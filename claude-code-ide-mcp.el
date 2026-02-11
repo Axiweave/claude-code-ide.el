@@ -732,9 +732,16 @@ This should be called when the buffer's context might have changed."
           (if file-in-project
               ;; File is in project - check cursor/selection changes
               (let* ((cursor-pos (point))
-                     (current-state (if (use-region-p)
-                                        (list cursor-pos (region-beginning) (region-end))
-                                      (list cursor-pos cursor-pos cursor-pos)))
+                     (current-state (cond
+                                     ((and (fboundp 'evil-visual-state-p)
+                                           (evil-visual-state-p)
+                                           (eq (evil-visual-type) 'line))
+                                      (let ((range (evil-contract-range (evil-visual-range))))
+                                        (list cursor-pos (nth 0 range) (nth 1 range))))
+                                     ((use-region-p)
+                                      (list cursor-pos (region-beginning) (region-end)))
+                                     (t
+                                      (list cursor-pos cursor-pos cursor-pos))))
                      (last-state (claude-code-ide-mcp-session-last-selection session))
                      (state-changed (not (equal current-state last-state))))
                 ;; Send notification if cursor or selection changed
