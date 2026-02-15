@@ -1130,6 +1130,17 @@ If the buffer is already visible, switch focus to it."
       (user-error "No Claude Code session for this project"))))
 
 ;;;###autoload
+(defun claude-code-ide-send-double-escape ()
+  "Send double escape key to the Claude Code terminal buffer for the current project."
+  (interactive)
+  (let ((buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (with-current-buffer buffer
+          (claude-code-ide--terminal-send-escape)
+          (claude-code-ide--terminal-send-escape))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
 (defun claude-code-ide-insert-newline ()
   "Send newline (backslash + return) to the Claude Code terminal buffer for the current project.
 This simulates typing backslash followed by Enter, which Claude Code interprets as a newline."

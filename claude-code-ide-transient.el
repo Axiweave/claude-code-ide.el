@@ -331,7 +331,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
     ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
     ("e" "Send escape key" claude-code-ide-send-escape)
-    ("n" "Insert newline" claude-code-ide-insert-newline)]
+    ("n" "Insert newline" claude-code-ide-insert-newline)
+    ("x" "Clear (double escape)" claude-code-ide-send-double-escape)
+    ]
    ["Submenus"
     ("C" "Configuration" claude-code-ide-config-menu)
     ("d" "Debugging" claude-code-ide-debug-menu)]])
