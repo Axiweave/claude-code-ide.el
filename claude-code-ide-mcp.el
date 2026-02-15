@@ -915,12 +915,26 @@ This should be called when the buffer's context might have changed."
 If a region is selected, send the selected lines.
 Otherwise, send the current line."
   (let* ((file-path (or (buffer-file-name) ""))
-         (start-line (if (use-region-p)
-                         (1- (line-number-at-pos (region-beginning)))
-                       (1- (line-number-at-pos (point)))))
-         (end-line (if (use-region-p)
-                       (1- (line-number-at-pos (region-end)))
-                     (1- (line-number-at-pos (point))))))
+         (start-line
+          (cond
+           ((and (fboundp 'evil-visual-state-p)
+                 (evil-visual-state-p)
+                 (eq (evil-visual-type) 'line))
+            (1- (line-number-at-pos
+                 (nth 0 (evil-contract-range (evil-visual-range))))))
+           ((use-region-p)
+            (1- (line-number-at-pos (region-beginning))))
+           (t (1- (line-number-at-pos (point))))))
+         (end-line
+          (cond
+           ((and (fboundp 'evil-visual-state-p)
+                 (evil-visual-state-p)
+                 (eq (evil-visual-type) 'line))
+            (1- (line-number-at-pos
+                 (nth 1 (evil-contract-range (evil-visual-range))))))
+           ((use-region-p)
+            (1- (line-number-at-pos (region-end))))
+           (t (1- (line-number-at-pos (point)))))))
     (claude-code-ide-mcp--send-notification
      "at_mentioned"
      `((filePath . ,file-path)
