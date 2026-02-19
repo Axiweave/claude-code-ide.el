@@ -735,7 +735,7 @@ This should be called when the buffer's context might have changed."
                      (current-state (cond
                                      ((and (fboundp 'evil-visual-state-p)
                                            (evil-visual-state-p)
-                                           (eq (evil-visual-type) 'line))
+                                           (memq (evil-visual-type) '(line screen-line)))
                                       (let ((range (evil-contract-range (evil-visual-range))))
                                         (list cursor-pos (nth 0 range) (nth 1 range))))
                                      ((use-region-p)
@@ -919,7 +919,7 @@ Otherwise, send the current line."
           (cond
            ((and (fboundp 'evil-visual-state-p)
                  (evil-visual-state-p)
-                 (eq (evil-visual-type) 'line))
+                 (memq (evil-visual-type) '(line screen-line)))
             (1- (line-number-at-pos
                  (nth 0 (evil-contract-range (evil-visual-range))))))
            ((use-region-p)
@@ -929,7 +929,7 @@ Otherwise, send the current line."
           (cond
            ((and (fboundp 'evil-visual-state-p)
                  (evil-visual-state-p)
-                 (eq (evil-visual-type) 'line))
+                 (memq (evil-visual-type) '(line screen-line)))
             (1- (line-number-at-pos
                  (nth 1 (evil-contract-range (evil-visual-range))))))
            ((use-region-p)

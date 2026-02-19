@@ -300,7 +300,7 @@ ARGUMENTS should contain:
      ;; use-region-p returns nil because start equals end)
      ((and (fboundp 'evil-visual-state-p)
            (evil-visual-state-p)
-           (eq (evil-visual-type) 'line))
+           (memq (evil-visual-type) '(line screen-line)))
       (let* ((range (evil-contract-range (evil-visual-range)))
              (start (nth 0 range))
              (end (nth 1 range))
