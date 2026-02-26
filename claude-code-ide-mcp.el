@@ -671,6 +671,7 @@ Optional SESSION contains the MCP session context."
 (defun claude-code-ide-mcp--invalidate-buffer-cache ()
   "Invalidate the buffer-local cache for project and session.
 This should be called when the buffer's context might have changed."
+  (interactive)
   (setq claude-code-ide-mcp--buffer-project-cache nil
         claude-code-ide-mcp--buffer-session-cache nil
         claude-code-ide-mcp--buffer-cache-valid nil))
