@@ -543,13 +543,11 @@ This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
 width has actually changed, working around the scrolling glitch."
   (let* ((base-result (apply original-fn args))
          (dimensions-stable t))
-    ;; Examine each window showing a Claude session
-    (dolist (win (window-list))
-      (when-let* ((buf (window-buffer win))
-                  ((claude-code-ide--session-buffer-p buf)))
+    ;; Only examine windows showing the current buffer, across ALL frames
+    (when (claude-code-ide--session-buffer-p (current-buffer))
+      (dolist (win (get-buffer-window-list (current-buffer) nil t))
         (let* ((new-width (window-width win))
                (cached-width (window-parameter win 'claude-code-ide-cached-width)))
-          ;; Width change detected
           (unless (eql new-width cached-width)
             (setq dimensions-stable nil)
             (set-window-parameter win 'claude-code-ide-cached-width new-width)))))
