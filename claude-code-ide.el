@@ -447,11 +447,11 @@ cursor management, and process buffering for superior user experience."
    (t
     (user-error "Invalid terminal backend: %s.  Valid options are 'vterm or 'eat" claude-code-ide-terminal-backend))))
 
-(defun claude-code-ide--terminal-send-string (string)
+(defun claude-code-ide--terminal-send-string (string &optional paste)
   "Send STRING to the terminal in the current buffer."
   (cond
    ((eq claude-code-ide-terminal-backend 'vterm)
-    (vterm-send-string string))
+    (vterm-send-string string paste))
    ((eq claude-code-ide-terminal-backend 'eat)
     (when eat-terminal
       (eat-term-send-string eat-terminal string)))
