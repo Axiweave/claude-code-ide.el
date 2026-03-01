@@ -74,17 +74,20 @@
 
 (defun claude-code-ide-mcp--find-session-for-file (file-path)
   "Find the MCP session that owns FILE-PATH.
+When multiple sessions match (nested projects), returns the most
+specific match (longest project directory).
 Returns the session if found, nil otherwise."
   (let ((expanded-file (expand-file-name file-path))
-        (found-session nil))
-    (catch 'found
-      (maphash (lambda (project-dir session)
-                 (when (string-prefix-p (expand-file-name project-dir)
-                                        expanded-file)
-                   (setq found-session session)
-                   (throw 'found t)))
-               claude-code-ide-mcp--sessions))
-    found-session))
+        (best-session nil)
+        (best-length 0))
+    (maphash (lambda (project-dir session)
+               (let ((expanded-dir (expand-file-name project-dir)))
+                 (when (and (string-prefix-p expanded-dir expanded-file)
+                            (> (length expanded-dir) best-length))
+                   (setq best-session session
+                         best-length (length expanded-dir)))))
+             claude-code-ide-mcp--sessions)
+    best-session))
 
 (defun claude-code-ide-mcp--find-claude-side-window ()
   "Find the Claude Code side window in the current frame.

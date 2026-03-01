@@ -1677,6 +1677,31 @@ have completed before cleanup.  Waits up to 5 seconds."
            ;; Remove session from global hash table
            (remhash default-directory claude-code-ide-mcp--sessions)))))))
 
+(ert-deftest claude-code-ide-test-find-session-for-file-nested-projects ()
+  "Test that find-session-for-file picks the most specific match for nested projects."
+  (let ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+        (parent-session (make-claude-code-ide-mcp-session
+                         :project-dir "/tmp/parent-project/"
+                         :deferred (make-hash-table :test 'equal)
+                         :active-diffs (make-hash-table :test 'equal)))
+        (child-session (make-claude-code-ide-mcp-session
+                        :project-dir "/tmp/parent-project/child/"
+                        :deferred (make-hash-table :test 'equal)
+                        :active-diffs (make-hash-table :test 'equal))))
+    (puthash "/tmp/parent-project/" parent-session claude-code-ide-mcp--sessions)
+    (puthash "/tmp/parent-project/child/" child-session claude-code-ide-mcp--sessions)
+
+    ;; File in child project should match child session, not parent
+    (should (eq (claude-code-ide-mcp--find-session-for-file "/tmp/parent-project/child/src/foo.el")
+                child-session))
+
+    ;; File in parent project (not in child) should match parent session
+    (should (eq (claude-code-ide-mcp--find-session-for-file "/tmp/parent-project/src/bar.el")
+                parent-session))
+
+    ;; File outside both projects should return nil
+    (should (null (claude-code-ide-mcp--find-session-for-file "/tmp/other/baz.el")))))
+
 (ert-deftest test-claude-code-ide-mcp-multi-session-deferred ()
   "Test that deferred responses work correctly with multiple sessions."
   (skip-unless (not (getenv "CI")))
