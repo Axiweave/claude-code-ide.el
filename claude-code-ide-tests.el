@@ -2300,6 +2300,106 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+(ert-deftest claude-code-ide-test-send-current-file ()
+  "Test the claude-code-ide-send-current-file command."
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/")))
+
+      ;; Test with a file buffer
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((test-source-buf (generate-new-buffer "test-source")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                           (lambda () "*test-claude-buffer*")))
+                  (claude-code-ide-send-current-file)
+                  (should (equal sent-string "@src/main.el"))))
+            (kill-buffer test-source-buf))))
+
+      ;; Test with no file buffer (should error)
+      (with-temp-buffer
+        (should-error (claude-code-ide-send-current-file) :type 'user-error))
+
+      ;; Test with no session buffer (should error)
+      (setq sent-string nil)
+      (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                 (lambda () "*nonexistent-buffer*")))
+        (let ((test-buf (generate-new-buffer "test-file-buf")))
+          (unwind-protect
+              (with-current-buffer test-buf
+                (setq buffer-file-name "/home/user/project/foo.el")
+                (should-error (claude-code-ide-send-current-file) :type 'user-error))
+            (kill-buffer test-buf)))))))
+
+(ert-deftest claude-code-ide-test-send-file ()
+  "Test the claude-code-ide-send-file command."
+  (let ((sent-string nil)
+        (completed-read-called nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'project-files)
+               (lambda (_) '("/home/user/project/src/main.el"
+                             "/home/user/project/src/utils.el"
+                             "/home/user/project/README.md")))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq completed-read-called t)
+                 (car collection))))
+
+      ;; Test completing-read path (no prefix arg)
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (claude-code-ide-send-file nil)
+        (should completed-read-called)
+        (should (equal sent-string "@src/main.el"))))
+
+    ;; Test prefix arg path (read-file-name)
+    (setq sent-string nil)
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'read-file-name)
+               (lambda (_prompt dir &rest _)
+                 (concat dir "lib/helper.el"))))
+
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (claude-code-ide-send-file t)
+        (should (equal sent-string "@lib/helper.el"))))
+
+    ;; Test with no session buffer (should error)
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*nonexistent-buffer*"))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'project-files)
+               (lambda (_) '("/home/user/project/src/main.el")))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _) (car collection))))
+      (should-error (claude-code-ide-send-file nil) :type 'user-error))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

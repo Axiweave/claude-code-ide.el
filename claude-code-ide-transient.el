@@ -52,6 +52,9 @@
 (declare-function claude-code-ide-mcp-session-last-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
+(declare-function claude-code-ide-send-current-file "claude-code-ide" ())
+(declare-function claude-code-ide-send-file "claude-code-ide" (arg))
+(declare-function claude-code-ide-send-file-from-root "claude-code-ide" ())
 
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
@@ -347,11 +350,13 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+    ("@" "Send current file @path" claude-code-ide-send-current-file)
+    ("f" "Send file @path" claude-code-ide-send-file)
+    ("F" "Send file @path (from root)" claude-code-ide-send-file-from-root)
     ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)
     ("e" "Send escape key" claude-code-ide-send-escape)
     ("n" "Insert newline" claude-code-ide-insert-newline)
-    ("x" "Clear (double escape)" claude-code-ide-send-double-escape)
-    ]
+    ("x" "Clear (double escape)" claude-code-ide-send-double-escape)]
    ["Submenus"
     ("C" "Configuration" claude-code-ide-config-menu)
     ("d" "Debugging" claude-code-ide-debug-menu)]])

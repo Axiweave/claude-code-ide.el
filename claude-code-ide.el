@@ -1185,6 +1185,52 @@ When called programmatically, sends the given PROMPT string."
       (user-error "No Claude Code session for this project"))))
 
 ;;;###autoload
+(defun claude-code-ide-send-current-file ()
+  "Send current buffer's file path with @ prefix to the Claude Code terminal.
+The path is relative to the project root."
+  (interactive)
+  (unless buffer-file-name
+    (user-error "Current buffer is not visiting a file"))
+  (let* ((project (project-current t))
+         (root (project-root project))
+         (relative (file-relative-name buffer-file-name root))
+         (buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (progn
+          (with-current-buffer buffer
+            (claude-code-ide--terminal-send-string (concat "@" relative " ") t))
+          (claude-code-ide-debug "Sent file reference to Claude Code: @%s" relative))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-send-file (arg)
+  "Send a project file path with @ prefix to the Claude Code terminal.
+With prefix ARG, use `read-file-name' from project root instead of
+`completing-read' over project files."
+  (interactive "P")
+  (let* ((project (project-current t))
+         (root (project-root project))
+         (file (if arg
+                   (file-relative-name (read-file-name "File: " root) root)
+                 (file-relative-name
+                  (completing-read "File: " (project-files project))
+                  root)))
+         (buffer-name (claude-code-ide--get-buffer-name)))
+    (if-let ((buffer (get-buffer buffer-name)))
+        (progn
+          (with-current-buffer buffer
+            (claude-code-ide--terminal-send-string (concat "@" file " ") t))
+          (claude-code-ide-debug "Sent file reference to Claude Code: @%s" file))
+      (user-error "No Claude Code session for this project"))))
+
+;;;###autoload
+(defun claude-code-ide-send-file-from-root ()
+  "Send a file path with @ prefix, browsing from project root.
+Like `claude-code-ide-send-file' with prefix argument."
+  (interactive)
+  (claude-code-ide-send-file t))
+
+;;;###autoload
 (defun claude-code-ide-toggle ()
   "Toggle visibility of Claude Code window for the current project."
   (interactive)
