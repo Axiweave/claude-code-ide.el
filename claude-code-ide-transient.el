@@ -358,7 +358,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("n" "Insert newline" claude-code-ide-insert-newline)
     ("x" "Clear (double escape)" claude-code-ide-send-double-escape)]
    ["Submenus"
-    ("C" "Configuration" claude-code-ide-config-menu)
+    ("<f12>" "Configuration" claude-code-ide-config-menu)
     ("d" "Debugging" claude-code-ide-debug-menu)]])
 
 (transient-define-prefix claude-code-ide-config-menu ()
