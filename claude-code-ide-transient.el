@@ -144,6 +144,42 @@ With prefix ARG, add --dangerously-skip-permissions flag."
              claude-code-ide-cli-extra-flags)))
       (claude-code-ide-resume))))
 
+(defun claude-code-ide--start-skip-description ()
+  "Dynamic description for start with --dangerously-skip-permissions."
+  (if (claude-code-ide--has-active-session-p)
+      (propertize "Start (skip permissions) (session already running)"
+                  'face 'transient-inactive-value)
+    "Start (skip permissions)"))
+
+(defun claude-code-ide--start-skip-permissions ()
+  "Start Claude Code with --dangerously-skip-permissions."
+  (interactive)
+  (claude-code-ide--start-if-no-session t))
+
+(defun claude-code-ide--continue-skip-description ()
+  "Dynamic description for continue with --dangerously-skip-permissions."
+  (if (claude-code-ide--has-active-session-p)
+      (propertize "Continue (skip permissions) (session already running)"
+                  'face 'transient-inactive-value)
+    "Continue (skip permissions)"))
+
+(defun claude-code-ide--continue-skip-permissions ()
+  "Continue Claude Code with --dangerously-skip-permissions."
+  (interactive)
+  (claude-code-ide--continue-if-no-session t))
+
+(defun claude-code-ide--resume-skip-description ()
+  "Dynamic description for resume with --dangerously-skip-permissions."
+  (if (claude-code-ide--has-active-session-p)
+      (propertize "Resume (skip permissions) (session already running)"
+                  'face 'transient-inactive-value)
+    "Resume (skip permissions)"))
+
+(defun claude-code-ide--resume-skip-permissions ()
+  "Resume Claude Code with --dangerously-skip-permissions."
+  (interactive)
+  (claude-code-ide--resume-if-no-session t))
+
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."
   (if-let ((session (claude-code-ide-mcp--get-current-session)))
@@ -340,8 +376,11 @@ Otherwise, if multiple sessions exist, prompt for selection."
   ["Claude Code IDE"
    ["Session Management"
     ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
+    ("S" claude-code-ide--start-skip-permissions :description claude-code-ide--start-skip-description)
     ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
+    ("C" claude-code-ide--continue-skip-permissions :description claude-code-ide--continue-skip-description)
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
+    ("R" claude-code-ide--resume-skip-permissions :description claude-code-ide--resume-skip-description)
     ("q" "Stop current session" claude-code-ide-stop)
     ("l" "List all sessions" claude-code-ide-list-sessions)]
    ["Navigation"
