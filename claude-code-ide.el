@@ -1268,13 +1268,16 @@ like #L12-L14 (or #L12 for a single line)."
                   (t (format "#L%d-L%d" (car range) (cdr range)))))
          (reference (concat "@" relative suffix " "))
          (buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (progn
-          (with-current-buffer buffer
-            (claude-code-ide--terminal-send-string reference t))
-          (claude-code-ide-debug "Sent file reference to Claude Code: %s"
-                                 (string-trim reference)))
-      (user-error "No Claude Code session for this project"))))
+    (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
+        (claude-code-ide-debug "Sent file reference to prompt buffer: %s"
+                               (string-trim reference))
+      (if-let ((buffer (get-buffer buffer-name)))
+          (progn
+            (with-current-buffer buffer
+              (claude-code-ide--terminal-send-string reference t))
+            (claude-code-ide-debug "Sent file reference to Claude Code: %s"
+                                   (string-trim reference)))
+        (user-error "No Claude Code session or prompt buffer for this project")))))
 
 ;;;###autoload
 (defun claude-code-ide-send-file (arg)
@@ -1289,13 +1292,16 @@ With prefix ARG, use `read-file-name' from project root instead of
                  (file-relative-name
                   (completing-read "File: " (project-files project))
                   root)))
+         (reference (concat "@" file " "))
          (buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (progn
-          (with-current-buffer buffer
-            (claude-code-ide--terminal-send-string (concat "@" file " ") t))
-          (claude-code-ide-debug "Sent file reference to Claude Code: @%s" file))
-      (user-error "No Claude Code session for this project"))))
+    (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
+        (claude-code-ide-debug "Sent file reference to prompt buffer: @%s" file)
+      (if-let ((buffer (get-buffer buffer-name)))
+          (progn
+            (with-current-buffer buffer
+              (claude-code-ide--terminal-send-string reference t))
+            (claude-code-ide-debug "Sent file reference to Claude Code: @%s" file))
+        (user-error "No Claude Code session or prompt buffer for this project")))))
 
 ;;;###autoload
 (defun claude-code-ide-send-file-from-root ()
