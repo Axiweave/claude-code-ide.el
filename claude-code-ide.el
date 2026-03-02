@@ -501,6 +501,14 @@ matching buffer, or nil."
                               claude-code-ide-prompt-buffer-patterns))
            return buf))
 
+(defun claude-code-ide--prompt-buffer-send-string (string)
+  "Insert STRING into the first visible prompt/plan buffer at point.
+Returns the buffer on success, or nil if no prompt buffer is visible."
+  (when-let ((buf (claude-code-ide--find-prompt-buffer)))
+    (with-current-buffer buf
+      (insert string))
+    buf))
+
 (defun claude-code-ide--sync-terminal-dimensions (buffer window)
   "Sync terminal dimensions in BUFFER to match WINDOW size.
 This ensures the terminal process has the correct dimensions after

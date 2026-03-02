@@ -2549,6 +2549,32 @@ have completed before cleanup.  Waits up to 5 seconds."
         (with-current-buffer buf (setq buffer-file-name nil))
         (kill-buffer buf)))))
 
+(ert-deftest claude-code-ide-test-prompt-buffer-send-string ()
+  "Test sending a string to a visible prompt/plan buffer."
+  ;; Successful insert at point
+  (let ((prompt-buf (generate-new-buffer "test-prompt-send")))
+    (unwind-protect
+        (progn
+          (with-current-buffer prompt-buf
+            (setq buffer-file-name "/tmp/claude-prompt-xyz.md")
+            (insert "existing text")
+            (goto-char 9))  ; position after "existing"
+          (cl-letf (((symbol-function 'claude-code-ide--find-prompt-buffer)
+                     (lambda () prompt-buf)))
+            (should (eq prompt-buf
+                        (claude-code-ide--prompt-buffer-send-string "@file.el ")))
+            (should (equal (with-current-buffer prompt-buf
+                             (buffer-string))
+                           "existing@file.el  text"))))
+      (let ((buf prompt-buf))
+        (with-current-buffer buf (setq buffer-file-name nil))
+        (kill-buffer buf))))
+
+  ;; No prompt buffer found -> nil, no error
+  (cl-letf (((symbol-function 'claude-code-ide--find-prompt-buffer)
+             (lambda () nil)))
+    (should (null (claude-code-ide--prompt-buffer-send-string "@file.el ")))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
