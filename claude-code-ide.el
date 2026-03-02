@@ -489,6 +489,18 @@ cursor management, and process buffering for superior user experience."
    (t
     (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
 
+(defun claude-code-ide--find-prompt-buffer ()
+  "Find a visible buffer whose file name matches a prompt/plan pattern.
+Scans all windows on all visible frames.  Returns the first
+matching buffer, or nil."
+  (cl-loop for win in (window-list nil 'no-minibuffer t)
+           for buf = (window-buffer win)
+           for fname = (buffer-file-name buf)
+           when (and fname
+                     (cl-some (lambda (pat) (string-match-p pat fname))
+                              claude-code-ide-prompt-buffer-patterns))
+           return buf))
+
 (defun claude-code-ide--sync-terminal-dimensions (buffer window)
   "Sync terminal dimensions in BUFFER to match WINDOW size.
 This ensures the terminal process has the correct dimensions after

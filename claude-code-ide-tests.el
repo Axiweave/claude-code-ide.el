@@ -2495,6 +2495,60 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should-not (string-match-p (nth 1 claude-code-ide-prompt-buffer-patterns)
                                "/home/user/notes.md")))
 
+(ert-deftest claude-code-ide-test-find-prompt-buffer ()
+  "Test finding a visible prompt/plan buffer."
+  ;; No matching buffer visible -> nil
+  (cl-letf (((symbol-function 'window-list)
+             (lambda (&rest _) (list (selected-window)))))
+    (with-temp-buffer
+      ;; temp buffer has no file-name, won't match
+      (should (null (claude-code-ide--find-prompt-buffer)))))
+
+  ;; Matching prompt buffer visible -> returns it
+  (let ((prompt-buf (generate-new-buffer "test-prompt")))
+    (unwind-protect
+        (progn
+          (with-current-buffer prompt-buf
+            (setq buffer-file-name "/tmp/claude-prompt-abc123.md"))
+          (cl-letf (((symbol-function 'window-list)
+                     (lambda (&rest _) (list (selected-window))))
+                    ((symbol-function 'window-buffer)
+                     (lambda (_win) prompt-buf)))
+            (should (eq prompt-buf (claude-code-ide--find-prompt-buffer)))))
+      (let ((buf prompt-buf))
+        (with-current-buffer buf (setq buffer-file-name nil))
+        (kill-buffer buf))))
+
+  ;; Matching plan buffer visible -> returns it
+  (let ((plan-buf (generate-new-buffer "test-plan")))
+    (unwind-protect
+        (progn
+          (with-current-buffer plan-buf
+            (setq buffer-file-name "/home/user/.claude/plans/my-plan.md"))
+          (cl-letf (((symbol-function 'window-list)
+                     (lambda (&rest _) (list (selected-window))))
+                    ((symbol-function 'window-buffer)
+                     (lambda (_win) plan-buf)))
+            (should (eq plan-buf (claude-code-ide--find-prompt-buffer)))))
+      (let ((buf plan-buf))
+        (with-current-buffer buf (setq buffer-file-name nil))
+        (kill-buffer buf))))
+
+  ;; Non-matching .md buffer -> nil
+  (let ((other-buf (generate-new-buffer "test-other")))
+    (unwind-protect
+        (progn
+          (with-current-buffer other-buf
+            (setq buffer-file-name "/home/user/README.md"))
+          (cl-letf (((symbol-function 'window-list)
+                     (lambda (&rest _) (list (selected-window))))
+                    ((symbol-function 'window-buffer)
+                     (lambda (_win) other-buf)))
+            (should (null (claude-code-ide--find-prompt-buffer)))))
+      (let ((buf other-buf))
+        (with-current-buffer buf (setq buffer-file-name nil))
+        (kill-buffer buf)))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
