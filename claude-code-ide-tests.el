@@ -2498,8 +2498,9 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-find-prompt-buffer ()
   "Test finding a visible prompt/plan buffer."
   ;; No matching buffer visible -> nil
-  (cl-letf (((symbol-function 'window-list)
-             (lambda (&rest _) (list (selected-window)))))
+  (cl-letf (((symbol-function 'walk-windows)
+             (lambda (fn &rest _)
+               (funcall fn (selected-window)))))
     (with-temp-buffer
       ;; temp buffer has no file-name, won't match
       (should (null (claude-code-ide--find-prompt-buffer)))))
@@ -2510,8 +2511,9 @@ have completed before cleanup.  Waits up to 5 seconds."
         (progn
           (with-current-buffer prompt-buf
             (setq buffer-file-name "/tmp/claude-prompt-abc123.md"))
-          (cl-letf (((symbol-function 'window-list)
-                     (lambda (&rest _) (list (selected-window))))
+          (cl-letf (((symbol-function 'walk-windows)
+                     (lambda (fn &rest _)
+                       (funcall fn (selected-window))))
                     ((symbol-function 'window-buffer)
                      (lambda (_win) prompt-buf)))
             (should (eq prompt-buf (claude-code-ide--find-prompt-buffer)))))
@@ -2525,8 +2527,9 @@ have completed before cleanup.  Waits up to 5 seconds."
         (progn
           (with-current-buffer plan-buf
             (setq buffer-file-name "/home/user/.claude/plans/my-plan.md"))
-          (cl-letf (((symbol-function 'window-list)
-                     (lambda (&rest _) (list (selected-window))))
+          (cl-letf (((symbol-function 'walk-windows)
+                     (lambda (fn &rest _)
+                       (funcall fn (selected-window))))
                     ((symbol-function 'window-buffer)
                      (lambda (_win) plan-buf)))
             (should (eq plan-buf (claude-code-ide--find-prompt-buffer)))))
@@ -2540,8 +2543,9 @@ have completed before cleanup.  Waits up to 5 seconds."
         (progn
           (with-current-buffer other-buf
             (setq buffer-file-name "/home/user/README.md"))
-          (cl-letf (((symbol-function 'window-list)
-                     (lambda (&rest _) (list (selected-window))))
+          (cl-letf (((symbol-function 'walk-windows)
+                     (lambda (fn &rest _)
+                       (funcall fn (selected-window))))
                     ((symbol-function 'window-buffer)
                      (lambda (_win) other-buf)))
             (should (null (claude-code-ide--find-prompt-buffer)))))
