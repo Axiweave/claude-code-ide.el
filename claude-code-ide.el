@@ -267,6 +267,15 @@ a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-prompt-buffer-patterns
+  '("claude-prompt.*\\.md\\'" "\\.claude/plans/.*\\.md\\'")
+  "List of regexps to identify Claude prompt and plan buffers.
+Each regexp is matched against `buffer-file-name'.  Used by
+`claude-code-ide--find-prompt-buffer' to locate a visible
+prompt or plan editing buffer."
+  :type '(repeat regexp)
+  :group 'claude-code-ide)
+
 (define-obsolete-variable-alias
   'claude-code-ide-eat-initialization-delay
   'claude-code-ide-terminal-initialization-delay

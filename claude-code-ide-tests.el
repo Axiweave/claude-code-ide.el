@@ -2481,6 +2481,20 @@ have completed before cleanup.  Waits up to 5 seconds."
                   (should (equal sent-string "@src/main.el#L2 "))))
             (kill-buffer test-source-buf)))))))
 
+(ert-deftest claude-code-ide-test-prompt-buffer-patterns-default ()
+  "Test that prompt buffer patterns defcustom has correct defaults."
+  (should (listp claude-code-ide-prompt-buffer-patterns))
+  (should (= 2 (length claude-code-ide-prompt-buffer-patterns)))
+  (should (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
+                          "/tmp/claude-prompt-abc.md"))
+  (should (string-match-p (nth 1 claude-code-ide-prompt-buffer-patterns)
+                          "/home/user/.claude/plans/my-plan.md"))
+  ;; Should NOT match random .md files
+  (should-not (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
+                               "/home/user/README.md"))
+  (should-not (string-match-p (nth 1 claude-code-ide-prompt-buffer-patterns)
+                               "/home/user/notes.md")))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
