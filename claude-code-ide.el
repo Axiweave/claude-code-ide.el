@@ -1184,22 +1184,62 @@ When called programmatically, sends the given PROMPT string."
             (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)))
       (user-error "No Claude Code session for this project"))))
 
+(defun claude-code-ide--get-selection-line-range ()
+  "Return (START-LINE . END-LINE) for the active selection, or nil.
+Checks evil visual state first, then falls back to `use-region-p'.
+Line numbers are 1-based."
+  (cond
+   ;; Evil visual state
+   ((and (fboundp 'evil-visual-state-p)
+         (funcall #'evil-visual-state-p))
+    (let* ((range (funcall #'evil-contract-range
+                           (funcall #'evil-visual-range)))
+           (start (nth 0 range))
+           (end (nth 1 range)))
+      (cons (line-number-at-pos start)
+            (line-number-at-pos end))))
+   ;; Regular Emacs region
+   ((use-region-p)
+    (let* ((start (region-beginning))
+           (end (region-end))
+           (end-line (line-number-at-pos end))
+           ;; When region ends at column 0 of a line, the user selected
+           ;; up to the end of the previous line, not into this line.
+           (adjusted-end (if (and (> end start)
+                                  (save-excursion
+                                    (goto-char end)
+                                    (bolp)))
+                             (1- end-line)
+                           end-line)))
+      (cons (line-number-at-pos start)
+            adjusted-end)))))
+
 ;;;###autoload
 (defun claude-code-ide-send-current-file ()
   "Send current buffer's file path with @ prefix to the Claude Code terminal.
-The path is relative to the project root."
+The path is relative to the project root.  When an evil visual
+selection or Emacs region is active, appends a line range suffix
+like #L12-L14 (or #L12 for a single line)."
   (interactive)
   (unless buffer-file-name
     (user-error "Current buffer is not visiting a file"))
   (let* ((project (project-current t))
          (root (project-root project))
          (relative (file-relative-name buffer-file-name root))
+         (range (claude-code-ide--get-selection-line-range))
+         (suffix (cond
+                  ((null range) "")
+                  ((= (car range) (cdr range))
+                   (format "#L%d" (car range)))
+                  (t (format "#L%d-L%d" (car range) (cdr range)))))
+         (reference (concat "@" relative suffix " "))
          (buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((buffer (get-buffer buffer-name)))
         (progn
           (with-current-buffer buffer
-            (claude-code-ide--terminal-send-string (concat "@" relative " ") t))
-          (claude-code-ide-debug "Sent file reference to Claude Code: @%s" relative))
+            (claude-code-ide--terminal-send-string reference t))
+          (claude-code-ide-debug "Sent file reference to Claude Code: %s"
+                                 (string-trim reference)))
       (user-error "No Claude Code session for this project"))))
 
 ;;;###autoload

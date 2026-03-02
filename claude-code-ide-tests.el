@@ -2400,6 +2400,87 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda (_prompt collection &rest _) (car collection))))
       (should-error (claude-code-ide-send-file nil) :type 'user-error))))
 
+(ert-deftest claude-code-ide-test-get-selection-line-range-no-selection ()
+  "Test that nil is returned when no selection is active."
+  (with-temp-buffer
+    (insert "line1\nline2\nline3\n")
+    (should (null (claude-code-ide--get-selection-line-range)))))
+
+(ert-deftest claude-code-ide-test-get-selection-line-range-region ()
+  "Test line range from an active Emacs region."
+  (with-temp-buffer
+    (transient-mark-mode 1)
+    (insert "line1\nline2\nline3\nline4\n")
+    (goto-char (point-min))
+    (forward-line 1)
+    (push-mark (point) t t)
+    (forward-line 2)
+    (should (equal (claude-code-ide--get-selection-line-range)
+                   '(2 . 3)))))
+
+(ert-deftest claude-code-ide-test-get-selection-line-range-single-line-region ()
+  "Test single-line region returns same start and end."
+  (with-temp-buffer
+    (transient-mark-mode 1)
+    (insert "line1\nline2\nline3\n")
+    (goto-char (point-min))
+    (forward-line 1)
+    (push-mark (point) t t)
+    (end-of-line)
+    (should (equal (claude-code-ide--get-selection-line-range)
+                   '(2 . 2)))))
+
+(ert-deftest claude-code-ide-test-send-current-file-with-region ()
+  "Test send-current-file includes line range when region is active."
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/")))
+
+      ;; Test with multi-line range
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((test-source-buf (generate-new-buffer "test-source-range")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (transient-mark-mode 1)
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (insert "line1\nline2\nline3\nline4\nline5\n")
+                (goto-char (point-min))
+                (forward-line 1)
+                (push-mark (point) t t)
+                (forward-line 2)
+                (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                           (lambda () "*test-claude-buffer*")))
+                  (claude-code-ide-send-current-file)
+                  (should (equal sent-string "@src/main.el#L2-L3 "))))
+            (kill-buffer test-source-buf))))
+
+      ;; Test with single-line range
+      (setq sent-string nil)
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((test-source-buf (generate-new-buffer "test-source-single")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (transient-mark-mode 1)
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (insert "line1\nline2\nline3\n")
+                (goto-char (point-min))
+                (forward-line 1)
+                (push-mark (point) t t)
+                (end-of-line)
+                (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                           (lambda () "*test-claude-buffer*")))
+                  (claude-code-ide-send-current-file)
+                  (should (equal sent-string "@src/main.el#L2 "))))
+            (kill-buffer test-source-buf)))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
