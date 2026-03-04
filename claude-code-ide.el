@@ -1274,7 +1274,7 @@ Line numbers are 1-based."
   "Send current buffer's file path with @ prefix to the Claude Code terminal.
 The path is relative to the project root.  When an evil visual
 selection or Emacs region is active, appends a line range suffix
-like #L12-14 (or #L12 for a single line)."
+like #L12-L14 (or #L12 for a single line)."
   (interactive)
   (unless buffer-file-name
     (user-error "Current buffer is not visiting a file"))
@@ -1286,7 +1286,7 @@ like #L12-14 (or #L12 for a single line)."
                   ((null range) "")
                   ((= (car range) (cdr range))
                    (format "#L%d" (car range)))
-                  (t (format "#L%d-%d" (car range) (cdr range)))))
+                  (t (format "#L%d-L%d" (car range) (cdr range)))))
          (reference (concat "@" relative suffix " "))
          (buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
