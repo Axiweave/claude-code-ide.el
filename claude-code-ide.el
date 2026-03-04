@@ -1233,7 +1233,8 @@ When called programmatically, sends the given PROMPT string."
               ;; Small delay to ensure prompt text is processed before sending return
               (sit-for 0.1)
               (claude-code-ide--terminal-send-return))
-            (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)))
+            (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)
+            (claude-code-ide--maybe-switch-to-window buffer)))
       (user-error "No Claude Code session for this project"))))
 
 (defun claude-code-ide--get-selection-line-range ()

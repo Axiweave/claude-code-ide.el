@@ -2672,6 +2672,24 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (should (eq switched-to terminal-buf)))
             (kill-buffer test-source-buf)))))))
 
+(ert-deftest claude-code-ide-test-send-prompt-switches-to-terminal ()
+  "Test send-prompt switches to terminal buffer when enabled."
+  (let ((claude-code-ide-switch-after-send t)
+        (switched-to nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str) nil))
+              ((symbol-function 'claude-code-ide--terminal-send-return)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+               (lambda (buf) (setq switched-to buf))))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((terminal-buf (current-buffer)))
+          (claude-code-ide-send-prompt "test prompt")
+          (should (eq switched-to terminal-buf)))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
