@@ -2617,6 +2617,61 @@ have completed before cleanup.  Waits up to 5 seconds."
           (claude-code-ide--maybe-switch-to-window buf)
           (should-not selected-window))))))
 
+(ert-deftest claude-code-ide-test-send-current-file-switches-to-prompt ()
+  "Test send-current-file switches to prompt buffer when enabled."
+  (let ((claude-code-ide-switch-after-send t)
+        (switched-to nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) nil))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+               (lambda (buf) (setq switched-to buf))))
+      (let ((prompt-buf (generate-new-buffer "test-prompt-switch")))
+        (unwind-protect
+            (progn
+              (with-current-buffer prompt-buf
+                (setq buffer-file-name "/tmp/claude-prompt-xyz.md"))
+              (cl-letf (((symbol-function 'claude-code-ide--find-prompt-buffer)
+                         (lambda () prompt-buf)))
+                (with-temp-buffer
+                  (setq buffer-file-name "/home/user/project/src/main.el")
+                  (claude-code-ide-send-current-file)
+                  (should (eq switched-to prompt-buf)))))
+          (with-current-buffer prompt-buf (setq buffer-file-name nil))
+          (kill-buffer prompt-buf))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-switches-to-terminal ()
+  "Test send-current-file switches to terminal buffer when no prompt buffer."
+  (let ((claude-code-ide-switch-after-send t)
+        (switched-to nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) nil))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'claude-code-ide--find-prompt-buffer)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+               (lambda (buf) (setq switched-to buf))))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((terminal-buf (current-buffer))
+              (test-source-buf (generate-new-buffer "test-source-switch")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (claude-code-ide-send-current-file)
+                (should (eq switched-to terminal-buf)))
+            (kill-buffer test-source-buf)))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
