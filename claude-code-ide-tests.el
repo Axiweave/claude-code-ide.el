@@ -1258,21 +1258,22 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-mcp-server-lifecycle ()
   "Test MCP server start and stop."
   (require 'claude-code-ide-mcp)
-  (unwind-protect
-      (progn
-        ;; Start server
-        (let ((port (claude-code-ide-mcp-start)))
-          (should (numberp port))
-          (should (>= port 10000))
-          (should (<= port 65535))
-          ;; Check lockfile exists
-          (should (file-exists-p (claude-code-ide-mcp--lockfile-path port)))
-          ;; Stop server
-          (claude-code-ide-mcp-stop)
-          ;; Check lockfile removed
-          (should-not (file-exists-p (claude-code-ide-mcp--lockfile-path port)))))
-    ;; Ensure cleanup
-    (claude-code-ide-mcp-stop)))
+  (let ((project-dir (expand-file-name default-directory)))
+    (unwind-protect
+        (progn
+          ;; Start server
+          (let ((port (claude-code-ide-mcp-start project-dir)))
+            (should (numberp port))
+            (should (>= port 10000))
+            (should (<= port 65535))
+            ;; Check lockfile exists
+            (should (file-exists-p (claude-code-ide-mcp--lockfile-path port)))
+            ;; Stop server using explicit project dir
+            (claude-code-ide-mcp-stop-session project-dir)
+            ;; Check lockfile removed
+            (should-not (file-exists-p (claude-code-ide-mcp--lockfile-path port)))))
+      ;; Ensure cleanup
+      (claude-code-ide-mcp-stop-session project-dir))))
 
 ;; Test for side window handling in openDiff
 (defvar claude-code-ide-debug-buffer)
