@@ -2579,6 +2579,44 @@ have completed before cleanup.  Waits up to 5 seconds."
              (lambda () nil)))
     (should (null (claude-code-ide--prompt-buffer-send-string "@file.el ")))))
 
+(ert-deftest claude-code-ide-test-maybe-switch-to-window-enabled ()
+  "Test that helper selects window when enabled and window is visible."
+  (let ((claude-code-ide-switch-after-send t)
+        (selected-window nil))
+    (with-temp-buffer
+      (let ((buf (current-buffer)))
+        (display-buffer buf)
+        (cl-letf (((symbol-function 'select-window)
+                   (lambda (win) (setq selected-window win))))
+          (claude-code-ide--maybe-switch-to-window buf)
+          (should selected-window))))))
+
+(ert-deftest claude-code-ide-test-maybe-switch-to-window-disabled ()
+  "Test that helper does nothing when disabled."
+  (let ((claude-code-ide-switch-after-send nil)
+        (selected-window nil))
+    (with-temp-buffer
+      (let ((buf (current-buffer)))
+        (display-buffer buf)
+        (cl-letf (((symbol-function 'select-window)
+                   (lambda (win) (setq selected-window win))))
+          (claude-code-ide--maybe-switch-to-window buf)
+          (should-not selected-window))))))
+
+(ert-deftest claude-code-ide-test-maybe-switch-to-window-not-visible ()
+  "Test that helper does nothing when window is not visible."
+  (let ((claude-code-ide-switch-after-send t)
+        (selected-window nil))
+    (with-temp-buffer
+      (let ((buf (current-buffer)))
+        ;; Don't display the buffer - no visible window
+        (cl-letf (((symbol-function 'select-window)
+                   (lambda (win) (setq selected-window win)))
+                  ((symbol-function 'get-buffer-window)
+                   (lambda (_buf) nil)))
+          (claude-code-ide--maybe-switch-to-window buf)
+          (should-not selected-window))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

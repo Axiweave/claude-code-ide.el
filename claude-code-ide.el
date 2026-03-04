@@ -276,6 +276,16 @@ prompt or plan editing buffer."
   :type '(repeat regexp)
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-switch-after-send nil
+  "Whether to switch to the target buffer after sending content.
+When non-nil, send commands will select the window of the buffer
+that received the text.  For commands that send to a prompt buffer,
+the prompt buffer window is selected.  For commands that send to
+the terminal, the terminal window is selected.  Only switches if
+the target window is already visible."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (define-obsolete-variable-alias
   'claude-code-ide-eat-initialization-delay
   'claude-code-ide-terminal-initialization-delay
@@ -618,6 +628,14 @@ width has actually changed, working around the scrolling glitch."
 If DIRECTORY is not provided, use the current working directory."
   (funcall claude-code-ide-buffer-name-function
            (or directory (claude-code-ide--get-working-directory))))
+
+(defun claude-code-ide--maybe-switch-to-window (buffer)
+  "Select BUFFER's window if `claude-code-ide-switch-after-send' is non-nil.
+Only switches if BUFFER has a visible window.  Does nothing if the
+variable is nil or the buffer has no visible window."
+  (when claude-code-ide-switch-after-send
+    (when-let ((win (get-buffer-window buffer)))
+      (select-window win))))
 
 (defun claude-code-ide--get-process (&optional directory)
   "Get the Claude Code process for DIRECTORY or current working directory."
@@ -1253,7 +1271,7 @@ Line numbers are 1-based."
   "Send current buffer's file path with @ prefix to the Claude Code terminal.
 The path is relative to the project root.  When an evil visual
 selection or Emacs region is active, appends a line range suffix
-like #L12-L14 (or #L12 for a single line)."
+like #L12-14 (or #L12 for a single line)."
   (interactive)
   (unless buffer-file-name
     (user-error "Current buffer is not visiting a file"))
@@ -1265,7 +1283,7 @@ like #L12-L14 (or #L12 for a single line)."
                   ((null range) "")
                   ((= (car range) (cdr range))
                    (format "#L%d" (car range)))
-                  (t (format "#L%d-L%d" (car range) (cdr range)))))
+                  (t (format "#L%d-%d" (car range) (cdr range)))))
          (reference (concat "@" relative suffix " "))
          (buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
