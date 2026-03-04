@@ -2459,7 +2459,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
                            (lambda () "*test-claude-buffer*")))
                   (claude-code-ide-send-current-file)
-                  (should (equal sent-string "@src/main.el#L2-L3 "))))
+                  (should (equal sent-string "@src/main.el#L2-3 "))))
             (kill-buffer test-source-buf))))
 
       ;; Test with single-line range
