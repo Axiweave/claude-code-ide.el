@@ -1316,12 +1316,15 @@ With prefix ARG, use `read-file-name' from project root instead of
          (reference (concat "@" file " "))
          (buffer-name (claude-code-ide--get-buffer-name)))
     (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
-        (claude-code-ide-debug "Sent file reference to prompt buffer: @%s" file)
+        (progn
+          (claude-code-ide-debug "Sent file reference to prompt buffer: @%s" file)
+          (claude-code-ide--maybe-switch-to-window prompt-buf))
       (if-let ((buffer (get-buffer buffer-name)))
           (progn
             (with-current-buffer buffer
               (claude-code-ide--terminal-send-string reference t))
-            (claude-code-ide-debug "Sent file reference to Claude Code: @%s" file))
+            (claude-code-ide-debug "Sent file reference to Claude Code: @%s" file)
+            (claude-code-ide--maybe-switch-to-window buffer))
         (user-error "No Claude Code session or prompt buffer for this project")))))
 
 ;;;###autoload
