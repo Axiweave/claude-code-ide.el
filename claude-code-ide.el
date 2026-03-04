@@ -1167,7 +1167,9 @@ If the buffer is already visible, switch focus to it."
             (client (claude-code-ide-mcp-session-client session)))
       (progn
         (claude-code-ide-mcp-send-at-mentioned)
-        (claude-code-ide-debug "Sent selection to Claude Code"))
+        (claude-code-ide-debug "Sent selection to Claude Code")
+        (when-let ((buffer (get-buffer (claude-code-ide--get-buffer-name))))
+          (claude-code-ide--maybe-switch-to-window buffer)))
     (user-error "Claude Code is not connected.  Please start Claude Code first")))
 
 ;;;###autoload

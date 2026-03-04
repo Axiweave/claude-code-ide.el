@@ -2491,9 +2491,9 @@ have completed before cleanup.  Waits up to 5 seconds."
                           "/home/user/.claude/plans/my-plan.md"))
   ;; Should NOT match random .md files
   (should-not (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
-                               "/home/user/README.md"))
+                              "/home/user/README.md"))
   (should-not (string-match-p (nth 1 claude-code-ide-prompt-buffer-patterns)
-                               "/home/user/notes.md")))
+                              "/home/user/notes.md")))
 
 (ert-deftest claude-code-ide-test-find-prompt-buffer ()
   "Test finding a visible prompt/plan buffer."
@@ -2688,6 +2688,26 @@ have completed before cleanup.  Waits up to 5 seconds."
         (rename-buffer "*test-claude-buffer*")
         (let ((terminal-buf (current-buffer)))
           (claude-code-ide-send-prompt "test prompt")
+          (should (eq switched-to terminal-buf)))))))
+
+(ert-deftest claude-code-ide-test-insert-at-mentioned-switches-to-terminal ()
+  "Test insert-at-mentioned switches to terminal buffer when enabled."
+  (let ((claude-code-ide-switch-after-send t)
+        (switched-to nil))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--get-buffer-project)
+               (lambda () "/home/user/project/"))
+              ((symbol-function 'claude-code-ide-mcp--get-session-for-project)
+               (lambda (_) (make-claude-code-ide-mcp-session :client t)))
+              ((symbol-function 'claude-code-ide-mcp-send-at-mentioned)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+               (lambda (buf) (setq switched-to buf))))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((terminal-buf (current-buffer)))
+          (claude-code-ide-insert-at-mentioned)
           (should (eq switched-to terminal-buf)))))))
 
 (provide 'claude-code-ide-tests)
