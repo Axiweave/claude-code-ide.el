@@ -1290,34 +1290,38 @@ Line numbers are 1-based."
   "Send current buffer's file path with @ prefix to the Claude Code terminal.
 The path is relative to the project root.  When an evil visual
 selection or Emacs region is active, appends a line range suffix
-like #L12-14 (or #L12 for a single line)."
+like #L12-14 (or #L12 for a single line).
+When called from a Claude Code session buffer, uses the most
+recent visible file-visiting buffer on the current frame."
   (interactive)
-  (unless buffer-file-name
-    (user-error "Current buffer is not visiting a file"))
-  (let* ((project (project-current t))
-         (root (project-root project))
-         (relative (file-relative-name buffer-file-name root))
-         (range (claude-code-ide--get-selection-line-range))
-         (suffix (cond
-                  ((null range) "")
-                  ((= (car range) (cdr range))
-                   (format "#L%d" (car range)))
-                  (t (format "#L%d-%d" (car range) (cdr range)))))
-         (reference (concat "@" relative suffix " "))
-         (buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
-        (progn
-          (claude-code-ide-debug "Sent file reference to prompt buffer: %s"
-                                 (string-trim reference))
-          (claude-code-ide--maybe-switch-to-window prompt-buf))
-      (if-let ((buffer (get-buffer buffer-name)))
-          (progn
-            (with-current-buffer buffer
-              (claude-code-ide--terminal-send-string reference t))
-            (claude-code-ide-debug "Sent file reference to Claude Code: %s"
-                                   (string-trim reference))
-            (claude-code-ide--maybe-switch-to-window buffer))
-        (user-error "No Claude Code session or prompt buffer for this project")))))
+  (let ((ctx-buf (claude-code-ide--get-context-buffer)))
+    (unless ctx-buf
+      (user-error "Current buffer is not visiting a file"))
+    (with-current-buffer ctx-buf
+      (let* ((project (project-current t))
+             (root (project-root project))
+             (relative (file-relative-name buffer-file-name root))
+             (range (claude-code-ide--get-selection-line-range))
+             (suffix (cond
+                      ((null range) "")
+                      ((= (car range) (cdr range))
+                       (format "#L%d" (car range)))
+                      (t (format "#L%d-%d" (car range) (cdr range)))))
+             (reference (concat "@" relative suffix " "))
+             (buffer-name (claude-code-ide--get-buffer-name)))
+        (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
+            (progn
+              (claude-code-ide-debug "Sent file reference to prompt buffer: %s"
+                                     (string-trim reference))
+              (claude-code-ide--maybe-switch-to-window prompt-buf))
+          (if-let ((buffer (get-buffer buffer-name)))
+              (progn
+                (with-current-buffer buffer
+                  (claude-code-ide--terminal-send-string reference t))
+                (claude-code-ide-debug "Sent file reference to Claude Code: %s"
+                                       (string-trim reference))
+                (claude-code-ide--maybe-switch-to-window buffer))
+            (user-error "No Claude Code session or prompt buffer for this project")))))))
 
 ;;;###autoload
 (defun claude-code-ide-send-file (arg)

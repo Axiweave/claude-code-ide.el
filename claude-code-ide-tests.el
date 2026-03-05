@@ -2748,6 +2748,36 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda (_win) (current-buffer))))
       (should-not (claude-code-ide--get-context-buffer)))))
 
+(ert-deftest claude-code-ide-test-send-current-file-from-claude-buffer ()
+  "Test send-current-file works from claude-code buffer using context buffer."
+  (let ((sent-string nil)
+        (file-buf (generate-new-buffer "test-ctx-send")))
+    (unwind-protect
+        (progn
+          (with-current-buffer file-buf
+            (setq buffer-file-name "/home/user/project/src/main.el"))
+          (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                     (lambda () "*test-claude-buffer*"))
+                    ((symbol-function 'claude-code-ide--terminal-send-string)
+                     (lambda (str &optional _paste) (setq sent-string str)))
+                    ((symbol-function 'project-current)
+                     (lambda (&rest _) '(vc . "/home/user/project/")))
+                    ((symbol-function 'project-root)
+                     (lambda (_) "/home/user/project/"))
+                    ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                     (lambda () nil))
+                    ((symbol-function 'claude-code-ide--get-context-buffer)
+                     (lambda () file-buf))
+                    ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                     (lambda (_buf) nil)))
+            (with-temp-buffer
+              (rename-buffer "*test-claude-buffer*")
+              ;; Call from a buffer with no file (simulating claude buffer)
+              (claude-code-ide-send-current-file)
+              (should (equal sent-string "@src/main.el ")))))
+      (with-current-buffer file-buf (setq buffer-file-name nil))
+      (kill-buffer file-buf))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
