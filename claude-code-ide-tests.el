@@ -2711,6 +2711,43 @@ have completed before cleanup.  Waits up to 5 seconds."
           (claude-code-ide-insert-at-mentioned)
           (should (eq switched-to terminal-buf)))))))
 
+(ert-deftest claude-code-ide-test-get-context-buffer-file-buffer ()
+  "Test helper returns current buffer when it has a file."
+  (with-temp-buffer
+    (setq buffer-file-name "/tmp/test-file.el")
+    (should (eq (claude-code-ide--get-context-buffer) (current-buffer)))))
+
+(ert-deftest claude-code-ide-test-get-context-buffer-claude-buffer ()
+  "Test helper returns visible file buffer when in claude-code buffer."
+  (let ((file-buf (generate-new-buffer "test-file-ctx")))
+    (unwind-protect
+        (progn
+          (with-current-buffer file-buf
+            (setq buffer-file-name "/tmp/test-context.el"))
+          (with-temp-buffer
+            (rename-buffer "*claude-code[test-ctx]*")
+            ;; Mock window-list to return a window showing file-buf
+            (cl-letf (((symbol-function 'window-list)
+                       (lambda (&optional _frame _minibuf _window)
+                         (list 'mock-win-claude 'mock-win-file)))
+                      ((symbol-function 'window-buffer)
+                       (lambda (win)
+                         (if (eq win 'mock-win-file) file-buf (current-buffer)))))
+              (should (eq (claude-code-ide--get-context-buffer) file-buf)))))
+      (with-current-buffer file-buf (setq buffer-file-name nil))
+      (kill-buffer file-buf))))
+
+(ert-deftest claude-code-ide-test-get-context-buffer-no-file-visible ()
+  "Test helper returns nil when no file buffer is visible."
+  (with-temp-buffer
+    (rename-buffer "*claude-code[test-none]*")
+    (cl-letf (((symbol-function 'window-list)
+               (lambda (&optional _frame _minibuf _window)
+                 (list 'mock-win)))
+              ((symbol-function 'window-buffer)
+               (lambda (_win) (current-buffer))))
+      (should-not (claude-code-ide--get-context-buffer)))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

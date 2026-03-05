@@ -637,6 +637,22 @@ variable is nil or the buffer has no visible window."
     (when-let ((win (get-buffer-window buffer)))
       (select-window win))))
 
+(defun claude-code-ide--get-context-buffer ()
+  "Return the buffer to use for file/selection context.
+If the current buffer is visiting a file, return it directly.
+If the current buffer is a Claude Code session buffer, find the
+most recent visible file-visiting buffer in another window on
+the current frame.  Returns nil if no suitable buffer is found."
+  (cond
+   (buffer-file-name (current-buffer))
+   ((claude-code-ide--session-buffer-p (current-buffer))
+    (let ((current (current-buffer)))
+      (cl-loop for win in (window-list nil 'no-minibuffer)
+               for buf = (window-buffer win)
+               when (and (not (eq buf current))
+                         (buffer-file-name buf))
+               return buf)))))
+
 (defun claude-code-ide--get-process (&optional directory)
   "Get the Claude Code process for DIRECTORY or current working directory."
   (gethash (or directory (claude-code-ide--get-working-directory))
