@@ -1176,13 +1176,16 @@ If the buffer is already visible, switch focus to it."
 
 ;;;###autoload
 (defun claude-code-ide-insert-at-mentioned ()
-  "Insert selected text into Claude prompt."
+  "Insert selected text into Claude prompt.
+When called from a Claude Code session buffer, uses the most
+recent visible file-visiting buffer on the current frame."
   (interactive)
   (if-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
             (session (claude-code-ide-mcp--get-session-for-project project-dir))
             (client (claude-code-ide-mcp-session-client session)))
-      (progn
-        (claude-code-ide-mcp-send-at-mentioned)
+      (let ((ctx-buf (or (claude-code-ide--get-context-buffer) (current-buffer))))
+        (with-current-buffer ctx-buf
+          (claude-code-ide-mcp-send-at-mentioned))
         (claude-code-ide-debug "Sent selection to Claude Code")
         (when-let ((buffer (get-buffer (claude-code-ide--get-buffer-name))))
           (claude-code-ide--maybe-switch-to-window buffer)))
