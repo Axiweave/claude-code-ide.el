@@ -2850,6 +2850,24 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (equal (claude-code-ide--dangerous-permissions-flag)
                    "--dangerously-bypass-approvals-and-sandbox"))))
 
+(ert-deftest claude-code-ide-test-codex-full-session-flow ()
+  "Test that codex CLI type flows through session creation correctly."
+  (let ((claude-code-ide-cli-path "codex")
+        (claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags ""))
+    ;; Verify CLI type
+    (should (eq (claude-code-ide--cli-type) 'codex))
+    ;; Verify command building
+    (let ((cmd (claude-code-ide--build-command)))
+      (should (string-match-p "codex" cmd))
+      (should (string-match-p "--no-alt-screen" cmd))
+      (should-not (string-match-p "--append-system-prompt" cmd))
+      (should-not (string-match-p "--mcp-config" cmd)))
+    ;; Verify dangerous flag
+    (should (equal (claude-code-ide--dangerous-permissions-flag)
+                   "--dangerously-bypass-approvals-and-sandbox"))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
