@@ -888,8 +888,6 @@ Additional flags from `claude-code-ide-cli-extra-flags' are included."
                     (resume (concat claude-code-ide-cli-path " resume"))
                     (continue (concat claude-code-ide-cli-path " resume --last"))
                     (t claude-code-ide-cli-path))))
-    ;; Add --no-alt-screen for terminal compatibility
-    (setq codex-cmd (concat codex-cmd " --no-alt-screen"))
     ;; Add any extra flags
     (when (and claude-code-ide-cli-extra-flags
                (not (string-empty-p claude-code-ide-cli-extra-flags)))

@@ -2914,14 +2914,14 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test building codex command."
   (let ((claude-code-ide-cli-path "codex")
         (claude-code-ide-cli-extra-flags ""))
-    ;; Basic command includes --no-alt-screen
+    ;; Basic command should not force extra terminal flags.
     (let ((cmd (claude-code-ide--build-codex-command)))
       (should (string-match-p "codex" cmd))
-      (should (string-match-p "--no-alt-screen" cmd)))
+      (should-not (string-match-p "--no-alt-screen" cmd)))
     ;; Continue -> codex resume --last
     (let ((cmd (claude-code-ide--build-codex-command t nil)))
       (should (string-match-p "codex resume --last" cmd))
-      (should (string-match-p "--no-alt-screen" cmd)))
+      (should-not (string-match-p "--no-alt-screen" cmd)))
     ;; Resume -> codex resume (no --last)
     (let ((cmd (claude-code-ide--build-codex-command nil t)))
       (should (string-match-p "codex resume" cmd))
@@ -2949,7 +2949,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags ""))
     (cl-letf (((symbol-function 'claude-code-ide--build-codex-command)
-               (lambda (&rest _) "codex --no-alt-screen")))
+               (lambda (&rest _) "codex")))
       (let ((result (claude-code-ide--create-terminal-session
                      "*test-codex*" "/tmp" 12345 nil nil "test-session")))
         (should (consp result))
@@ -2975,7 +2975,7 @@ have completed before cleanup.  Waits up to 5 seconds."
     ;; Verify command building
     (let ((cmd (claude-code-ide--build-command)))
       (should (string-match-p "codex" cmd))
-      (should (string-match-p "--no-alt-screen" cmd))
+      (should-not (string-match-p "--no-alt-screen" cmd))
       (should-not (string-match-p "--append-system-prompt" cmd))
       (should-not (string-match-p "--mcp-config" cmd)))
     ;; Verify dangerous flag
