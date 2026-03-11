@@ -2778,6 +2778,24 @@ have completed before cleanup.  Waits up to 5 seconds."
       (with-current-buffer file-buf (setq buffer-file-name nil))
       (kill-buffer file-buf))))
 
+(ert-deftest claude-code-ide-test-cli-type-detection ()
+  "Test CLI type detection from cli-path."
+  ;; Claude paths
+  (let ((claude-code-ide-cli-path "claude"))
+    (should (eq (claude-code-ide--cli-type) 'claude)))
+  (let ((claude-code-ide-cli-path "/usr/local/bin/claude"))
+    (should (eq (claude-code-ide--cli-type) 'claude)))
+  (let ((claude-code-ide-cli-path "claude-code"))
+    (should (eq (claude-code-ide--cli-type) 'claude)))
+  ;; Codex paths
+  (let ((claude-code-ide-cli-path "codex"))
+    (should (eq (claude-code-ide--cli-type) 'codex)))
+  (let ((claude-code-ide-cli-path "/usr/local/bin/codex"))
+    (should (eq (claude-code-ide--cli-type) 'codex)))
+  ;; Unknown falls back to claude
+  (let ((claude-code-ide-cli-path "some-other-cli"))
+    (should (eq (claude-code-ide--cli-type) 'claude))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

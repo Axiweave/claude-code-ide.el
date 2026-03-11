@@ -773,6 +773,15 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
 
 ;;; CLI Detection
 
+(defun claude-code-ide--cli-type ()
+  "Detect CLI type from `claude-code-ide-cli-path'.
+Returns \\='claude or \\='codex based on the basename prefix.
+Unknown CLIs fall back to \\='claude."
+  (let ((basename (file-name-nondirectory claude-code-ide-cli-path)))
+    (cond
+     ((string-prefix-p "codex" basename) 'codex)
+     (t 'claude))))
+
 (defun claude-code-ide--detect-cli ()
   "Detect if Claude Code CLI is available."
   (let ((available (condition-case nil
