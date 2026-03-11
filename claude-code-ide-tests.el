@@ -2841,6 +2841,15 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should (consp result))
         (should (bufferp (car result)))))))
 
+(ert-deftest claude-code-ide-test-dangerous-flag-by-cli-type ()
+  "Test that the dangerous permissions flag varies by CLI type."
+  (let ((claude-code-ide-cli-path "claude"))
+    (should (equal (claude-code-ide--dangerous-permissions-flag)
+                   "--dangerously-skip-permissions")))
+  (let ((claude-code-ide-cli-path "codex"))
+    (should (equal (claude-code-ide--dangerous-permissions-flag)
+                   "--dangerously-bypass-approvals-and-sandbox"))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

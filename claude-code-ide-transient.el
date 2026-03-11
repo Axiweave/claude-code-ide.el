@@ -52,6 +52,7 @@
 (declare-function claude-code-ide-mcp-session-last-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
+(declare-function claude-code-ide--cli-type "claude-code-ide" ())
 (declare-function claude-code-ide-send-current-file "claude-code-ide" ())
 (declare-function claude-code-ide-send-file "claude-code-ide" (arg))
 (declare-function claude-code-ide-send-file-from-root "claude-code-ide" ())
@@ -78,6 +79,12 @@
   "Check if there's an active Claude Code session for the current buffer."
   (when (claude-code-ide-mcp--get-current-session) t))
 
+(defun claude-code-ide--dangerous-permissions-flag ()
+  "Return the dangerous permissions flag for the current CLI type."
+  (pcase (claude-code-ide--cli-type)
+    ('codex "--dangerously-bypass-approvals-and-sandbox")
+    (_ "--dangerously-skip-permissions")))
+
 (defun claude-code-ide--start-description ()
   "Dynamic description for start command based on session status."
   (if (claude-code-ide--has-active-session-p)
@@ -85,7 +92,7 @@
                   'face 'transient-inactive-value)
     "Start new Claude Code session"))
 
-(defun claude-code-ide--start-if-no-session (arg)
+(defun claude-code-ide--start-if-no-session (&optional arg)
   "Start Claude Code only if no session is active for current buffer.
 With prefix ARG, add --dangerously-skip-permissions flag."
   (interactive "P")
@@ -96,7 +103,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
     (let ((claude-code-ide-cli-extra-flags
            (if arg
                (string-trim (concat claude-code-ide-cli-extra-flags
-                                    " --dangerously-skip-permissions"))
+                                    " " (claude-code-ide--dangerous-permissions-flag)))
              claude-code-ide-cli-extra-flags)))
       (claude-code-ide))))
 
@@ -107,7 +114,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
                   'face 'transient-inactive-value)
     "Continue most recent conversation"))
 
-(defun claude-code-ide--continue-if-no-session (arg)
+(defun claude-code-ide--continue-if-no-session (&optional arg)
   "Continue Claude Code only if no session is active for current buffer.
 With prefix ARG, add --dangerously-skip-permissions flag."
   (interactive "P")
@@ -118,7 +125,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
     (let ((claude-code-ide-cli-extra-flags
            (if arg
                (string-trim (concat claude-code-ide-cli-extra-flags
-                                    " --dangerously-skip-permissions"))
+                                    " " (claude-code-ide--dangerous-permissions-flag)))
              claude-code-ide-cli-extra-flags)))
       (claude-code-ide-continue))))
 
@@ -129,7 +136,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
                   'face 'transient-inactive-value)
     "Resume session (from previous conversation)"))
 
-(defun claude-code-ide--resume-if-no-session (arg)
+(defun claude-code-ide--resume-if-no-session (&optional arg)
   "Resume Claude Code only if no session is active for current buffer.
 With prefix ARG, add --dangerously-skip-permissions flag."
   (interactive "P")
@@ -140,7 +147,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
     (let ((claude-code-ide-cli-extra-flags
            (if arg
                (string-trim (concat claude-code-ide-cli-extra-flags
-                                    " --dangerously-skip-permissions"))
+                                    " " (claude-code-ide--dangerous-permissions-flag)))
              claude-code-ide-cli-extra-flags)))
       (claude-code-ide-resume))))
 
