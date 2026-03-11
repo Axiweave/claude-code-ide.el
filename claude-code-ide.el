@@ -1027,7 +1027,8 @@ SESSION-ID is the unique identifier for this session.
 Returns a cons cell of (buffer . process) on success."
   (let ((cmd (claude-code-ide--build-codex-command continue resume session-id))
         (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name)
-                        "TERM_PROGRAM=emacs")))
+                        ;; "TERM_PROGRAM=emacs"
+                        )))
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
 
