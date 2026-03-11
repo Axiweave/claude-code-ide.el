@@ -699,6 +699,37 @@ have completed before cleanup.  Waits up to 5 seconds."
       (claude-code-ide--cleanup-on-exit "/tmp/test")
       (should advice-removed))))
 
+(ert-deftest claude-code-ide-test-configure-eat-buffer ()
+  "Test that eat buffer configuration applies display-related settings."
+  (let ((hl-line-arg nil)
+        (face-remapped nil)
+        (advice-added nil)
+        (claude-code-ide-vterm-anti-flicker t))
+    (cl-letf (((symbol-function 'featurep)
+               (lambda (feature &rest _)
+                 (eq feature 'hl-line)))
+              ((symbol-function 'hl-line-mode)
+               (lambda (arg)
+                 (setq hl-line-arg arg)))
+              ((symbol-function 'face-remap-add-relative)
+               (lambda (&rest args)
+                 (setq face-remapped args)))
+              ((symbol-function 'advice-add)
+               (lambda (symbol where function &rest _)
+                 (setq advice-added (list symbol where function)))))
+      (with-temp-buffer
+        (claude-code-ide--configure-eat-buffer)
+        (should (local-variable-p 'cursor-in-non-selected-windows))
+        (should-not cursor-in-non-selected-windows)
+        (should (local-variable-p 'blink-cursor-mode))
+        (should-not blink-cursor-mode)
+        (should (local-variable-p 'cursor-type))
+        (should-not cursor-type)
+        (should (equal hl-line-arg -1))
+        (should (equal face-remapped '(nobreak-space :inherit default)))
+        (should (equal advice-added
+                       '(eat--filter :around claude-code-ide--eat-smart-renderer)))))))
+
 (ert-deftest claude-code-ide-test-vterm-smart-renderer-passthrough ()
   "Test that vterm smart renderer passes through normal text immediately."
   (let ((orig-fun-called nil)

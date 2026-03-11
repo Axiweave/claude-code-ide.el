@@ -503,7 +503,17 @@ cursor management, and process buffering for superior user experience."
     (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer)))
 
 (defun claude-code-ide--configure-eat-buffer ()
-  "Configure eat for Claude Code anti-flicker rendering."
+  "Configure eat for enhanced performance and visual quality."
+  ;; Disable cursor in non-selected windows to reduce flicker
+  (setq-local cursor-in-non-selected-windows nil)
+  (setq-local blink-cursor-mode nil)
+  (setq-local cursor-type nil)
+  ;; Disable hl-line-mode to eliminate another source of flicker
+  (when (featurep 'hl-line)
+    (hl-line-mode -1))
+  ;; Make sure the non-breaking space in the prompt isn't themed
+  (face-remap-add-relative 'nobreak-space :inherit 'default)
+  ;; Set up rendering optimization
   (when claude-code-ide-vterm-anti-flicker
     (advice-add 'eat--filter :around #'claude-code-ide--eat-smart-renderer)))
 
