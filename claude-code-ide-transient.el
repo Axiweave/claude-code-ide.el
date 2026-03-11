@@ -56,6 +56,7 @@
 (declare-function claude-code-ide-send-current-file "claude-code-ide" ())
 (declare-function claude-code-ide-send-file "claude-code-ide" (arg))
 (declare-function claude-code-ide-send-file-from-root "claude-code-ide" ())
+(declare-function claude-code-ide-implement-todo "claude-code-ide" (arg))
 
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
@@ -395,7 +396,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("w" "Toggle window visibility" claude-code-ide-toggle-window)
     ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
    ["Interaction"
-    ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
+    ("i" "Implement TODO" claude-code-ide-implement-todo)
     ("@" "Send current file @path" claude-code-ide-send-current-file)
     ("f" "Send file @path" claude-code-ide-send-file)
     ("F" "Send file @path (from root)" claude-code-ide-send-file-from-root)

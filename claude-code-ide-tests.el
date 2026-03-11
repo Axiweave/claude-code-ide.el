@@ -468,6 +468,120 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (null sent-string))
           (should (null sent-return)))))))
 
+(ert-deftest claude-code-ide-test-is-comment-line-detects-todo ()
+  "Test TODO comment detection for the current buffer syntax."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (should (claude-code-ide--is-comment-line ";; TODO: implement this"))
+    (should-not (claude-code-ide--is-comment-line ";; DONE: already implemented"))
+    (should-not (claude-code-ide--is-comment-line "(message \"not a comment\")"))))
+
+(ert-deftest claude-code-ide-test-is-comment-block-allows-only-comment-lines ()
+  "Test comment block validation for TODO implementation."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (should (claude-code-ide--is-comment-block ";; TODO: first\n;; detail line\n"))
+    (should-not (claude-code-ide--is-comment-block ";; TODO: first\n(message \"x\")\n"))))
+
+(ert-deftest claude-code-ide-test-implement-todo-sends-current-todo-line ()
+  "Test TODO implementation sends an adapted prompt for the current TODO line."
+  (let ((prompt-label nil)
+        (initial-input nil)
+        (sent-prompt nil))
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (prompt &optional initial &rest _)
+                 (setq prompt-label prompt)
+                 (setq initial-input initial)
+                 initial))
+              ((symbol-function 'claude-code-ide-send-prompt)
+               (lambda (prompt)
+                 (setq sent-prompt prompt))))
+      (with-temp-buffer
+        (emacs-lisp-mode)
+        (setq buffer-file-name "/home/user/project/test.el")
+        (insert ";; TODO: implement support\n")
+        (goto-char (point-min))
+        (claude-code-ide-implement-todo nil)
+        (should (equal prompt-label "Implement TODO in Claude Code: "))
+        (should (string-match-p "Please implement code for this TODO comment on line 1"
+                                initial-input))
+        (should (equal sent-prompt initial-input))))))
+
+(ert-deftest claude-code-ide-test-implement-todo-sends-selected-comment-block ()
+  "Test TODO implementation accepts a selected comment block."
+  (let ((sent-prompt nil))
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (_prompt &optional initial &rest _)
+                 initial))
+              ((symbol-function 'claude-code-ide-send-prompt)
+               (lambda (prompt)
+                 (setq sent-prompt prompt))))
+      (with-temp-buffer
+        (emacs-lisp-mode)
+        (transient-mark-mode 1)
+        (setq buffer-file-name "/home/user/project/test.el")
+        (insert ";; TODO: first step\n;; second step\n")
+        (goto-char (point-min))
+        (push-mark (point) t t)
+        (goto-char (point-max))
+        (activate-mark)
+        (claude-code-ide-implement-todo nil)
+        (should (string-match-p "Please implement code for this TODO comment block"
+                                sent-prompt))
+        (should (string-match-p ";; TODO: first step" sent-prompt))
+        (should (string-match-p ";; second step" sent-prompt))))))
+
+(ert-deftest claude-code-ide-test-implement-todo-errors-on-non-comment-context ()
+  "Test TODO implementation rejects non-comment context."
+  (cl-letf (((symbol-function 'claude-code-ide-send-prompt)
+             (lambda (&rest _)
+               (ert-fail "Should not send a prompt for non-comment context"))))
+    (with-temp-buffer
+      (emacs-lisp-mode)
+      (setq buffer-file-name "/home/user/project/test.el")
+      (insert "(message \"hello\")\n")
+      (goto-char (point-min))
+      (should-error (claude-code-ide-implement-todo nil) :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-implement-todo-blank-line-inserts-comment ()
+  "Test TODO implementation inserts a TODO comment on a blank line."
+  (let ((sent-prompt nil))
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (_prompt &optional _initial &rest _)
+                 "add support"))
+              ((symbol-function 'claude-code-ide-send-prompt)
+               (lambda (prompt)
+                 (setq sent-prompt prompt))))
+      (with-temp-buffer
+        (emacs-lisp-mode)
+        (setq buffer-file-name "/home/user/project/test.el")
+        (insert "\n")
+        (goto-char (point-min))
+        (claude-code-ide-implement-todo nil)
+        (should (equal (buffer-string) ";; TODO: add support\n"))
+        (should-not sent-prompt)))))
+
+(ert-deftest claude-code-ide-test-implement-todo-done-line-toggle ()
+  "Test TODO implementation toggles a DONE comment back to TODO."
+  (let ((sent-prompt nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) "Toggle to TODO"))
+              ((symbol-function 'claude-code-ide-send-prompt)
+               (lambda (prompt)
+                 (setq sent-prompt prompt))))
+      (with-temp-buffer
+        (emacs-lisp-mode)
+        (setq buffer-file-name "/home/user/project/test.el")
+        (insert ";; DONE: add support\n")
+        (goto-char (point-min))
+        (claude-code-ide-implement-todo nil)
+        (should (equal (buffer-string) ";; TODO: add support\n"))
+        (should-not sent-prompt)))))
+
+(ert-deftest claude-code-ide-test-transient-exposes-implement-todo ()
+  "Test the main transient exposes the TODO implementation command."
+  (should (transient-get-suffix 'claude-code-ide-menu "i")))
+
 (ert-deftest claude-code-ide-test-terminal-session-creation ()
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)

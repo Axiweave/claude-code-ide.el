@@ -60,6 +60,8 @@
 
 (require 'cl-lib)
 (require 'project)
+(require 'subr-x)
+(require 'which-func)
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-mcp)
 (require 'claude-code-ide-transient)
@@ -1319,6 +1321,260 @@ When called programmatically, sends the given PROMPT string."
             (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)
             (claude-code-ide--maybe-switch-to-window buffer)))
       (user-error "No Claude Code session for this project"))))
+
+(defun claude-code-ide--get-clipboard-text ()
+  "Return the current clipboard contents as a plain string, or nil if unavailable."
+  (let* ((selection (when (fboundp 'gui-get-selection)
+                      (or (let ((text (gui-get-selection 'CLIPBOARD 'UTF8_STRING)))
+                            (and (stringp text) (not (string-empty-p text)) text))
+                          (let ((text (gui-get-selection 'CLIPBOARD 'STRING)))
+                            (and (stringp text) (not (string-empty-p text)) text)))))
+         (kill-text (condition-case nil
+                        (current-kill 0 t)
+                      (error nil))))
+    (let ((text (or selection kill-text)))
+      (when (stringp text)
+        (substring-no-properties text)))))
+
+(defun claude-code-ide--comment-prefix ()
+  "Return the comment prefix for the current buffer."
+  (when comment-start
+    (if (derived-mode-p 'emacs-lisp-mode)
+        (let* ((trimmed (string-trim-right comment-start)))
+          (if (= (length trimmed) 1)
+              (make-string 2 (string-to-char trimmed))
+            trimmed))
+      (string-trim-right comment-start))))
+
+(defun claude-code-ide--is-comment-line (line)
+  "Return non-nil when LINE is a comment line for the current buffer.
+Lines whose comment body begins with `DONE:' are excluded."
+  (when-let ((comment-str (claude-code-ide--comment-prefix)))
+    (let* ((trimmed-line (string-trim-left line))
+           (comment-re (concat "^[ \t]*"
+                               (regexp-quote comment-str)
+                               "+[ \t]*")))
+      (when (string-match comment-re trimmed-line)
+        (let ((content (string-trim-left (substring trimmed-line (match-end 0)))))
+          (unless (string-prefix-p "DONE:" content)
+            t))))))
+
+(defun claude-code-ide--is-comment-block (text)
+  "Return non-nil when TEXT contains only comment lines and blanks."
+  (let ((lines (split-string text "\n")))
+    (cl-every (lambda (line)
+                (or (string-blank-p line)
+                    (claude-code-ide--is-comment-line line)))
+              lines)))
+
+(defun claude-code-ide--relative-file-name (file-name)
+  "Return FILE-NAME relative to the current project when possible."
+  (if-let ((project (project-current nil)))
+      (file-relative-name file-name (project-root project))
+    file-name))
+
+(defun claude-code-ide--get-region-location-info (region-beginning region-end)
+  "Return file and line range information for REGION-BEGINNING and REGION-END."
+  (when (and region-beginning region-end buffer-file-name)
+    (let ((region-start-line (line-number-at-pos region-beginning))
+          (region-end-line (line-number-at-pos region-end)))
+      (format "%s#L%d-L%d"
+              (claude-code-ide--relative-file-name buffer-file-name)
+              region-start-line
+              region-end-line))))
+
+(defun claude-code-ide--get-context-files-string ()
+  "Return a formatted list of visible file buffers for additional context."
+  (if (not buffer-file-name)
+      ""
+    (let* ((current-file buffer-file-name)
+           (files (list current-file)))
+      (dolist (win (window-list nil 'no-minibuffer))
+        (let ((file (buffer-file-name (window-buffer win))))
+          (when (and file (not (equal file current-file)))
+            (cl-pushnew file files :test #'string=))))
+      (concat "\nFiles:\n"
+              (mapconcat #'claude-code-ide--relative-file-name files "\n")))))
+
+(defun claude-code-ide--get-function-name-for-comment ()
+  "Return the most relevant function name for the comment at point."
+  (let* ((current-func (which-function))
+         (resolved-func
+          (save-excursion
+            (cl-labels ((line-text ()
+                          (buffer-substring-no-properties
+                           (line-beginning-position)
+                           (line-end-position))))
+              (forward-line 1)
+              (cl-block resolve
+                (let ((text (line-text)))
+                  (when (or (eobp) (string-blank-p text))
+                    (cl-return-from resolve nil))
+                  (while (claude-code-ide--is-comment-line text)
+                    (forward-line 1)
+                    (setq text (line-text))
+                    (when (or (eobp) (string-blank-p text))
+                      (cl-return-from resolve nil)))
+                  (let ((next-func (which-function)))
+                    (cl-loop with lookahead = 5
+                             while (and (> lookahead 0)
+                                        (or (null next-func)
+                                            (string= next-func current-func)))
+                             do (forward-line 1)
+                                (setq lookahead (1- lookahead))
+                                (setq text (line-text))
+                                (when (string-blank-p text)
+                                  (cl-return-from resolve nil))
+                                (unless (claude-code-ide--is-comment-line text)
+                                  (setq next-func (which-function)))
+                             finally return (cond
+                                             ((not current-func) next-func)
+                                             ((not next-func) current-func)
+                                             ((not (string= next-func current-func)) next-func)
+                                             (t current-func))))))))))
+    resolved-func))
+
+(defun claude-code-ide--implement-todo--handle-done-line ()
+  "Handle actions when the current line is a DONE comment.
+Return non-nil when the caller should stop processing."
+  (let* ((line-str (buffer-substring-no-properties (line-beginning-position)
+                                                   (line-end-position)))
+         (comment-prefix (claude-code-ide--comment-prefix))
+         (done-re (when comment-prefix
+                    (concat "^\\([ \t]*" (regexp-quote comment-prefix) "+[ \t]*\\)DONE:"))))
+    (when (and line-str done-re (string-match done-re line-str) (not (use-region-p)))
+      (let* ((action (completing-read
+                      "Current line starts with DONE:. Action: "
+                      '("Toggle to TODO" "Delete comment line" "Keep as DONE")
+                      nil t nil nil "Toggle to TODO"))
+             (line-beg (line-beginning-position))
+             (line-end (line-end-position)))
+        (pcase action
+          ("Toggle to TODO"
+           (save-excursion
+             (goto-char line-beg)
+             (when (search-forward "DONE:" line-end t)
+               (replace-match "TODO:" nil nil)))
+           (message "Changed DONE comment back to TODO"))
+          ("Delete comment line"
+           (let ((line-next
+                  (save-excursion
+                    (goto-char line-beg)
+                    (forward-line 1)
+                    (min (point) (point-max)))))
+             (delete-region line-beg line-next))
+           (message "Deleted DONE comment line"))
+          (_
+           (message "Keeping DONE comment unchanged")))
+        t))))
+
+(defun claude-code-ide--implement-todo--handle-blank-line ()
+  "Insert a TODO comment when point is on a blank line.
+Return non-nil when the caller should stop processing."
+  (when (and (not (use-region-p))
+             (or (not (thing-at-point 'line t))
+                 (string-blank-p (thing-at-point 'line t)))
+             comment-start)
+    (let ((todo-text (read-string "Enter TODO comment: "))
+          (comment-prefix (claude-code-ide--comment-prefix)))
+      (unless (string-blank-p todo-text)
+        (delete-region (line-beginning-position) (line-end-position))
+        (indent-according-to-mode)
+        (insert comment-prefix
+                " TODO: "
+                todo-text
+                (if (and comment-end (not (string-blank-p comment-end)))
+                    (concat " " (string-trim-left comment-end))
+                  ""))
+        (indent-according-to-mode)))
+    t))
+
+(defun claude-code-ide--implement-todo--prompt-label (clipboard-context)
+  "Return the minibuffer label for TODO implementation.
+CLIPBOARD-CONTEXT indicates whether clipboard text will be appended."
+  (if (and clipboard-context
+           (string-match-p "\\S-" clipboard-context))
+      "Implement TODO in Claude Code (clipboard context): "
+    "Implement TODO in Claude Code: "))
+
+(defun claude-code-ide--implement-todo--build-prompt (arg)
+  "Build the TODO implementation prompt for prefix ARG."
+  (let* ((clipboard-context (when arg (claude-code-ide--get-clipboard-text)))
+         (current-line (string-trim (thing-at-point 'line t)))
+         (current-line-number (line-number-at-pos (point)))
+         (is-comment (claude-code-ide--is-comment-line current-line))
+         (function-name (if is-comment
+                            (claude-code-ide--get-function-name-for-comment)
+                          (which-function)))
+         (function-context (if function-name
+                               (format "\nFunction: %s" function-name)
+                             ""))
+         (region-active (use-region-p))
+         (region-text (when region-active
+                        (buffer-substring-no-properties
+                         (region-beginning)
+                         (region-end))))
+         (region-start-line (when region-active
+                              (line-number-at-pos (region-beginning))))
+         (region-location-info (when region-active
+                                 (claude-code-ide--get-region-location-info
+                                  (region-beginning)
+                                  (region-end))))
+         (region-location-line (when region-text
+                                 (or (and region-location-info
+                                          (format "Selected region: %s"
+                                                  region-location-info))
+                                     (when region-start-line
+                                       (format "Selected region starting on line %d"
+                                               region-start-line)))))
+         (files-context-string (claude-code-ide--get-context-files-string))
+         (prompt-label (claude-code-ide--implement-todo--prompt-label
+                        clipboard-context))
+         (initial-input
+          (cond
+           (region-text
+            (unless (claude-code-ide--is-comment-block region-text)
+              (user-error "Selected region must be a comment block"))
+            (format
+             "Please implement code for this TODO comment block in the selected region first. After implementing, keep the comment in place and ensure it begins with a DONE prefix (change TODO to DONE or prepend DONE if no prefix). If this is a pure new code block, place it after the comment; otherwise keep the existing structure and make the corresponding change for the surrounding code.\n%s\n%s%s%s"
+             region-location-line
+             region-text
+             function-context
+             files-context-string))
+           (is-comment
+            (format
+             "Please implement code for this TODO comment on line %d: '%s' first. After implementing, keep the comment in place and ensure it begins with a DONE prefix (change TODO to DONE or prepend DONE if needed). If this is a pure new code block, place it after the comment; otherwise keep the existing structure and make the corresponding change for the surrounding code.%s%s"
+             current-line-number
+             current-line
+             function-context
+             files-context-string))
+           (t
+            (user-error
+             "Current line is not a TODO comment. Select a TODO comment, a comment block, or use a blank line"))))
+         (prompt (read-string prompt-label initial-input))
+         (final-prompt
+          (concat prompt
+                  (when (and clipboard-context
+                             (string-match-p "\\S-" clipboard-context))
+                    (concat "\n\nClipboard context:\n" clipboard-context)))))
+    final-prompt))
+
+;;;###autoload
+(defun claude-code-ide-implement-todo (arg)
+  "Build and send a TODO implementation prompt for the current context.
+With prefix ARG, append clipboard text as extra context."
+  (interactive "P")
+  (let ((ctx-buf (claude-code-ide--get-context-buffer)))
+    (unless ctx-buf
+      (user-error "Current buffer is not visiting a file"))
+    (with-current-buffer ctx-buf
+      (cl-block finalize
+        (when (claude-code-ide--implement-todo--handle-done-line)
+          (cl-return-from finalize nil))
+        (when (claude-code-ide--implement-todo--handle-blank-line)
+          (cl-return-from finalize nil))
+        (claude-code-ide-send-prompt
+         (claude-code-ide--implement-todo--build-prompt arg))))))
 
 (defun claude-code-ide--get-selection-line-range ()
   "Return (START-LINE . END-LINE) for the active selection, or nil.
