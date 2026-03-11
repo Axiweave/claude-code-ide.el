@@ -89,6 +89,7 @@
 (declare-function eat-term-send-string "eat" (terminal string))
 (declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
+(declare-function eat--filter "eat" (process input))
 
 ;;; Customization
 
@@ -321,6 +322,13 @@ Stored in reverse order for O(1) push, joined at flush time.")
 (defvar-local claude-code-ide--vterm-render-timer nil
   "Timer for executing queued rendering operations.")
 
+(defvar-local claude-code-ide--eat-render-queue nil
+  "List of pending eat output strings awaiting batched rendering.
+Stored in reverse order for O(1) push, joined at flush time.")
+
+(defvar-local claude-code-ide--eat-render-timer nil
+  "Timer for executing queued eat rendering operations.")
+
 (defun claude-code-ide--count-escape-sequence (sequence input)
   "Count occurrences of escape SEQUENCE in INPUT.
 More efficient than split-string + cl-count-if for simple counting."
@@ -401,6 +409,51 @@ INPUT contains the terminal output stream."
             ;; Standard processing for regular output
             (funcall orig-fun process input)))))))
 
+(defun claude-code-ide--eat-smart-renderer (orig-fun process input)
+  "Smart rendering filter for optimized eat display updates.
+ORIG-FUN is the underlying filter to enhance.
+PROCESS is the terminal process being optimized.
+INPUT contains the terminal output stream."
+  (if (or (not claude-code-ide-vterm-anti-flicker)
+          (not (claude-code-ide--session-buffer-p (process-buffer process))))
+      (funcall orig-fun process input)
+    (with-current-buffer (process-buffer process)
+      (if (and (not claude-code-ide--eat-render-queue)
+               (not (string-search "\033" input)))
+          (funcall orig-fun process input)
+        (let* ((complex-redraw-detected
+                (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
+               (clear-count (claude-code-ide--count-escape-sequence "\033[K" input))
+               (escape-count (cl-count ?\033 input))
+               (input-length (length input))
+               (escape-density (if (> input-length 0)
+                                   (/ (float escape-count) input-length)
+                                 0)))
+          (if (or complex-redraw-detected
+                  (and (> escape-density 0.3)
+                       (>= clear-count 2))
+                  claude-code-ide--eat-render-queue)
+              (progn
+                (push input claude-code-ide--eat-render-queue)
+                (when claude-code-ide--eat-render-timer
+                  (cancel-timer claude-code-ide--eat-render-timer))
+                (setq claude-code-ide--eat-render-timer
+                      (run-at-time claude-code-ide-vterm-render-delay nil
+                                   (lambda (buf)
+                                     (when (buffer-live-p buf)
+                                       (with-current-buffer buf
+                                         (when claude-code-ide--eat-render-queue
+                                           (let* ((inhibit-redisplay t)
+                                                  (queue claude-code-ide--eat-render-queue)
+                                                  (data (apply #'concat (nreverse queue))))
+                                             (setq claude-code-ide--eat-render-queue nil
+                                                   claude-code-ide--eat-render-timer nil)
+                                             (funcall orig-fun
+                                                      (get-buffer-process buf)
+                                                      data))))))
+                                   (current-buffer))))
+            (funcall orig-fun process input)))))))
+
 (defvar-local claude-code-ide--saved-cursor-type nil
   "Saved cursor-type before entering vterm-copy-mode.")
 
@@ -448,6 +501,11 @@ cursor management, and process buffering for superior user experience."
   ;; Set up rendering optimization
   (when claude-code-ide-vterm-anti-flicker
     (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer)))
+
+(defun claude-code-ide--configure-eat-buffer ()
+  "Configure eat for Claude Code anti-flicker rendering."
+  (when claude-code-ide-vterm-anti-flicker
+    (advice-add 'eat--filter :around #'claude-code-ide--eat-smart-renderer)))
 
 
 ;;; Terminal Backend Abstraction
@@ -750,10 +808,13 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
             (advice-remove (claude-code-ide--terminal-resize-handler)
                            #'claude-code-ide--terminal-reflow-filter))
           ;; Remove vterm rendering optimization if no sessions remain
-          (when (and (eq claude-code-ide-terminal-backend 'vterm)
-                     claude-code-ide-vterm-anti-flicker
+          (when (and claude-code-ide-vterm-anti-flicker
                      (= (hash-table-count claude-code-ide--processes) 0))
-            (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer))
+            (cond
+             ((eq claude-code-ide-terminal-backend 'vterm)
+              (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer))
+             ((eq claude-code-ide-terminal-backend 'eat)
+              (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))))
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
           ;; Notify MCP tools server about session end with session ID
@@ -981,6 +1042,7 @@ Signals an error if terminal fails to initialize."
         (with-current-buffer buffer
           (unless (eq major-mode 'eat-mode)
             (eat-mode))
+          (claude-code-ide--configure-eat-buffer)
           (when claude-code-ide-eat-preserve-position
             (setq-local eat--synchronize-scroll-function
                         #'claude-code-ide--terminal-position-keeper))
