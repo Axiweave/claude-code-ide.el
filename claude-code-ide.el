@@ -1179,7 +1179,8 @@ This function handles:
                               (claude-code-ide--cleanup-on-exit working-dir))
                             nil t)
                   ;; Set up terminal keybindings
-                  (claude-code-ide--setup-terminal-keybindings)
+                  (unless (eq (claude-code-ide--cli-type) 'codex)
+                    (claude-code-ide--setup-terminal-keybindings))
                   ;; Add terminal-specific exit hooks
                   (cond
                    ((eq claude-code-ide-terminal-backend 'vterm)
