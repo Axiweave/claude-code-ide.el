@@ -937,55 +937,36 @@ and args is a list of arguments."
     (cons (car parts) (cdr parts))))
 
 
-(defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
-  "Create a new terminal session for Claude Code.
+(defun claude-code-ide--create-terminal-with-command (buffer-name working-dir cmd env-vars)
+  "Create a terminal buffer running CMD with ENV-VARS.
 BUFFER-NAME is the name for the terminal buffer.
 WORKING-DIR is the working directory.
-PORT is the MCP server port.
-CONTINUE is whether to continue the most recent conversation.
-RESUME is whether to resume a previous conversation.
-SESSION-ID is the unique identifier for this session.
+CMD is the shell command string to run.
+ENV-VARS is a list of \"KEY=VALUE\" environment variable strings.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
-  ;; Ensure terminal backend is available before proceeding
   (claude-code-ide--terminal-ensure-backend)
-  (let* ((claude-cmd (claude-code-ide--build-claude-command continue resume session-id))
-         (default-directory working-dir)
-         (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                         (format "EMACS_BUFFER_NAME=%s" buffer-name)
-                         "ENABLE_IDE_INTEGRATION=true"
-                         "TERM_PROGRAM=emacs"
-                         "FORCE_CODE_TERMINAL=true")))
-    ;; Log the command for debugging
-    (claude-code-ide-debug "Starting Claude with command: %s" claude-cmd)
+  (let ((default-directory working-dir))
+    (claude-code-ide-debug "Starting with command: %s" cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
-    (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
-    (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide-debug "Terminal backend: %s" claude-code-ide-terminal-backend)
 
     (cond
      ;; vterm backend
      ((eq claude-code-ide-terminal-backend 'vterm)
       (let* ((vterm-buffer-name buffer-name)
-             ;; Set vterm-shell to run Claude directly
-             (vterm-shell claude-cmd)
-             ;; vterm uses vterm-environment for passing env vars
+             (vterm-shell cmd)
              (vterm-environment (append env-vars vterm-environment)))
-        ;; Create vterm buffer without switching to it
         (let ((buffer (save-window-excursion
                         (vterm vterm-buffer-name))))
-          ;; Check if vterm successfully created a buffer
           (unless buffer
             (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
-          ;; Configure vterm buffer for optimal performance
           (with-current-buffer buffer
             (claude-code-ide--configure-vterm-buffer))
-          ;; Get the process that vterm created
           (let ((process (get-buffer-process buffer)))
             (unless process
               (error "Failed to get vterm process.  The vterm module may not be compiled correctly"))
-            ;; Check if buffer is still alive
             (unless (buffer-live-p buffer)
               (error "Vterm buffer was killed during initialization"))
             (cons buffer process)))))
@@ -994,23 +975,18 @@ Signals an error if terminal fails to initialize."
      ((eq claude-code-ide-terminal-backend 'eat)
       (let* ((buffer (get-buffer-create buffer-name))
              (eat-term-name "xterm-256color")
-             ;; Parse command string into program and args
-             (cmd-parts (claude-code-ide--parse-command-string claude-cmd))
+             (cmd-parts (claude-code-ide--parse-command-string cmd))
              (program (car cmd-parts))
              (args (cdr cmd-parts)))
         (with-current-buffer buffer
-          ;; Set up eat mode
           (unless (eq major-mode 'eat-mode)
             (eat-mode))
-          ;; Configure position preservation if enabled
           (when claude-code-ide-eat-preserve-position
             (setq-local eat--synchronize-scroll-function
                         #'claude-code-ide--terminal-position-keeper))
-          ;; Prepend our env vars to the buffer-local process-environment
           (setq-local process-environment
                       (append env-vars process-environment))
           (eat-exec buffer buffer-name program nil args)
-          ;; Get the process
           (let ((process (get-buffer-process buffer)))
             (unless process
               (error "Failed to create eat process.  Please ensure eat is properly installed"))
@@ -1018,6 +994,58 @@ Signals an error if terminal fails to initialize."
 
      (t
       (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))))
+
+(defun claude-code-ide--create-claude-terminal-session (buffer-name working-dir port continue resume session-id)
+  "Create a new terminal session for the CLI.
+BUFFER-NAME is the name for the terminal buffer.
+WORKING-DIR is the working directory.
+PORT is the MCP server port.
+CONTINUE is whether to continue the most recent conversation.
+RESUME is whether to resume a previous conversation.
+SESSION-ID is the unique identifier for this session.
+
+Returns a cons cell of (buffer . process) on success."
+  (let ((cmd (claude-code-ide--build-claude-command continue resume session-id))
+        (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                        (format "EMACS_BUFFER_NAME=%s" buffer-name)
+                        "ENABLE_IDE_INTEGRATION=true"
+                        "TERM_PROGRAM=emacs"
+                        "FORCE_CODE_TERMINAL=true")))
+    (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
+    (claude-code-ide-debug "Session ID: %s" session-id)
+    (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
+
+(defun claude-code-ide--create-codex-terminal-session (buffer-name working-dir _port continue resume session-id)
+  "Create a new terminal session for Codex CLI.
+BUFFER-NAME is the name for the terminal buffer.
+WORKING-DIR is the working directory.
+_PORT is unused (no MCP for Codex).
+CONTINUE is whether to continue the most recent conversation.
+RESUME is whether to resume a previous conversation.
+SESSION-ID is the unique identifier for this session.
+
+Returns a cons cell of (buffer . process) on success."
+  (let ((cmd (claude-code-ide--build-codex-command continue resume session-id))
+        (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name)
+                        "TERM_PROGRAM=emacs")))
+    (claude-code-ide-debug "Session ID: %s" session-id)
+    (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
+
+(defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
+  "Create a new terminal session, dispatching by CLI type.
+BUFFER-NAME is the name for the terminal buffer.
+WORKING-DIR is the working directory.
+PORT is the MCP server port.
+CONTINUE is whether to continue the most recent conversation.
+RESUME is whether to resume a previous conversation.
+SESSION-ID is the unique identifier for this session.
+
+Returns a cons cell of (buffer . process) on success."
+  (pcase (claude-code-ide--cli-type)
+    ('codex (claude-code-ide--create-codex-terminal-session
+             buffer-name working-dir port continue resume session-id))
+    (_ (claude-code-ide--create-claude-terminal-session
+        buffer-name working-dir port continue resume session-id))))
 
 (defun claude-code-ide--start-session (&optional continue resume)
   "Start a Claude Code session for the current project.

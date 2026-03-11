@@ -2828,6 +2828,19 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-cli-extra-flags ""))
     (should (string-match-p "^codex" (claude-code-ide--build-command)))))
 
+(ert-deftest claude-code-ide-test-create-codex-terminal-session ()
+  "Test creating a codex terminal session without MCP env vars."
+  (let ((claude-code-ide-cli-path "codex")
+        (claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags ""))
+    (cl-letf (((symbol-function 'claude-code-ide--build-codex-command)
+               (lambda (&rest _) "codex --no-alt-screen")))
+      (let ((result (claude-code-ide--create-terminal-session
+                     "*test-codex*" "/tmp" 12345 nil nil "test-session")))
+        (should (consp result))
+        (should (bufferp (car result)))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
