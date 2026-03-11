@@ -876,6 +876,31 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
               (setq claude-cmd (concat claude-cmd " --allowedTools " allowed-tools)))))))
     claude-cmd))
 
+(defun claude-code-ide--build-codex-command (&optional continue resume _session-id)
+  "Build the Codex command with optional flags.
+If CONTINUE is non-nil, use `codex resume --last'.
+If RESUME is non-nil, use `codex resume' (picker).
+_SESSION-ID is unused (no MCP for codex).
+Additional flags from `claude-code-ide-cli-extra-flags' are included."
+  (let ((codex-cmd (cond
+                    (resume (concat claude-code-ide-cli-path " resume"))
+                    (continue (concat claude-code-ide-cli-path " resume --last"))
+                    (t claude-code-ide-cli-path))))
+    ;; Add --no-alt-screen for terminal compatibility
+    (setq codex-cmd (concat codex-cmd " --no-alt-screen"))
+    ;; Add any extra flags
+    (when (and claude-code-ide-cli-extra-flags
+               (not (string-empty-p claude-code-ide-cli-extra-flags)))
+      (setq codex-cmd (concat codex-cmd " " claude-code-ide-cli-extra-flags)))
+    codex-cmd))
+
+(defun claude-code-ide--build-command (&optional continue resume session-id)
+  "Build CLI command, dispatching by CLI type.
+Arguments CONTINUE, RESUME, SESSION-ID are passed to the CLI-specific builder."
+  (pcase (claude-code-ide--cli-type)
+    ('codex (claude-code-ide--build-codex-command continue resume session-id))
+    (_ (claude-code-ide--build-claude-command continue resume session-id))))
+
 (defun claude-code-ide--terminal-position-keeper (window-list)
   "Maintain stable terminal view position across window switches.
 WINDOW-LIST contains windows requiring position synchronization.

@@ -2796,6 +2796,38 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((claude-code-ide-cli-path "some-other-cli"))
     (should (eq (claude-code-ide--cli-type) 'claude))))
 
+(ert-deftest claude-code-ide-test-build-codex-command ()
+  "Test building codex command."
+  (let ((claude-code-ide-cli-path "codex")
+        (claude-code-ide-cli-extra-flags ""))
+    ;; Basic command includes --no-alt-screen
+    (let ((cmd (claude-code-ide--build-codex-command)))
+      (should (string-match-p "codex" cmd))
+      (should (string-match-p "--no-alt-screen" cmd)))
+    ;; Continue -> codex resume --last
+    (let ((cmd (claude-code-ide--build-codex-command t nil)))
+      (should (string-match-p "codex resume --last" cmd))
+      (should (string-match-p "--no-alt-screen" cmd)))
+    ;; Resume -> codex resume (no --last)
+    (let ((cmd (claude-code-ide--build-codex-command nil t)))
+      (should (string-match-p "codex resume" cmd))
+      (should-not (string-match-p "--last" cmd)))
+    ;; Extra flags
+    (let ((claude-code-ide-cli-extra-flags "--model o3"))
+      (let ((cmd (claude-code-ide--build-codex-command)))
+        (should (string-match-p "--model o3" cmd))))))
+
+(ert-deftest claude-code-ide-test-build-command-dispatches ()
+  "Test that --build-command dispatches by CLI type."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-cli-debug nil)
+        (claude-code-ide-system-prompt nil)
+        (claude-code-ide-cli-extra-flags ""))
+    (should (string-match-p "^claude" (claude-code-ide--build-command))))
+  (let ((claude-code-ide-cli-path "codex")
+        (claude-code-ide-cli-extra-flags ""))
+    (should (string-match-p "^codex" (claude-code-ide--build-command)))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
