@@ -997,7 +997,7 @@ when navigating between terminal and other buffers."
            ((not (pos-visible-in-window-p terminal-point win))
             (with-selected-window win
               (goto-char terminal-point)
-              (recenter)))))))))
+              (recenter -1)))))))))
 
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.
