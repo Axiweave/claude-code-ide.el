@@ -975,20 +975,29 @@ Arguments CONTINUE, RESUME, SESSION-ID are passed to the CLI-specific builder."
 (defun claude-code-ide--terminal-position-keeper (window-list)
   "Maintain stable terminal view position across window switches.
 WINDOW-LIST contains windows requiring position synchronization.
-Uses eat's default scroll calculation for consistent behavior."
+Implements intelligent scroll management to preserve user context
+when navigating between terminal and other buffers."
   (dolist (win window-list)
     (if (eq win 'buffer)
+        ;; Direct buffer point update
         (goto-char (eat-term-display-cursor eat-terminal))
-      (unless buffer-read-only
+      ;; Window-specific position management
+      (unless buffer-read-only  ; Skip when terminal is in navigation mode
         (let ((terminal-point (eat-term-display-cursor eat-terminal)))
+          ;; Update window point to match terminal state
           (set-window-point win terminal-point)
-          (with-selected-window win
-            (recenter
-             (- (how-many "\n" (eat-term-display-beginning eat-terminal)
-                          terminal-point)
-                (cdr (eat-term-size eat-terminal))
-                (max 0 (- (floor (window-screen-lines))
-                          (cdr (eat-term-size eat-terminal))))))))))))
+          ;; Apply smart positioning strategy
+          (cond
+           ;; Terminal at bottom: maintain bottom alignment for active prompts
+           ((>= terminal-point (- (point-max) 2))
+            (with-selected-window win
+              (goto-char terminal-point)
+              (recenter -1)))  ; Pin to bottom
+           ;; Terminal out of view: restore visibility
+           ((not (pos-visible-in-window-p terminal-point win))
+            (with-selected-window win
+              (goto-char terminal-point)
+              (recenter)))))))))
 
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.
