@@ -986,18 +986,22 @@ when navigating between terminal and other buffers."
         (let ((terminal-point (eat-term-display-cursor eat-terminal)))
           ;; Update window point to match terminal state
           (set-window-point win terminal-point)
+          (goto-char terminal-point)
+          (recenter (if (eq (claude-code-ide--cli-type) 'claude) -1 -4))
           ;; Apply smart positioning strategy
-          (cond
-           ;; Terminal at bottom: maintain bottom alignment for active prompts
-           ((>= terminal-point (- (point-max) 2))
-            (with-selected-window win
-              (goto-char terminal-point)
-              (recenter -1)))  ; Pin to bottom
-           ;; Terminal out of view: restore visibility
-           ((not (pos-visible-in-window-p terminal-point win))
-            (with-selected-window win
-              (goto-char terminal-point)
-              (recenter -1)))))))))
+          ;; (cond
+          ;;  ;; Terminal at bottom: maintain bottom alignment for active prompts
+          ;;  ((>= terminal-point (- (point-max) (if (eq (claude-code-ide--cli-type) 'claude) 2 5)))
+          ;;   (with-selected-window win
+          ;;     (goto-char terminal-point)
+          ;;     (recenter (if (eq (claude-code-ide--cli-type) 'claude) -1 -4))))  ; Pin to bottom
+          ;;  ;; Terminal out of view: restore visibility
+          ;;  ((not (pos-visible-in-window-p terminal-point win))
+          ;;   (with-selected-window win
+          ;;     (goto-char terminal-point)
+          ;;     (recenter (if (eq (claude-code-ide--cli-type) 'claude) -1 -4)))))
+
+          )))))
 
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.
