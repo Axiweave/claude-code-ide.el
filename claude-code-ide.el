@@ -347,7 +347,8 @@ It significantly improves visual quality during complex operations.
 ORIG-FUN is the underlying filter to enhance.
 PROCESS is the terminal process being optimized.
 INPUT contains the terminal output stream."
-  (if (or (not claude-code-ide-vterm-anti-flicker)
+  (if (or (eq (claude-code-ide--cli-type) 'opencode)
+          (not claude-code-ide-vterm-anti-flicker)
           (not (claude-code-ide--session-buffer-p (process-buffer process))))
       ;; Feature disabled or not a Claude buffer, pass through normally
       (funcall orig-fun process input)
@@ -478,7 +479,9 @@ cursor management, and process buffering for superior user experience."
   ;; Disable automatic scrolling to bottom on output to prevent flickering
   (setq-local vterm-scroll-to-bottom-on-output nil)
   ;; Disable immediate redraw to batch updates and reduce flickering
-  (when (boundp 'vterm--redraw-immididately)
+  ;; Only for claude-code, not opencode which doesn't need this
+  (when (and (not (eq (claude-code-ide--cli-type) 'opencode))
+             (boundp 'vterm--redraw-immididately))
     (setq-local vterm--redraw-immididately nil))
   ;; Try to prevent cursor flickering by disabling Emacs' own cursor management
   (setq-local cursor-in-non-selected-windows nil)
@@ -731,7 +734,8 @@ the current frame.  Returns nil if no suitable buffer is found."
 (defun claude-code-ide--set-process (process &optional directory)
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."
   ;; Check if this is the first session starting
-  (when (and claude-code-ide-prevent-reflow-glitch
+  (when (and (eq (claude-code-ide--cli-type) 'claude)
+             claude-code-ide-prevent-reflow-glitch
              (= (hash-table-count claude-code-ide--processes) 0))
     ;; Apply advice globally for the first session
     (advice-add (claude-code-ide--terminal-resize-handler)
@@ -848,11 +852,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
 
 (defun claude-code-ide--cli-type ()
   "Detect CLI type from `claude-code-ide-cli-path'.
-Returns \\='claude or \\='codex based on the basename prefix.
+Returns \\='claude, \\='codex, or \\='opencode based on the basename prefix.
 Unknown CLIs fall back to \\='claude."
   (let ((basename (file-name-nondirectory claude-code-ide-cli-path)))
     (cond
-     ((string-prefix-p "codex" basename) 'codex)
+     ((string-prefix-p "opencode" basename) 'opencode)
+     ((string-prefix-p "code" basename) 'codex)
      (t 'claude))))
 
 (defun claude-code-ide--detect-cli ()
@@ -965,10 +970,27 @@ Additional flags from `claude-code-ide-cli-extra-flags' are included."
       (setq codex-cmd (concat codex-cmd " " claude-code-ide-cli-extra-flags)))
     codex-cmd))
 
+(defun claude-code-ide--build-opencode-command (&optional continue resume _session-id)
+  "Build the OpenCode command with optional flags.
+If CONTINUE is non-nil, use `opencode --continue'.
+If RESUME is non-nil, use `opencode --continue' (same behavior).
+_SESSION-ID is unused (no MCP for opencode).
+Additional flags from `claude-code-ide-cli-extra-flags' are included."
+  (let ((opencode-cmd claude-code-ide-cli-path))
+    ;; OpenCode uses --continue / -c for resuming the last session
+    (when (or continue resume)
+      (setq opencode-cmd (concat opencode-cmd " --continue")))
+    ;; Add any extra flags
+    (when (and claude-code-ide-cli-extra-flags
+               (not (string-empty-p claude-code-ide-cli-extra-flags)))
+      (setq opencode-cmd (concat opencode-cmd " " claude-code-ide-cli-extra-flags)))
+    opencode-cmd))
+
 (defun claude-code-ide--build-command (&optional continue resume session-id)
   "Build CLI command, dispatching by CLI type.
 Arguments CONTINUE, RESUME, SESSION-ID are passed to the CLI-specific builder."
   (pcase (claude-code-ide--cli-type)
+    ('opencode (claude-code-ide--build-opencode-command continue resume session-id))
     ('codex (claude-code-ide--build-codex-command continue resume session-id))
     (_ (claude-code-ide--build-claude-command continue resume session-id))))
 
@@ -987,8 +1009,9 @@ when navigating between terminal and other buffers."
           ;; Update window point to match terminal state
           (set-window-point win terminal-point)
           (with-selected-window win
-            (goto-char terminal-point)
-            (recenter (if (eq (claude-code-ide--cli-type) 'claude) -1 -4)))
+            (when (evil-emacs-state-p)
+              (goto-char terminal-point)
+              (recenter (if (memq (claude-code-ide--cli-type) '(codex opencode)) -4 -1))))
           ;; Apply smart positioning strategy
           ;; (cond
           ;;  ;; Terminal at bottom: maintain bottom alignment for active prompts
@@ -1039,7 +1062,8 @@ Signals an error if terminal fails to initialize."
           (unless buffer
             (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
           (with-current-buffer buffer
-            (claude-code-ide--configure-vterm-buffer))
+            ;; (claude-code-ide--configure-vterm-buffer)
+            )
           (let ((process (get-buffer-process buffer)))
             (unless process
               (error "Failed to get vterm process.  The vterm module may not be compiled correctly"))
@@ -1058,7 +1082,8 @@ Signals an error if terminal fails to initialize."
           (unless (eq major-mode 'eat-mode)
             (eat-mode))
           (claude-code-ide--configure-eat-buffer)
-          (when claude-code-ide-eat-preserve-position
+          (when (and claude-code-ide-eat-preserve-position
+                     (eq (claude-code-ide--cli-type) 'claude))
             (setq-local eat--synchronize-scroll-function
                         #'claude-code-ide--terminal-position-keeper))
           (setq-local process-environment
@@ -1109,6 +1134,21 @@ Returns a cons cell of (buffer . process) on success."
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
 
+(defun claude-code-ide--create-opencode-terminal-session (buffer-name working-dir _port continue resume session-id)
+  "Create a new terminal session for OpenCode CLI.
+BUFFER-NAME is the name for the terminal buffer.
+WORKING-DIR is the working directory.
+_PORT is unused (no MCP for OpenCode).
+CONTINUE is whether to continue the most recent conversation.
+RESUME is whether to resume a previous conversation.
+SESSION-ID is the unique identifier for this session.
+
+Returns a cons cell of (buffer . process) on success."
+  (let ((cmd (claude-code-ide--build-opencode-command continue resume session-id))
+        (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name))))
+    (claude-code-ide-debug "Session ID: %s" session-id)
+    (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
+
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session, dispatching by CLI type.
 BUFFER-NAME is the name for the terminal buffer.
@@ -1120,6 +1160,8 @@ SESSION-ID is the unique identifier for this session.
 
 Returns a cons cell of (buffer . process) on success."
   (pcase (claude-code-ide--cli-type)
+    ('opencode (claude-code-ide--create-opencode-terminal-session
+                buffer-name working-dir port continue resume session-id))
     ('codex (claude-code-ide--create-codex-terminal-session
              buffer-name working-dir port continue resume session-id))
     (_ (claude-code-ide--create-claude-terminal-session
@@ -1194,7 +1236,7 @@ This function handles:
                               (claude-code-ide--cleanup-on-exit working-dir))
                             nil t)
                   ;; Set up terminal keybindings
-                  (unless (eq (claude-code-ide--cli-type) 'codex)
+                  (when (eq (claude-code-ide--cli-type) 'claude)
                     (claude-code-ide--setup-terminal-keybindings))
                   ;; Add terminal-specific exit hooks
                   (cond
@@ -1498,12 +1540,12 @@ Lines whose comment body begins with `DONE:' are excluded."
                                         (or (null next-func)
                                             (string= next-func current-func)))
                              do (forward-line 1)
-                                (setq lookahead (1- lookahead))
-                                (setq text (line-text))
-                                (when (string-blank-p text)
-                                  (cl-return-from resolve nil))
-                                (unless (claude-code-ide--is-comment-line text)
-                                  (setq next-func (which-function)))
+                             (setq lookahead (1- lookahead))
+                             (setq text (line-text))
+                             (when (string-blank-p text)
+                               (cl-return-from resolve nil))
+                             (unless (claude-code-ide--is-comment-line text)
+                               (setq next-func (which-function)))
                              finally return (cond
                                              ((not current-func) next-func)
                                              ((not next-func) current-func)

@@ -3066,7 +3066,10 @@ have completed before cleanup.  Waits up to 5 seconds."
                    "--dangerously-skip-permissions")))
   (let ((claude-code-ide-cli-path "codex"))
     (should (equal (claude-code-ide--dangerous-permissions-flag)
-                   "--dangerously-bypass-approvals-and-sandbox"))))
+                   "--dangerously-bypass-approvals-and-sandbox")))
+  (let ((claude-code-ide-cli-path "opencode"))
+    (should (equal (claude-code-ide--dangerous-permissions-flag)
+                   ""))))
 
 (ert-deftest claude-code-ide-test-codex-full-session-flow ()
   "Test that codex CLI type flows through session creation correctly."

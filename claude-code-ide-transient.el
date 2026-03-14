@@ -83,8 +83,9 @@
 (defun claude-code-ide--dangerous-permissions-flag ()
   "Return the dangerous permissions flag for the current CLI type."
   (pcase (claude-code-ide--cli-type)
+    ('claude "--dangerously-skip-permissions")
     ('codex "--dangerously-bypass-approvals-and-sandbox")
-    (_ "--dangerously-skip-permissions")))
+    (_ "")))
 
 (defun claude-code-ide--start-description ()
   "Dynamic description for start command based on session status."
