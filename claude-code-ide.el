@@ -347,7 +347,7 @@ It significantly improves visual quality during complex operations.
 ORIG-FUN is the underlying filter to enhance.
 PROCESS is the terminal process being optimized.
 INPUT contains the terminal output stream."
-  (if (or (eq (claude-code-ide--cli-type) 'opencode)
+  (if (or (not (eq (claude-code-ide--cli-type) 'claude))
           (not claude-code-ide-vterm-anti-flicker)
           (not (claude-code-ide--session-buffer-p (process-buffer process))))
       ;; Feature disabled or not a Claude buffer, pass through normally
@@ -415,7 +415,8 @@ INPUT contains the terminal output stream."
 ORIG-FUN is the underlying filter to enhance.
 PROCESS is the terminal process being optimized.
 INPUT contains the terminal output stream."
-  (if (or (not claude-code-ide-vterm-anti-flicker)
+  (if (or (not (eq (claude-code-ide--cli-type) 'claude))
+          (not claude-code-ide-vterm-anti-flicker)
           (not (claude-code-ide--session-buffer-p (process-buffer process))))
       (funcall orig-fun process input)
     (with-current-buffer (process-buffer process)
@@ -1083,7 +1084,9 @@ Signals an error if terminal fails to initialize."
             (eat-mode))
           (claude-code-ide--configure-eat-buffer)
           (when (and claude-code-ide-eat-preserve-position
-                     (eq (claude-code-ide--cli-type) 'claude))
+                     ;; (eq (claude-code-ide--cli-type) 'claude)
+                     (not (eq (claude-code-ide--cli-type) 'opencode))
+                     )
             (setq-local eat--synchronize-scroll-function
                         #'claude-code-ide--terminal-position-keeper))
           (setq-local process-environment
