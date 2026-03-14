@@ -509,9 +509,7 @@ cursor management, and process buffering for superior user experience."
   ;; Disable automatic scrolling to bottom on output to prevent flickering
   (setq-local vterm-scroll-to-bottom-on-output nil)
   ;; Disable immediate redraw to batch updates and reduce flickering
-  ;; Only for claude-code, not opencode which doesn't need this
-  (when (and (not (eq (claude-code-ide--cli-type) 'opencode))
-             (boundp 'vterm--redraw-immididately))
+  (when (boundp 'vterm--redraw-immididately)
     (setq-local vterm--redraw-immididately nil))
   ;; Try to prevent cursor flickering by disabling Emacs' own cursor management
   (setq-local cursor-in-non-selected-windows nil)
@@ -1094,7 +1092,7 @@ Signals an error if terminal fails to initialize."
             (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
           (with-current-buffer buffer
             (setq-local claude-code-ide--terminal-backend backend)
-            ;; (claude-code-ide--configure-vterm-buffer)
+            (claude-code-ide--configure-vterm-buffer)
             )
           (let ((process (get-buffer-process buffer)))
             (unless process
