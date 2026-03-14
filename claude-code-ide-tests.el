@@ -386,6 +386,17 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should-error (claude-code-ide--terminal-ensure-backend)
                     :type 'user-error))))
 
+(ert-deftest claude-code-ide-test-terminal-backend-resolution ()
+  "Test per-CLI terminal backend overrides with fallback to the default."
+  (let ((claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide-cli-terminal-backends '((codex . eat)
+                                                 (opencode . vterm))))
+    (let ((claude-code-ide-cli-path "claude"))
+      (should (eq (claude-code-ide--resolve-terminal-backend) 'vterm)))
+    (let ((claude-code-ide-cli-path "codex"))
+      (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))
+    (should (eq (claude-code-ide--resolve-terminal-backend 'opencode) 'vterm))))
+
 (ert-deftest claude-code-ide-test-terminal-send-functions ()
   "Test terminal send wrapper functions."
   ;; Mock vterm functions
@@ -428,6 +439,18 @@ have completed before cleanup.  Waits up to 5 seconds."
           (setq eat-string-sent nil)
           (claude-code-ide--terminal-send-return)
           (should (equal eat-string-sent "\r")))))))
+
+(ert-deftest claude-code-ide-test-terminal-send-functions-use-buffer-local-backend ()
+  "Test that terminal send wrappers honor the session buffer backend."
+  (let ((eat-string-sent nil))
+    (cl-letf (((symbol-function 'eat-term-send-string)
+               (lambda (_term str) (setq eat-string-sent str))))
+      (with-temp-buffer
+        (let ((claude-code-ide-terminal-backend 'vterm))
+          (setq-local eat-terminal t)
+          (setq-local claude-code-ide--terminal-backend 'eat)
+          (claude-code-ide--terminal-send-string "test")
+          (should (equal eat-string-sent "test")))))))
 
 (ert-deftest claude-code-ide-test-send-prompt-command ()
   "Test the claude-code-ide-send-prompt command."
@@ -3058,6 +3081,39 @@ have completed before cleanup.  Waits up to 5 seconds."
                      "*test-codex*" "/tmp" 12345 nil nil "test-session")))
         (should (consp result))
         (should (bufferp (car result)))))))
+
+(ert-deftest claude-code-ide-test-create-codex-terminal-session-uses-cli-backend-override ()
+  "Test Codex terminal session creation respects per-CLI backend overrides."
+  (let ((claude-code-ide-cli-path "codex")
+        (claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide-cli-terminal-backends '((codex . eat)))
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags "")
+        (mock-eat-buffer nil)
+        (mock-process (start-process "mock-codex-eat" nil "true")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                   (lambda (&optional _backend) nil))
+                  ((symbol-function 'eat-mode)
+                   (lambda () nil))
+                  ((symbol-function 'eat-exec)
+                   (lambda (buffer _name _cmd _startfile _args)
+                     (setq mock-eat-buffer buffer)))
+                  ((symbol-function 'get-buffer-process)
+                   (lambda (_buffer) mock-process))
+                  ((symbol-function 'claude-code-ide--build-codex-command)
+                   (lambda (&rest _) "codex")))
+          (let* ((result (claude-code-ide--create-terminal-session
+                          "*test-codex-eat*" "/tmp" 12345 nil nil "test-session"))
+                 (buffer (car result)))
+            (should (consp result))
+            (should (eq buffer mock-eat-buffer))
+            (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
+                        'eat))))
+      (when (process-live-p mock-process)
+        (delete-process mock-process))
+      (when (buffer-live-p mock-eat-buffer)
+        (kill-buffer mock-eat-buffer)))))
 
 (ert-deftest claude-code-ide-test-dangerous-flag-by-cli-type ()
   "Test that the dangerous permissions flag varies by CLI type."

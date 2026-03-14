@@ -191,6 +191,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
 | ~claude-code-ide-terminal-backend~              | Terminal backend (vterm or eat)             | ~'vterm~                               |
+| ~claude-code-ide-cli-terminal-backends~         | Per-CLI terminal backend overrides          | ~nil~                                  |
 | ~claude-code-ide-vterm-anti-flicker~            | Enable vterm flicker reduction              | ~t~                                    |
 | ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
 | ~claude-code-ide-terminal-initialization-delay~ | Initialization delay for terminals          | ~0.1~                                  |
@@ -261,6 +262,17 @@ Claude Code IDE supports both =vterm= and =eat= as terminal backends. By default
 #+end_src
 
 The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. Both backends provide full terminal functionality including color support and special key handling.
+
+You can also override the terminal backend per CLI while keeping a global default for everything else:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-terminal-backend 'vterm
+      claude-code-ide-cli-terminal-backends '((claude . vterm)
+                                              (codex . eat)
+                                              (opencode . vterm)))
+#+end_src
+
+If a CLI is not listed in =claude-code-ide-cli-terminal-backends=, Claude Code IDE falls back to =claude-code-ide-terminal-backend=.
 
 **** vterm Rendering Optimization
 

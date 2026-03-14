@@ -218,6 +218,18 @@ environments."
                  (const :tag "eat" eat))
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-cli-terminal-backends nil
+  "Per-CLI terminal backend overrides.
+Each entry maps `claude', `codex', or `opencode' to either `vterm'
+or `eat'.  When a CLI has no override, `claude-code-ide-terminal-backend'
+is used."
+  :type '(alist :key-type (choice (const :tag "Claude" claude)
+                                  (const :tag "Codex" codex)
+                                  (const :tag "OpenCode" opencode))
+                :value-type (choice (const :tag "vterm" vterm)
+                                    (const :tag "eat" eat)))
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-prevent-reflow-glitch t
   "Workaround for Claude Code terminal scrolling bug #1422.
 When non-nil (default), prevents the terminal from reflowing on height-only
@@ -328,6 +340,23 @@ Stored in reverse order for O(1) push, joined at flush time.")
 
 (defvar-local claude-code-ide--eat-render-timer nil
   "Timer for executing queued eat rendering operations.")
+
+(defvar-local claude-code-ide--terminal-backend nil
+  "Resolved terminal backend for the current session buffer.")
+
+(defun claude-code-ide--resolve-terminal-backend (&optional cli-type)
+  "Resolve the terminal backend for CLI-TYPE.
+Falls back to `claude-code-ide-terminal-backend' when no per-CLI
+override is configured."
+  (or (alist-get (or cli-type (claude-code-ide--cli-type))
+                 claude-code-ide-cli-terminal-backends
+                 nil nil #'eq)
+      claude-code-ide-terminal-backend))
+
+(defun claude-code-ide--current-terminal-backend ()
+  "Return the terminal backend for the current buffer or CLI."
+  (or claude-code-ide--terminal-backend
+      (claude-code-ide--resolve-terminal-backend)))
 
 (defun claude-code-ide--count-escape-sequence (sequence input)
   "Count occurrences of escape SEQUENCE in INPUT.
@@ -526,52 +555,55 @@ cursor management, and process buffering for superior user experience."
 
 (defun claude-code-ide--terminal-ensure-backend ()
   "Ensure the selected terminal backend is available."
-  (cond
-   ((eq claude-code-ide-terminal-backend 'vterm)
+  (let ((backend (claude-code-ide--current-terminal-backend)))
+    (cond
+   ((eq backend 'vterm)
     (unless (featurep 'vterm)
       (require 'vterm nil t))
     (unless (featurep 'vterm)
-      (user-error "The package vterm is not installed.  Please install the vterm package or change `claude-code-ide-terminal-backend' to 'eat")))
-   ((eq claude-code-ide-terminal-backend 'eat)
+      (user-error "The package vterm is not installed.  Please install the vterm package or change the terminal backend configuration to 'eat")))
+   ((eq backend 'eat)
     (unless (featurep 'eat)
       (require 'eat nil t))
     (unless (featurep 'eat)
-      (user-error "The package eat is not installed.  Please install the eat package or change `claude-code-ide-terminal-backend' to 'vterm")))
+      (user-error "The package eat is not installed.  Please install the eat package or change the terminal backend configuration to 'vterm")))
    (t
-    (user-error "Invalid terminal backend: %s.  Valid options are 'vterm or 'eat" claude-code-ide-terminal-backend))))
+    (user-error "Invalid terminal backend: %s.  Valid options are 'vterm or 'eat" backend)))))
 
 (defun claude-code-ide--terminal-send-string (string &optional paste)
   "Send STRING to the terminal in the current buffer."
-  (cond
-   ((eq claude-code-ide-terminal-backend 'vterm)
+  (pcase (claude-code-ide--current-terminal-backend)
+   ('vterm
     (vterm-send-string string paste))
-   ((eq claude-code-ide-terminal-backend 'eat)
+   ('eat
     (when eat-terminal
-      (eat-term-send-string eat-terminal string)))
-   (t
-    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+      (if paste
+          (eat-term-send-string-as-yank eat-terminal string)
+        (eat-term-send-string eat-terminal string))))
+   (_
+    (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
 
 (defun claude-code-ide--terminal-send-escape ()
   "Send escape key to the terminal in the current buffer."
-  (cond
-   ((eq claude-code-ide-terminal-backend 'vterm)
+  (pcase (claude-code-ide--current-terminal-backend)
+   ('vterm
     (vterm-send-escape))
-   ((eq claude-code-ide-terminal-backend 'eat)
+   ('eat
     (when eat-terminal
       (eat-term-send-string eat-terminal "\e")))
-   (t
-    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+   (_
+    (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
 
 (defun claude-code-ide--terminal-send-return ()
   "Send return key to the terminal in the current buffer."
-  (cond
-   ((eq claude-code-ide-terminal-backend 'vterm)
+  (pcase (claude-code-ide--current-terminal-backend)
+   ('vterm
     (vterm-send-return))
-   ((eq claude-code-ide-terminal-backend 'eat)
+   ('eat
     (when eat-terminal
       (eat-term-send-string eat-terminal "\r")))
-   (t
-    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+   (_
+    (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
 
 (defun claude-code-ide--find-prompt-buffer ()
   "Find a visible buffer whose file name matches a prompt/plan pattern.
@@ -615,18 +647,18 @@ from the window where it was initially created."
 This function binds:
 - M-RET (Alt-Return) to insert a newline
 - C-<escape> to send escape"
-  (cond
-   ((eq claude-code-ide-terminal-backend 'vterm)
+  (pcase (claude-code-ide--current-terminal-backend)
+   ('vterm
     ;; For vterm, we set up local keybindings in vterm-mode-map
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
-   ((eq claude-code-ide-terminal-backend 'eat)
+   ('eat
     ;; For eat, we need to modify the semi-char mode map which is the default
     ;; We use local-set-key to make it buffer-local
     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
-   (t
-    (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend))))
+   (_
+    (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
 
 ;;; Terminal Reflow Glitch Prevention
 ;;
@@ -638,14 +670,14 @@ This function binds:
 
 (defun claude-code-ide--terminal-resize-handler ()
   "Retrieve the terminal's resize handling function based on backend."
-  (pcase claude-code-ide-terminal-backend
+  (pcase (claude-code-ide--current-terminal-backend)
     ('vterm #'vterm--window-adjust-process-window-size)
     ('eat #'eat--adjust-process-window-size)
-    (_ (error "Unsupported terminal backend: %s" claude-code-ide-terminal-backend))))
+    (_ (error "Unsupported terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
 
 (defun claude-code-ide--terminal-scroll-mode-active-p ()
   "Determine if terminal is currently in scroll/copy mode."
-  (pcase claude-code-ide-terminal-backend
+  (pcase (claude-code-ide--current-terminal-backend)
     ('vterm (bound-and-true-p vterm-copy-mode))
     ('eat (not (bound-and-true-p eat--semi-char-mode)))
     (_ nil)))
@@ -825,11 +857,8 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           ;; Remove vterm rendering optimization if no sessions remain
           (when (and claude-code-ide-vterm-anti-flicker
                      (= (hash-table-count claude-code-ide--processes) 0))
-            (cond
-             ((eq claude-code-ide-terminal-backend 'vterm)
-              (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer))
-             ((eq claude-code-ide-terminal-backend 'eat)
-              (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))))
+            (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer)
+            (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))
           ;; Stop MCP server for this project directory
           (claude-code-ide-mcp-stop-session directory)
           ;; Notify MCP tools server about session end with session ID
@@ -1046,15 +1075,16 @@ ENV-VARS is a list of \"KEY=VALUE\" environment variable strings.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
-  (claude-code-ide--terminal-ensure-backend)
-  (let ((default-directory working-dir))
+  (let ((backend (claude-code-ide--resolve-terminal-backend)))
+    (claude-code-ide--terminal-ensure-backend)
+    (let ((default-directory working-dir))
     (claude-code-ide-debug "Starting with command: %s" cmd)
     (claude-code-ide-debug "Working directory: %s" working-dir)
-    (claude-code-ide-debug "Terminal backend: %s" claude-code-ide-terminal-backend)
+    (claude-code-ide-debug "Terminal backend: %s" backend)
 
     (cond
      ;; vterm backend
-     ((eq claude-code-ide-terminal-backend 'vterm)
+     ((eq backend 'vterm)
       (let* ((vterm-buffer-name buffer-name)
              (vterm-shell cmd)
              (vterm-environment (append env-vars vterm-environment)))
@@ -1063,6 +1093,7 @@ Signals an error if terminal fails to initialize."
           (unless buffer
             (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
           (with-current-buffer buffer
+            (setq-local claude-code-ide--terminal-backend backend)
             ;; (claude-code-ide--configure-vterm-buffer)
             )
           (let ((process (get-buffer-process buffer)))
@@ -1073,13 +1104,14 @@ Signals an error if terminal fails to initialize."
             (cons buffer process)))))
 
      ;; eat backend
-     ((eq claude-code-ide-terminal-backend 'eat)
+     ((eq backend 'eat)
       (let* ((buffer (get-buffer-create buffer-name))
              (eat-term-name "xterm-256color")
              (cmd-parts (claude-code-ide--parse-command-string cmd))
              (program (car cmd-parts))
              (args (cdr cmd-parts)))
         (with-current-buffer buffer
+          (setq-local claude-code-ide--terminal-backend backend)
           (unless (eq major-mode 'eat-mode)
             (eat-mode))
           (claude-code-ide--configure-eat-buffer)
@@ -1098,7 +1130,7 @@ Signals an error if terminal fails to initialize."
             (cons buffer process)))))
 
      (t
-      (error "Unknown terminal backend: %s" claude-code-ide-terminal-backend)))))
+      (error "Unknown terminal backend: %s" backend))))))
 
 (defun claude-code-ide--create-claude-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for the CLI.
@@ -1242,8 +1274,8 @@ This function handles:
                   (when (eq (claude-code-ide--cli-type) 'claude)
                     (claude-code-ide--setup-terminal-keybindings))
                   ;; Add terminal-specific exit hooks
-                  (cond
-                   ((eq claude-code-ide-terminal-backend 'vterm)
+                  (pcase (claude-code-ide--current-terminal-backend)
+                   ('vterm
                     ;; Add vterm exit hook to ensure buffer is killed when process exits
                     ;; vterm runs Claude directly, no shell involved
                     (add-hook 'vterm-exit-functions
@@ -1251,7 +1283,7 @@ This function handles:
                                 (when (buffer-live-p buffer)
                                   (kill-buffer buffer)))
                               nil t))
-                   ((eq claude-code-ide-terminal-backend 'eat)
+                   ('eat
                     ;; eat uses kill-buffer-on-exit variable
                     (setq-local eat-kill-buffer-on-exit t))))
                 ;; Stabilization period for terminal layout initialization
