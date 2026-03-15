@@ -27,6 +27,7 @@
 
 ;;; Code:
 
+(require 'files-x)
 (require 'transient)
 (require 'claude-code-ide-debug)
 
@@ -44,6 +45,7 @@
 (declare-function claude-code-ide-toggle "claude-code-ide" ())
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
+(declare-function claude-code-ide--get-project-root "claude-code-ide" ())
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-port "claude-code-ide-mcp" (session))
@@ -60,6 +62,7 @@
 
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
+(defvar claude-code-ide-supported-agents)
 (defvar claude-code-ide-debug)
 (defvar claude-code-ide-window-side)
 (defvar claude-code-ide-window-width)
@@ -201,6 +204,34 @@ With prefix ARG, add --dangerously-skip-permissions flag."
       (propertize (format "No active session (%s)" cli-path)
                   'face 'transient-inactive-value))))
 
+(defun claude-code-ide--project-dir-locals-file (&optional project-root)
+  "Return the dir-locals file for PROJECT-ROOT."
+  (expand-file-name dir-locals-file
+                    (file-name-as-directory
+                     (or project-root (claude-code-ide--get-project-root)))))
+
+(defun claude-code-ide--save-project-dir-local-cli-path (operation &optional cli-path project-root)
+  "Persist a project-local CLI path using OPERATION at PROJECT-ROOT.
+OPERATION is either `set' or `clear'.  CLI-PATH is used when OPERATION is `set'."
+  (let* ((root (file-name-as-directory
+                (or project-root (claude-code-ide--get-project-root))))
+         (file (claude-code-ide--project-dir-locals-file root))
+         (existing-buffer (find-buffer-visiting file)))
+    (when (or (eq operation 'set)
+              (file-exists-p file))
+      (save-window-excursion
+        (save-current-buffer
+          (pcase operation
+            ('set
+             (add-dir-local-variable nil 'claude-code-ide-cli-path cli-path file))
+            ('clear
+             (delete-dir-local-variable nil 'claude-code-ide-cli-path file)))
+          (when-let ((buffer (get-file-buffer file)))
+            (with-current-buffer buffer
+              (save-buffer))
+            (unless existing-buffer
+              (kill-buffer buffer))))))))
+
 (defun claude-code-ide-toggle-window ()
   "Toggle visibility of Claude Code window.
 If called from a Claude vterm buffer, toggle that window.
@@ -296,6 +327,30 @@ Otherwise, if multiple sessions exist, prompt for selection."
   (interactive (list (read-file-name "Claude CLI path: " nil claude-code-ide-cli-path t)))
   (setq claude-code-ide-cli-path path)
   (claude-code-ide-log "CLI path set to %s" path))
+
+(transient-define-suffix claude-code-ide--set-project-agent (agent)
+  "Set a project-local agent in .dir-locals.el."
+  :description "Set project agent"
+  (interactive
+   (list (completing-read "Project agent: "
+                          claude-code-ide-supported-agents
+                          nil t nil nil
+                          (and (member claude-code-ide-cli-path
+                                       claude-code-ide-supported-agents)
+                               claude-code-ide-cli-path))))
+  (let ((project-root (claude-code-ide--get-project-root)))
+    (claude-code-ide--save-project-dir-local-cli-path 'set agent project-root)
+    (setq-local claude-code-ide-cli-path agent)
+    (claude-code-ide-log "Project agent set to %s in %s" agent project-root)))
+
+(transient-define-suffix claude-code-ide--clear-project-agent ()
+  "Clear the project-local agent override from .dir-locals.el."
+  :description "Clear project agent"
+  (interactive)
+  (let ((project-root (claude-code-ide--get-project-root)))
+    (claude-code-ide--save-project-dir-local-cli-path 'clear nil project-root)
+    (kill-local-variable 'claude-code-ide-cli-path)
+    (claude-code-ide-log "Project agent cleared in %s" project-root)))
 
 (transient-define-suffix claude-code-ide--set-cli-extra-flags (flags)
   "Set additional CLI flags."
@@ -438,6 +493,8 @@ Otherwise, if multiple sessions exist, prompt for selection."
                                      (if claude-code-ide-use-side-window "ON" "OFF"))))]
    ["CLI Settings"
     ("p" "Set CLI path" claude-code-ide--set-cli-path)
+    ("P" "Set project agent" claude-code-ide--set-project-agent)
+    ("c" "Clear project agent" claude-code-ide--clear-project-agent)
     ("x" "Set extra CLI flags" claude-code-ide--set-cli-extra-flags)
     ("a" "Set system prompt" claude-code-ide--set-system-prompt)]]
   ["Save"

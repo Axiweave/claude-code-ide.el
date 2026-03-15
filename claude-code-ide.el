@@ -98,9 +98,18 @@
   :group 'tools
   :prefix "claude-code-ide-")
 
+(defconst claude-code-ide-supported-agents '("claude" "codex" "gsd" "opencode")
+  "Supported agent names for project-local CLI selection.")
+
+(defun claude-code-ide--supported-agent-p (value)
+  "Return non-nil when VALUE is a supported project-local agent."
+  (and (stringp value)
+       (member value claude-code-ide-supported-agents)))
+
 (defcustom claude-code-ide-cli-path "claude"
   "Path to the Claude Code CLI executable."
   :type 'string
+  :safe #'claude-code-ide--supported-agent-p
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-buffer-name-function #'claude-code-ide--default-buffer-name
@@ -727,6 +736,13 @@ width has actually changed, working around the scrolling glitch."
   (if-let ((project (project-current)))
       (expand-file-name (project-root project))
     (expand-file-name default-directory)))
+
+(defun claude-code-ide--get-project-root ()
+  "Get the current project root.
+Signal a `user-error' when the current buffer is not in a project."
+  (if-let ((project (project-current nil)))
+      (expand-file-name (project-root project))
+    (user-error "Not in a project")))
 
 (defun claude-code-ide--get-buffer-name (&optional directory)
   "Get the buffer name for the Claude Code session in DIRECTORY.

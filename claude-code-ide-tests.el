@@ -636,6 +636,59 @@ have completed before cleanup.  Waits up to 5 seconds."
                      "No active session (/usr/local/bin/codex)"))
       (should (eq (get-text-property 0 'face status)
                   'transient-inactive-value)))))
+
+(ert-deftest claude-code-ide-test-set-project-agent-writes-dir-locals ()
+  "Test setting a project agent writes a project-local CLI override."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let ((project-root (expand-file-name default-directory))
+           (claude-code-ide-cli-path "claude"))
+       (with-temp-file (expand-file-name ".dir-locals.el" project-root)
+         (insert ";;; Directory Local Variables            -*- no-byte-compile: t -*-\n")
+         (insert ";;; For more information see (info \"(emacs) Directory Variables\")\n\n")
+         (insert "((nil . ((foo . 1))))\n"))
+       (cl-letf (((symbol-function 'project-current)
+                  (lambda (&optional _maybe-prompt _dir) 'project))
+                 ((symbol-function 'project-root)
+                  (lambda (_project) project-root)))
+         (with-temp-buffer
+           (setq default-directory project-root)
+           (claude-code-ide--set-project-agent "codex")
+           (should (local-variable-p 'claude-code-ide-cli-path))
+           (should (equal claude-code-ide-cli-path "codex")))
+         (with-temp-buffer
+           (insert-file-contents (expand-file-name ".dir-locals.el" project-root))
+           (let ((contents (buffer-string)))
+             (should (string-match-p "(foo \\. 1)" contents))
+             (should (string-match-p "(claude-code-ide-cli-path \\. \"codex\")" contents)))))))))
+
+(ert-deftest claude-code-ide-test-clear-project-agent-removes-dir-local ()
+  "Test clearing a project agent removes the project-local CLI override."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let ((project-root (expand-file-name default-directory))
+           (claude-code-ide-cli-path "claude"))
+       (with-temp-file (expand-file-name ".dir-locals.el" project-root)
+         (insert ";;; Directory Local Variables            -*- no-byte-compile: t -*-\n")
+         (insert ";;; For more information see (info \"(emacs) Directory Variables\")\n\n")
+         (insert "((nil . ((foo . 1)\n")
+         (insert "         (claude-code-ide-cli-path . \"codex\"))))\n"))
+       (cl-letf (((symbol-function 'project-current)
+                  (lambda (&optional _maybe-prompt _dir) 'project))
+                 ((symbol-function 'project-root)
+                  (lambda (_project) project-root)))
+         (with-temp-buffer
+           (setq default-directory project-root)
+           (setq-local claude-code-ide-cli-path "codex")
+           (claude-code-ide--clear-project-agent)
+           (should-not (local-variable-p 'claude-code-ide-cli-path))
+           (should (equal claude-code-ide-cli-path "claude")))
+         (with-temp-buffer
+           (insert-file-contents (expand-file-name ".dir-locals.el" project-root))
+           (let ((contents (buffer-string)))
+             (should (string-match-p "(foo \\. 1)" contents))
+             (should-not (string-match-p "claude-code-ide-cli-path" contents)))))))))
+
 (ert-deftest claude-code-ide-test-terminal-session-creation ()
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)
@@ -3072,6 +3125,15 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; Unknown falls back to claude
   (let ((claude-code-ide-cli-path "some-other-cli"))
     (should (eq (claude-code-ide--cli-type) 'claude))))
+
+(ert-deftest claude-code-ide-test-cli-path-safe-local-values ()
+  "Test project-local CLI path values are limited to supported agents."
+  (let ((predicate (get 'claude-code-ide-cli-path 'safe-local-variable)))
+    (should predicate)
+    (dolist (value '("claude" "codex" "gsd" "opencode"))
+      (should (funcall predicate value)))
+    (dolist (value '("/usr/local/bin/codex" "claude-code" "echo" "" nil))
+      (should-not (funcall predicate value)))))
 
 (ert-deftest claude-code-ide-test-build-gsd-command ()
   "Test building gsd command."
