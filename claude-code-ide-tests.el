@@ -612,6 +612,30 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test the main transient exposes the TODO implementation command."
   (should (transient-get-suffix 'claude-code-ide-menu "i")))
 
+(ert-deftest claude-code-ide-test-session-status-includes-cli-path ()
+  "Test active session status includes the current CLI path."
+  (let* ((claude-code-ide-cli-path "/usr/local/bin/codex")
+         (session (make-claude-code-ide-mcp-session
+                   :project-dir "/tmp/project/"))
+         (status nil))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--get-current-session)
+               (lambda () session)))
+      (setq status (claude-code-ide--session-status))
+      (should (equal (substring-no-properties status)
+                     "Active session in [project] (/usr/local/bin/codex)"))
+      (should (eq (get-text-property 0 'face status) 'success)))))
+
+(ert-deftest claude-code-ide-test-session-status-without-session-includes-cli-path ()
+  "Test no-session status includes the current CLI path."
+  (let ((claude-code-ide-cli-path "/usr/local/bin/codex")
+        (status nil))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--get-current-session)
+               (lambda () nil)))
+      (setq status (claude-code-ide--session-status))
+      (should (equal (substring-no-properties status)
+                     "No active session (/usr/local/bin/codex)"))
+      (should (eq (get-text-property 0 'face status)
+                  'transient-inactive-value)))))
 (ert-deftest claude-code-ide-test-terminal-session-creation ()
   "Test terminal session creation with both backends."
   (let ((mock-vterm-buffer nil)

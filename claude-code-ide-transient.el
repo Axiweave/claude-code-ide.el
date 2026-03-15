@@ -192,13 +192,14 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."
-  (if-let ((session (claude-code-ide-mcp--get-current-session)))
-      (let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
-             (project-name (file-name-nondirectory (directory-file-name project-dir)))
-             (connected (if (claude-code-ide-mcp-session-client session) "connected" "disconnected")))
-        (propertize (format "Active session in [%s] - %s" project-name connected)
-                    'face 'success))
-    (propertize "No active session" 'face 'transient-inactive-value)))
+  (let ((cli-path (or claude-code-ide-cli-path "unknown")))
+    (if-let ((session (claude-code-ide-mcp--get-current-session)))
+        (let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
+               (project-name (file-name-nondirectory (directory-file-name project-dir))))
+          (propertize (format "Active session in [%s] (%s)" project-name cli-path)
+                      'face 'success))
+      (propertize (format "No active session (%s)" cli-path)
+                  'face 'transient-inactive-value))))
 
 (defun claude-code-ide-toggle-window ()
   "Toggle visibility of Claude Code window.
