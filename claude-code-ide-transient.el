@@ -439,7 +439,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
 (transient-define-prefix claude-code-ide-menu ()
   "Claude Code IDE main menu."
   [:description claude-code-ide--session-status]
-  ["Claude Code IDE"
+  ["Claude Code IDE" :description claude-code-ide--session-status
    ["Session Management"
     ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
     ("S" claude-code-ide--start-skip-permissions :description claude-code-ide--start-skip-description)
