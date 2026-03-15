@@ -220,11 +220,12 @@ environments."
 
 (defcustom claude-code-ide-cli-terminal-backends nil
   "Per-CLI terminal backend overrides.
-Each entry maps `claude', `codex', or `opencode' to either `vterm'
+Each entry maps `claude', `codex', `gsd', or `opencode' to either `vterm'
 or `eat'.  When a CLI has no override, `claude-code-ide-terminal-backend'
 is used."
   :type '(alist :key-type (choice (const :tag "Claude" claude)
                                   (const :tag "Codex" codex)
+                                  (const :tag "GSD" gsd)
                                   (const :tag "OpenCode" opencode))
                 :value-type (choice (const :tag "vterm" vterm)
                                     (const :tag "eat" eat)))
@@ -880,11 +881,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
 
 (defun claude-code-ide--cli-type ()
   "Detect CLI type from `claude-code-ide-cli-path'.
-Returns \\='claude, \\='codex, or \\='opencode based on the basename prefix.
+Returns \\='claude, \\='codex, \\='gsd, or \\='opencode based on the basename prefix.
 Unknown CLIs fall back to \\='claude."
   (let ((basename (file-name-nondirectory claude-code-ide-cli-path)))
     (cond
      ((string-prefix-p "opencode" basename) 'opencode)
+     ((string-prefix-p "gsd" basename) 'gsd)
      ((string-prefix-p "code" basename) 'codex)
      (t 'claude))))
 
@@ -1014,11 +1016,26 @@ Additional flags from `claude-code-ide-cli-extra-flags' are included."
       (setq opencode-cmd (concat opencode-cmd " " claude-code-ide-cli-extra-flags)))
     opencode-cmd))
 
+(defun claude-code-ide--build-gsd-command (&optional continue resume _session-id)
+  "Build the GSD command with optional flags.
+If CONTINUE is non-nil, use `gsd --continue'.
+If RESUME is non-nil, use `gsd --continue' (same behavior).
+_SESSION-ID is unused (no MCP for gsd).
+Additional flags from `claude-code-ide-cli-extra-flags' are included."
+  (let ((gsd-cmd claude-code-ide-cli-path))
+    (when (or continue resume)
+      (setq gsd-cmd (concat gsd-cmd " --continue")))
+    (when (and claude-code-ide-cli-extra-flags
+               (not (string-empty-p claude-code-ide-cli-extra-flags)))
+      (setq gsd-cmd (concat gsd-cmd " " claude-code-ide-cli-extra-flags)))
+    gsd-cmd))
+
 (defun claude-code-ide--build-command (&optional continue resume session-id)
   "Build CLI command, dispatching by CLI type.
 Arguments CONTINUE, RESUME, SESSION-ID are passed to the CLI-specific builder."
   (pcase (claude-code-ide--cli-type)
     ('opencode (claude-code-ide--build-opencode-command continue resume session-id))
+    ('gsd (claude-code-ide--build-gsd-command continue resume session-id))
     ('codex (claude-code-ide--build-codex-command continue resume session-id))
     (_ (claude-code-ide--build-claude-command continue resume session-id))))
 
@@ -1182,6 +1199,21 @@ Returns a cons cell of (buffer . process) on success."
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
 
+(defun claude-code-ide--create-gsd-terminal-session (buffer-name working-dir _port continue resume session-id)
+  "Create a new terminal session for GSD CLI.
+BUFFER-NAME is the name for the terminal buffer.
+WORKING-DIR is the working directory.
+_PORT is unused (no MCP for GSD).
+CONTINUE is whether to continue the most recent conversation.
+RESUME is whether to resume a previous conversation.
+SESSION-ID is the unique identifier for this session.
+
+Returns a cons cell of (buffer . process) on success."
+  (let ((cmd (claude-code-ide--build-gsd-command continue resume session-id))
+        (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name))))
+    (claude-code-ide-debug "Session ID: %s" session-id)
+    (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
+
 (defun claude-code-ide--create-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session, dispatching by CLI type.
 BUFFER-NAME is the name for the terminal buffer.
@@ -1195,6 +1227,8 @@ Returns a cons cell of (buffer . process) on success."
   (pcase (claude-code-ide--cli-type)
     ('opencode (claude-code-ide--create-opencode-terminal-session
                 buffer-name working-dir port continue resume session-id))
+    ('gsd (claude-code-ide--create-gsd-terminal-session
+           buffer-name working-dir port continue resume session-id))
     ('codex (claude-code-ide--create-codex-terminal-session
              buffer-name working-dir port continue resume session-id))
     (_ (claude-code-ide--create-claude-terminal-session

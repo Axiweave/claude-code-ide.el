@@ -268,11 +268,13 @@ You can also override the terminal backend per CLI while keeping a global defaul
 #+begin_src emacs-lisp
 (setq claude-code-ide-terminal-backend 'vterm
       claude-code-ide-cli-terminal-backends '((claude . vterm)
+                                              (gsd . vterm)
                                               (codex . eat)
                                               (opencode . vterm)))
 #+end_src
 
 If a CLI is not listed in =claude-code-ide-cli-terminal-backends=, Claude Code IDE falls back to =claude-code-ide-terminal-backend=.
+This means =gsd= uses =vterm= by default unless you override it explicitly.
 
 **** vterm Rendering Optimization
 

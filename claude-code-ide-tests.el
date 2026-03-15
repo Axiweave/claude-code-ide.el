@@ -397,6 +397,13 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))
     (should (eq (claude-code-ide--resolve-terminal-backend 'opencode) 'vterm))))
 
+(ert-deftest claude-code-ide-test-terminal-backend-resolution-gsd ()
+  "Test `gsd' respects per-CLI terminal backend overrides."
+  (let ((claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide-cli-terminal-backends '((gsd . eat))))
+    (let ((claude-code-ide-cli-path "gsd"))
+      (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))))
+
 (ert-deftest claude-code-ide-test-terminal-send-functions ()
   "Test terminal send wrapper functions."
   ;; Mock vterm functions
@@ -3033,9 +3040,28 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (eq (claude-code-ide--cli-type) 'codex)))
   (let ((claude-code-ide-cli-path "/usr/local/bin/codex"))
     (should (eq (claude-code-ide--cli-type) 'codex)))
+  ;; GSD paths
+  (let ((claude-code-ide-cli-path "gsd"))
+    (should (eq (claude-code-ide--cli-type) 'gsd)))
+  (let ((claude-code-ide-cli-path "/usr/local/bin/gsd"))
+    (should (eq (claude-code-ide--cli-type) 'gsd)))
   ;; Unknown falls back to claude
   (let ((claude-code-ide-cli-path "some-other-cli"))
     (should (eq (claude-code-ide--cli-type) 'claude))))
+
+(ert-deftest claude-code-ide-test-build-gsd-command ()
+  "Test building gsd command."
+  (let ((claude-code-ide-cli-path "gsd")
+        (claude-code-ide-cli-extra-flags ""))
+    (let ((cmd (claude-code-ide--build-gsd-command)))
+      (should (string-match-p "^gsd\\>" cmd)))
+    (let ((cmd (claude-code-ide--build-gsd-command t nil)))
+      (should (string-match-p "gsd --continue" cmd)))
+    (let ((cmd (claude-code-ide--build-gsd-command nil t)))
+      (should (string-match-p "gsd --continue" cmd)))
+    (let ((claude-code-ide-cli-extra-flags "--model claude-opus-4-6"))
+      (let ((cmd (claude-code-ide--build-gsd-command)))
+        (should (string-match-p "--model claude-opus-4-6" cmd))))))
 
 (ert-deftest claude-code-ide-test-build-codex-command ()
   "Test building codex command."
@@ -3067,7 +3093,10 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (string-match-p "^claude" (claude-code-ide--build-command))))
   (let ((claude-code-ide-cli-path "codex")
         (claude-code-ide-cli-extra-flags ""))
-    (should (string-match-p "^codex" (claude-code-ide--build-command)))))
+    (should (string-match-p "^codex" (claude-code-ide--build-command))))
+  (let ((claude-code-ide-cli-path "gsd")
+        (claude-code-ide-cli-extra-flags ""))
+    (should (string-match-p "^gsd" (claude-code-ide--build-command)))))
 
 (ert-deftest claude-code-ide-test-create-codex-terminal-session ()
   "Test creating a codex terminal session without MCP env vars."
@@ -3081,6 +3110,60 @@ have completed before cleanup.  Waits up to 5 seconds."
                      "*test-codex*" "/tmp" 12345 nil nil "test-session")))
         (should (consp result))
         (should (bufferp (car result)))))))
+
+(ert-deftest claude-code-ide-test-create-gsd-terminal-session ()
+  "Test creating a gsd terminal session without MCP env vars."
+  (let ((claude-code-ide-cli-path "gsd")
+        (claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags "")
+        (gsd-builder-called nil))
+    (cl-letf (((symbol-function 'claude-code-ide--build-gsd-command)
+               (lambda (&rest _)
+                 (setq gsd-builder-called t)
+                 "gsd"))
+              ((symbol-function 'claude-code-ide--build-claude-command)
+               (lambda (&rest _)
+                 (error "should not use claude command builder for gsd"))))
+      (let ((result (claude-code-ide--create-terminal-session
+                     "*test-gsd*" "/tmp" 12345 nil nil "test-session")))
+        (should (consp result))
+        (should gsd-builder-called)
+        (should (bufferp (car result)))))))
+
+(ert-deftest claude-code-ide-test-create-gsd-terminal-session-uses-cli-backend-override ()
+  "Test GSD terminal session creation respects per-CLI backend overrides."
+  (let ((claude-code-ide-cli-path "gsd")
+        (claude-code-ide-terminal-backend 'eat)
+        (claude-code-ide-cli-terminal-backends '((gsd . vterm)))
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags "")
+        (mock-vterm-buffer nil)
+        (mock-process (start-process "mock-gsd-vterm" nil "true")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                   (lambda (&optional _backend) nil))
+                  ((symbol-function 'vterm)
+                   (lambda (&optional buffer-name)
+                     (setq mock-vterm-buffer
+                           (generate-new-buffer (or buffer-name "*mock-gsd-vterm*")))))
+                  ((symbol-function 'get-buffer-process)
+                   (lambda (_buffer) mock-process))
+                  ((symbol-function 'claude-code-ide--configure-vterm-buffer)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide--build-gsd-command)
+                   (lambda (&rest _) "gsd")))
+          (let* ((result (claude-code-ide--create-terminal-session
+                          "*test-gsd-vterm*" "/tmp" 12345 nil nil "test-session"))
+                 (buffer (car result)))
+            (should (consp result))
+            (should (eq buffer mock-vterm-buffer))
+            (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
+                        'vterm))))
+      (when (process-live-p mock-process)
+        (delete-process mock-process))
+      (when (buffer-live-p mock-vterm-buffer)
+        (kill-buffer mock-vterm-buffer)))))
 
 (ert-deftest claude-code-ide-test-create-codex-terminal-session-uses-cli-backend-override ()
   "Test Codex terminal session creation respects per-CLI backend overrides."
@@ -3123,9 +3206,25 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((claude-code-ide-cli-path "codex"))
     (should (equal (claude-code-ide--dangerous-permissions-flag)
                    "--dangerously-bypass-approvals-and-sandbox")))
+  (let ((claude-code-ide-cli-path "gsd"))
+    (should (equal (claude-code-ide--dangerous-permissions-flag)
+                   "")))
   (let ((claude-code-ide-cli-path "opencode"))
     (should (equal (claude-code-ide--dangerous-permissions-flag)
                    ""))))
+
+(ert-deftest claude-code-ide-test-gsd-full-session-flow ()
+  "Test that gsd CLI type flows through session creation correctly."
+  (let ((claude-code-ide-cli-path "gsd")
+        (claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags ""))
+    (should (eq (claude-code-ide--cli-type) 'gsd))
+    (let ((cmd (claude-code-ide--build-command)))
+      (should (string-match-p "^gsd" cmd))
+      (should-not (string-match-p "--append-system-prompt" cmd))
+      (should-not (string-match-p "--mcp-config" cmd)))
+    (should (equal (claude-code-ide--dangerous-permissions-flag) ""))))
 
 (ert-deftest claude-code-ide-test-codex-full-session-flow ()
   "Test that codex CLI type flows through session creation correctly."

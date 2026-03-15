@@ -85,6 +85,7 @@
   (pcase (claude-code-ide--cli-type)
     ('claude "--dangerously-skip-permissions")
     ('codex "--dangerously-bypass-approvals-and-sandbox")
+    ('gsd "")
     (_ "")))
 
 (defun claude-code-ide--start-description ()
