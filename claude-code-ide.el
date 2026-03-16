@@ -1068,9 +1068,9 @@ when navigating between terminal and other buffers."
       (unless buffer-read-only  ; Skip when terminal is in navigation mode
         (let ((terminal-point (eat-term-display-cursor eat-terminal)))
           ;; Update window point to match terminal state
-          (set-window-point win terminal-point)
           (with-selected-window win
             (when (evil-emacs-state-p)
+              (set-window-point win terminal-point)
               (goto-char terminal-point)
               (recenter (if (memq (claude-code-ide--cli-type) '(codex opencode)) -4 -1))))
           ;; Apply smart positioning strategy
