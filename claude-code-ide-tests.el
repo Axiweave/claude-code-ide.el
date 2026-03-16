@@ -2666,6 +2666,48 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (should-error (claude-code-ide-send-current-file) :type 'user-error))
             (kill-buffer test-buf)))))))
 
+(ert-deftest claude-code-ide-test-format-file-reference ()
+  "Test conditional leading-space formatting for file references."
+  (with-temp-buffer
+    (should (equal (claude-code-ide--format-file-reference "@file.el")
+                   "@file.el ")))
+  (with-temp-buffer
+    (insert "x")
+    (should (equal (claude-code-ide--format-file-reference "@file.el")
+                   " @file.el ")))
+  (with-temp-buffer
+    (insert " ")
+    (should (equal (claude-code-ide--format-file-reference "@file.el")
+                   "@file.el ")))
+  (with-temp-buffer
+    (insert "\n")
+    (should (equal (claude-code-ide--format-file-reference "@file.el")
+                   "@file.el "))))
+
+(ert-deftest claude-code-ide-test-send-current-file-adds-leading-space-when-needed ()
+  "Test send-current-file prefixes a space when point follows a word."
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'claude-code-ide--find-prompt-buffer)
+               (lambda () nil)))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (insert "hello")
+        (let ((test-source-buf (generate-new-buffer "test-source-spacing")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (claude-code-ide-send-current-file)
+                (should (equal sent-string " @src/main.el ")))
+            (kill-buffer test-source-buf)))))))
+
 (ert-deftest claude-code-ide-test-send-file ()
   "Test the claude-code-ide-send-file command."
   (let ((sent-string nil)
@@ -2725,6 +2767,27 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'completing-read)
                (lambda (_prompt collection &rest _) (car collection))))
       (should-error (claude-code-ide-send-file nil) :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-send-file-adds-leading-space-when-needed ()
+  "Test send-file prefixes a space when point follows a word."
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'project-files)
+               (lambda (_) '("/home/user/project/src/main.el")))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _) (car collection))))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (insert "hello")
+        (claude-code-ide-send-file nil)
+        (should (equal sent-string " @src/main.el "))))))
 
 (ert-deftest claude-code-ide-test-get-selection-line-range-no-selection ()
   "Test that nil is returned when no selection is active."
@@ -2968,6 +3031,38 @@ have completed before cleanup.  Waits up to 5 seconds."
                   (setq buffer-file-name "/home/user/project/src/main.el")
                   (claude-code-ide-send-current-file)
                   (should (eq switched-to prompt-buf)))))
+          (with-current-buffer prompt-buf (setq buffer-file-name nil))
+          (kill-buffer prompt-buf))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-to-prompt-adds-leading-space-when-needed ()
+  "Test send-current-file inserts a leading space into prompt buffers when needed."
+  (let ((claude-code-ide-switch-after-send nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (_str &optional _paste) (ert-fail "terminal path should not be used")))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/")))
+      (let ((prompt-buf (generate-new-buffer "test-prompt-spacing")))
+        (unwind-protect
+            (progn
+              (with-current-buffer prompt-buf
+                (setq buffer-file-name "/tmp/claude-prompt-xyz.md")
+                (insert "hello")
+                (goto-char (point-max)))
+              (cl-letf (((symbol-function 'claude-code-ide--find-prompt-buffer)
+                         (lambda () prompt-buf)))
+                (let ((test-source-buf (generate-new-buffer "test-source-prompt-spacing")))
+                  (unwind-protect
+                      (with-current-buffer test-source-buf
+                        (setq buffer-file-name "/home/user/project/src/main.el")
+                        (claude-code-ide-send-current-file)
+                        (should (equal (with-current-buffer prompt-buf
+                                         (buffer-string))
+                                       "hello @src/main.el ")))
+                    (kill-buffer test-source-buf)))))
           (with-current-buffer prompt-buf (setq buffer-file-name nil))
           (kill-buffer prompt-buf))))))
 

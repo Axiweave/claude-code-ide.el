@@ -638,6 +638,17 @@ Returns the buffer on success, or nil if no prompt buffer is visible."
       (insert string))
     buf))
 
+(defun claude-code-ide--format-file-reference (reference-body)
+  "Format REFERENCE-BODY for insertion at point.
+Prepends a space unless point is at beginning of buffer or after
+whitespace, and always appends a trailing space."
+  (concat
+   (if-let ((prev (char-before)))
+       (if (eq (char-syntax prev) ?\s) "" " ")
+     "")
+   reference-body
+   " "))
+
 (defun claude-code-ide--sync-terminal-dimensions (buffer window)
   "Sync terminal dimensions in BUFFER to match WINDOW size.
 This ensures the terminal process has the correct dimensions after
@@ -1830,19 +1841,22 @@ recent visible file-visiting buffer on the current frame."
                       ((= (car range) (cdr range))
                        (format "#L%d" (car range)))
                       (t (format "#L%d-%d" (car range) (cdr range)))))
-             (reference (concat "@" relative suffix " "))
+             (reference-body (concat "@" relative suffix))
              (buffer-name (claude-code-ide--get-buffer-name)))
-        (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
+        (if-let ((prompt-buf (claude-code-ide--find-prompt-buffer)))
             (progn
+              (with-current-buffer prompt-buf
+                (insert (claude-code-ide--format-file-reference reference-body)))
               (claude-code-ide-debug "Sent file reference to prompt buffer: %s"
-                                     (string-trim reference))
+                                     reference-body)
               (claude-code-ide--maybe-switch-to-window prompt-buf))
           (if-let ((buffer (get-buffer buffer-name)))
               (progn
                 (with-current-buffer buffer
-                  (claude-code-ide--terminal-send-string reference t))
+                  (claude-code-ide--terminal-send-string
+                   (claude-code-ide--format-file-reference reference-body) t))
                 (claude-code-ide-debug "Sent file reference to Claude Code: %s"
-                                       (string-trim reference))
+                                       reference-body)
                 (claude-code-ide--maybe-switch-to-window buffer))
             (user-error "No Claude Code session or prompt buffer for this project")))))))
 
@@ -1859,16 +1873,19 @@ With prefix ARG, use `read-file-name' from project root instead of
                  (file-relative-name
                   (completing-read "File: " (project-files project))
                   root)))
-         (reference (concat "@" file " "))
+         (reference-body (concat "@" file))
          (buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((prompt-buf (claude-code-ide--prompt-buffer-send-string reference)))
+    (if-let ((prompt-buf (claude-code-ide--find-prompt-buffer)))
         (progn
+          (with-current-buffer prompt-buf
+            (insert (claude-code-ide--format-file-reference reference-body)))
           (claude-code-ide-debug "Sent file reference to prompt buffer: @%s" file)
           (claude-code-ide--maybe-switch-to-window prompt-buf))
       (if-let ((buffer (get-buffer buffer-name)))
           (progn
             (with-current-buffer buffer
-              (claude-code-ide--terminal-send-string reference t))
+              (claude-code-ide--terminal-send-string
+               (claude-code-ide--format-file-reference reference-body) t))
             (claude-code-ide-debug "Sent file reference to Claude Code: @%s" file)
             (claude-code-ide--maybe-switch-to-window buffer))
         (user-error "No Claude Code session or prompt buffer for this project")))))
