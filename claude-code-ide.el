@@ -927,6 +927,24 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
       (claude-code-ide--sync-terminal-dimensions buffer window))
     window))
 
+(defun claude-code-ide--show-session-buffer (buffer)
+  "Show session BUFFER, reusing an existing visible Claude window when possible."
+  (or (when-let ((window (get-buffer-window buffer)))
+        (when claude-code-ide-focus-on-open
+          (select-window window))
+        window)
+      (when-let ((window (cl-loop for win in (window-list nil 'no-minibuffer)
+                                  for win-buffer = (window-buffer win)
+                                  when (claude-code-ide--session-buffer-p win-buffer)
+                                  return win)))
+        (set-window-buffer window buffer)
+        (setq claude-code-ide--last-accessed-buffer buffer)
+        (claude-code-ide--sync-terminal-dimensions buffer window)
+        (when claude-code-ide-focus-on-open
+          (select-window window))
+        window)
+      (claude-code-ide--display-buffer-in-side-window buffer)))
+
 (defvar claude-code-ide--cleanup-in-progress nil
   "Flag to prevent recursive cleanup calls.")
 
@@ -1507,7 +1525,7 @@ If the buffer is already visible, switch focus to it."
             (let* ((directory (alist-get choice sessions nil nil #'string=))
                    (buffer (claude-code-ide--get-session-buffer directory)))
               (if buffer
-                  (claude-code-ide--display-buffer-in-side-window buffer)
+                  (claude-code-ide--show-session-buffer buffer)
                 (user-error "Buffer for session %s no longer exists" choice)))))
       (claude-code-ide-log "No related Claude Code sessions"))))
 
@@ -1529,7 +1547,7 @@ If the buffer is already visible, switch focus to it."
             (let* ((directory (alist-get choice sessions nil nil #'string=))
                    (buffer-name (funcall claude-code-ide-buffer-name-function directory)))
               (if-let ((buffer (get-buffer buffer-name)))
-                  (claude-code-ide--display-buffer-in-side-window buffer)
+                  (claude-code-ide--show-session-buffer buffer)
                 (user-error "Buffer for session %s no longer exists" choice)))))
       (claude-code-ide-log "No active Claude Code sessions"))))
 
