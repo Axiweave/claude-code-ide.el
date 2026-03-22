@@ -464,7 +464,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("x" "Clear (double escape)" claude-code-ide-send-double-escape)]
    ["Submenus"
     ("<f12>" "Configuration" claude-code-ide-config-menu)
-    ("d" "Debugging" claude-code-ide-debug-menu)]])
+    ("<f11>" "Debugging" claude-code-ide-debug-menu)]])
 
 (transient-define-prefix claude-code-ide-config-menu ()
   "Claude Code configuration menu."
