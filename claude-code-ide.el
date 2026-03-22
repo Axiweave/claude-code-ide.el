@@ -521,6 +521,8 @@ cursor management, and process buffering for superior user experience."
   ;; Disable immediate redraw to batch updates and reduce flickering
   (when (boundp 'vterm--redraw-immididately)
     (setq-local vterm--redraw-immididately nil))
+  (when (boundp 'vterm--redraw-immediately)
+    (setq-local vterm--redraw-immediately nil))
   ;; Try to prevent cursor flickering by disabling Emacs' own cursor management
   (setq-local cursor-in-non-selected-windows nil)
   (setq-local blink-cursor-mode nil)
