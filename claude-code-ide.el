@@ -1324,8 +1324,8 @@ This function handles:
                               (claude-code-ide--cleanup-on-exit working-dir))
                             nil t)
                   ;; Set up terminal keybindings
-                  (when (eq (claude-code-ide--cli-type) 'claude)
-                    (claude-code-ide--setup-terminal-keybindings))
+                  ;; (when (eq (claude-code-ide--cli-type) 'claude)
+                  ;;   (claude-code-ide--setup-terminal-keybindings))
                   ;; Add terminal-specific exit hooks
                   (pcase (claude-code-ide--current-terminal-backend)
                    ('vterm
