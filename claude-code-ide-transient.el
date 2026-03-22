@@ -33,10 +33,12 @@
 
 ;; Declare functions from other files to avoid circular dependencies
 (declare-function claude-code-ide "claude-code-ide" ())
+(declare-function claude-code-ide-current-directory "claude-code-ide" ())
 (declare-function claude-code-ide-resume "claude-code-ide" ())
 (declare-function claude-code-ide-continue "claude-code-ide" ())
 (declare-function claude-code-ide-stop "claude-code-ide" ())
 (declare-function claude-code-ide-list-sessions "claude-code-ide" ())
+(declare-function claude-code-ide-list-related-sessions "claude-code-ide" ())
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
 (declare-function claude-code-ide-insert-at-mentioned "claude-code-ide" ())
 (declare-function claude-code-ide-send-prompt "claude-code-ide" ())
@@ -53,6 +55,8 @@
 (declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-last-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
+(declare-function claude-code-ide--get-current-directory "claude-code-ide" ())
 (declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
 (declare-function claude-code-ide--cli-type "claude-code-ide" ())
 (declare-function claude-code-ide-send-current-file "claude-code-ide" ())
@@ -80,8 +84,14 @@
 ;;; Helper Functions
 
 (defun claude-code-ide--has-active-session-p ()
-  "Check if there's an active Claude Code session for the current buffer."
+  "Check if there's an attached Claude Code session for the current buffer."
   (when (claude-code-ide-mcp--get-current-session) t))
+
+(defun claude-code-ide--has-project-session-p ()
+  "Check whether the project-root launch target already has an active session."
+  (when (claude-code-ide-mcp--get-session-for-project
+         (claude-code-ide--get-working-directory))
+    t))
 
 (defun claude-code-ide--dangerous-permissions-flag ()
   "Return the dangerous permissions flag for the current CLI type."
@@ -91,9 +101,15 @@
     ('gsd "")
     (_ "")))
 
+(defun claude-code-ide--has-current-directory-session-p ()
+  "Check whether the current directory already has an active session."
+  (when (claude-code-ide-mcp--get-session-for-project
+         (claude-code-ide--get-current-directory))
+    t))
+
 (defun claude-code-ide--start-description ()
   "Dynamic description for start command based on session status."
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (propertize "Start new Claude Code session (session already running)"
                   'face 'transient-inactive-value)
     "Start new Claude Code session"))
@@ -102,7 +118,7 @@
   "Start Claude Code only if no session is active for current buffer.
 With prefix ARG, add --dangerously-skip-permissions flag."
   (interactive "P")
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (let ((working-dir (claude-code-ide--get-working-directory)))
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
@@ -115,16 +131,50 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 
 (defun claude-code-ide--continue-description ()
   "Dynamic description for continue command based on session status."
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (propertize "Continue most recent conversation (session already running)"
                   'face 'transient-inactive-value)
     "Continue most recent conversation"))
+
+(defun claude-code-ide--current-directory-description ()
+  "Dynamic description for current-directory start command."
+  (if (claude-code-ide--has-current-directory-session-p)
+      (propertize "Start in current dir (session already running)"
+                  'face 'transient-inactive-value)
+    "Start in current dir"))
+
+(defun claude-code-ide--current-directory-if-no-session (&optional arg)
+  "Start Claude Code in the current directory if no exact session is active.
+With prefix ARG, add the agent-specific permissions bypass flag."
+  (interactive "P")
+  (if (claude-code-ide--has-current-directory-session-p)
+      (let ((working-dir (claude-code-ide--get-current-directory)))
+        (claude-code-ide-log "Claude Code session already running in %s"
+                             (abbreviate-file-name working-dir)))
+    (let ((claude-code-ide-cli-extra-flags
+           (if arg
+               (string-trim (concat claude-code-ide-cli-extra-flags
+                                    " " (claude-code-ide--dangerous-permissions-flag)))
+             claude-code-ide-cli-extra-flags)))
+      (claude-code-ide-current-directory))))
+
+(defun claude-code-ide--current-directory-skip-description ()
+  "Dynamic description for current-directory start with permissions bypass."
+  (if (claude-code-ide--has-current-directory-session-p)
+      (propertize "Start in current dir (skip permissions) (session already running)"
+                  'face 'transient-inactive-value)
+    "Start in current dir (skip permissions)"))
+
+(defun claude-code-ide--current-directory-skip-permissions ()
+  "Start Claude Code in the current directory with permissions bypass."
+  (interactive)
+  (claude-code-ide--current-directory-if-no-session t))
 
 (defun claude-code-ide--continue-if-no-session (&optional arg)
   "Continue Claude Code only if no session is active for current buffer.
 With prefix ARG, add --dangerously-skip-permissions flag."
   (interactive "P")
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (let ((working-dir (claude-code-ide--get-working-directory)))
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
@@ -137,7 +187,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 
 (defun claude-code-ide--resume-description ()
   "Dynamic description for resume command based on session status."
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (propertize "Resume session (session already running)"
                   'face 'transient-inactive-value)
     "Resume session (from previous conversation)"))
@@ -146,7 +196,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   "Resume Claude Code only if no session is active for current buffer.
 With prefix ARG, add --dangerously-skip-permissions flag."
   (interactive "P")
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (let ((working-dir (claude-code-ide--get-working-directory)))
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
@@ -159,7 +209,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 
 (defun claude-code-ide--start-skip-description ()
   "Dynamic description for start with --dangerously-skip-permissions."
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (propertize "Start (skip permissions) (session already running)"
                   'face 'transient-inactive-value)
     "Start (skip permissions)"))
@@ -171,7 +221,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 
 (defun claude-code-ide--continue-skip-description ()
   "Dynamic description for continue with --dangerously-skip-permissions."
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (propertize "Continue (skip permissions) (session already running)"
                   'face 'transient-inactive-value)
     "Continue (skip permissions)"))
@@ -183,7 +233,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 
 (defun claude-code-ide--resume-skip-description ()
   "Dynamic description for resume with --dangerously-skip-permissions."
-  (if (claude-code-ide--has-active-session-p)
+  (if (claude-code-ide--has-project-session-p)
       (propertize "Resume (skip permissions) (session already running)"
                   'face 'transient-inactive-value)
     "Resume (skip permissions)"))
@@ -443,12 +493,15 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ["Session Management"
     ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
     ("S" claude-code-ide--start-skip-permissions :description claude-code-ide--start-skip-description)
+    ("d" claude-code-ide--current-directory-if-no-session :description claude-code-ide--current-directory-description)
+    ("D" claude-code-ide--current-directory-skip-permissions :description claude-code-ide--current-directory-skip-description)
     ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
     ("C" claude-code-ide--continue-skip-permissions :description claude-code-ide--continue-skip-description)
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("R" claude-code-ide--resume-skip-permissions :description claude-code-ide--resume-skip-description)
     ("q" "Stop current session" claude-code-ide-stop)
-    ("l" "List all sessions" claude-code-ide-list-sessions)]
+    ("l" "List related sessions" claude-code-ide-list-related-sessions)
+    ("L" "List all sessions" claude-code-ide-list-sessions)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
     ("w" "Toggle window visibility" claude-code-ide-toggle-window)

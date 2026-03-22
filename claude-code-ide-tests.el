@@ -630,6 +630,25 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test the main transient exposes the TODO implementation command."
   (should (transient-get-suffix 'claude-code-ide-menu "i")))
 
+(ert-deftest claude-code-ide-test-transient-exposes-current-dir-and-session-lists ()
+  "Test the main transient exposes current-dir and session list bindings."
+  (should (transient-get-suffix 'claude-code-ide-menu "d"))
+  (should (transient-get-suffix 'claude-code-ide-menu "D"))
+  (should (transient-get-suffix 'claude-code-ide-menu "l"))
+  (should (transient-get-suffix 'claude-code-ide-menu "L")))
+
+(ert-deftest claude-code-ide-test-start-if-no-session-allows-project-launch-with-only-attached-session ()
+  "Test project-root launch is not blocked by an attached subdirectory session."
+  (let ((started nil))
+    (cl-letf (((symbol-function 'claude-code-ide--has-active-session-p)
+               (lambda () t))
+              ((symbol-function 'claude-code-ide--has-project-session-p)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide)
+               (lambda () (setq started t))))
+      (claude-code-ide--start-if-no-session)
+      (should started))))
+
 (ert-deftest claude-code-ide-test-session-status-includes-cli-path ()
   "Test active session status includes the current CLI path."
   (let* ((claude-code-ide-cli-path "/usr/local/bin/codex")
@@ -654,6 +673,16 @@ have completed before cleanup.  Waits up to 5 seconds."
                      "No active session (/usr/local/bin/codex)"))
       (should (eq (get-text-property 0 'face status)
                   'transient-inactive-value)))))
+
+(ert-deftest claude-code-ide-test-current-directory-command-starts-in-default-directory ()
+  "Test current-directory start command uses `default-directory'."
+  (let ((default-directory "/tmp/project/subdir/")
+        (captured-directory :unset))
+    (cl-letf (((symbol-function 'claude-code-ide--start-session)
+               (lambda (&optional _continue _resume directory)
+                 (setq captured-directory directory))))
+      (claude-code-ide-current-directory)
+      (should (equal captured-directory "/tmp/project/subdir/")))))
 
 (ert-deftest claude-code-ide-test-set-project-agent-writes-dir-locals ()
   "Test setting a project agent writes a project-local CLI override."

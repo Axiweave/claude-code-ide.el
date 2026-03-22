@@ -1317,10 +1317,12 @@ Returns a cons cell of (buffer . process) on success."
     (_ (claude-code-ide--create-claude-terminal-session
         buffer-name working-dir port continue resume session-id))))
 
-(defun claude-code-ide--start-session (&optional continue resume)
+(defun claude-code-ide--start-session (&optional continue resume directory)
   "Start a Claude Code session for the current project.
 If CONTINUE is non-nil, start Claude with the -c (continue) flag.
 If RESUME is non-nil, start Claude with the -r (resume) flag.
+If DIRECTORY is non-nil, start in that directory instead of resolving
+the project-aware working directory.
 
 This function handles:
 - CLI availability checking
@@ -1334,8 +1336,8 @@ This function handles:
   ;; Clean up any dead processes first
   (claude-code-ide--cleanup-dead-processes)
 
-  (let* ((working-dir (claude-code-ide--get-working-directory))
-         (buffer-name (claude-code-ide--get-buffer-name))
+  (let* ((working-dir (or directory (claude-code-ide--get-working-directory)))
+         (buffer-name (claude-code-ide--get-buffer-name working-dir))
          (existing-buffer (get-buffer buffer-name))
          (existing-process (claude-code-ide--get-process working-dir)))
 
@@ -1424,6 +1426,12 @@ This function handles:
   "Run Claude Code in a terminal for the current project or directory."
   (interactive)
   (claude-code-ide--start-session))
+
+;;;###autoload
+(defun claude-code-ide-current-directory ()
+  "Run Claude Code in a terminal for the current directory."
+  (interactive)
+  (claude-code-ide--start-session nil nil (claude-code-ide--get-current-directory)))
 
 ;;;###autoload
 (defun claude-code-ide-resume ()
