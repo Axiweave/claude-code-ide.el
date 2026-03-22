@@ -1073,33 +1073,25 @@ Arguments CONTINUE, RESUME, SESSION-ID are passed to the CLI-specific builder."
 WINDOW-LIST contains windows requiring position synchronization.
 Implements intelligent scroll management to preserve user context
 when navigating between terminal and other buffers."
-  (dolist (win window-list)
-    (if (eq win 'buffer)
-        ;; Direct buffer point update
-        (goto-char (eat-term-display-cursor eat-terminal))
-      ;; Window-specific position management
-      (unless buffer-read-only  ; Skip when terminal is in navigation mode
-        (let ((terminal-point (eat-term-display-cursor eat-terminal)))
-          ;; Update window point to match terminal state
+  (let* ((terminal-point (eat-term-display-cursor eat-terminal))
+         (visible-windows (get-buffer-window-list (current-buffer) nil t))
+         (sync-windows (cl-remove-duplicates
+                        (append (delq 'buffer (copy-sequence window-list))
+                                visible-windows)
+                        :test #'eq))
+         (recenter-line (if (memq (claude-code-ide--cli-type) '(codex opencode))
+                            -4
+                          -1)))
+    (when (memq 'buffer window-list)
+      (goto-char terminal-point))
+    (unless buffer-read-only         ; Skip when terminal is in navigation mode
+      (dolist (win sync-windows)
+        (when (window-live-p win)
           (with-selected-window win
             (when (evil-emacs-state-p)
               (set-window-point win terminal-point)
               (goto-char terminal-point)
-              (recenter (if (memq (claude-code-ide--cli-type) '(codex opencode)) -4 -1))))
-          ;; Apply smart positioning strategy
-          ;; (cond
-          ;;  ;; Terminal at bottom: maintain bottom alignment for active prompts
-          ;;  ((>= terminal-point (- (point-max) (if (eq (claude-code-ide--cli-type) 'claude) 2 5)))
-          ;;   (with-selected-window win
-          ;;     (goto-char terminal-point)
-          ;;     (recenter (if (eq (claude-code-ide--cli-type) 'claude) -1 -4))))  ; Pin to bottom
-          ;;  ;; Terminal out of view: restore visibility
-          ;;  ((not (pos-visible-in-window-p terminal-point win))
-          ;;   (with-selected-window win
-          ;;     (goto-char terminal-point)
-          ;;     (recenter (if (eq (claude-code-ide--cli-type) 'claude) -1 -4)))))
-
-          )))))
+              (recenter recenter-line))))))))
 
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.

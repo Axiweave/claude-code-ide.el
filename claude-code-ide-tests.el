@@ -1682,6 +1682,66 @@ have completed before cleanup.  Waits up to 5 seconds."
       (kill-buffer "*test-buffer*")
       (kill-buffer "*test-sidebar*"))))
 
+(ert-deftest claude-code-ide-test-terminal-position-keeper-syncs-unfocused-eat-window ()
+  "Test Eat position keeper also syncs visible windows omitted by Eat."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-eat-position*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 80)
+                               "\n"))
+            (goto-char (point-min))
+            (forward-line 59)
+            (setq-local eat-terminal 'mock-terminal)
+            (let ((buffer-read-only nil)
+                  (target-point (point))
+                  (side-window (split-window-below)))
+              (set-window-buffer side-window buffer)
+              (set-window-point side-window (point-min))
+              (cl-letf (((symbol-function 'eat-term-display-cursor)
+                         (lambda (_terminal) target-point))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () t))
+                        ((symbol-function 'claude-code-ide--cli-type)
+                         (lambda () 'claude)))
+                (claude-code-ide--terminal-position-keeper nil))
+              (should (= (window-point side-window) target-point)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-terminal-position-keeper-skips-sync-outside-evil-emacs-state ()
+  "Test Eat position keeper leaves windows alone outside Evil Emacs state."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-eat-position*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 80)
+                               "\n"))
+            (goto-char (point-min))
+            (forward-line 59)
+            (setq-local eat-terminal 'mock-terminal)
+            (let ((buffer-read-only nil)
+                  (target-point (point))
+                  (side-window (split-window-below)))
+              (set-window-buffer side-window buffer)
+              (set-window-point side-window (point-min))
+              (cl-letf (((symbol-function 'eat-term-display-cursor)
+                         (lambda (_terminal) target-point))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () nil))
+                        ((symbol-function 'claude-code-ide--cli-type)
+                         (lambda () 'claude)))
+                (claude-code-ide--terminal-position-keeper nil))
+              (should (= (window-point side-window) (point-min))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 ;;; Tests for Diagnostics
 
 (ert-deftest claude-code-ide-test-diagnostics-severity-mapping ()
