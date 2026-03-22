@@ -239,6 +239,24 @@ have completed before cleanup.  Waits up to 5 seconds."
      (let ((expected (expand-file-name default-directory)))
        (should (equal (claude-code-ide--get-working-directory) expected))))))
 
+(ert-deftest claude-code-ide-test-get-current-session-prefers-closest-parent ()
+  "Test current session resolution prefers the closest parent directory."
+  (let* ((root-dir "/tmp/project/")
+         (sub-dir "/tmp/project/sub/")
+         (session-root (make-claude-code-ide-mcp-session :project-dir root-dir))
+         (session-sub (make-claude-code-ide-mcp-session :project-dir sub-dir))
+         (claude-code-ide-mcp--sessions (make-hash-table :test 'equal)))
+    (puthash root-dir session-root claude-code-ide-mcp--sessions)
+    (puthash sub-dir session-sub claude-code-ide-mcp--sessions)
+    (with-temp-buffer
+      (setq default-directory "/tmp/project/sub/nested/")
+      (setq buffer-file-name "/tmp/project/sub/nested/file.el")
+      (cl-letf (((symbol-function 'project-current)
+                 (lambda (&optional _maybe-prompt _dir) '(transient . "/tmp/project/")))
+                ((symbol-function 'project-root)
+                 (lambda (_project) root-dir)))
+        (should (eq (claude-code-ide-mcp--get-current-session) session-sub))))))
+
 (ert-deftest claude-code-ide-test-get-buffer-name ()
   "Test buffer name generation using custom function."
   ;; Test with custom function
@@ -1109,6 +1127,62 @@ have completed before cleanup.  Waits up to 5 seconds."
         ;; List sessions should work without error
         (claude-code-ide-list-sessions))
     (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-list-related-sessions-filters-by-buffer-path ()
+  "Test related sessions are limited to the current buffer's directory tree."
+  (claude-code-ide-tests--clear-processes)
+  (let ((captured-choices nil)
+        (selected nil))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project/" (current-buffer) claude-code-ide--processes)
+          (puthash "/tmp/project/sub/" (current-buffer) claude-code-ide--processes)
+          (puthash "/tmp/other/" (current-buffer) claude-code-ide--processes)
+          (with-temp-buffer
+            (setq default-directory "/tmp/project/sub/nested/")
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (setq captured-choices collection
+                               selected (caar collection))
+                         selected))
+                      ((symbol-function 'claude-code-ide--cleanup-dead-processes)
+                       (lambda () nil))
+                      ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                       (lambda (_buffer) nil))
+                      ((symbol-function 'get-buffer)
+                       (lambda (_name) (current-buffer))))
+              (claude-code-ide-list-related-sessions)
+              (should (equal (mapcar #'car captured-choices)
+                             '("/tmp/project/sub/" "/tmp/project/"))))))
+      (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-stop-prefers-attached-session-directory ()
+  "Test stop uses the attached session directory instead of project root."
+  (let* ((root-dir "/tmp/project/")
+         (sub-dir "/tmp/project/sub/")
+         (root-buffer (generate-new-buffer "*claude-root*"))
+         (sub-buffer (generate-new-buffer "*claude-sub*"))
+         (session (make-claude-code-ide-mcp-session :project-dir sub-dir)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-working-directory)
+                   (lambda () root-dir))
+                  ((symbol-function 'claude-code-ide--get-buffer-name)
+                   (lambda (&optional directory)
+                     (cond
+                      ((equal directory sub-dir) (buffer-name sub-buffer))
+                      ((equal directory root-dir) (buffer-name root-buffer))
+                      (t (error "Unexpected directory: %S" directory)))))
+                  ((symbol-function 'claude-code-ide-mcp--get-current-session)
+                   (lambda () session))
+                  ((symbol-function 'claude-code-ide-log)
+                   (lambda (&rest _args) nil)))
+          (claude-code-ide-stop)
+          (should (buffer-live-p root-buffer))
+          (should-not (buffer-live-p sub-buffer)))
+      (when (buffer-live-p root-buffer)
+        (kill-buffer root-buffer))
+      (when (buffer-live-p sub-buffer)
+        (kill-buffer sub-buffer)))))
 
 (ert-deftest claude-code-ide-test-toggle-recent ()
   "Test the toggle-recent functionality."

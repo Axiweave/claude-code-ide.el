@@ -142,13 +142,70 @@ Returns the session structure if found, nil otherwise."
   (when project-dir
     (gethash project-dir claude-code-ide-mcp--sessions)))
 
+(defun claude-code-ide-mcp--normalize-directory (directory)
+  "Return DIRECTORY as a normalized absolute directory name."
+  (when directory
+    (file-name-as-directory (expand-file-name directory))))
+
+(defun claude-code-ide-mcp--get-buffer-directory ()
+  "Return the current buffer's most specific working directory."
+  (when-let ((directory (or (and buffer-file-name
+                                 (file-name-directory buffer-file-name))
+                            default-directory)))
+    (claude-code-ide-mcp--normalize-directory directory)))
+
+(defun claude-code-ide-mcp--directory-contains-p (parent child)
+  "Return non-nil when PARENT contains CHILD."
+  (let ((parent (claude-code-ide-mcp--normalize-directory parent))
+        (child (claude-code-ide-mcp--normalize-directory child)))
+    (and parent child
+         (string-prefix-p parent child))))
+
+(defun claude-code-ide-mcp--directory-related-p (directory other-directory)
+  "Return non-nil when DIRECTORY and OTHER-DIRECTORY are in the same tree."
+  (or (claude-code-ide-mcp--directory-contains-p directory other-directory)
+      (claude-code-ide-mcp--directory-contains-p other-directory directory)))
+
+(defun claude-code-ide-mcp--sort-sessions-by-specificity (sessions)
+  "Return SESSIONS sorted from most specific directory to least specific."
+  (sort (copy-sequence sessions)
+        (lambda (left right)
+          (> (length (claude-code-ide-mcp--normalize-directory
+                      (claude-code-ide-mcp-session-project-dir left)))
+             (length (claude-code-ide-mcp--normalize-directory
+                      (claude-code-ide-mcp-session-project-dir right)))))))
+
+(defun claude-code-ide-mcp--get-related-sessions (&optional directory)
+  "Return sessions related to DIRECTORY or the current buffer."
+  (when-let ((directory (claude-code-ide-mcp--normalize-directory
+                         (or directory (claude-code-ide-mcp--get-buffer-directory)))))
+    (claude-code-ide-mcp--sort-sessions-by-specificity
+     (cl-remove-if-not
+      (lambda (session)
+        (claude-code-ide-mcp--directory-related-p
+         directory
+         (claude-code-ide-mcp-session-project-dir session)))
+      (claude-code-ide-mcp--active-sessions)))))
+
 (defun claude-code-ide-mcp--get-current-session ()
-  "Get the MCP session for the current buffer's project.
-This is a convenience function that combines
-`claude-code-ide-mcp--get-buffer-project' and
-`claude-code-ide-mcp--get-session-for-project'."
-  (when-let ((project-dir (claude-code-ide-mcp--get-buffer-project)))
-    (claude-code-ide-mcp--get-session-for-project project-dir)))
+  "Get the MCP session attached to the current buffer.
+The attached session is the active session whose directory is the
+closest parent of the current buffer's directory."
+  (when-let ((directory (claude-code-ide-mcp--get-buffer-directory)))
+    (car (claude-code-ide-mcp--sort-sessions-by-specificity
+          (cl-remove-if-not
+           (lambda (session)
+             (claude-code-ide-mcp--directory-contains-p
+              (claude-code-ide-mcp-session-project-dir session)
+              directory))
+           (claude-code-ide-mcp--active-sessions))))))
+
+(defun claude-code-ide-mcp--resolve-buffer-session ()
+  "Resolve and cache the MCP session attached to the current buffer."
+  (let ((session (claude-code-ide-mcp--get-current-session)))
+    (setq claude-code-ide-mcp--buffer-session-cache session
+          claude-code-ide-mcp--buffer-cache-valid t)
+    session))
 
 (defun claude-code-ide-mcp--find-session-by-websocket (ws)
   "Find the MCP session that owns the WebSocket WS.
@@ -234,13 +291,7 @@ Returns the session if found, nil otherwise."
   (when-let* ((session (or (when (and claude-code-ide-mcp--buffer-cache-valid
                                       claude-code-ide-mcp--buffer-session-cache)
                              claude-code-ide-mcp--buffer-session-cache)
-                           (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
-                                       (found-session (claude-code-ide-mcp--get-session-for-project project-dir)))
-                             ;; Cache the session (only cache non-nil values)
-                             (when found-session
-                               (setq claude-code-ide-mcp--buffer-session-cache found-session
-                                     claude-code-ide-mcp--buffer-cache-valid t))
-                             found-session)))
+                           (claude-code-ide-mcp--resolve-buffer-session)))
               (client (claude-code-ide-mcp-session-client session)))
     (let ((message `((jsonrpc . "2.0")
                      (method . ,method)
@@ -432,13 +483,7 @@ Optional SESSION contains the MCP session context."
                         (when-let ((s (or (when (and claude-code-ide-mcp--buffer-cache-valid
                                                      claude-code-ide-mcp--buffer-session-cache)
                                             claude-code-ide-mcp--buffer-session-cache)
-                                          (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
-                                                      (found-session (claude-code-ide-mcp--get-session-for-project project-dir)))
-                                            ;; Cache the session (only cache non-nil values)
-                                            (when found-session
-                                              (setq claude-code-ide-mcp--buffer-session-cache found-session
-                                                    claude-code-ide-mcp--buffer-cache-valid t))
-                                            found-session))))
+                                          (claude-code-ide-mcp--resolve-buffer-session))))
                           (claude-code-ide-mcp-session-client s)))))
           (if client
               (let ((response-text (json-encode response)))
@@ -694,13 +739,7 @@ This should be called when the buffer's context might have changed."
                             claude-code-ide-mcp--buffer-session-cache)
                        ;; Use cached session (only if non-nil)
                        claude-code-ide-mcp--buffer-session-cache
-                     ;; No valid cache or cached nil, look up session
-                     (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
-                                 (found-session (claude-code-ide-mcp--get-session-for-project project-dir)))
-                       ;; Cache the session (only cache non-nil values)
-                       (setq claude-code-ide-mcp--buffer-session-cache found-session
-                             claude-code-ide-mcp--buffer-cache-valid t)
-                       found-session))))
+                     (claude-code-ide-mcp--resolve-buffer-session))))
       ;; Only proceed if we have a session
       (when session
         ;; Cancel any existing timer for this session
@@ -763,13 +802,7 @@ This should be called when the buffer's context might have changed."
                           claude-code-ide-mcp--buffer-session-cache)
                      ;; Use cached session (only if non-nil)
                      claude-code-ide-mcp--buffer-session-cache
-                   ;; No valid cache or cached nil, look up session
-                   (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
-                               (found-session (claude-code-ide-mcp--get-session-for-project project-dir)))
-                     ;; Cache the session (only cache non-nil values)
-                     (setq claude-code-ide-mcp--buffer-session-cache found-session
-                           claude-code-ide-mcp--buffer-cache-valid t)
-                     found-session))))
+                   (claude-code-ide-mcp--resolve-buffer-session))))
     (when session
       (let ((project-dir (claude-code-ide-mcp-session-project-dir session)))
         (claude-code-ide-mcp--send-selection-for-project project-dir)))))
@@ -785,13 +818,7 @@ This should be called when the buffer's context might have changed."
                               claude-code-ide-mcp--buffer-session-cache)
                          ;; Use cached session (only if non-nil)
                          claude-code-ide-mcp--buffer-session-cache
-                       ;; No valid cache or cached nil, look up session
-                       (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
-                                   (found-session (claude-code-ide-mcp--get-session-for-project project-dir)))
-                         ;; Cache the session (only cache non-nil values)
-                         (setq claude-code-ide-mcp--buffer-session-cache found-session
-                               claude-code-ide-mcp--buffer-cache-valid t)
-                         found-session))))
+                       (claude-code-ide-mcp--resolve-buffer-session))))
         ;; Only proceed if we have a session with a client
         (when (and session (claude-code-ide-mcp-session-client session))
           (let ((project-dir (claude-code-ide-mcp-session-project-dir session)))
@@ -900,7 +927,8 @@ This should be called when the buffer's context might have changed."
   (claude-code-ide-debug "Stopping MCP server...")
 
   ;; Try to determine which session to stop
-  (let ((project-dir (claude-code-ide-mcp--get-buffer-project)))
+  (let ((project-dir (when-let ((session (claude-code-ide-mcp--get-current-session)))
+                       (claude-code-ide-mcp-session-project-dir session))))
 
     (if project-dir
         (claude-code-ide-mcp-stop-session project-dir)

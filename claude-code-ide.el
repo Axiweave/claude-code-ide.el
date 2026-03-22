@@ -91,6 +91,10 @@
 (declare-function eat--adjust-process-window-size "eat" (process windows))
 (declare-function eat--filter "eat" (process input))
 
+;; External function declarations from MCP
+(declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
+
 ;;; Customization
 
 (defgroup claude-code-ide nil
@@ -750,6 +754,10 @@ width has actually changed, working around the scrolling glitch."
       (expand-file-name (project-root project))
     (expand-file-name default-directory)))
 
+(defun claude-code-ide--get-current-directory ()
+  "Get the current directory without promoting to the project root."
+  (expand-file-name default-directory))
+
 (defun claude-code-ide--get-project-root ()
   "Get the current project root.
 Signal a `user-error' when the current buffer is not in a project."
@@ -757,11 +765,65 @@ Signal a `user-error' when the current buffer is not in a project."
       (expand-file-name (project-root project))
     (user-error "Not in a project")))
 
+(defun claude-code-ide--normalize-directory (directory)
+  "Return DIRECTORY as a normalized absolute directory name."
+  (when directory
+    (file-name-as-directory (expand-file-name directory))))
+
+(defun claude-code-ide--directory-contains-p (parent child)
+  "Return non-nil when PARENT contains CHILD."
+  (let ((parent (claude-code-ide--normalize-directory parent))
+        (child (claude-code-ide--normalize-directory child)))
+    (and parent child
+         (string-prefix-p parent child))))
+
+(defun claude-code-ide--directory-related-p (directory other-directory)
+  "Return non-nil when DIRECTORY and OTHER-DIRECTORY are in the same tree."
+  (or (claude-code-ide--directory-contains-p directory other-directory)
+      (claude-code-ide--directory-contains-p other-directory directory)))
+
+(defun claude-code-ide--sort-directories-by-specificity (directories)
+  "Return DIRECTORIES sorted from most specific to least specific."
+  (sort (copy-sequence directories)
+        (lambda (left right)
+          (> (length (claude-code-ide--normalize-directory left))
+             (length (claude-code-ide--normalize-directory right))))))
+
+(defun claude-code-ide--get-related-session-directories (&optional directory)
+  "Return active session directories related to DIRECTORY or the current dir."
+  (let ((directory (claude-code-ide--normalize-directory
+                    (or directory (claude-code-ide--get-current-directory))))
+        (matches '()))
+    (when directory
+      (maphash (lambda (session-directory _process)
+                 (when (claude-code-ide--directory-related-p directory session-directory)
+                   (push session-directory matches)))
+               claude-code-ide--processes)
+      (claude-code-ide--sort-directories-by-specificity matches))))
+
+(defun claude-code-ide--get-attached-working-directory (&optional fallback-directory)
+  "Return the active session directory attached to the current buffer.
+When no attached session exists, use FALLBACK-DIRECTORY or the default
+project-aware working directory."
+  (or (when-let ((session (claude-code-ide-mcp--get-current-session)))
+        (claude-code-ide-mcp-session-project-dir session))
+      fallback-directory
+      (claude-code-ide--get-working-directory)))
+
 (defun claude-code-ide--get-buffer-name (&optional directory)
   "Get the buffer name for the Claude Code session in DIRECTORY.
 If DIRECTORY is not provided, use the current working directory."
   (funcall claude-code-ide-buffer-name-function
            (or directory (claude-code-ide--get-working-directory))))
+
+(defun claude-code-ide--get-session-buffer (&optional directory)
+  "Return the Claude session buffer for DIRECTORY or the attached session."
+  (let ((attached-directory (or directory
+                                (when-let ((session (claude-code-ide-mcp--get-current-session)))
+                                  (claude-code-ide-mcp-session-project-dir session)))))
+    (get-buffer (if attached-directory
+                    (claude-code-ide--get-buffer-name attached-directory)
+                  (claude-code-ide--get-buffer-name)))))
 
 (defun claude-code-ide--maybe-switch-to-window (buffer)
   "Select BUFFER's window if `claude-code-ide-switch-after-send' is non-nil.
@@ -1396,9 +1458,9 @@ conversation in the current directory."
 (defun claude-code-ide-stop ()
   "Stop the Claude Code session for the current project or directory."
   (interactive)
-  (let* ((working-dir (claude-code-ide--get-working-directory))
-         (buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
+  (let* ((working-dir (claude-code-ide--get-attached-working-directory))
+         (buffer (claude-code-ide--get-session-buffer working-dir)))
+    (if buffer
         (progn
           ;; Kill the buffer (cleanup will be handled by hooks)
           ;; The process sentinel will handle cleanup when the process dies
@@ -1414,14 +1476,32 @@ conversation in the current directory."
 If the buffer is not visible, display it in the configured side window.
 If the buffer is already visible, switch focus to it."
   (interactive)
-  (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (if-let ((window (get-buffer-window buffer)))
-            ;; Buffer is visible, just focus it
-            (select-window window)
-          ;; Buffer exists but not visible, display it
-          (claude-code-ide--display-buffer-in-side-window buffer))
-      (user-error "No Claude Code session for this project.  Use M-x claude-code-ide to start one"))))
+  (if-let ((buffer (claude-code-ide--get-session-buffer)))
+      (if-let ((window (get-buffer-window buffer)))
+          ;; Buffer is visible, just focus it
+          (select-window window)
+        ;; Buffer exists but not visible, display it
+        (claude-code-ide--display-buffer-in-side-window buffer))
+    (user-error "No Claude Code session for this project.  Use M-x claude-code-ide to start one")))
+
+;;;###autoload
+(defun claude-code-ide-list-related-sessions ()
+  "List active sessions related to the current buffer and switch to one."
+  (interactive)
+  (claude-code-ide--cleanup-dead-processes)
+  (let ((sessions (mapcar (lambda (directory)
+                            (cons (abbreviate-file-name directory) directory))
+                          (claude-code-ide--get-related-session-directories))))
+    (if sessions
+        (let ((choice (completing-read "Switch to related Claude Code session: "
+                                       sessions nil t)))
+          (when choice
+            (let* ((directory (alist-get choice sessions nil nil #'string=))
+                   (buffer (claude-code-ide--get-session-buffer directory)))
+              (if buffer
+                  (claude-code-ide--display-buffer-in-side-window buffer)
+                (user-error "Buffer for session %s no longer exists" choice)))))
+      (claude-code-ide-log "No related Claude Code sessions"))))
 
 ;;;###autoload
 (defun claude-code-ide-list-sessions ()
@@ -1451,14 +1531,16 @@ If the buffer is already visible, switch focus to it."
 When called from a Claude Code session buffer, uses the most
 recent visible file-visiting buffer on the current frame."
   (interactive)
-  (if-let* ((project-dir (claude-code-ide-mcp--get-buffer-project))
-            (session (claude-code-ide-mcp--get-session-for-project project-dir))
+  (if-let* ((session (or (claude-code-ide-mcp--get-current-session)
+                         (when-let ((project-dir (claude-code-ide-mcp--get-buffer-project)))
+                           (claude-code-ide-mcp--get-session-for-project project-dir))))
             (client (claude-code-ide-mcp-session-client session)))
       (let ((ctx-buf (or (claude-code-ide--get-context-buffer) (current-buffer))))
         (with-current-buffer ctx-buf
           (claude-code-ide-mcp-send-at-mentioned))
         (claude-code-ide-debug "Sent selection to Claude Code")
-        (when-let ((buffer (get-buffer (claude-code-ide--get-buffer-name))))
+        (when-let ((buffer (claude-code-ide--get-session-buffer
+                            (claude-code-ide-mcp-session-project-dir session))))
           (claude-code-ide--maybe-switch-to-window buffer)))
     (user-error "Claude Code is not connected.  Please start Claude Code first")))
 
@@ -1466,36 +1548,33 @@ recent visible file-visiting buffer on the current frame."
 (defun claude-code-ide-send-escape ()
   "Send escape key to the Claude Code terminal buffer for the current project."
   (interactive)
-  (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (with-current-buffer buffer
-          (claude-code-ide--terminal-send-escape))
-      (user-error "No Claude Code session for this project"))))
+  (if-let ((buffer (claude-code-ide--get-session-buffer)))
+      (with-current-buffer buffer
+        (claude-code-ide--terminal-send-escape))
+    (user-error "No Claude Code session for this project")))
 
 ;;;###autoload
 (defun claude-code-ide-send-double-escape ()
   "Send double escape key to the Claude Code terminal buffer for the current project."
   (interactive)
-  (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (with-current-buffer buffer
-          (claude-code-ide--terminal-send-escape)
-          (claude-code-ide--terminal-send-escape))
-      (user-error "No Claude Code session for this project"))))
+  (if-let ((buffer (claude-code-ide--get-session-buffer)))
+      (with-current-buffer buffer
+        (claude-code-ide--terminal-send-escape)
+        (claude-code-ide--terminal-send-escape))
+    (user-error "No Claude Code session for this project")))
 
 ;;;###autoload
 (defun claude-code-ide-insert-newline ()
   "Send newline (backslash + return) to the Claude Code terminal buffer for the current project.
 This simulates typing backslash followed by Enter, which Claude Code interprets as a newline."
   (interactive)
-  (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (with-current-buffer buffer
-          (claude-code-ide--terminal-send-string "\\")
-          ;; Small delay to ensure prompt text is processed before sending return
-          (sit-for 0.1)
-          (claude-code-ide--terminal-send-return))
-      (user-error "No Claude Code session for this project"))))
+  (if-let ((buffer (claude-code-ide--get-session-buffer)))
+      (with-current-buffer buffer
+        (claude-code-ide--terminal-send-string "\\")
+        ;; Small delay to ensure prompt text is processed before sending return
+        (sit-for 0.1)
+        (claude-code-ide--terminal-send-return))
+    (user-error "No Claude Code session for this project")))
 
 ;;;###autoload
 (defun claude-code-ide-toggle-vterm-optimization ()
@@ -1516,18 +1595,17 @@ Use this to balance between visual smoothness and raw responsiveness."
 When called interactively, reads a prompt from the minibuffer.
 When called programmatically, sends the given PROMPT string."
   (interactive)
-  (let ((buffer-name (claude-code-ide--get-buffer-name)))
-    (if-let ((buffer (get-buffer buffer-name)))
-        (let ((prompt-to-send (or prompt (read-string "Claude prompt: "))))
-          (when (not (string-empty-p prompt-to-send))
-            (with-current-buffer buffer
-              (claude-code-ide--terminal-send-string prompt-to-send)
-              ;; Small delay to ensure prompt text is processed before sending return
-              (sit-for 0.1)
-              (claude-code-ide--terminal-send-return))
-            (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)
-            (claude-code-ide--maybe-switch-to-window buffer)))
-      (user-error "No Claude Code session for this project"))))
+  (if-let ((buffer (claude-code-ide--get-session-buffer)))
+      (let ((prompt-to-send (or prompt (read-string "Claude prompt: "))))
+        (when (not (string-empty-p prompt-to-send))
+          (with-current-buffer buffer
+            (claude-code-ide--terminal-send-string prompt-to-send)
+            ;; Small delay to ensure prompt text is processed before sending return
+            (sit-for 0.1)
+            (claude-code-ide--terminal-send-return))
+          (claude-code-ide-debug "Sent prompt to Claude Code: %s" prompt-to-send)
+          (claude-code-ide--maybe-switch-to-window buffer)))
+    (user-error "No Claude Code session for this project")))
 
 (defun claude-code-ide--get-clipboard-text ()
   "Return the current clipboard contents as a plain string, or nil if unavailable."
@@ -1836,7 +1914,7 @@ recent visible file-visiting buffer on the current frame."
                        (format "#L%d" (car range)))
                       (t (format "#L%d-%d" (car range) (cdr range)))))
              (reference-body (concat "@" relative suffix))
-             (buffer-name (claude-code-ide--get-buffer-name)))
+             (buffer (claude-code-ide--get-session-buffer)))
         (if-let ((prompt-buf (claude-code-ide--find-prompt-buffer)))
             (progn
               (with-current-buffer prompt-buf
@@ -1844,7 +1922,7 @@ recent visible file-visiting buffer on the current frame."
               (claude-code-ide-debug "Sent file reference to prompt buffer: %s"
                                      reference-body)
               (claude-code-ide--maybe-switch-to-window prompt-buf))
-          (if-let ((buffer (get-buffer buffer-name)))
+          (if buffer
               (progn
                 (with-current-buffer buffer
                   (claude-code-ide--terminal-send-string
@@ -1868,14 +1946,14 @@ With prefix ARG, use `read-file-name' from project root instead of
                   (completing-read "File: " (project-files project))
                   root)))
          (reference-body (concat "@" file))
-         (buffer-name (claude-code-ide--get-buffer-name)))
+         (buffer (claude-code-ide--get-session-buffer)))
     (if-let ((prompt-buf (claude-code-ide--find-prompt-buffer)))
         (progn
           (with-current-buffer prompt-buf
             (insert (claude-code-ide--format-file-reference reference-body)))
           (claude-code-ide-debug "Sent file reference to prompt buffer: @%s" file)
           (claude-code-ide--maybe-switch-to-window prompt-buf))
-      (if-let ((buffer (get-buffer buffer-name)))
+      (if buffer
           (progn
             (with-current-buffer buffer
               (claude-code-ide--terminal-send-string
@@ -1895,9 +1973,8 @@ Like `claude-code-ide-send-file' with prefix argument."
 (defun claude-code-ide-toggle ()
   "Toggle visibility of Claude Code window for the current project."
   (interactive)
-  (let* ((working-dir (claude-code-ide--get-working-directory))
-         (buffer-name (claude-code-ide--get-buffer-name))
-         (buffer (get-buffer buffer-name)))
+  (let* ((working-dir (claude-code-ide--get-attached-working-directory))
+         (buffer (claude-code-ide--get-session-buffer working-dir)))
     (if buffer
         (claude-code-ide--toggle-existing-window buffer working-dir)
       (user-error "No Claude Code session for this project"))))
