@@ -647,7 +647,11 @@ matching buffer, or nil."
 Returns the buffer on success, or nil if no prompt buffer is visible."
   (when-let ((buf (claude-code-ide--find-prompt-buffer)))
     (with-current-buffer buf
-      (insert string))
+      (insert string)
+      (let ((target-point (point)))
+        (dolist (win (get-buffer-window-list buf nil t))
+          (when (window-live-p win)
+            (set-window-point win target-point)))))
     buf))
 
 (defun claude-code-ide--format-file-reference (reference-body)
@@ -1949,8 +1953,9 @@ recent visible file-visiting buffer on the current frame."
              (buffer (claude-code-ide--get-session-buffer)))
         (if-let ((prompt-buf (claude-code-ide--find-prompt-buffer)))
             (progn
-              (with-current-buffer prompt-buf
-                (insert (claude-code-ide--format-file-reference reference-body)))
+              (claude-code-ide--prompt-buffer-send-string
+               (with-current-buffer prompt-buf
+                 (claude-code-ide--format-file-reference reference-body)))
               (claude-code-ide-debug "Sent file reference to prompt buffer: %s"
                                      reference-body)
               (claude-code-ide--maybe-switch-to-window prompt-buf))
@@ -1981,8 +1986,9 @@ With prefix ARG, use `read-file-name' from project root instead of
          (buffer (claude-code-ide--get-session-buffer)))
     (if-let ((prompt-buf (claude-code-ide--find-prompt-buffer)))
         (progn
-          (with-current-buffer prompt-buf
-            (insert (claude-code-ide--format-file-reference reference-body)))
+          (claude-code-ide--prompt-buffer-send-string
+           (with-current-buffer prompt-buf
+             (claude-code-ide--format-file-reference reference-body)))
           (claude-code-ide-debug "Sent file reference to prompt buffer: @%s" file)
           (claude-code-ide--maybe-switch-to-window prompt-buf))
       (if buffer

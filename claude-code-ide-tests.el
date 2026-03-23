@@ -3190,6 +3190,28 @@ have completed before cleanup.  Waits up to 5 seconds."
              (lambda () nil)))
     (should (null (claude-code-ide--prompt-buffer-send-string "@file.el ")))))
 
+(ert-deftest claude-code-ide-test-prompt-buffer-send-string-updates-visible-window-point ()
+  "Test prompt-buffer send updates the visible window point to inserted text end."
+  (let ((prompt-buf (generate-new-buffer "test-prompt-window-point")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer (generate-new-buffer " *prompt-buffer-driver*"))
+          (let ((prompt-window (split-window-right)))
+            (set-window-buffer prompt-window prompt-buf)
+            (set-window-point prompt-window (point-min))
+            (with-current-buffer prompt-buf
+              (setq buffer-file-name "/tmp/claude-prompt-window-point.md")
+              (insert "hello")
+              (goto-char (point-max))
+              (cl-letf (((symbol-function 'claude-code-ide--find-prompt-buffer)
+                         (lambda () prompt-buf)))
+                (claude-code-ide--prompt-buffer-send-string " @src/main.el ")
+                (should (= (window-point prompt-window) (point-max)))))))
+      (with-current-buffer prompt-buf
+        (setq buffer-file-name nil))
+      (kill-buffer prompt-buf))))
+
 (ert-deftest claude-code-ide-test-maybe-switch-to-window-enabled ()
   "Test that helper selects window when enabled and window is visible."
   (let ((claude-code-ide-switch-after-send t)
@@ -3286,6 +3308,36 @@ have completed before cleanup.  Waits up to 5 seconds."
                                        "hello @src/main.el ")))
                     (kill-buffer test-source-buf)))))
           (with-current-buffer prompt-buf (setq buffer-file-name nil))
+          (kill-buffer prompt-buf))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-uses-prompt-buffer-helper ()
+  "Test send-current-file routes prompt-buffer insertion through the helper."
+  (let ((claude-code-ide-switch-after-send nil)
+        (helper-called nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (_str &optional _paste) (ert-fail "terminal path should not be used")))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'claude-code-ide--find-prompt-buffer)
+               (lambda () (get-buffer "test-prompt-helper")))
+              ((symbol-function 'claude-code-ide--prompt-buffer-send-string)
+               (lambda (string)
+                 (setq helper-called string)
+                 (get-buffer "test-prompt-helper"))))
+      (let ((prompt-buf (generate-new-buffer "test-prompt-helper")))
+        (unwind-protect
+            (with-temp-buffer
+              (setq buffer-file-name "/home/user/project/src/main.el")
+              (with-current-buffer prompt-buf
+                (setq buffer-file-name "/tmp/claude-prompt-helper.md"))
+              (claude-code-ide-send-current-file)
+              (should (equal helper-called "@src/main.el ")))
+          (with-current-buffer prompt-buf
+            (setq buffer-file-name nil))
           (kill-buffer prompt-buf))))))
 
 (ert-deftest claude-code-ide-test-send-current-file-switches-to-terminal ()
