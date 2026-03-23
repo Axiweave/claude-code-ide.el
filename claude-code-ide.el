@@ -296,9 +296,15 @@ a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defconst claude-code-ide--temporary-prompt-buffer-regexp
+  "^/\\(?:private/\\)?\\(?:tmp\\|var/folders/.*/T\\)/.*\\.\\(?:zsh\\|md\\)\\'"
+  "Regexp matching transient prompt buffers opened by CLI tools.")
+
 (defcustom claude-code-ide-prompt-buffer-patterns
-  '("claude-prompt.*\\.md\\'" "\\.claude/plans/.*\\.md\\'")
-  "List of regexps to identify Claude prompt and plan buffers.
+  (list claude-code-ide--temporary-prompt-buffer-regexp
+        "claude-prompt.*\\.md\\'"
+        "\\.claude/plans/.*\\.md\\'")
+  "List of regexps to identify transient prompt and plan buffers.
 Each regexp is matched against `buffer-file-name'.  Used by
 `claude-code-ide--find-prompt-buffer' to locate a visible
 prompt or plan editing buffer."

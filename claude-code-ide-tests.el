@@ -3069,15 +3069,25 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-prompt-buffer-patterns-default ()
   "Test that prompt buffer patterns defcustom has correct defaults."
   (should (listp claude-code-ide-prompt-buffer-patterns))
-  (should (= 2 (length claude-code-ide-prompt-buffer-patterns)))
+  (should (= 3 (length claude-code-ide-prompt-buffer-patterns)))
   (should (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
-                          "/tmp/claude-prompt-abc.md"))
+                          "/tmp/codex-prompt-abc.md"))
+  (should (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
+                          "/private/tmp/zsh-edit-abc.zsh"))
+  (should (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
+                          "/var/folders/ab/cd123/T/prompt-buffer.md"))
   (should (string-match-p (nth 1 claude-code-ide-prompt-buffer-patterns)
+                          "/tmp/claude-prompt-abc.md"))
+  (should (string-match-p (nth 2 claude-code-ide-prompt-buffer-patterns)
                           "/home/user/.claude/plans/my-plan.md"))
   ;; Should NOT match random .md files
   (should-not (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
                               "/home/user/README.md"))
+  (should-not (string-match-p (nth 0 claude-code-ide-prompt-buffer-patterns)
+                              "/home/user/script.zsh"))
   (should-not (string-match-p (nth 1 claude-code-ide-prompt-buffer-patterns)
+                              "/home/user/notes.md"))
+  (should-not (string-match-p (nth 2 claude-code-ide-prompt-buffer-patterns)
                               "/home/user/notes.md")))
 
 (ert-deftest claude-code-ide-test-find-prompt-buffer ()
@@ -3119,6 +3129,22 @@ have completed before cleanup.  Waits up to 5 seconds."
                      (lambda (_win) plan-buf)))
             (should (eq plan-buf (claude-code-ide--find-prompt-buffer)))))
       (let ((buf plan-buf))
+        (with-current-buffer buf (setq buffer-file-name nil))
+        (kill-buffer buf))))
+
+  ;; Matching Codex/zle temp buffer visible -> returns it
+  (let ((temp-buf (generate-new-buffer "test-temp-prompt")))
+    (unwind-protect
+        (progn
+          (with-current-buffer temp-buf
+            (setq buffer-file-name "/var/folders/ab/cd123/T/codex-buffer.md"))
+          (cl-letf (((symbol-function 'walk-windows)
+                     (lambda (fn &rest _)
+                       (funcall fn (selected-window))))
+                    ((symbol-function 'window-buffer)
+                     (lambda (_win) temp-buf)))
+            (should (eq temp-buf (claude-code-ide--find-prompt-buffer)))))
+      (let ((buf temp-buf))
         (with-current-buffer buf (setq buffer-file-name nil))
         (kill-buffer buf))))
 
