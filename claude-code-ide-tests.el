@@ -3653,6 +3653,42 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p mock-eat-buffer)
         (kill-buffer mock-eat-buffer)))))
 
+(ert-deftest claude-code-ide-test-create-terminal-session-snapshots-cli-type ()
+  "Test terminal buffers keep the launch-time CLI type."
+  (let ((claude-code-ide-cli-path "codex")
+        (claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide-cli-terminal-backends '((codex . eat)))
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags "")
+        (mock-eat-buffer nil)
+        (mock-process (start-process "mock-cli-type-snapshot" nil "true")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                   (lambda (&optional _backend) nil))
+                  ((symbol-function 'eat-mode)
+                   (lambda () nil))
+                  ((symbol-function 'eat-exec)
+                   (lambda (buffer _name _cmd _startfile _args)
+                     (setq mock-eat-buffer buffer)))
+                  ((symbol-function 'get-buffer-process)
+                   (lambda (_buffer) mock-process))
+                  ((symbol-function 'claude-code-ide--build-codex-command)
+                   (lambda (&rest _) "codex")))
+          (let* ((result (claude-code-ide--create-terminal-session
+                          "*test-cli-type-snapshot*" "/tmp" 12345 nil nil "test-session"))
+                 (buffer (car result)))
+            (setq claude-code-ide-cli-path "claude")
+            (should (consp result))
+            (should (eq buffer mock-eat-buffer))
+            (should (eq (buffer-local-value 'claude-code-ide--session-cli-type buffer)
+                        'codex))
+            (with-current-buffer buffer
+              (should (eq (claude-code-ide--current-cli-type) 'codex)))))
+      (when (process-live-p mock-process)
+        (delete-process mock-process))
+      (when (buffer-live-p mock-eat-buffer)
+        (kill-buffer mock-eat-buffer)))))
+
 (ert-deftest claude-code-ide-test-dangerous-flag-by-cli-type ()
   "Test that the dangerous permissions flag varies by CLI type."
   (let ((claude-code-ide-cli-path "claude"))

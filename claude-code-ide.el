@@ -364,6 +364,14 @@ Stored in reverse order for O(1) push, joined at flush time.")
 (defvar-local claude-code-ide--terminal-backend nil
   "Resolved terminal backend for the current session buffer.")
 
+(defvar-local claude-code-ide--session-cli-type nil
+  "Resolved CLI type for the current session buffer.")
+
+(defun claude-code-ide--current-cli-type ()
+  "Return the CLI type for the current buffer or current configuration."
+  (or claude-code-ide--session-cli-type
+      (claude-code-ide--cli-type)))
+
 (defun claude-code-ide--resolve-terminal-backend (&optional cli-type)
   "Resolve the terminal backend for CLI-TYPE.
 Falls back to `claude-code-ide-terminal-backend' when no per-CLI
@@ -396,7 +404,7 @@ It significantly improves visual quality during complex operations.
 ORIG-FUN is the underlying filter to enhance.
 PROCESS is the terminal process being optimized.
 INPUT contains the terminal output stream."
-  (if (or (not (eq (claude-code-ide--cli-type) 'claude))
+  (if (or (not (eq (claude-code-ide--current-cli-type) 'claude))
           (not claude-code-ide-vterm-anti-flicker)
           (not (claude-code-ide--session-buffer-p (process-buffer process))))
       ;; Feature disabled or not a Claude buffer, pass through normally
@@ -464,7 +472,7 @@ INPUT contains the terminal output stream."
 ORIG-FUN is the underlying filter to enhance.
 PROCESS is the terminal process being optimized.
 INPUT contains the terminal output stream."
-  (if (or (not (eq (claude-code-ide--cli-type) 'claude))
+  (if (or (not (eq (claude-code-ide--current-cli-type) 'claude))
           (not claude-code-ide-vterm-anti-flicker)
           (not (claude-code-ide--session-buffer-p (process-buffer process))))
       (funcall orig-fun process input)
@@ -1169,7 +1177,7 @@ when navigating between terminal and other buffers."
                         (append (delq 'buffer (copy-sequence window-list))
                                 visible-windows)
                         :test #'eq))
-         (recenter-line (if (memq (claude-code-ide--cli-type) '(codex opencode))
+         (recenter-line (if (memq (claude-code-ide--current-cli-type) '(codex opencode))
                             -4
                           -1)))
     (when (memq 'buffer window-list)
@@ -1201,7 +1209,8 @@ ENV-VARS is a list of \"KEY=VALUE\" environment variable strings.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
-  (let ((backend (claude-code-ide--resolve-terminal-backend)))
+  (let* ((cli-type (claude-code-ide--cli-type))
+         (backend (claude-code-ide--resolve-terminal-backend cli-type)))
     (claude-code-ide--terminal-ensure-backend)
     (let ((default-directory working-dir))
     (claude-code-ide-debug "Starting with command: %s" cmd)
@@ -1219,6 +1228,7 @@ Signals an error if terminal fails to initialize."
           (unless buffer
             (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
           (with-current-buffer buffer
+            (setq-local claude-code-ide--session-cli-type cli-type)
             (setq-local claude-code-ide--terminal-backend backend)
             (claude-code-ide--configure-vterm-buffer)
             )
@@ -1237,13 +1247,14 @@ Signals an error if terminal fails to initialize."
              (program (car cmd-parts))
              (args (cdr cmd-parts)))
         (with-current-buffer buffer
+          (setq-local claude-code-ide--session-cli-type cli-type)
           (setq-local claude-code-ide--terminal-backend backend)
           (unless (eq major-mode 'eat-mode)
             (eat-mode))
           (claude-code-ide--configure-eat-buffer)
           (when (and claude-code-ide-eat-preserve-position
-                     ;; (eq (claude-code-ide--cli-type) 'claude)
-                     (not (eq (claude-code-ide--cli-type) 'opencode))
+                     ;; (eq (claude-code-ide--current-cli-type) 'claude)
+                     (not (eq (claude-code-ide--current-cli-type) 'opencode))
                      )
             (setq-local eat--synchronize-scroll-function
                         #'claude-code-ide--terminal-position-keeper))
