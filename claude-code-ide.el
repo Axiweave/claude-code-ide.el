@@ -370,13 +370,13 @@ Stored in reverse order for O(1) push, joined at flush time.")
 (defun claude-code-ide--current-cli-type ()
   "Return the CLI type for the current buffer or current configuration."
   (or claude-code-ide--session-cli-type
-      (claude-code-ide--cli-type)))
+      (claude-code-ide--configured-cli-type)))
 
 (defun claude-code-ide--resolve-terminal-backend (&optional cli-type)
   "Resolve the terminal backend for CLI-TYPE.
 Falls back to `claude-code-ide-terminal-backend' when no per-CLI
 override is configured."
-  (or (alist-get (or cli-type (claude-code-ide--cli-type))
+  (or (alist-get (or cli-type (claude-code-ide--current-cli-type))
                  claude-code-ide-cli-terminal-backends
                  nil nil #'eq)
       claude-code-ide-terminal-backend))
@@ -875,7 +875,7 @@ the current frame.  Returns nil if no suitable buffer is found."
 (defun claude-code-ide--set-process (process &optional directory)
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."
   ;; Check if this is the first session starting
-  (when (and (eq (claude-code-ide--cli-type) 'claude)
+  (when (and (eq (claude-code-ide--current-cli-type) 'claude)
              claude-code-ide-prevent-reflow-glitch
              (= (hash-table-count claude-code-ide--processes) 0))
     ;; Apply advice globally for the first session
@@ -1006,7 +1006,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
 
 ;;; CLI Detection
 
-(defun claude-code-ide--cli-type ()
+(defun claude-code-ide--configured-cli-type ()
   "Detect CLI type from `claude-code-ide-cli-path'.
 Returns \\='claude, \\='codex, \\='gsd, or \\='opencode based on the basename prefix.
 Unknown CLIs fall back to \\='claude."
@@ -1160,7 +1160,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are included."
 (defun claude-code-ide--build-command (&optional continue resume session-id)
   "Build CLI command, dispatching by CLI type.
 Arguments CONTINUE, RESUME, SESSION-ID are passed to the CLI-specific builder."
-  (pcase (claude-code-ide--cli-type)
+  (pcase (claude-code-ide--current-cli-type)
     ('opencode (claude-code-ide--build-opencode-command continue resume session-id))
     ('gsd (claude-code-ide--build-gsd-command continue resume session-id))
     ('codex (claude-code-ide--build-codex-command continue resume session-id))
@@ -1209,7 +1209,7 @@ ENV-VARS is a list of \"KEY=VALUE\" environment variable strings.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
-  (let* ((cli-type (claude-code-ide--cli-type))
+  (let* ((cli-type (claude-code-ide--current-cli-type))
          (backend (claude-code-ide--resolve-terminal-backend cli-type)))
     (claude-code-ide--terminal-ensure-backend)
     (let ((default-directory working-dir))
@@ -1346,7 +1346,7 @@ RESUME is whether to resume a previous conversation.
 SESSION-ID is the unique identifier for this session.
 
 Returns a cons cell of (buffer . process) on success."
-  (pcase (claude-code-ide--cli-type)
+  (pcase (claude-code-ide--current-cli-type)
     ('opencode (claude-code-ide--create-opencode-terminal-session
                 buffer-name working-dir port continue resume session-id))
     ('gsd (claude-code-ide--create-gsd-terminal-session
@@ -1427,7 +1427,7 @@ This function handles:
                               (claude-code-ide--cleanup-on-exit working-dir))
                             nil t)
                   ;; Set up terminal keybindings
-                  ;; (when (eq (claude-code-ide--cli-type) 'claude)
+                  ;; (when (eq (claude-code-ide--current-cli-type) 'claude)
                   ;;   (claude-code-ide--setup-terminal-keybindings))
                   ;; Add terminal-specific exit hooks
                   (pcase (claude-code-ide--current-terminal-backend)

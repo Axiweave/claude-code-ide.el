@@ -1841,7 +1841,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                          (lambda (_terminal) target-point))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t))
-                        ((symbol-function 'claude-code-ide--cli-type)
+                        ((symbol-function 'claude-code-ide--current-cli-type)
                          (lambda () 'claude)))
                 (claude-code-ide--terminal-position-keeper nil))
               (should (= (window-point side-window) target-point)))))
@@ -1871,7 +1871,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                          (lambda (_terminal) target-point))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () nil))
-                        ((symbol-function 'claude-code-ide--cli-type)
+                        ((symbol-function 'claude-code-ide--current-cli-type)
                          (lambda () 'claude)))
                 (claude-code-ide--terminal-position-keeper nil))
               (should (= (window-point side-window) (point-min))))))
@@ -3476,24 +3476,24 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test CLI type detection from cli-path."
   ;; Claude paths
   (let ((claude-code-ide-cli-path "claude"))
-    (should (eq (claude-code-ide--cli-type) 'claude)))
+    (should (eq (claude-code-ide--current-cli-type) 'claude)))
   (let ((claude-code-ide-cli-path "/usr/local/bin/claude"))
-    (should (eq (claude-code-ide--cli-type) 'claude)))
+    (should (eq (claude-code-ide--current-cli-type) 'claude)))
   (let ((claude-code-ide-cli-path "claude-code"))
-    (should (eq (claude-code-ide--cli-type) 'claude)))
+    (should (eq (claude-code-ide--current-cli-type) 'claude)))
   ;; Codex paths
   (let ((claude-code-ide-cli-path "codex"))
-    (should (eq (claude-code-ide--cli-type) 'codex)))
+    (should (eq (claude-code-ide--current-cli-type) 'codex)))
   (let ((claude-code-ide-cli-path "/usr/local/bin/codex"))
-    (should (eq (claude-code-ide--cli-type) 'codex)))
+    (should (eq (claude-code-ide--current-cli-type) 'codex)))
   ;; GSD paths
   (let ((claude-code-ide-cli-path "gsd"))
-    (should (eq (claude-code-ide--cli-type) 'gsd)))
+    (should (eq (claude-code-ide--current-cli-type) 'gsd)))
   (let ((claude-code-ide-cli-path "/usr/local/bin/gsd"))
-    (should (eq (claude-code-ide--cli-type) 'gsd)))
+    (should (eq (claude-code-ide--current-cli-type) 'gsd)))
   ;; Unknown falls back to claude
   (let ((claude-code-ide-cli-path "some-other-cli"))
-    (should (eq (claude-code-ide--cli-type) 'claude))))
+    (should (eq (claude-code-ide--current-cli-type) 'claude))))
 
 (ert-deftest claude-code-ide-test-cli-path-safe-local-values ()
   "Test project-local CLI path values are limited to supported agents."
@@ -3710,7 +3710,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-terminal-backend 'vterm)
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags ""))
-    (should (eq (claude-code-ide--cli-type) 'gsd))
+    (should (eq (claude-code-ide--current-cli-type) 'gsd))
     (let ((cmd (claude-code-ide--build-command)))
       (should (string-match-p "^gsd" cmd))
       (should-not (string-match-p "--append-system-prompt" cmd))
@@ -3724,7 +3724,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags ""))
     ;; Verify CLI type
-    (should (eq (claude-code-ide--cli-type) 'codex))
+    (should (eq (claude-code-ide--current-cli-type) 'codex))
     ;; Verify command building
     (let ((cmd (claude-code-ide--build-command)))
       (should (string-match-p "codex" cmd))

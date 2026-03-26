@@ -58,7 +58,7 @@
 (declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide--get-current-directory "claude-code-ide" ())
 (declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
-(declare-function claude-code-ide--cli-type "claude-code-ide" ())
+(declare-function claude-code-ide--current-cli-type "claude-code-ide" ())
 (declare-function claude-code-ide-send-current-file "claude-code-ide" ())
 (declare-function claude-code-ide-send-file "claude-code-ide" (arg))
 (declare-function claude-code-ide-send-file-from-root "claude-code-ide" ())
@@ -95,7 +95,7 @@
 
 (defun claude-code-ide--dangerous-permissions-flag ()
   "Return the dangerous permissions flag for the current CLI type."
-  (pcase (claude-code-ide--cli-type)
+  (pcase (claude-code-ide--current-cli-type)
     ('claude "--dangerously-skip-permissions")
     ('codex "--dangerously-bypass-approvals-and-sandbox")
     ('gsd "")
