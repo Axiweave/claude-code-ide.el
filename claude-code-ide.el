@@ -867,6 +867,36 @@ the current frame.  Returns nil if no suitable buffer is found."
                          (buffer-file-name buf))
                return buf)))))
 
+(defun claude-code-ide--treemacs-path-at-point ()
+  "Return the Treemacs file path at point, or nil when unavailable."
+  (when (and (fboundp 'treemacs-current-button)
+             (fboundp 'treemacs-safe-button-get))
+    (when-let* ((button (treemacs-current-button))
+                (path (treemacs-safe-button-get button :path))
+                ((stringp path)))
+      path)))
+
+(defun claude-code-ide--get-file-reference-context ()
+  "Return a `(FILE . BUFFER)' pair for `claude-code-ide-send-current-file'.
+FILE is the absolute file path to reference.  BUFFER is the source
+buffer to inspect for an active line selection, or nil when no line
+range should be attached."
+  (cond
+   (buffer-file-name
+    (cons buffer-file-name (current-buffer)))
+   ((and (derived-mode-p 'dired-mode)
+         (fboundp 'dired-get-filename))
+    (when-let ((path (dired-get-filename nil t)))
+      (cons path nil)))
+   ((derived-mode-p 'treemacs-mode)
+    (when-let ((path (claude-code-ide--treemacs-path-at-point)))
+      (cons path nil)))
+   ((claude-code-ide--session-buffer-p (current-buffer))
+    (when-let ((ctx-buf (claude-code-ide--get-context-buffer)))
+      (with-current-buffer ctx-buf
+        (when buffer-file-name
+          (cons buffer-file-name ctx-buf)))))))
+
 (defun claude-code-ide--get-process (&optional directory)
   "Get the Claude Code process for DIRECTORY or current working directory."
   (gethash (or directory (claude-code-ide--get-working-directory))
@@ -1944,17 +1974,21 @@ Line numbers are 1-based."
 The path is relative to the project root.  When an evil visual
 selection or Emacs region is active, appends a line range suffix
 like #L12-14 (or #L12 for a single line).
+When called from Dired or Treemacs, uses the file at point.
 When called from a Claude Code session buffer, uses the most
 recent visible file-visiting buffer on the current frame."
   (interactive)
-  (let ((ctx-buf (claude-code-ide--get-context-buffer)))
-    (unless ctx-buf
+  (let* ((context (claude-code-ide--get-file-reference-context))
+         (file (car context))
+         (ctx-buf (cdr context)))
+    (unless file
       (user-error "Current buffer is not visiting a file"))
-    (with-current-buffer ctx-buf
+    (with-current-buffer (or ctx-buf (current-buffer))
       (let* ((project (project-current t))
              (root (project-root project))
-             (relative (file-relative-name buffer-file-name root))
-             (range (claude-code-ide--get-selection-line-range))
+             (relative (file-relative-name file root))
+             (range (when ctx-buf
+                      (claude-code-ide--get-selection-line-range)))
              (suffix (cond
                       ((null range) "")
                       ((= (car range) (cdr range))
