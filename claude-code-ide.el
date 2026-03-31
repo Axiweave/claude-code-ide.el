@@ -871,8 +871,7 @@ the current frame.  Returns nil if no suitable buffer is found."
   "Return the Treemacs file path at point, or nil when unavailable."
   (when (and (fboundp 'treemacs-current-button)
              (fboundp 'treemacs-safe-button-get))
-    (when-let* ((button (treemacs-current-button))
-                (path (treemacs-safe-button-get button :path))
+    (when-let* ((path (treemacs-safe-button-get (treemacs-current-button) :path))
                 ((stringp path)))
       path)))
 

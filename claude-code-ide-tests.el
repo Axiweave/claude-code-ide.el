@@ -2890,9 +2890,20 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-send-current-file-from-treemacs ()
   "Test send-current-file uses the file at point in treemacs."
   (let ((sent-string nil)
-        (terminal-buf (generate-new-buffer "*test-claude-buffer*")))
+        (terminal-buf (generate-new-buffer "*test-claude-buffer*"))
+        (orig-treemacs-safe-button-get
+         (when (fboundp 'treemacs-safe-button-get)
+           (symbol-function 'treemacs-safe-button-get))))
     (unwind-protect
         (progn
+          (fset 'treemacs-safe-button-get
+                '(macro lambda (button-form property)
+                   (unless (equal button-form '(treemacs-current-button))
+                     (error "Expected direct treemacs-current-button form, got: %S"
+                            button-form))
+                   (unless (eq property :path)
+                     (error "Expected :path property, got: %S" property))
+                   "/home/user/project/src/from-treemacs.el"))
           (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
                      (lambda () "*test-claude-buffer*"))
                     ((symbol-function 'claude-code-ide--terminal-send-string)
@@ -2902,18 +2913,16 @@ have completed before cleanup.  Waits up to 5 seconds."
                     ((symbol-function 'project-root)
                      (lambda (_) "/home/user/project/"))
                     ((symbol-function 'treemacs-current-button)
-                     (lambda () 'mock-button))
-                    ((symbol-function 'treemacs-safe-button-get)
-                     (lambda (button property)
-                       (when (and (eq button 'mock-button)
-                                  (eq property :path))
-                         "/home/user/project/src/from-treemacs.el"))))
+                     (lambda () 'mock-button)))
             (with-temp-buffer
               (let ((default-directory "/home/user/project/"))
                 (cl-letf (((symbol-function 'derived-mode-p)
                            (lambda (&rest modes) (memq 'treemacs-mode modes))))
                   (claude-code-ide-send-current-file)
                   (should (equal sent-string "@src/from-treemacs.el ")))))))
+      (if orig-treemacs-safe-button-get
+          (fset 'treemacs-safe-button-get orig-treemacs-safe-button-get)
+        (fmakunbound 'treemacs-safe-button-get))
       (kill-buffer terminal-buf))))
 
 (ert-deftest claude-code-ide-test-format-file-reference ()
