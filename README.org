@@ -197,7 +197,7 @@ You can reach the manager in two ways:
 Each row in the sidebar represents one live Claude session derived from the existing session process table.
 
 - The row shows the project basename
-- The full project path is available via hover text
+- The full project path is available via hover text and in the echo area when point moves onto the row
 - The currently active session row is highlighted
 - Pinned rows are marked with = [P] =
 - Visible rows are assigned quick slots =1..9, 0= from top to bottom

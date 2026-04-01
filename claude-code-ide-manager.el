@@ -100,6 +100,9 @@
 (defvar claude-code-ide-manager--current-session-key nil
   "Session key currently active in the manager frame.")
 
+(defvar-local claude-code-ide-manager--last-point-path nil
+  "Last full path shown in the echo area for the current manager buffer.")
+
 (defun claude-code-ide-manager--apply-window-compatibility ()
   "Hide the manager sidebar from common window-selection packages."
   (when (boundp 'winum-ignored-buffers-regexp)
@@ -116,12 +119,14 @@
 
 (claude-code-ide-manager--apply-window-compatibility)
 
+(declare-function evil-set-initial-state "evil" (mode state))
+
 (defvar claude-code-ide-manager-mode-map (make-sparse-keymap)
   "Keymap for `claude-code-ide-manager-mode'.")
 
 (define-key claude-code-ide-manager-mode-map (kbd "g") #'claude-code-ide-manager-refresh)
 (define-key claude-code-ide-manager-mode-map (kbd "RET") #'claude-code-ide-manager-switch-at-point)
-(define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point)
+(define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)
 (define-key claude-code-ide-manager-mode-map (kbd "n") #'claude-code-ide-manager-next-line)
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
@@ -134,11 +139,26 @@
      (kbd (number-to-string (mod (1+ index) 10)))
      (lambda ()
        (interactive)
-       (claude-code-ide-manager-switch-by-slot slot)))))
+       (claude-code-ide-manager-switch-by-slot-preserve-focus slot)))))
+
+(defun claude-code-ide-manager--setup-evil-state ()
+  "Start manager buffers in Evil emacs state when Evil is available."
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'claude-code-ide-manager-mode 'emacs)))
+
+(with-eval-after-load 'evil
+  (claude-code-ide-manager--setup-evil-state))
+
+(claude-code-ide-manager--setup-evil-state)
 
 (define-derived-mode claude-code-ide-manager-mode special-mode "CC-Manager"
   "Major mode for the cc-manager sidebar."
-  (setq truncate-lines t))
+  (setq truncate-lines t)
+  (setq-local global-hl-line-mode nil)
+  (setq-local claude-code-ide-manager--last-point-path nil)
+  (add-hook 'post-command-hook #'claude-code-ide-manager--show-point-path nil t)
+  (when (featurep 'hl-line)
+    (hl-line-mode -1)))
 
 (defun claude-code-ide-manager--serialize-item (item)
   "Convert manager ITEM to a persistable plist."
@@ -386,6 +406,17 @@
   (when-let ((session-key (get-text-property (point) 'claude-code-ide-manager-session-key)))
     (claude-code-ide-manager--item-by-session-key session-key)))
 
+(defun claude-code-ide-manager--show-point-path ()
+  "Show the current row's full path in the echo area.
+This mirrors mouse hover text for keyboard navigation in the manager."
+  (when (eq (current-buffer) (window-buffer (selected-window)))
+    (let ((path (get-text-property (point) 'help-echo)))
+      (unless (equal path claude-code-ide-manager--last-point-path)
+        (setq claude-code-ide-manager--last-point-path path)
+        (if path
+            (message "%s" path)
+          (message ""))))))
+
 (defun claude-code-ide-manager--visible-session-keys ()
   "Return visible session keys in sidebar order."
   (mapcar #'claude-code-ide-manager-item-session-key
@@ -545,30 +576,36 @@ With a negative ARG, hide the sidebar."
        ((> step 0) (car keys))
        (t (car (last keys)))))))
 
+(defun claude-code-ide-manager--sidebar-buffer-p ()
+  "Return non-nil when the current buffer is the manager buffer."
+  (not (null (derived-mode-p 'claude-code-ide-manager-mode))))
+
 (defun claude-code-ide-manager-next-line ()
   "Move point to the next manager row and switch to it."
   (interactive)
   (when-let ((session-key (claude-code-ide-manager--cycle-session-key 1)))
     (claude-code-ide-manager--sync-point-to-session-key session-key)
-    (claude-code-ide-manager-switch-to-session session-key)))
+    (claude-code-ide-manager-switch-to-session
+     session-key
+     (claude-code-ide-manager--sidebar-buffer-p))))
 
 (defun claude-code-ide-manager-previous-line ()
   "Move point to the previous manager row and switch to it."
   (interactive)
   (when-let ((session-key (claude-code-ide-manager--cycle-session-key -1)))
     (claude-code-ide-manager--sync-point-to-session-key session-key)
-    (claude-code-ide-manager-switch-to-session session-key)))
+    (claude-code-ide-manager-switch-to-session
+     session-key
+     (claude-code-ide-manager--sidebar-buffer-p))))
 
 (defun claude-code-ide-manager-focus ()
   "Focus the manager sidebar."
   (interactive)
   (claude-code-ide-manager-toggle-sidebar 1))
 
-(defun claude-code-ide-manager-toggle-pin ()
-  "Toggle pin state for the item at point."
-  (interactive)
-  (when-let* ((item (claude-code-ide-manager--item-at-point))
-              (session-key (claude-code-ide-manager-item-session-key item)))
+(defun claude-code-ide-manager--toggle-pin-for-session-key (session-key)
+  "Toggle pin state for SESSION-KEY."
+  (when-let ((item (claude-code-ide-manager--item-by-session-key session-key)))
     (setf (claude-code-ide-manager-item-pinned item)
           (not (claude-code-ide-manager-item-pinned item)))
     (setq claude-code-ide-manager--items
@@ -660,8 +697,11 @@ Return the selected window when successful."
     (claude-code-ide-manager-refresh)
     nil))
 
-(defun claude-code-ide-manager-switch-to-session (session-key)
-  "Switch the current frame to SESSION-KEY."
+(defun claude-code-ide-manager-switch-to-session (session-key &optional keep-manager-focus)
+  "Switch the current frame to SESSION-KEY.
+
+When KEEP-MANAGER-FOCUS is non-nil, reselect the manager window after the
+session layout is updated."
   (interactive)
   (when claude-code-ide-manager--current-session-key
     (puthash claude-code-ide-manager--current-session-key
@@ -672,7 +712,10 @@ Return the selected window when successful."
   (prog1
       (or (claude-code-ide-manager--restore-layout session-key)
           (claude-code-ide-manager--build-default-layout session-key))
-    (claude-code-ide-manager--refresh-sidebar-state)))
+    (claude-code-ide-manager--refresh-sidebar-state)
+    (when keep-manager-focus
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (select-window window)))))
 
 (defun claude-code-ide-manager-switch-at-point ()
   "Switch to the session on the current row."
@@ -680,6 +723,25 @@ Return the selected window when successful."
   (when-let ((item (claude-code-ide-manager--item-at-point)))
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item))))
+
+(defun claude-code-ide-manager-switch-at-point-preserve-focus ()
+  "Switch to the session on the current row and keep focus in the manager."
+  (interactive)
+  (when-let ((item (claude-code-ide-manager--item-at-point)))
+    (claude-code-ide-manager-switch-to-session
+     (claude-code-ide-manager-item-session-key item)
+     t)))
+
+(defun claude-code-ide-manager-switch-by-slot-preserve-focus (slot)
+  "Switch to visible SLOT and keep focus in the manager."
+  (when-let* ((item (nth (1- slot)
+                         (cl-subseq (claude-code-ide-manager--sorted-items
+                                     claude-code-ide-manager--items)
+                                    0
+                                    (min 10 (length claude-code-ide-manager--items)))))
+              (session-key (claude-code-ide-manager-item-session-key item)))
+    (claude-code-ide-manager--sync-point-to-session-key session-key)
+    (claude-code-ide-manager-switch-to-session session-key t)))
 
 (defun claude-code-ide-manager-switch-by-slot (slot)
   "Switch to visible SLOT."
