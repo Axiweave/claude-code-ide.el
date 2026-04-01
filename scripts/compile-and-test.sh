@@ -45,8 +45,13 @@ find_emacs_package() {
     for dir in \
         ~/.emacs.d/.cache/straight/repos/"$package" \
         ~/.emacs.d/elpa/"$package"* \
+        ~/.emacs.d.spacemacs-30/elpa/"$package"* \
+        ~/.emacs.d.spacemacs-30/elpa/*/"$package"* \
+        ~/.emacs.d.spacemacs-30/elpa/*/develop/"$package"* \
         ~/.config/emacs/.cache/straight/repos/"$package" \
-        ~/.config/emacs/elpa/"$package"*; do
+        ~/.config/emacs/elpa/"$package"* \
+        ~/.config/emacs/elpa/*/"$package"* \
+        ~/.config/emacs/elpa/*/develop/"$package"*; do
         if [ -d "$dir" ]; then
             echo "$dir"
             return 0
@@ -65,6 +70,10 @@ fi
 
 if TRANSIENT_DIR=$(find_emacs_package "transient"); then
     LOAD_PATH="$LOAD_PATH -L $TRANSIENT_DIR"
+fi
+
+if PERSIST_DIR=$(find_emacs_package "persist"); then
+    LOAD_PATH="$LOAD_PATH -L $PERSIST_DIR"
 fi
 
 if VTERM_DIR=$(find_emacs_package "emacs-libvterm"); then

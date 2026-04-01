@@ -48,6 +48,10 @@
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
 (declare-function claude-code-ide--get-project-root "claude-code-ide" ())
+(declare-function claude-code-ide-manager-show "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-hide "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-focus "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-refresh "claude-code-ide-manager" ())
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-port "claude-code-ide-mcp" (session))
@@ -502,6 +506,11 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("q" "Stop current session" claude-code-ide-stop)
     ("l" "List related sessions" claude-code-ide-list-related-sessions)
     ("L" "List all sessions" claude-code-ide-list-sessions)]
+   ["Manager"
+    ("m" "Show manager" claude-code-ide-manager-show)
+    ("M" "Focus manager" claude-code-ide-manager-focus)
+    ("h" "Hide manager" claude-code-ide-manager-hide)
+    ("g" "Refresh manager" claude-code-ide-manager-refresh)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
     ("w" "Toggle window visibility" claude-code-ide-toggle-window)

@@ -139,6 +139,10 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |
 | =M-x claude-code-ide-switch-to-buffer=    | Switch to project's Claude buffer                 |
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code sessions and switch   |
+| =M-x claude-code-ide-manager-show=        | Show the CC Manager sidebar                       |
+| =M-x claude-code-ide-manager-focus=       | Focus the CC Manager sidebar                      |
+| =M-x claude-code-ide-manager-hide=        | Hide the CC Manager sidebar                       |
+| =M-x claude-code-ide-manager-refresh=     | Refresh the CC Manager live session list          |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
@@ -159,6 +163,19 @@ You can run multiple Claude Code instances simultaneously for different projects
 - Running =claude-code-ide= when a session is already active will toggle the window visibility
 - The window can be closed with standard Emacs window commands (=C-x 0=) without stopping Claude
 - Use =claude-code-ide-toggle-recent= to toggle the most recent Claude window from anywhere, regardless of your current project context. This is useful when you're outside a project directory but want to quickly hide/show Claude
+
+** CC Manager
+
+=claude-code-ide-manager-show= opens a dedicated left sidebar for live Claude sessions, similar to a Treemacs-style frame panel. The manager is additive: existing commands such as =claude-code-ide-list-sessions= still work as before.
+
+The manager can:
+
+- Show all live sessions with project name and path
+- Pin sessions to keep them at the top
+- Preserve manual ordering within pinned and unpinned groups
+- Restore per-session window layouts when you switch back
+
+When a session is opened through the manager for the first time, the content area defaults to a two-column layout with =magit-status= on the left and the Claude session on the right. If =magit= is unavailable, it falls back to =dired=. Manager state can persist across Emacs restarts through =persist.el=.
 
 ** Diff Viewing with Ediff
 

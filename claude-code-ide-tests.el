@@ -168,6 +168,45 @@
 
 (provide (quote flycheck))
 
+;; === Mock persist module ===
+(defvar persist--test-store (make-hash-table :test 'eq)
+  "Mock persist storage keyed by symbol.")
+(defvar persist--test-defaults (make-hash-table :test 'eq)
+  "Mock persist default values keyed by symbol.")
+
+(defun persist-symbol (symbol &optional initvalue)
+  "Mock `persist-symbol' for testing."
+  (puthash symbol (copy-tree (or initvalue (symbol-value symbol)) t)
+           persist--test-defaults)
+  symbol)
+
+(defun persist-save (symbol)
+  "Mock `persist-save' for testing."
+  (puthash symbol (copy-tree (symbol-value symbol) t) persist--test-store))
+
+(defun persist-load (symbol)
+  "Mock `persist-load' for testing."
+  (when (gethash symbol persist--test-store)
+    (set symbol (copy-tree (gethash symbol persist--test-store) t))))
+
+(defun persist-reset (symbol)
+  "Mock `persist-reset' for testing."
+  (set symbol (copy-tree (gethash symbol persist--test-defaults) t)))
+
+(defun persist-unpersist (_symbol)
+  "Mock `persist-unpersist' for testing."
+  nil)
+
+(defmacro persist-defvar (symbol initvalue docstring &optional _location)
+  "Mock `persist-defvar' for testing."
+  `(progn
+     (defvar ,symbol ,initvalue ,docstring)
+     (persist-symbol ',symbol ,symbol)
+     (persist-load ',symbol)
+     ',symbol))
+
+(provide 'persist)
+
 ;; === Load required modules ===
 (define-error 'mcp-error "MCP Error" 'error)
 (require 'claude-code-ide-mcp-handlers)
@@ -198,6 +237,13 @@ Ensures a clean state before each test that involves process management."
   ;; Also clear MCP sessions
   (when (boundp 'claude-code-ide-mcp--sessions)
     (clrhash claude-code-ide-mcp--sessions)))
+
+(defun claude-code-ide-tests--reset-manager-state ()
+  "Reset cc-manager test state."
+  (setq persist--test-store (make-hash-table :test 'eq))
+  (setq persist--test-defaults (make-hash-table :test 'eq))
+  (when (fboundp 'claude-code-ide-manager--reset-state)
+    (claude-code-ide-manager--reset-state)))
 
 (defun claude-code-ide-tests--wait-for-process (buffer)
   "Wait for the process in BUFFER to finish.
@@ -230,6 +276,443 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; Path with special characters
   (should (equal (claude-code-ide--default-buffer-name "/home/user/my-project@v1.0/")
                  "*claude-code[my-project@v1.0]*")))
+
+(ert-deftest claude-code-ide-test-manager-module-loads ()
+  "Test manager module loads with the main package."
+  (should (featurep 'claude-code-ide-manager)))
+
+(ert-deftest claude-code-ide-test-manager-persistence-toggle-disables-reload ()
+  "Test manager skips reload when persistence is disabled."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t)
+        (claude-code-ide-manager--items nil))
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "/tmp/a"
+                 :display-name "a"
+                 :secondary-text "a"
+                 :pinned t
+                 :order-key 1
+                 :live-p t)))
+    (claude-code-ide-manager--save-state)
+    (setq claude-code-ide-manager--items nil)
+    (let ((claude-code-ide-manager-persist-state nil))
+      (claude-code-ide-manager--load-state))
+    (should-not claude-code-ide-manager--items)))
+
+(ert-deftest claude-code-ide-test-manager-pinned-items-persist-when-enabled ()
+  "Test manager saves and reloads pinned item state."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t)
+        (claude-code-ide-manager--items nil))
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "/tmp/a"
+                 :display-name "a"
+                 :secondary-text "a"
+                 :pinned t
+                 :order-key 3
+                 :live-p t)))
+    (claude-code-ide-manager--save-state)
+    (setq claude-code-ide-manager--items nil)
+    (claude-code-ide-manager--load-state)
+    (should (= (length claude-code-ide-manager--items) 1))
+    (should (claude-code-ide-manager-item-pinned
+             (car claude-code-ide-manager--items)))
+    (should (= (claude-code-ide-manager-item-order-key
+                (car claude-code-ide-manager--items))
+               3))))
+
+(ert-deftest claude-code-ide-test-manager-reloads-persisted-state-on-initialize ()
+  "Test manager initialization restores persisted items and layouts."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t))
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "/tmp/a"
+                 :display-name "a"
+                 :secondary-text "/tmp/a"
+                 :pinned t
+                 :order-key 7
+                 :live-p t)))
+    (puthash "/tmp/a"
+             '(:session-key "/tmp/a"
+                            :window-state persisted-window-state
+                            :selected-buffer-name "*persisted*")
+             claude-code-ide-manager--layouts)
+    (claude-code-ide-manager--save-state)
+    (claude-code-ide-manager--reset-state)
+    (claude-code-ide-manager--initialize)
+    (should (= (length claude-code-ide-manager--items) 1))
+    (should (equal (claude-code-ide-manager-item-session-key
+                    (car claude-code-ide-manager--items))
+                   "/tmp/a"))
+    (should (claude-code-ide-manager-item-pinned
+             (car claude-code-ide-manager--items)))
+    (should (= (claude-code-ide-manager-item-order-key
+                (car claude-code-ide-manager--items))
+               7))
+    (should (eq (plist-get (gethash "/tmp/a" claude-code-ide-manager--layouts)
+                           :window-state)
+                'persisted-window-state))
+    (should (equal (plist-get (gethash "/tmp/a" claude-code-ide-manager--layouts)
+                              :selected-buffer-name)
+                   "*persisted*"))))
+
+(ert-deftest claude-code-ide-test-manager-collects-live-sessions ()
+  "Test manager builds items from live session directories."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-b" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (claude-code-ide-manager-refresh-items)
+          (should (= (length claude-code-ide-manager--items) 2))
+          (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                                 claude-code-ide-manager--items)
+                         '("/tmp/project-a" "/tmp/project-b"))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b)))))
+
+(ert-deftest claude-code-ide-test-manager-sorts-pinned-before-unpinned ()
+  "Test pinned items sort before unpinned items."
+  (let* ((a (make-claude-code-ide-manager-item
+             :session-key "a" :display-name "a" :secondary-text "a"
+             :pinned nil :order-key 2 :live-p t))
+         (b (make-claude-code-ide-manager-item
+             :session-key "b" :display-name "b" :secondary-text "b"
+             :pinned t :order-key 5 :live-p t))
+         (c (make-claude-code-ide-manager-item
+             :session-key "c" :display-name "c" :secondary-text "c"
+             :pinned nil :order-key 1 :live-p t)))
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items (list a b c)))
+                   '("b" "c" "a")))))
+
+(ert-deftest claude-code-ide-test-manager-assigns-visible-slots-1-to-10 ()
+  "Test visible rows map to slot numbers in order."
+  (let ((items
+         (cl-loop for index from 1 to 11
+                  collect (make-claude-code-ide-manager-item
+                           :session-key (format "s%d" index)
+                           :display-name (format "s%d" index)
+                           :secondary-text (format "s%d" index)
+                           :pinned nil
+                           :order-key index
+                           :live-p t))))
+    (let ((slots (claude-code-ide-manager--slot-map items)))
+      (should (= (hash-table-count slots) 10))
+      (should (= (gethash "s1" slots) 1))
+      (should (= (gethash "s10" slots) 10))
+      (should-not (gethash "s11" slots)))))
+
+(ert-deftest claude-code-ide-test-manager-sidebar-renders-project-and-path ()
+  "Test sidebar render shows the project label and secondary path."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "~/tmp/project-a"
+               :pinned t
+               :order-key 1
+               :live-p t)))
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (should (equal major-mode 'claude-code-ide-manager-mode))
+    (should (string-match-p "project-a" (buffer-string)))
+    (should (string-match-p "~/tmp/project-a" (buffer-string)))))
+
+(ert-deftest claude-code-ide-test-manager-show-creates-left-side-window ()
+  "Test showing the manager creates a left side window."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-show" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (let ((window (claude-code-ide-manager-show)))
+            (should (window-live-p window))
+            (should (eq (window-parameter window 'window-side) 'left))
+            (should (equal (window-buffer window)
+                           (claude-code-ide-manager--get-buffer)))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-pin-command-updates-selected-row ()
+  "Test pin command toggles the row at point."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "~/tmp/project-a"
+               :pinned nil
+               :order-key 1
+               :live-p t)))
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (goto-char (point-min))
+    (claude-code-ide-manager-toggle-pin)
+    (should (claude-code-ide-manager-item-pinned
+             (car claude-code-ide-manager--items)))))
+
+(ert-deftest claude-code-ide-test-manager-move-up-swaps-order-within-bucket ()
+  "Test move-up swaps row order within the same pin bucket."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/a"
+               :display-name "a"
+               :secondary-text "a"
+               :pinned nil
+               :order-key 2
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/b"
+               :display-name "b"
+               :secondary-text "b"
+               :pinned nil
+               :order-key 1
+               :live-p t)))
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (goto-char (point-min))
+    (forward-line 2)
+    (claude-code-ide-manager-move-up)
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items
+                            claude-code-ide-manager--items))
+                   '("/tmp/a" "/tmp/b")))))
+
+(ert-deftest claude-code-ide-test-manager-switch-by-slot-uses-visible-order ()
+  "Test switch-by-slot uses the current visible ordering."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/a"
+               :display-name "a"
+               :secondary-text "a"
+               :pinned t
+               :order-key 2
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/b"
+               :display-name "b"
+               :secondary-text "b"
+               :pinned t
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/c"
+               :display-name "c"
+               :secondary-text "c"
+               :pinned nil
+               :order-key 1
+               :live-p t)))
+  (let (switched)
+    (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+               (lambda (session-key)
+                 (setq switched session-key))))
+      (claude-code-ide-manager-switch-by-slot 1)
+      (should (equal switched "/tmp/b"))
+      (claude-code-ide-manager-switch-by-slot 2)
+      (should (equal switched "/tmp/a")))))
+
+(ert-deftest claude-code-ide-test-manager-saves-layout-before-switch ()
+  "Test switching captures the current session layout first."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-a (get-buffer-create "*cc-a*"))
+        (session-b (get-buffer-create "*cc-b*"))
+        (extra (get-buffer-create "*cc-extra*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer extra)
+          (split-window-right)
+          (other-window 1)
+          (switch-to-buffer session-a)
+          (other-window -1)
+          (setq claude-code-ide-manager--current-session-key "/tmp/a")
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (directory)
+                       (cond
+                        ((equal directory "/tmp/a") session-a)
+                        ((equal directory "/tmp/b") session-b))))
+                    ((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                     (lambda (_directory)
+                       (get-buffer-create "*cc-status*"))))
+            (claude-code-ide-manager-switch-to-session "/tmp/b")
+            (should (gethash "/tmp/a" claude-code-ide-manager--layouts))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-a session-b extra (get-buffer "*cc-status*"))))))
+
+(ert-deftest claude-code-ide-test-manager-switch-persists-captured-layout ()
+  "Test switching saves the captured layout snapshot to persist storage."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-a (get-buffer-create "*cc-a*"))
+        (session-b (get-buffer-create "*cc-b*"))
+        (status-buffer (get-buffer-create "*cc-status*"))
+        (claude-code-ide-manager-persist-state t))
+    (unwind-protect
+        (progn
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/a"
+                       :display-name "a"
+                       :secondary-text "a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)
+                      (make-claude-code-ide-manager-item
+                       :session-key "/tmp/b"
+                       :display-name "b"
+                       :secondary-text "b"
+                       :pinned nil
+                       :order-key 2
+                       :live-p t)))
+          (setq claude-code-ide-manager--current-session-key "/tmp/a")
+          (setq claude-code-ide-manager--layouts (make-hash-table :test 'equal))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (directory)
+                       (cond
+                        ((equal directory "/tmp/a") session-a)
+                        ((equal directory "/tmp/b") session-b))))
+                    ((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                     (lambda (_directory) status-buffer)))
+            (delete-other-windows)
+            (switch-to-buffer session-a)
+            (split-window-right)
+            (other-window 1)
+            (switch-to-buffer (get-buffer-create "*cc-focus*"))
+            (other-window -1)
+            (claude-code-ide-manager-switch-to-session "/tmp/b")
+            (let ((saved (gethash 'claude-code-ide-manager--persisted-state
+                                  persist--test-store)))
+              (should saved)
+              (should (assoc "/tmp/a" (plist-get saved :layouts))))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-a session-b status-buffer (get-buffer "*cc-focus*"))))))
+
+(ert-deftest claude-code-ide-test-manager-builds-default-layout-with-magit ()
+  "Test first-open layout uses magit when available."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-session*"))
+        (status-buffer (get-buffer-create "*cc-status*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (_directory) session-buffer))
+                  ((symbol-function 'magit-status-setup-buffer)
+                   (lambda (_directory) status-buffer)))
+          (delete-other-windows)
+          (let ((window (claude-code-ide-manager--build-default-layout "/tmp/project-a")))
+            (should (window-live-p window))
+            (should (get-buffer-window session-buffer))
+            (should (get-buffer-window status-buffer))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer status-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-falls-back-to-dired-when-magit-unavailable ()
+  "Test status buffer falls back to dired when magit fails."
+  (let ((dired-buffer (get-buffer-create "*cc-dired*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magit-status-setup-buffer)
+                   (lambda (_directory)
+                     (error "no magit")))
+                  ((symbol-function 'dired-noselect)
+                   (lambda (_directory) dired-buffer)))
+          (should (eq (claude-code-ide-manager--open-status-buffer "/tmp/project-a")
+                      dired-buffer)))
+      (when (buffer-live-p dired-buffer)
+        (kill-buffer dired-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-switch-restores-last-selected-window ()
+  "Test restore selects the saved focused buffer when available."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-session*"))
+        (focus-buffer (get-buffer-create "*cc-focus*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer focus-buffer)
+          (split-window-right)
+          (other-window 1)
+          (switch-to-buffer session-buffer)
+          (other-window -1)
+          (puthash "/tmp/project-a"
+                   (claude-code-ide-manager--capture-layout "/tmp/project-a")
+                   claude-code-ide-manager--layouts)
+          (delete-other-windows)
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_directory) session-buffer)))
+            (claude-code-ide-manager-switch-to-session "/tmp/project-a")
+            (should (equal (window-buffer (selected-window)) focus-buffer))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer focus-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-switch-falls-back-to-session-buffer ()
+  "Test restore falls back to session buffer when focused buffer is gone."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-session*"))
+        (focus-buffer (get-buffer-create "*cc-focus*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer focus-buffer)
+          (split-window-right)
+          (other-window 1)
+          (switch-to-buffer session-buffer)
+          (other-window -1)
+          (let ((layout (claude-code-ide-manager--capture-layout "/tmp/project-a")))
+            (setf (plist-get layout :selected-buffer-name) "*cc-missing*")
+            (puthash "/tmp/project-a" layout claude-code-ide-manager--layouts))
+          (delete-other-windows)
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_directory) session-buffer)))
+            (claude-code-ide-manager-switch-to-session "/tmp/project-a")
+            (should (equal (window-buffer (selected-window)) session-buffer))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer focus-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-refreshes-when-target-buffer-disappears ()
+  "Test stale target refreshes manager state and errors cleanly."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/missing"
+               :display-name "missing"
+               :secondary-text "missing"
+               :pinned nil
+               :order-key 1
+               :live-p t)))
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        refreshed)
+    (cl-letf (((symbol-function 'claude-code-ide-manager-refresh)
+               (lambda ()
+                 (setq refreshed t)
+                 (setq claude-code-ide-manager--items nil)))
+              ((symbol-function 'claude-code-ide--get-session-buffer)
+               (lambda (_directory) nil)))
+      (should-error (claude-code-ide-manager-switch-to-session "/tmp/missing")
+                    :type 'user-error)
+      (should refreshed)
+      (should-not claude-code-ide-manager--items))))
 
 (ert-deftest claude-code-ide-test-get-working-directory ()
   "Test working directory detection."
@@ -636,6 +1119,13 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (transient-get-suffix 'claude-code-ide-menu "D"))
   (should (transient-get-suffix 'claude-code-ide-menu "l"))
   (should (transient-get-suffix 'claude-code-ide-menu "L")))
+
+(ert-deftest claude-code-ide-test-transient-exposes-manager-commands ()
+  "Test the main transient exposes cc-manager bindings."
+  (should (transient-get-suffix 'claude-code-ide-menu "m"))
+  (should (transient-get-suffix 'claude-code-ide-menu "M"))
+  (should (transient-get-suffix 'claude-code-ide-menu "h"))
+  (should (transient-get-suffix 'claude-code-ide-menu "g")))
 
 (ert-deftest claude-code-ide-test-start-if-no-session-allows-project-launch-with-only-attached-session ()
   "Test project-root launch is not blocked by an attached subdirectory session."
@@ -2898,12 +3388,12 @@ have completed before cleanup.  Waits up to 5 seconds."
         (progn
           (fset 'treemacs-safe-button-get
                 '(macro lambda (button-form property)
-                   (unless (equal button-form '(treemacs-current-button))
-                     (error "Expected direct treemacs-current-button form, got: %S"
-                            button-form))
-                   (unless (eq property :path)
-                     (error "Expected :path property, got: %S" property))
-                   "/home/user/project/src/from-treemacs.el"))
+                        (unless (equal button-form '(treemacs-current-button))
+                          (error "Expected direct treemacs-current-button form, got: %S"
+                                 button-form))
+                        (unless (eq property :path)
+                          (error "Expected :path property, got: %S" property))
+                        "/home/user/project/src/from-treemacs.el"))
           (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
                      (lambda () "*test-claude-buffer*"))
                     ((symbol-function 'claude-code-ide--terminal-send-string)
