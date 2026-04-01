@@ -330,6 +330,37 @@ have completed before cleanup.  Waits up to 5 seconds."
                       '("/tmp/repo/a" "/tmp/repo-nested/b"))
                      '("/tmp/repo/a"))))))
 
+(ert-deftest claude-code-ide-test-manager-repo-scope-includes-nested-roots-when-enabled ()
+  (let ((claude-code-ide-manager-repo-include-nested t))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
+               (lambda (session-key)
+                 (cond
+                  ((equal session-key "/tmp/repo/a") "/tmp/repo/")
+                  ((equal session-key "/tmp/repo/packages/lib") "/tmp/repo/packages/lib/")
+                  ((equal session-key "/tmp/other/c") "/tmp/other/")))))
+      (should (equal (claude-code-ide-manager--scope-session-keys
+                      '(:type repo :git-root "/tmp/repo/")
+                      '("/tmp/repo/a" "/tmp/repo/packages/lib" "/tmp/other/c"))
+                     '("/tmp/repo/a" "/tmp/repo/packages/lib"))))))
+
+(ert-deftest claude-code-ide-test-manager-repo-label-uses-basename-strategy ()
+  (let ((claude-code-ide-manager-repo-label-strategy 'basename))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--session-branch-name)
+               (lambda (_session-key) "feature-x")))
+      (should (equal (claude-code-ide-manager--scope-display-name
+                      '(:type repo :git-root "/tmp/repo/")
+                      "/tmp/repo/worktree-a")
+                     "worktree-a")))))
+
+(ert-deftest claude-code-ide-test-manager-repo-label-uses-branch-strategy ()
+  (let ((claude-code-ide-manager-repo-label-strategy 'branch))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--session-branch-name)
+               (lambda (_session-key) "feature-x")))
+      (should (equal (claude-code-ide-manager--scope-display-name
+                      '(:type repo :git-root "/tmp/repo/")
+                      "/tmp/repo/worktree-a")
+                     "feature-x")))))
+
 (ert-deftest claude-code-ide-test-manager-repo-label-falls-back-to-basename-when-detached ()
   (let ((claude-code-ide-manager-repo-label-strategy 'branch-or-basename))
     (cl-letf (((symbol-function 'claude-code-ide-manager--session-branch-name)
@@ -348,6 +379,17 @@ have completed before cleanup.  Waits up to 5 seconds."
                       :display-name "feature-x"))))
     (should (equal (claude-code-ide-manager--disambiguate-display-names items)
                    '("feature-x [backend]" "feature-x [docs]")))))
+
+(ert-deftest claude-code-ide-test-manager-repo-label-disambiguates-colliding-basenames ()
+  (let ((items (list (make-claude-code-ide-manager-item
+                      :session-key "/tmp/repo/apps/backend"
+                      :display-name "feature-x")
+                     (make-claude-code-ide-manager-item
+                      :session-key "/tmp/repo/services/backend"
+                      :display-name "feature-x"))))
+    (should (equal (claude-code-ide-manager--disambiguate-display-names items)
+                   '("feature-x [apps/backend]"
+                     "feature-x [services/backend]")))))
 
 (ert-deftest claude-code-ide-test-manager-repo-buffer-name-uses-git-root ()
   (let ((name (claude-code-ide-manager--buffer-name-for-scope

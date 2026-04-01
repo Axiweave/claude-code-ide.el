@@ -191,23 +191,50 @@
 
 (defun claude-code-ide-manager--disambiguate-display-names (items)
   "Return display names for ITEMS with duplicate labels disambiguated."
-  (let ((counts (make-hash-table :test 'equal)))
+  (let ((groups (make-hash-table :test 'equal))
+        (labels (make-hash-table :test 'equal)))
     (dolist (item items)
-      (puthash (claude-code-ide-manager-item-display-name item)
-               (1+ (gethash (claude-code-ide-manager-item-display-name item)
-                            counts 0))
-               counts))
-    (mapcar
-     (lambda (item)
-       (let ((display-name (claude-code-ide-manager-item-display-name item)))
-         (if (> (gethash display-name counts 0) 1)
-             (format "%s [%s]"
-                     display-name
-                     (file-name-nondirectory
-                      (directory-file-name
-                       (claude-code-ide-manager-item-session-key item))))
-           display-name)))
-     items)))
+      (let ((display-name (claude-code-ide-manager-item-display-name item)))
+        (push item (gethash display-name groups))
+        (puthash item display-name labels)))
+    (dolist (display-name (hash-table-keys groups))
+      (let ((group (nreverse (gethash display-name groups))))
+        (when (> (length group) 1)
+          (let ((suffix-length 1)
+                resolved)
+            (while (not resolved)
+              (let ((seen (make-hash-table :test 'equal))
+                    (collision nil))
+                (dolist (item group)
+                  (let* ((parts (split-string
+                                 (directory-file-name
+                                  (claude-code-ide-manager-item-session-key item))
+                                 "/" t))
+                         (suffix-parts (last parts (min suffix-length
+                                                       (length parts))))
+                         (suffix (string-join suffix-parts "/")))
+                    (if (gethash suffix seen)
+                        (setq collision t)
+                      (puthash suffix item seen))))
+                (if (or (not collision)
+                        (cl-every
+                         (lambda (item)
+                           (<= (length (split-string
+                                        (directory-file-name
+                                         (claude-code-ide-manager-item-session-key item))
+                                        "/" t))
+                               suffix-length))
+                         group))
+                    (progn
+                      (maphash
+                       (lambda (suffix item)
+                         (puthash item
+                                  (format "%s [%s]" display-name suffix)
+                                  labels))
+                       seen)
+                      (setq resolved t))
+                  (setq suffix-length (1+ suffix-length)))))))))
+    (mapcar (lambda (item) (gethash item labels)) items)))
 
 (defvar claude-code-ide--processes)
 
