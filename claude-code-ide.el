@@ -65,6 +65,8 @@
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-manager)
 (require 'claude-code-ide-mcp)
+(require 'claude-code-ide-session)
+(require 'claude-code-ide-session-idle)
 (require 'claude-code-ide-transient)
 (require 'claude-code-ide-mcp-server)
 (require 'claude-code-ide-emacs-tools)
@@ -514,126 +516,6 @@ INPUT contains the terminal output stream."
                                    (current-buffer))))
             (funcall orig-fun process input)))))))
 
-(defvar-local claude-code-ide--saved-cursor-type nil
-  "Saved cursor-type before entering vterm-copy-mode.")
-
-(defun claude-code-ide--vterm-copy-mode-hook ()
-  "Make sure cursor is visible in `vterm-copy-mode'.
-Saves the current cursor-type when entering copy mode and restores it
-when exiting, ensuring compatibility with evil-mode and other packages
-that manage cursor appearance."
-  (if vterm-copy-mode
-      ;; Entering copy mode: save current cursor-type and make cursor visible
-      (progn
-        (setq claude-code-ide--saved-cursor-type cursor-type)
-        (when (null cursor-type)
-          (setq cursor-type t)))
-    ;; Exiting copy mode: restore previous cursor-type
-    (setq cursor-type claude-code-ide--saved-cursor-type)))
-
-(defun claude-code-ide--configure-vterm-buffer ()
-  "Configure vterm for enhanced performance and visual quality.
-Establishes optimal terminal settings including rendering optimizations,
-cursor management, and process buffering for superior user experience."
-  ;; Disable automatic scrolling to bottom on output to prevent flickering
-  (setq-local vterm-scroll-to-bottom-on-output nil)
-  ;; Disable immediate redraw to batch updates and reduce flickering
-  (when (boundp 'vterm--redraw-immididately)
-    (setq-local vterm--redraw-immididately nil))
-  (when (boundp 'vterm--redraw-immediately)
-    (setq-local vterm--redraw-immediately nil))
-  ;; Try to prevent cursor flickering by disabling Emacs' own cursor management
-  (setq-local cursor-in-non-selected-windows nil)
-  (setq-local blink-cursor-mode nil)
-  (setq-local cursor-type nil)  ; Let vterm handle the cursor entirely
-  ;; disable hl-line-mode, eliminates another source of flicker
-  (setq-local global-hl-line-mode nil)
-  (when (featurep 'hl-line)
-    (hl-line-mode -1))
-  ;; make sure the non-breaking space in the prompt isn't themed
-  (face-remap-add-relative 'nobreak-space :inherit 'default)
-  ;; Register hook for copy-mode cursor visibility
-  (add-hook 'vterm-copy-mode-hook #'claude-code-ide--vterm-copy-mode-hook nil t)
-  ;; Increase process read buffering to batch more updates together
-  (when-let ((proc (get-buffer-process (current-buffer))))
-    (set-process-query-on-exit-flag proc nil)
-    ;; Try to make vterm read larger chunks at once
-    (when (fboundp 'process-put)
-      (process-put proc 'read-output-max 4096)))
-  ;; Set up rendering optimization
-  (when claude-code-ide-vterm-anti-flicker
-    (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer)))
-
-(defun claude-code-ide--configure-eat-buffer ()
-  "Configure eat for enhanced performance and visual quality."
-  ;; Disable cursor in non-selected windows to reduce flicker
-  (setq-local cursor-in-non-selected-windows nil)
-  (setq-local blink-cursor-mode nil)
-  (setq-local cursor-type nil)
-  ;; Disable hl-line-mode to eliminate another source of flicker
-  (when (featurep 'hl-line)
-    (hl-line-mode -1))
-  ;; Make sure the non-breaking space in the prompt isn't themed
-  (face-remap-add-relative 'nobreak-space :inherit 'default)
-  ;; Set up rendering optimization
-  (when claude-code-ide-vterm-anti-flicker
-    (advice-add 'eat--filter :around #'claude-code-ide--eat-smart-renderer)))
-
-
-;;; Terminal Backend Abstraction
-
-(defun claude-code-ide--terminal-ensure-backend ()
-  "Ensure the selected terminal backend is available."
-  (let ((backend (claude-code-ide--current-terminal-backend)))
-    (cond
-     ((eq backend 'vterm)
-      (unless (featurep 'vterm)
-        (require 'vterm nil t))
-      (unless (featurep 'vterm)
-        (user-error "The package vterm is not installed.  Please install the vterm package or change the terminal backend configuration to 'eat")))
-     ((eq backend 'eat)
-      (unless (featurep 'eat)
-        (require 'eat nil t))
-      (unless (featurep 'eat)
-        (user-error "The package eat is not installed.  Please install the eat package or change the terminal backend configuration to 'vterm")))
-     (t
-      (user-error "Invalid terminal backend: %s.  Valid options are 'vterm or 'eat" backend)))))
-
-(defun claude-code-ide--terminal-send-string (string &optional paste)
-  "Send STRING to the terminal in the current buffer."
-  (pcase (claude-code-ide--current-terminal-backend)
-    ('vterm
-     (vterm-send-string string paste))
-    ('eat
-     (when eat-terminal
-       (if paste
-           (eat-term-send-string-as-yank eat-terminal string)
-         (eat-term-send-string eat-terminal string))))
-    (_
-     (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
-
-(defun claude-code-ide--terminal-send-escape ()
-  "Send escape key to the terminal in the current buffer."
-  (pcase (claude-code-ide--current-terminal-backend)
-    ('vterm
-     (vterm-send-escape))
-    ('eat
-     (when eat-terminal
-       (eat-term-send-string eat-terminal "\e")))
-    (_
-     (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
-
-(defun claude-code-ide--terminal-send-return ()
-  "Send return key to the terminal in the current buffer."
-  (pcase (claude-code-ide--current-terminal-backend)
-    ('vterm
-     (vterm-send-return))
-    ('eat
-     (when eat-terminal
-       (eat-term-send-string eat-terminal "\r")))
-    (_
-     (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
-
 (defun claude-code-ide--find-prompt-buffer ()
   "Find a visible buffer whose file name matches a prompt/plan pattern.
 Scans all windows on all visible frames.  Returns the first
@@ -686,24 +568,6 @@ from the window where it was initially created."
               (width (window-body-width window)))
           (set-process-window-size proc height width))))))
 
-(defun claude-code-ide--setup-terminal-keybindings ()
-  "Set up keybindings for the Claude Code terminal buffer.
-This function binds:
-- M-RET (Alt-Return) to insert a newline
-- C-<escape> to send escape"
-  (pcase (claude-code-ide--current-terminal-backend)
-    ('vterm
-     ;; For vterm, we set up local keybindings in vterm-mode-map
-     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
-    ('eat
-     ;; For eat, we need to modify the semi-char mode map which is the default
-     ;; We use local-set-key to make it buffer-local
-     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
-    (_
-     (error "Unknown terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
-
 ;;; Terminal Reflow Glitch Prevention
 ;;
 ;; This section implements a workaround for Claude Code bug #1422
@@ -725,11 +589,6 @@ This function binds:
     ('vterm (bound-and-true-p vterm-copy-mode))
     ('eat (not (bound-and-true-p eat--semi-char-mode)))
     (_ nil)))
-
-(defun claude-code-ide--session-buffer-p (buffer)
-  "Check if BUFFER belongs to a Claude Code session."
-  (when-let ((name (if (stringp buffer) buffer (buffer-name buffer))))
-    (string-prefix-p "*claude-code[" name)))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
   "Filter terminal reflows to prevent height-only resize triggers.
@@ -1262,8 +1121,8 @@ Signals an error if terminal fails to initialize."
             (with-current-buffer buffer
               (setq-local claude-code-ide--session-cli-type cli-type)
               (setq-local claude-code-ide--terminal-backend backend)
-              (claude-code-ide--configure-vterm-buffer)
-              )
+              (claude-code-ide-session-mode 1)
+              (claude-code-ide-session-setup-buffer))
             (let ((process (get-buffer-process buffer)))
               (unless process
                 (error "Failed to get vterm process.  The vterm module may not be compiled correctly"))
@@ -1283,7 +1142,8 @@ Signals an error if terminal fails to initialize."
             (setq-local claude-code-ide--terminal-backend backend)
             (unless (eq major-mode 'eat-mode)
               (eat-mode))
-            (claude-code-ide--configure-eat-buffer)
+            (claude-code-ide-session-mode 1)
+            (claude-code-ide-session-setup-buffer)
             (when (and claude-code-ide-eat-preserve-position
                        ;; (eq (claude-code-ide--current-cli-type) 'claude)
                        (not (eq (claude-code-ide--current-cli-type) 'opencode))

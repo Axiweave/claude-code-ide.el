@@ -1,0 +1,172 @@
+;;; claude-code-ide-session-idle.el --- Session idle core for Claude Code IDE  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2025
+
+;; Author: Yoav Orot
+;; Keywords: ai, claude, sessions, idle
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;;; Commentary:
+
+;; Generic session idle infrastructure for Claude Code IDE.
+;; This module owns the package-level idle timer state, enable/disable
+;; commands, timer reset/fire helpers, and the hook that initializes
+;; session-local idle monitoring when a session buffer is set up.
+
+;;; Code:
+
+(require 'cl-lib)
+
+(declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
+
+(defvar claude-code-ide-session-setup-hook)
+
+(defgroup claude-code-ide-session-idle nil
+  "Idle monitoring for Claude Code IDE sessions."
+  :group 'claude-code-ide-session
+  :prefix "claude-code-ide-session-idle-")
+
+(defcustom claude-code-ide-session-idle-delay 30
+  "Idle delay in seconds before the session idle hook runs."
+  :type 'number
+  :group 'claude-code-ide-session-idle)
+
+(defcustom claude-code-ide-session-idle-default-enabled nil
+  "Whether session idle monitoring is enabled by default."
+  :type 'boolean
+  :group 'claude-code-ide-session-idle)
+
+(defcustom claude-code-ide-session-idle-suppressed-predicate nil
+  "Predicate function used to suppress session idle monitoring.
+When non-nil, it is called with the session buffer.  A non-nil return value
+prevents idle timer scheduling and idle hook execution."
+  :type '(choice (const :tag "Disabled" nil)
+                 (function :tag "Predicate"))
+  :group 'claude-code-ide-session-idle)
+
+(defvar claude-code-ide-session-idle-hook nil
+  "Hook run when a session idle timer fires.")
+
+(defvar-local claude-code-ide-session-idle-enabled nil
+  "Non-nil when idle monitoring is enabled for the current session buffer.")
+
+(defvar-local claude-code-ide-session-idle-timer nil
+  "Idle timer object for the current session buffer.")
+
+(defvaralias 'claude-code-ide-session-idle--enabled
+  'claude-code-ide-session-idle-enabled)
+
+(defvaralias 'claude-code-ide-session-idle--timer
+  'claude-code-ide-session-idle-timer)
+
+(defun claude-code-ide-session-idle--suppressed-p (&optional buffer)
+  "Return non-nil when idle monitoring should be suppressed."
+  (and (functionp claude-code-ide-session-idle-suppressed-predicate)
+       (funcall claude-code-ide-session-idle-suppressed-predicate
+                (or buffer (current-buffer)))))
+
+(defun claude-code-ide-session-idle--clear-timer ()
+  "Cancel the current session idle timer, if any."
+  (when (timerp claude-code-ide-session-idle-timer)
+    (cancel-timer claude-code-ide-session-idle-timer))
+  (setq claude-code-ide-session-idle-timer nil))
+
+(defun claude-code-ide-session-idle--ensure-session-buffer ()
+  "Signal a user error unless the current buffer is a session buffer."
+  (unless (claude-code-ide-session-buffer-p (current-buffer))
+    (user-error "Idle monitoring only applies to Claude Code session buffers")))
+
+(defun claude-code-ide-session-idle--maybe-reset-timer ()
+  "Reset idle monitoring when the current buffer is a session buffer."
+  (when (claude-code-ide-session-buffer-p (current-buffer))
+    (claude-code-ide-session-idle-reset-timer)))
+
+(defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
+  "Run ORIG-FN, then reset the idle timer for session buffers."
+  (prog1 (apply orig-fn args)
+    (claude-code-ide-session-idle--maybe-reset-timer)))
+
+(defun claude-code-ide-session-idle--install-output-observer (symbol)
+  "Install the output observer for SYMBOL when available."
+  (unless (advice-member-p #'claude-code-ide-session-idle--filter-advice symbol)
+    (advice-add symbol :around #'claude-code-ide-session-idle--filter-advice)))
+
+(defun claude-code-ide-session-idle--install-output-observers ()
+  "Install output observers for supported terminal backends."
+  (with-eval-after-load 'vterm
+    (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
+  (with-eval-after-load 'eat
+    (claude-code-ide-session-idle--install-output-observer 'eat--filter))
+  (when (featurep 'vterm)
+    (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
+  (when (featurep 'eat)
+    (claude-code-ide-session-idle--install-output-observer 'eat--filter)))
+
+(defun claude-code-ide-session-idle--fire-timer (buffer)
+  "Run the idle hook for BUFFER if monitoring is still active."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq claude-code-ide-session-idle-timer nil)
+      (when (and claude-code-ide-session-idle-enabled
+                 (not (claude-code-ide-session-idle--suppressed-p buffer)))
+        (run-hook-with-args 'claude-code-ide-session-idle-hook buffer)))))
+
+(defun claude-code-ide-session-idle-reset-timer ()
+  "Reset the idle timer for the current session buffer."
+  (interactive)
+  (claude-code-ide-session-idle--ensure-session-buffer)
+  (claude-code-ide-session-idle--clear-timer)
+  (when (and claude-code-ide-session-idle-enabled
+             (not (claude-code-ide-session-idle--suppressed-p (current-buffer)))
+             (claude-code-ide-session-buffer-p (current-buffer)))
+    (setq claude-code-ide-session-idle-timer
+          (run-with-idle-timer claude-code-ide-session-idle-delay nil
+                               #'claude-code-ide-session-idle--fire-timer
+                               (current-buffer))))
+  claude-code-ide-session-idle-timer)
+
+(defun claude-code-ide-session-idle-enable ()
+  "Enable idle monitoring in the current session buffer."
+  (interactive)
+  (claude-code-ide-session-idle--ensure-session-buffer)
+  (setq claude-code-ide-session-idle-enabled t)
+  (claude-code-ide-session-idle-reset-timer))
+
+(defun claude-code-ide-session-idle-disable ()
+  "Disable idle monitoring in the current session buffer."
+  (interactive)
+  (claude-code-ide-session-idle--ensure-session-buffer)
+  (setq claude-code-ide-session-idle-enabled nil)
+  (claude-code-ide-session-idle--clear-timer))
+
+(defun claude-code-ide-session-idle-toggle ()
+  "Toggle idle monitoring in the current session buffer."
+  (interactive)
+  (claude-code-ide-session-idle--ensure-session-buffer)
+  (if claude-code-ide-session-idle-enabled
+      (claude-code-ide-session-idle-disable)
+    (claude-code-ide-session-idle-enable)))
+
+(defun claude-code-ide-session-idle--setup-buffer ()
+  "Initialize idle monitoring state for the current session buffer."
+  (when (claude-code-ide-session-buffer-p (current-buffer))
+    (setq claude-code-ide-session-idle-enabled
+          claude-code-ide-session-idle-default-enabled)
+    (if claude-code-ide-session-idle-enabled
+        (claude-code-ide-session-idle-reset-timer)
+      (claude-code-ide-session-idle--clear-timer))))
+
+(claude-code-ide-session-idle--install-output-observers)
+
+(add-hook 'claude-code-ide-session-setup-hook
+          #'claude-code-ide-session-idle--setup-buffer)
+
+(provide 'claude-code-ide-session-idle)
+
+;;; claude-code-ide-session-idle.el ends here
