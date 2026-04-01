@@ -139,9 +139,8 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |
 | =M-x claude-code-ide-switch-to-buffer=    | Switch to project's Claude buffer                 |
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code sessions and switch   |
-| =M-x claude-code-ide-manager-show=        | Show the CC Manager sidebar                       |
+| =M-x claude-code-ide-manager-toggle-sidebar= | Toggle the CC Manager sidebar                   |
 | =M-x claude-code-ide-manager-focus=       | Focus the CC Manager sidebar                      |
-| =M-x claude-code-ide-manager-hide=        | Hide the CC Manager sidebar                       |
 | =M-x claude-code-ide-manager-refresh=     | Refresh the CC Manager live session list          |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
@@ -166,16 +165,100 @@ You can run multiple Claude Code instances simultaneously for different projects
 
 ** CC Manager
 
-=claude-code-ide-manager-show= opens a dedicated left sidebar for live Claude sessions, similar to a Treemacs-style frame panel. The manager is additive: existing commands such as =claude-code-ide-list-sessions= still work as before.
+=claude-code-ide-manager-toggle-sidebar= manages a dedicated left sidebar for live Claude sessions, similar to a Treemacs-style frame panel. The manager is additive: existing commands such as =claude-code-ide-list-sessions= still work as before.
 
 The manager can:
 
-- Show all live sessions with project name and path
+- Show all live sessions with project basename in the sidebar
 - Pin sessions to keep them at the top
 - Preserve manual ordering within pinned and unpinned groups
 - Restore per-session window layouts when you switch back
 
 When a session is opened through the manager for the first time, the content area defaults to a two-column layout with =magit-status= on the left and the Claude session on the right. If =magit= is unavailable, it falls back to =dired=. Manager state can persist across Emacs restarts through =persist.el=.
+
+*** Entry Points
+
+You can reach the manager in two ways:
+
+- Run =M-x claude-code-ide-manager-toggle-sidebar= to toggle the sidebar
+  - pass a positive prefix argument to force open and focus
+  - pass a negative prefix argument to force hide
+- Open the main transient and use:
+  - =t= to toggle the manager sidebar
+  - =n= to move to the next manager session and switch to it
+  - =p= to move to the previous manager session and switch to it
+  - =1..9= to switch to manager slots 1 through 9
+  - =0= to switch to manager slot 10
+  - =M= to focus the manager window
+  - =g= to refresh the live session list
+
+*** What The Sidebar Shows
+
+Each row in the sidebar represents one live Claude session derived from the existing session process table.
+
+- The row shows the project basename
+- The full project path is available via hover text
+- The currently active session row is highlighted
+- Pinned rows are marked with = [P] =
+- Visible rows are assigned quick slots =1..9, 0= from top to bottom
+
+Quick slots are derived from the current visible order. They are not stored separately, so pinning or reordering a row immediately changes which session each slot selects.
+
+*** Sidebar Keys
+
+When point is in the manager buffer:
+
+- =n= moves to the next row, cycling to the first row after the last, and switches to it
+- =p= moves to the previous row, cycling to the last row before the first, and switches to it
+- =RET= switches to the session at point
+- =SPC= switches to the session at point
+- =P= toggles pin state for the selected row
+- =M-p= moves the selected row up within its current pinned or unpinned group
+- =M-n= moves the selected row down within its current pinned or unpinned group
+- =g= refreshes the sidebar from the current live session table
+- =1..9= jump directly to the corresponding visible slot
+- =0= jumps to slot 10
+
+Pinned rows always stay above unpinned rows. Reordering only swaps items within the current bucket, so moving a pinned row never pushes it below unpinned rows.
+
+*** Switching Behavior
+
+The manager saves and restores layout per session key.
+
+When you switch from one managed session to another:
+
+1. The current layout is captured for the session you are leaving
+2. If the target session already has a saved layout, that layout is restored
+3. Otherwise a default layout is created:
+   - left content window: =magit-status=
+   - right content window: Claude session buffer
+   - if =magit= cannot open, =dired= is used instead
+4. Focus returns to the last selected window for that session when possible
+5. If the previous focused window no longer exists, focus falls back to the Claude session buffer
+
+If the target session buffer is gone by the time you switch, the manager refreshes itself and aborts cleanly instead of leaving stale sidebar state behind.
+
+*** Persistence
+
+The manager persists its own metadata with =persist.el=. This is separate from the live Claude session registry.
+
+When persistence is enabled, the manager remembers:
+
+- pinned state
+- manual ordering
+- saved layout snapshots
+- last selected buffer for layout restore
+
+When persistence is disabled, the same manager behavior still works for the current Emacs session, but no previous manager state is reloaded after restart.
+
+*** Configuration
+
+Manager-specific options:
+
+| Variable                                | Description                                  | Default |
+|-----------------------------------------+----------------------------------------------+---------|
+| ~claude-code-ide-manager-persist-state~ | Persist manager metadata across Emacs restarts | ~t~     |
+| ~claude-code-ide-manager-window-width~  | Width of the left manager side window        | ~22~    |
 
 ** Diff Viewing with Ediff
 

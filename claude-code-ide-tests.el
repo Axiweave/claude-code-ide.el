@@ -409,14 +409,14 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should (= (gethash "s10" slots) 10))
       (should-not (gethash "s11" slots)))))
 
-(ert-deftest claude-code-ide-test-manager-sidebar-renders-project-and-path ()
-  "Test sidebar render shows the project label and secondary path."
+(ert-deftest claude-code-ide-test-manager-sidebar-renders-project-with-hover-path ()
+  "Test sidebar render shows basename and keeps full path in hover text."
   (claude-code-ide-tests--reset-manager-state)
   (setq claude-code-ide-manager--items
         (list (make-claude-code-ide-manager-item
                :session-key "/tmp/project-a"
                :display-name "project-a"
-               :secondary-text "~/tmp/project-a"
+               :secondary-text "/tmp/project-a"
                :pinned t
                :order-key 1
                :live-p t)))
@@ -424,19 +424,78 @@ have completed before cleanup.  Waits up to 5 seconds."
     (claude-code-ide-manager--render)
     (should (equal major-mode 'claude-code-ide-manager-mode))
     (should (string-match-p "project-a" (buffer-string)))
-    (should (string-match-p "~/tmp/project-a" (buffer-string)))))
+    (should-not (string-match-p "/tmp/project-a" (buffer-string)))
+    (goto-char (point-min))
+    (should (equal (get-text-property (point) 'help-echo)
+                   "/tmp/project-a"))))
 
-(ert-deftest claude-code-ide-test-manager-show-creates-left-side-window ()
-  "Test showing the manager creates a left side window."
+(ert-deftest claude-code-ide-test-manager-sidebar-highlights-current-session ()
+  "Test sidebar render highlights the active session row."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "/tmp/project-a"
+               :pinned nil
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-b"
+               :display-name "project-b"
+               :secondary-text "/tmp/project-b"
+               :pinned nil
+               :order-key 2
+               :live-p t)))
+  (setq claude-code-ide-manager--current-session-key "/tmp/project-b")
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (goto-char (point-min))
+    (should-not (get-text-property (point) 'face))
+    (forward-line 1)
+    (should (eq (get-text-property (point) 'face)
+                'claude-code-ide-manager-current-session-face))))
+
+(ert-deftest claude-code-ide-test-manager-render-moves-point-to-current-session ()
+  "Test manager render places point on the active session row."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "/tmp/project-a"
+               :pinned nil
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-b"
+               :display-name "project-b"
+               :secondary-text "/tmp/project-b"
+               :pinned nil
+               :order-key 2
+               :live-p t)))
+  (setq claude-code-ide-manager--current-session-key "/tmp/project-b")
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                   "/tmp/project-b"))))
+
+(ert-deftest claude-code-ide-test-manager-default-window-width ()
+  "Test manager sidebar width default is narrow enough for basename rows."
+  (should (= claude-code-ide-manager-window-width 22)))
+
+(ert-deftest claude-code-ide-test-manager-toggle-sidebar-1-creates-left-side-window ()
+  "Test forcing the manager open creates a left side window."
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide--processes (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-show" :buffer nil)))
     (unwind-protect
         (progn
           (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (let ((window (claude-code-ide-manager-show)))
+          (let ((window (claude-code-ide-manager-toggle-sidebar 1)))
             (should (window-live-p window))
             (should (eq (window-parameter window 'window-side) 'left))
+            (should (eq (window-parameter window 'no-other-window) t))
             (should (equal (window-buffer window)
                            (claude-code-ide-manager--get-buffer)))))
       (ignore-errors (delete-process process-a))
@@ -445,8 +504,66 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-installs-window-package-compatibility ()
+  "Test manager compatibility setup hides the sidebar from window selectors."
+  (defvar winum-ignored-buffers-regexp)
+  (defvar aw-ignored-buffers)
+  (let ((winum-ignored-buffers-regexp nil)
+        (aw-ignored-buffers nil))
+    (claude-code-ide-manager--apply-window-compatibility)
+    (should (member (regexp-quote claude-code-ide-manager--buffer-name)
+                    winum-ignored-buffers-regexp))
+    (should (member 'claude-code-ide-manager-mode aw-ignored-buffers))))
+
+(ert-deftest claude-code-ide-test-manager-toggle-sidebar-toggles-window ()
+  "Test toggling the manager hides an existing sidebar and shows it again."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-toggle" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (let ((window (claude-code-ide-manager-toggle-sidebar)))
+            (should (window-live-p window))
+            (should (eq (selected-window) window))
+            (should (get-buffer-window (claude-code-ide-manager--get-buffer))))
+          (claude-code-ide-manager-toggle-sidebar)
+          (should-not (get-buffer-window (claude-code-ide-manager--get-buffer)))
+          (let ((window (claude-code-ide-manager-toggle-sidebar)))
+            (should (window-live-p window))
+            (should (eq (selected-window) window))
+            (should (get-buffer-window (claude-code-ide-manager--get-buffer)))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-toggle-sidebar-arg-controls-visibility ()
+  "Test toggle arguments force open or hide without the toggle heuristic."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-toggle-arg" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (let ((window (claude-code-ide-manager-toggle-sidebar 1)))
+            (should (window-live-p window))
+            (should (eq (selected-window) window)))
+          (let ((window (claude-code-ide-manager-toggle-sidebar 1)))
+            (should (window-live-p window))
+            (should (eq (selected-window) window))
+            (should (get-buffer-window (claude-code-ide-manager--get-buffer))))
+          (should-not (claude-code-ide-manager-toggle-sidebar -1))
+          (should-not (get-buffer-window (claude-code-ide-manager--get-buffer))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-pin-command-updates-selected-row ()
-  "Test pin command toggles the row at point."
+  "Test uppercase P toggles pin state for the row at point."
   (claude-code-ide-tests--reset-manager-state)
   (setq claude-code-ide-manager--items
         (list (make-claude-code-ide-manager-item
@@ -459,9 +576,141 @@ have completed before cleanup.  Waits up to 5 seconds."
   (with-current-buffer (claude-code-ide-manager--get-buffer)
     (claude-code-ide-manager--render)
     (goto-char (point-min))
-    (claude-code-ide-manager-toggle-pin)
+    (call-interactively (key-binding (kbd "P")))
     (should (claude-code-ide-manager-item-pinned
              (car claude-code-ide-manager--items)))))
+
+(ert-deftest claude-code-ide-test-manager-space-switches-session-at-point ()
+  "Test SPC activates the manager row at point."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "/tmp/project-a"
+               :pinned nil
+               :order-key 1
+               :live-p t)))
+  (let (switched)
+    (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+               (lambda (session-key)
+                 (setq switched session-key))))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (goto-char (point-min))
+        (call-interactively (key-binding (kbd "SPC")))
+        (should (equal switched "/tmp/project-a"))))))
+
+(ert-deftest claude-code-ide-test-manager-n-and-p-move-and-switch-between-rows ()
+  "Test n/p move point and switch to the selected visible row."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/a"
+               :display-name "a"
+               :secondary-text "/tmp/a"
+               :pinned nil
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/b"
+               :display-name "b"
+               :secondary-text "/tmp/b"
+               :pinned nil
+               :order-key 2
+               :live-p t)))
+  (let (switched)
+    (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+               (lambda (session-key)
+                 (setq switched session-key))))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (goto-char (point-min))
+        (call-interactively (key-binding (kbd "n")))
+        (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                       "/tmp/b"))
+        (should (equal switched "/tmp/b"))
+        (call-interactively (key-binding (kbd "p")))
+        (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                       "/tmp/a"))
+        (should (equal switched "/tmp/a"))))))
+
+(ert-deftest claude-code-ide-test-manager-n-and-p-cycle-between-ends ()
+  "Test n/p wrap around the visible manager rows."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/a"
+               :display-name "a"
+               :secondary-text "/tmp/a"
+               :pinned nil
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/b"
+               :display-name "b"
+               :secondary-text "/tmp/b"
+               :pinned nil
+               :order-key 2
+               :live-p t)))
+  (let (switched)
+    (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+               (lambda (session-key)
+                 (setq switched session-key))))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (goto-char (point-min))
+        (call-interactively (key-binding (kbd "p")))
+        (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                       "/tmp/b"))
+        (should (equal switched "/tmp/b"))
+        (call-interactively (key-binding (kbd "n")))
+        (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                       "/tmp/a"))
+        (should (equal switched "/tmp/a"))))))
+
+(ert-deftest claude-code-ide-test-manager-next-line-works-outside-sidebar ()
+  "Test manager next-line can be invoked when the sidebar is not selected."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/a"
+               :display-name "a"
+               :secondary-text "/tmp/a"
+               :pinned nil
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/b"
+               :display-name "b"
+               :secondary-text "/tmp/b"
+               :pinned nil
+               :order-key 2
+               :live-p t)))
+  (setq claude-code-ide-manager--current-session-key "/tmp/a")
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-next-outside-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-next-outside-b" :buffer nil))
+        switched)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+                   (lambda (session-key)
+                     (setq switched session-key)
+                     session-key)))
+          (puthash "/tmp/a" process-a claude-code-ide--processes)
+          (puthash "/tmp/b" process-b claude-code-ide--processes)
+          (switch-to-buffer (get-buffer-create "*cc-outside*"))
+          (claude-code-ide-manager-next-line)
+          (should (equal switched "/tmp/b")))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list (get-buffer "*cc-outside*")
+                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
 (ert-deftest claude-code-ide-test-manager-move-up-swaps-order-within-bucket ()
   "Test move-up swaps row order within the same pin bucket."
@@ -484,7 +733,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (with-current-buffer (claude-code-ide-manager--get-buffer)
     (claude-code-ide-manager--render)
     (goto-char (point-min))
-    (forward-line 2)
+    (forward-line 1)
     (claude-code-ide-manager-move-up)
     (should (equal (mapcar #'claude-code-ide-manager-item-session-key
                            (claude-code-ide-manager--sorted-items
@@ -623,6 +872,32 @@ have completed before cleanup.  Waits up to 5 seconds."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list session-buffer status-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-switch-from-sidebar-builds-default-layout ()
+  "Test switching from the manager sidebar can build the default layout."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-session*"))
+        (status-buffer (get-buffer-create "*cc-status*"))
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-sidebar-switch" :buffer nil)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (_directory) session-buffer))
+                  ((symbol-function 'magit-status-setup-buffer)
+                   (lambda (_directory) status-buffer)))
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-manager-focus)
+          (let ((window (claude-code-ide-manager-switch-to-session "/tmp/project-a")))
+            (should (window-live-p window))
+            (should (eq (window-buffer window) session-buffer))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer status-buffer
+                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
 (ert-deftest claude-code-ide-test-manager-falls-back-to-dired-when-magit-unavailable ()
   "Test status buffer falls back to dired when magit fails."
@@ -1122,9 +1397,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-transient-exposes-manager-commands ()
   "Test the main transient exposes cc-manager bindings."
-  (should (transient-get-suffix 'claude-code-ide-menu "m"))
+  (should (transient-get-suffix 'claude-code-ide-menu "t"))
+  (should (transient-get-suffix 'claude-code-ide-menu "n"))
+  (should (transient-get-suffix 'claude-code-ide-menu "p"))
+  (should (transient-get-suffix 'claude-code-ide-menu "1"))
+  (should (transient-get-suffix 'claude-code-ide-menu "0"))
   (should (transient-get-suffix 'claude-code-ide-menu "M"))
-  (should (transient-get-suffix 'claude-code-ide-menu "h"))
   (should (transient-get-suffix 'claude-code-ide-menu "g")))
 
 (ert-deftest claude-code-ide-test-start-if-no-session-allows-project-launch-with-only-attached-session ()
