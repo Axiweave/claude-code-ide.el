@@ -304,6 +304,14 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test manager module loads with the main package."
   (should (featurep 'claude-code-ide-manager)))
 
+(ert-deftest claude-code-ide-test-manager-global-scope-key-is-stable ()
+  (should (equal (claude-code-ide-manager--scope-key '(:type global))
+                 "global")))
+
+(ert-deftest claude-code-ide-test-manager-global-buffer-name-remains-unchanged ()
+  (should (equal (claude-code-ide-manager--buffer-name-for-scope '(:type global))
+                 "*claude-code-manager*")))
+
 (ert-deftest claude-code-ide-test-manager-persistence-toggle-disables-reload ()
   "Test manager skips reload when persistence is disabled."
   (claude-code-ide-tests--reset-manager-state)

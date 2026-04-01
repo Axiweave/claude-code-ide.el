@@ -98,6 +98,22 @@
 (defconst claude-code-ide-manager--buffer-name "*claude-code-manager*"
   "Manager sidebar buffer name.")
 
+(defun claude-code-ide-manager--scope-key (scope)
+  "Return a stable key for manager SCOPE."
+  (pcase (plist-get scope :type)
+    ('global "global")
+    ('repo (format "repo:%s" (plist-get scope :git-root)))
+    (_ (error "Unknown manager scope: %S" scope))))
+
+(defun claude-code-ide-manager--buffer-name-for-scope (scope)
+  "Return the manager buffer name for SCOPE."
+  (pcase (plist-get scope :type)
+    ('global claude-code-ide-manager--buffer-name)
+    ('repo (format "*claude-code-manager:%s*"
+                   (file-name-nondirectory
+                    (directory-file-name (plist-get scope :git-root)))))
+    (_ (error "Unknown manager scope: %S" scope))))
+
 (defvar claude-code-ide--processes)
 
 (defvar claude-code-ide-manager--current-session-key nil
@@ -403,7 +419,8 @@ Idle markers take precedence over pinned markers."
 
 (defun claude-code-ide-manager--get-buffer ()
   "Return the manager buffer."
-  (let ((buffer (get-buffer-create claude-code-ide-manager--buffer-name)))
+  (let ((buffer (get-buffer-create
+                 (claude-code-ide-manager--buffer-name-for-scope '(:type global)))))
     (with-current-buffer buffer
       (unless (derived-mode-p 'claude-code-ide-manager-mode)
         (claude-code-ide-manager-mode)))
