@@ -204,6 +204,20 @@ Each row in the sidebar represents one live Claude session derived from the exis
 
 Quick slots are derived from the current visible order. They are not stored separately, so pinning or reordering a row immediately changes which session each slot selects.
 
+*** Idle Indicator
+
+Each row reserves a left gutter so the session names stay aligned whether or not an idle marker is present.
+
+- Idle-enabled rows that are currently idle show =🔔= in that gutter
+- Rows that are not idle keep the same alignment with blank gutter padding
+- Idle highlighting applies only to non-current rows
+- The current session keeps =claude-code-ide-manager-current-session-face= even when it is idle
+
+#+begin_example
+🔔 project-a
+  project-b
+#+end_example
+
 *** Sidebar Keys
 
 When point is in the manager buffer:

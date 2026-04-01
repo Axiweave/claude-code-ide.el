@@ -248,6 +248,19 @@ Ensures a clean state before each test that involves process management."
   (when (boundp 'claude-code-ide-mcp--sessions)
     (clrhash claude-code-ide-mcp--sessions)))
 
+(defun claude-code-ide-tests--manager-row-slot-column ()
+  "Return the visual column where the current row's slot text begins."
+  (save-excursion
+    (beginning-of-line)
+    (re-search-forward "[0-9]+\\." (line-end-position) t)
+    (goto-char (match-beginning 0))
+    (current-column)))
+
+(defun claude-code-ide-tests--manager-row-text ()
+  "Return the current manager row as plain text."
+  (buffer-substring-no-properties (line-beginning-position)
+                                   (line-end-position)))
+
 (defun claude-code-ide-tests--reset-manager-state ()
   "Reset cc-manager test state."
   (setq persist--test-store (make-hash-table :test 'eq))
@@ -465,6 +478,361 @@ have completed before cleanup.  Waits up to 5 seconds."
     (forward-line 1)
     (should (eq (get-text-property (point) 'face)
                 'claude-code-ide-manager-current-session-face))))
+
+(ert-deftest claude-code-ide-test-manager-render-idle-indicator-aligns-slot-column ()
+  "Test idle and non-idle rows keep the slot column aligned."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((idle-buffer (get-buffer-create "*cc-idle*"))
+        (active-buffer (get-buffer-create "*cc-active*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer idle-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (with-current-buffer active-buffer
+            (setq-local claude-code-ide-session-idle-enabled nil
+                        claude-code-ide-session-idle-p nil))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)
+                      (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-b"
+                       :display-name "project-b"
+                       :secondary-text "/tmp/project-b"
+                       :pinned nil
+                       :order-key 2
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (session-key)
+                       (cond
+                        ((equal session-key "/tmp/project-a") idle-buffer)
+                        ((equal session-key "/tmp/project-b") active-buffer)))))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (let ((idle-row (buffer-substring-no-properties
+                               (line-beginning-position)
+                               (line-end-position)))
+                    (idle-column (claude-code-ide-tests--manager-row-slot-column)))
+                (forward-line 1)
+                (let ((active-row (buffer-substring-no-properties
+                                   (line-beginning-position)
+                                   (line-end-position)))
+                      (active-column (claude-code-ide-tests--manager-row-slot-column)))
+                  (should (= idle-column active-column))
+                  (should (string-match-p "🔔" idle-row))
+                  (should-not (string-match-p "🔔" active-row)))))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list idle-buffer active-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-render-idle-face-respects-current-session-priority ()
+  "Test current idle rows keep the current-session face and others use idle face."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((idle-buffer (get-buffer-create "*cc-idle-priority*"))
+        (current-buffer (get-buffer-create "*cc-current-priority*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer idle-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (with-current-buffer current-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)
+                      (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-b"
+                       :display-name "project-b"
+                       :secondary-text "/tmp/project-b"
+                       :pinned nil
+                       :order-key 2
+                       :live-p t)))
+          (setq claude-code-ide-manager--current-session-key "/tmp/project-b")
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (session-key)
+                       (cond
+                        ((equal session-key "/tmp/project-a") idle-buffer)
+                        ((equal session-key "/tmp/project-b") current-buffer)))))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (should (eq (get-text-property (point) 'face)
+                          'claude-code-ide-manager-idle-session-face))
+              (forward-line 1)
+              (should (eq (get-text-property (point) 'face)
+                          'claude-code-ide-manager-current-session-face)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list idle-buffer current-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-idle-indicator-uses-live-session-state ()
+  "Test the bell follows live buffer state after rerender without mutating items."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((idle-buffer (get-buffer-create "*cc-live-idle*"))
+        (active-buffer (get-buffer-create "*cc-live-active*")))
+    (unwind-protect
+        (let ((serialized-items-before nil))
+          (with-current-buffer idle-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (with-current-buffer active-buffer
+            (setq-local claude-code-ide-session-idle-enabled nil
+                        claude-code-ide-session-idle-p nil))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)
+                      (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-b"
+                       :display-name "project-b"
+                       :secondary-text "/tmp/project-b"
+                       :pinned nil
+                       :order-key 2
+                       :live-p t)))
+          (setq serialized-items-before
+                (mapcar #'claude-code-ide-manager--serialize-item
+                        claude-code-ide-manager--items))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (session-key)
+                       (cond
+                        ((equal session-key "/tmp/project-a") idle-buffer)
+                        ((equal session-key "/tmp/project-b") active-buffer)))))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (should (string-match-p "🔔"
+                                      (buffer-substring-no-properties
+                                       (line-beginning-position)
+                                       (line-end-position))))
+              (forward-line 1)
+              (should-not (string-match-p "🔔"
+                                          (buffer-substring-no-properties
+                                           (line-beginning-position)
+                                           (line-end-position))))
+              (with-current-buffer idle-buffer
+                (setq-local claude-code-ide-session-idle-enabled nil
+                            claude-code-ide-session-idle-p nil))
+              (with-current-buffer active-buffer
+                (setq-local claude-code-ide-session-idle-enabled t
+                            claude-code-ide-session-idle-p t))
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (should-not (string-match-p "🔔"
+                                          (buffer-substring-no-properties
+                                           (line-beginning-position)
+                                           (line-end-position))))
+              (forward-line 1)
+              (should (string-match-p "🔔"
+                                      (buffer-substring-no-properties
+                                       (line-beginning-position)
+                                       (line-end-position))))))
+          (should (equal serialized-items-before
+                         (mapcar #'claude-code-ide-manager--serialize-item
+                                 claude-code-ide-manager--items))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list idle-buffer active-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-visible-sidebar-updates-on-idle-transitions ()
+  "Test the visible manager updates when a session becomes idle or active."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-idle-transition*"))
+        (manager-buffer (claude-code-ide-manager--get-buffer))
+        (content-buffer (get-buffer-create "*cc-content*"))
+        (timer-called nil))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[idle-transition]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (set-window-buffer (split-window-right) manager-buffer)
+          (should (get-buffer-window manager-buffer))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) session-buffer))
+                    ((symbol-function 'run-with-idle-timer)
+                     (lambda (&rest _args)
+                       (setq timer-called t)
+                       'mock-idle-timer)))
+            (with-current-buffer manager-buffer
+              (claude-code-ide-manager--render)
+              (should-not (string-match-p "🔔"
+                                          (claude-code-ide-tests--manager-row-text))))
+            (claude-code-ide-session-idle--fire-timer session-buffer)
+            (with-current-buffer manager-buffer
+              (should (string-match-p "🔔"
+                                      (claude-code-ide-tests--manager-row-text))))
+            (with-current-buffer session-buffer
+              (claude-code-ide-session-idle-reset-timer))
+            (with-current-buffer manager-buffer
+              (should-not (string-match-p "🔔"
+                                          (claude-code-ide-tests--manager-row-text))))
+            (should timer-called)))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer manager-buffer content-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-non-idle-reset-does-not-rerender ()
+  "Test ordinary reset calls do not rerender the visible manager."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-non-idle-reset*"))
+        (manager-buffer (claude-code-ide-manager--get-buffer))
+        (content-buffer (get-buffer-create "*cc-content-reset*"))
+        (refresh-count 0))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[non-idle-reset]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (set-window-buffer (split-window-right) manager-buffer)
+          (should (get-buffer-window manager-buffer))
+          (let ((orig-refresh
+                 (symbol-function 'claude-code-ide-manager--refresh-sidebar-state)))
+            (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                       (lambda (_session-key) session-buffer))
+                      ((symbol-function 'run-with-idle-timer)
+                       (lambda (&rest _args)
+                         'mock-idle-timer))
+                      ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state)
+                       (lambda ()
+                         (setq refresh-count (1+ refresh-count))
+                         (funcall orig-refresh))))
+              (with-current-buffer manager-buffer
+                (claude-code-ide-manager--render))
+              (setq refresh-count 0)
+              (with-current-buffer session-buffer
+                (claude-code-ide-session-idle-reset-timer))
+              (should (= refresh-count 0)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer manager-buffer content-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-non-idle-output-does-not-rerender ()
+  "Test ordinary backend output does not rerender the visible manager."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-non-idle-output*"))
+        (manager-buffer (claude-code-ide-manager--get-buffer))
+        (content-buffer (get-buffer-create "*cc-content-output*"))
+        (refresh-count 0))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[non-idle-output]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (set-window-buffer (split-window-right) manager-buffer)
+          (should (get-buffer-window manager-buffer))
+          (let ((orig-refresh
+                 (symbol-function 'claude-code-ide-manager--refresh-sidebar-state)))
+            (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                       (lambda (_session-key) session-buffer))
+                      ((symbol-function 'process-buffer)
+                       (lambda (_process) session-buffer))
+                      ((symbol-function 'run-with-idle-timer)
+                       (lambda (&rest _args) 'mock-idle-timer))
+                      ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state)
+                       (lambda ()
+                         (setq refresh-count (1+ refresh-count))
+                         (funcall orig-refresh))))
+              (with-current-buffer manager-buffer
+                (claude-code-ide-manager--render))
+              (setq refresh-count 0)
+              (with-current-buffer content-buffer
+                (vterm--filter 'mock-process "output"))
+              (should (= refresh-count 0)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer manager-buffer content-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-render-does-not-error-when-idle-vars-are-unbound ()
+  "Test manager render tolerates session buffers that lack idle locals."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-no-idle-vars*"))
+        (manager-buffer (claude-code-ide-manager--get-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[no-idle-vars]*" t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) session-buffer))
+                    ((symbol-function 'boundp)
+                     (let ((orig-boundp (symbol-function 'boundp)))
+                       (lambda (symbol)
+                         (if (memq symbol '(claude-code-ide-session-idle-enabled
+                                            claude-code-ide-session-idle-p))
+                             nil
+                           (funcall orig-boundp symbol))))))
+            (with-current-buffer manager-buffer
+              (let (error-signaled)
+                (condition-case err
+                    (claude-code-ide-manager--render)
+                  (error (setq error-signaled err)))
+                (should-not error-signaled)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer manager-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-switch-refreshes-sidebar-highlight ()
   "Test switching sessions rerenders the manager highlight."

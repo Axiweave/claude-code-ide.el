@@ -23,6 +23,10 @@
 (require 'persist)
 
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
+(declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
+(declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
+
+(defvar claude-code-ide-session-idle-hook)
 
 (defgroup claude-code-ide-manager nil
   "Session manager for Claude Code IDE."
@@ -61,6 +65,17 @@
   '((t :inherit highlight))
   "Face used to highlight the active session in the manager sidebar."
   :group 'claude-code-ide-manager)
+
+(defface claude-code-ide-manager-idle-session-face
+  '((t :background "red"))
+  "Face used to highlight idle sessions in the manager sidebar."
+  :group 'claude-code-ide-manager)
+
+(defconst claude-code-ide-manager--bell-glyph "🔔"
+  "Bell glyph used to mark idle sessions in the manager sidebar.")
+
+(defconst claude-code-ide-manager--bell-gutter-width 2
+  "Fixed display width for the idle bell gutter.")
 
 (cl-defstruct claude-code-ide-manager-item
   "Sidebar row state for a managed session."
@@ -274,6 +289,83 @@
         (setq slot (1+ slot))))
     slots))
 
+(defun claude-code-ide-manager--buffer-local-value (variable buffer)
+  "Return VARIABLE's value in BUFFER when VARIABLE is bound there."
+  (when (and (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (boundp variable)))
+    (buffer-local-value variable buffer)))
+
+(defun claude-code-ide-manager--session-idle-p (session-key)
+  "Return non-nil when SESSION-KEY's live buffer is idle-enabled and idle."
+  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+    (and (claude-code-ide-manager--buffer-local-value
+          'claude-code-ide-session-idle-enabled buffer)
+         (claude-code-ide-manager--buffer-local-value
+          'claude-code-ide-session-idle-p buffer))))
+
+(defun claude-code-ide-manager--bell-gutter (session-key)
+  "Return a fixed-width bell gutter for SESSION-KEY."
+  (let* ((bell (if (claude-code-ide-manager--session-idle-p session-key)
+                   claude-code-ide-manager--bell-glyph
+                 ""))
+         (padding (max 0 (- claude-code-ide-manager--bell-gutter-width
+                            (string-width bell)))))
+    (concat bell (make-string padding ?\s))))
+
+(defun claude-code-ide-manager--row-face (session-key)
+  "Return the face to apply to SESSION-KEY's row."
+  (cond
+   ((equal session-key claude-code-ide-manager--current-session-key)
+    'claude-code-ide-manager-current-session-face)
+   ((claude-code-ide-manager--session-idle-p session-key)
+    'claude-code-ide-manager-idle-session-face)))
+
+(defun claude-code-ide-manager--visible-window ()
+  "Return the live manager window when the sidebar is visible."
+  (when-let ((buffer (get-buffer claude-code-ide-manager--buffer-name))
+             (window (get-buffer-window buffer)))
+    window))
+
+(defun claude-code-ide-manager--refresh-on-idle-transition (&rest _args)
+  "Refresh the manager sidebar after an idle state transition."
+  (when (claude-code-ide-manager--visible-window)
+    (claude-code-ide-manager--refresh-sidebar-state)))
+
+(defun claude-code-ide-manager--refresh-after-idle-clear (orig-fn &rest args)
+  "Refresh the sidebar when ORIG-FN clears a previously idle session."
+  (let ((was-idle (and (bound-and-true-p claude-code-ide-session-idle-enabled)
+                       (bound-and-true-p claude-code-ide-session-idle-p))))
+    (prog1 (apply orig-fn args)
+      (when was-idle
+        (claude-code-ide-manager--refresh-on-idle-transition)))))
+
+(defun claude-code-ide-manager--install-idle-refresh-hooks ()
+  "Refresh the manager sidebar when session idle state changes."
+  (unless (memq #'claude-code-ide-manager--refresh-on-idle-transition
+                claude-code-ide-session-idle-hook)
+    (add-hook 'claude-code-ide-session-idle-hook
+              #'claude-code-ide-manager--refresh-on-idle-transition))
+  (when (advice-member-p #'claude-code-ide-manager--refresh-on-idle-transition
+                         'claude-code-ide-session-idle-reset-timer)
+    (advice-remove 'claude-code-ide-session-idle-reset-timer
+                   #'claude-code-ide-manager--refresh-on-idle-transition))
+  (when (advice-member-p #'claude-code-ide-manager--refresh-on-idle-transition
+                         'claude-code-ide-session-idle-disable)
+    (advice-remove 'claude-code-ide-session-idle-disable
+                   #'claude-code-ide-manager--refresh-on-idle-transition))
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
+                           'claude-code-ide-session-idle-reset-timer)
+    (advice-add 'claude-code-ide-session-idle-reset-timer
+                :around #'claude-code-ide-manager--refresh-after-idle-clear))
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
+                           'claude-code-ide-session-idle-disable)
+    (advice-add 'claude-code-ide-session-idle-disable
+                :around #'claude-code-ide-manager--refresh-after-idle-clear)))
+
+(with-eval-after-load 'claude-code-ide-session-idle
+  (claude-code-ide-manager--install-idle-refresh-hooks))
+
 (defun claude-code-ide-manager-refresh-items ()
   "Refresh manager items from the live session registry."
   (claude-code-ide-manager--load-state)
@@ -302,19 +394,24 @@
 (defun claude-code-ide-manager--insert-item (item slot)
   "Insert ITEM into the current buffer using SLOT."
   (let ((start (point)))
-    (insert (format "%s %s%s\n"
-                    (if (numberp slot) (format "%d." slot) " -")
-                    (if (claude-code-ide-manager-item-pinned item) "[P] " "")
-                    (claude-code-ide-manager-item-display-name item)))
+    (insert (claude-code-ide-manager--bell-gutter
+             (claude-code-ide-manager-item-session-key item)))
+    (insert " ")
+    (insert (if (numberp slot) (format "%d." slot) " -"))
+    (when (claude-code-ide-manager-item-pinned item)
+      (insert " [P]"))
+    (insert " ")
+    (insert (claude-code-ide-manager-item-display-name item))
+    (insert "\n")
     (add-text-properties
      start (point)
      (append
       (list 'claude-code-ide-manager-session-key
             (claude-code-ide-manager-item-session-key item)
             'help-echo (claude-code-ide-manager-item-secondary-text item))
-      (when (equal (claude-code-ide-manager-item-session-key item)
-                   claude-code-ide-manager--current-session-key)
-        (list 'face 'claude-code-ide-manager-current-session-face))))))
+      (when-let ((face (claude-code-ide-manager--row-face
+                        (claude-code-ide-manager-item-session-key item))))
+        (list 'face face))))))
 
 (defun claude-code-ide-manager--render ()
   "Render the manager sidebar."
