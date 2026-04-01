@@ -47,6 +47,8 @@
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
 (declare-function claude-code-ide--get-project-root "claude-code-ide" ())
 (declare-function claude-code-ide-manager-toggle-sidebar "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-toggle-global-sidebar "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-toggle-repo-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-next-line "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-previous-line "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-by-slot "claude-code-ide-manager" (slot))
@@ -507,7 +509,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ("l" "List related sessions" claude-code-ide-list-related-sessions)
    ("L" "List all sessions" claude-code-ide-list-sessions)]
    ["Manager"
-    ("t" "Toggle manager" claude-code-ide-manager-toggle-sidebar)
+    ("t" "Toggle default manager" claude-code-ide-manager-toggle-sidebar)
+    ("T" "Toggle global manager" claude-code-ide-manager-toggle-global-sidebar)
+    ("R" "Toggle repo manager" claude-code-ide-manager-toggle-repo-sidebar)
     ("n" "Next manager session" claude-code-ide-manager-next-line)
     ("p" "Previous manager session" claude-code-ide-manager-previous-line)
     ("P" "Pin current manager session" claude-code-ide-manager-toggle-current-session-pin)

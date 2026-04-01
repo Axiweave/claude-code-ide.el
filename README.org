@@ -139,8 +139,12 @@ The easiest way to interact with Claude Code IDE is through the transient menu i
 | =M-x claude-code-ide-stop=                | Stop Claude Code for the current project          |
 | =M-x claude-code-ide-switch-to-buffer=    | Switch to project's Claude buffer                 |
 | =M-x claude-code-ide-list-sessions=       | List all active Claude Code sessions and switch   |
-| =M-x claude-code-ide-manager-toggle-sidebar= | Toggle the CC Manager sidebar                   |
-| =M-x claude-code-ide-manager-focus=       | Focus the CC Manager sidebar                      |
+| =M-x claude-code-ide-manager-toggle-sidebar= | Toggle the default CC Manager sidebar           |
+| =M-x claude-code-ide-manager-toggle-global-sidebar= | Toggle the global CC Manager sidebar    |
+| =M-x claude-code-ide-manager-toggle-repo-sidebar= | Toggle the repo-local CC Manager sidebar  |
+| =M-x claude-code-ide-manager-focus=       | Focus the default CC Manager sidebar             |
+| =M-x claude-code-ide-manager-focus-global= | Focus the global CC Manager sidebar             |
+| =M-x claude-code-ide-manager-focus-repo=  | Focus the repo-local CC Manager sidebar          |
 | =M-x claude-code-ide-manager-refresh=     | Refresh the CC Manager live session list          |
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
@@ -167,9 +171,17 @@ You can run multiple Claude Code instances simultaneously for different projects
 
 =claude-code-ide-manager-toggle-sidebar= manages a dedicated left sidebar for live Claude sessions, similar to a Treemacs-style frame panel. The manager is additive: existing commands such as =claude-code-ide-list-sessions= still work as before.
 
+CC Manager supports two scope families:
+
+- a global manager across all live sessions
+- a repo-local manager keyed by the current Git root
+
+Generic commands such as =claude-code-ide-manager-toggle-sidebar= and =claude-code-ide-manager-focus= use =claude-code-ide-manager-default-target= to choose which scope to target. Explicit global and repo-local commands remain available when you want to bypass that policy.
+
 The manager can:
 
 - Show all live sessions with project basename in the sidebar
+- Show repo-local sessions with branch-first labels by default, falling back to basename when detached
 - Pin sessions to keep them at the top
 - Preserve manual ordering within pinned and unpinned groups
 - Restore per-session window layouts when you switch back
@@ -183,8 +195,12 @@ You can reach the manager in two ways:
 - Run =M-x claude-code-ide-manager-toggle-sidebar= to toggle the sidebar
   - pass a positive prefix argument to force open and focus
   - pass a negative prefix argument to force hide
+- Run =M-x claude-code-ide-manager-toggle-global-sidebar= to always target the global manager
+- Run =M-x claude-code-ide-manager-toggle-repo-sidebar= to always target the repo-local manager for the current Git root
 - Open the main transient and use:
-  - =t= to toggle the manager sidebar
+  - =t= to toggle the default manager sidebar
+  - =T= to toggle the global manager sidebar
+  - =R= to toggle the repo-local manager sidebar
   - =n= to move to the next manager session and switch to it
   - =p= to move to the previous manager session and switch to it
   - =P= to pin or unpin the current active manager session
@@ -197,7 +213,8 @@ You can reach the manager in two ways:
 
 Each row in the sidebar represents one live Claude session derived from the existing session process table.
 
-- The row shows the project basename
+- Global manager rows show the project basename
+- Repo-local manager rows use =claude-code-ide-manager-repo-label-strategy=, which defaults to branch-first with basename fallback
 - The full project path is available via hover text and in the echo area when point moves onto the row
 - The currently active session row is highlighted
 - The left gutter shows =📌= for pinned rows
@@ -276,6 +293,9 @@ Manager-specific options:
 |-----------------------------------------+----------------------------------------------+---------|
 | ~claude-code-ide-manager-persist-state~ | Persist manager metadata across Emacs restarts | ~t~     |
 | ~claude-code-ide-manager-window-width~  | Width of the left manager side window        | ~22~    |
+| ~claude-code-ide-manager-repo-label-strategy~ | Visible label strategy for repo-local rows | ~branch-or-basename~ |
+| ~claude-code-ide-manager-repo-include-nested~ | Include nested git roots in repo-local scope | ~nil~ |
+| ~claude-code-ide-manager-default-target~ | Default target for generic manager commands | ~global~ |
 
 ** Diff Viewing with Ediff
 
