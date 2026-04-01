@@ -199,17 +199,19 @@ Each row in the sidebar represents one live Claude session derived from the exis
 - The row shows the project basename
 - The full project path is available via hover text and in the echo area when point moves onto the row
 - The currently active session row is highlighted
-- Pinned rows are marked with = [P] =
+- The left gutter shows =📌= for pinned rows
 - Visible rows are assigned quick slots =1..9, 0= from top to bottom
 
 Quick slots are derived from the current visible order. They are not stored separately, so pinning or reordering a row immediately changes which session each slot selects.
 
 *** Idle Indicator
 
-Each row reserves a left gutter so the session names stay aligned whether or not an idle marker is present.
+Each row reserves a left gutter so the session names stay aligned whether or not a marker is present.
 
 - Idle-enabled rows that are currently idle show =🔔= in that gutter
-- Rows that are not idle keep the same alignment with blank gutter padding
+- Pinned rows show =📌= in that gutter when they are not idle
+- Idle rows take marker priority over pinned rows
+- Rows with no marker keep the same alignment with blank gutter padding
 - Idle highlighting applies only to non-current rows
 - The current session keeps =claude-code-ide-manager-current-session-face= even when it is idle
 

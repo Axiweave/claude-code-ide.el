@@ -74,8 +74,11 @@
 (defconst claude-code-ide-manager--bell-glyph "🔔"
   "Bell glyph used to mark idle sessions in the manager sidebar.")
 
-(defconst claude-code-ide-manager--bell-gutter-width 2
-  "Fixed display width for the idle bell gutter.")
+(defconst claude-code-ide-manager--pin-glyph "📌"
+  "Pin glyph used to mark pinned sessions in the manager sidebar.")
+
+(defconst claude-code-ide-manager--marker-gutter-width 2
+  "Fixed display width for the left marker gutter.")
 
 (cl-defstruct claude-code-ide-manager-item
   "Sidebar row state for a managed session."
@@ -324,14 +327,19 @@
          (claude-code-ide-manager--buffer-local-value
           'claude-code-ide-session-idle-p buffer))))
 
-(defun claude-code-ide-manager--bell-gutter (session-key)
-  "Return a fixed-width bell gutter for SESSION-KEY."
-  (let* ((bell (if (claude-code-ide-manager--session-idle-p session-key)
-                   claude-code-ide-manager--bell-glyph
-                 ""))
-         (padding (max 0 (- claude-code-ide-manager--bell-gutter-width
-                            (string-width bell)))))
-    (concat bell (make-string padding ?\s))))
+(defun claude-code-ide-manager--marker-gutter (item)
+  "Return a fixed-width marker gutter for ITEM.
+Idle markers take precedence over pinned markers."
+  (let* ((marker (cond
+                  ((claude-code-ide-manager--session-idle-p
+                    (claude-code-ide-manager-item-session-key item))
+                   claude-code-ide-manager--bell-glyph)
+                  ((claude-code-ide-manager-item-pinned item)
+                   claude-code-ide-manager--pin-glyph)
+                  (t "")))
+         (padding (max 0 (- claude-code-ide-manager--marker-gutter-width
+                            (string-width marker)))))
+    (concat marker (make-string padding ?\s))))
 
 (defun claude-code-ide-manager--row-face (session-key)
   "Return the face to apply to SESSION-KEY's row."
@@ -425,12 +433,9 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 (defun claude-code-ide-manager--insert-item (item slot)
   "Insert ITEM into the current buffer using SLOT."
   (let ((start (point)))
-    (insert (claude-code-ide-manager--bell-gutter
-             (claude-code-ide-manager-item-session-key item)))
+    (insert (claude-code-ide-manager--marker-gutter item))
     (insert " ")
     (insert (if (numberp slot) (format "%d." slot) " -"))
-    (when (claude-code-ide-manager-item-pinned item)
-      (insert " [P]"))
     (insert " ")
     (insert (claude-code-ide-manager-item-display-name item))
     (insert "\n")

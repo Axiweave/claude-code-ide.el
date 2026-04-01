@@ -560,6 +560,57 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (kill-buffer buffer)))
             (list idle-buffer active-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-render-pinned-row-uses-gutter-marker ()
+  "Test pinned rows use a gutter marker instead of inline [P] text."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "/tmp/project-a"
+               :pinned t
+               :order-key 1
+               :live-p t)))
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (goto-char (point-min))
+    (let ((row (buffer-substring-no-properties
+                (line-beginning-position)
+                (line-end-position))))
+      (should-not (string-match-p "\\[P\\]" row))
+      (should (string-match-p "📌" row)))))
+
+(ert-deftest claude-code-ide-test-manager-render-idle-marker-overrides-pin-marker ()
+  "Test the idle gutter marker takes priority over the pin marker."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((idle-buffer (get-buffer-create "*cc-pinned-idle*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer idle-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned t
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) idle-buffer)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (let ((row (buffer-substring-no-properties
+                          (line-beginning-position)
+                          (line-end-position))))
+                (should (string-match-p "🔔" row))
+                (should-not (string-match-p "📌" row))
+                (should-not (string-match-p "\\[P\\]" row))))))
+      (when (buffer-live-p idle-buffer)
+        (kill-buffer idle-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-render-idle-face-respects-current-session-priority ()
   "Test current idle rows keep the current-session face and others use idle face."
   (claude-code-ide-tests--reset-manager-state)
