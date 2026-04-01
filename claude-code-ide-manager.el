@@ -374,13 +374,17 @@ DIRECTION should be -1 for up or 1 for down."
 (defun claude-code-ide-manager--show-sidebar ()
   "Show the manager sidebar in a dedicated left side window."
   (claude-code-ide-manager-refresh)
-  (display-buffer-in-side-window
-   (claude-code-ide-manager--get-buffer)
-   `((side . left)
-     (slot . -1)
-     (window-width . ,claude-code-ide-manager-window-width)
-     (window-parameters . ((no-delete-other-windows . t)
-                           (no-other-window . t))))))
+  (let ((window
+         (display-buffer-in-side-window
+          (claude-code-ide-manager--get-buffer)
+          `((side . left)
+            (slot . -1)
+            (window-width . ,claude-code-ide-manager-window-width)
+            (window-parameters . ((no-delete-other-windows . t)
+                                  (no-other-window . t)
+                                  (window-size-fixed . both)))))))
+    (window-preserve-size window t t)
+    window))
 
 (defun claude-code-ide-manager--hide-sidebar ()
   "Hide the manager sidebar."

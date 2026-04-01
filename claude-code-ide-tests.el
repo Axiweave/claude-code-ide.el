@@ -496,6 +496,11 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (window-live-p window))
             (should (eq (window-parameter window 'window-side) 'left))
             (should (eq (window-parameter window 'no-other-window) t))
+            (should (eq (window-parameter window 'window-size-fixed) 'both))
+            (should (window-size-fixed-p window t))
+            (let ((width-before (window-total-width window)))
+              (balance-windows)
+              (should (= (window-total-width window) width-before)))
             (should (equal (window-buffer window)
                            (claude-code-ide-manager--get-buffer)))))
       (ignore-errors (delete-process process-a))
@@ -1404,6 +1409,11 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (transient-get-suffix 'claude-code-ide-menu "0"))
   (should (transient-get-suffix 'claude-code-ide-menu "M"))
   (should (transient-get-suffix 'claude-code-ide-menu "g")))
+
+(ert-deftest claude-code-ide-test-transient-manager-slots-are-visible ()
+  "Test manager slot entries are shown at the normal transient level."
+  (dolist (key '("1" "2" "3" "4" "5" "6" "7" "8" "9" "0"))
+    (should (= (car (transient-get-suffix 'claude-code-ide-menu key)) 1))))
 
 (ert-deftest claude-code-ide-test-start-if-no-session-allows-project-launch-with-only-attached-session ()
   "Test project-root launch is not blocked by an attached subdirectory session."
