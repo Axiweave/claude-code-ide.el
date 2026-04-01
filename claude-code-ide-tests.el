@@ -420,6 +420,57 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda (&optional _dir) "/tmp/project/")))
       (should-not (claude-code-ide-manager--current-git-root)))))
 
+(ert-deftest claude-code-ide-test-manager-global-and-repo-scopes-keep-separate-pin-state ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((global-scope '(:type global))
+        (repo-scope '(:type repo :git-root "/tmp/repo/")))
+    (claude-code-ide-manager--set-scope-items
+     global-scope
+     (list (make-claude-code-ide-manager-item :session-key "/tmp/repo/" :pinned t)))
+    (claude-code-ide-manager--set-scope-items
+     repo-scope
+     (list (make-claude-code-ide-manager-item :session-key "/tmp/repo/" :pinned nil)))
+    (should (claude-code-ide-manager-item-pinned
+             (car (claude-code-ide-manager--scope-items global-scope))))
+    (should-not (claude-code-ide-manager-item-pinned
+                 (car (claude-code-ide-manager--scope-items repo-scope))))))
+
+(ert-deftest claude-code-ide-test-manager-layouts-stay-shared-across-scopes ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((layout '(:selected-buffer-name "*x*")))
+    (puthash "/tmp/repo/" layout claude-code-ide-manager--layouts)
+    (should (equal (gethash "/tmp/repo/" claude-code-ide-manager--layouts)
+                   layout))))
+
+(ert-deftest claude-code-ide-test-manager-persisted-scope-state-is-isolated ()
+  (should-not (equal (claude-code-ide-manager--scope-key '(:type global))
+                     (claude-code-ide-manager--scope-key
+                      '(:type repo :git-root "/tmp/repo/")))))
+
+(ert-deftest claude-code-ide-test-manager-loads-legacy-global-persisted-state ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t))
+    (puthash 'claude-code-ide-manager--persisted-state
+             '(:version 1
+               :items ((:session-key "/tmp/a"
+                        :display-name "a"
+                        :secondary-text "/tmp/a"
+                        :pinned t
+                        :order-key 4
+                        :live-p t))
+               :layouts nil)
+             persist--test-store)
+    (claude-code-ide-manager--load-state)
+    (should (= (length claude-code-ide-manager--items) 1))
+    (should (equal (claude-code-ide-manager-item-session-key
+                    (car claude-code-ide-manager--items))
+                   "/tmp/a"))
+    (should (claude-code-ide-manager-item-pinned
+             (car claude-code-ide-manager--items)))
+    (should (= (claude-code-ide-manager-item-order-key
+                (car claude-code-ide-manager--items))
+               4))))
+
 (ert-deftest claude-code-ide-test-manager-persistence-toggle-disables-reload ()
   "Test manager skips reload when persistence is disabled."
   (claude-code-ide-tests--reset-manager-state)

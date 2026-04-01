@@ -34,12 +34,12 @@
   :group 'tools
   :prefix "claude-code-ide-manager-")
 
-(defconst claude-code-ide-manager--state-version 1
+(defconst claude-code-ide-manager--state-version 2
   "Persisted cc-manager state schema version.")
 
 (defvar claude-code-ide-manager--persisted-state
   `(:version ,claude-code-ide-manager--state-version
-             :items nil
+             :scopes nil
              :layouts nil)
   "Serialized manager state stored through `persist'.")
 
@@ -105,6 +105,9 @@
 (defvar claude-code-ide-manager--items nil
   "Current manager items.")
 
+(defvar claude-code-ide-manager--scope-state (make-hash-table :test 'equal)
+  "Per-scope manager view state keyed by scope key.")
+
 (defvar claude-code-ide-manager--layouts (make-hash-table :test 'equal)
   "Saved layouts keyed by session key.")
 
@@ -129,6 +132,34 @@
                   (root-hash (substring (md5 git-root) 0 8)))
              (format "*claude-code-manager:%s@%s*" repo-name root-hash)))
     (_ (error "Unknown manager scope: %S" scope))))
+
+(defun claude-code-ide-manager--scope-state-entry (scope)
+  "Return the state plist stored for SCOPE."
+  (gethash (claude-code-ide-manager--scope-key scope)
+           claude-code-ide-manager--scope-state))
+
+(defun claude-code-ide-manager--set-scope-state-entry (scope state)
+  "Store STATE plist for SCOPE and sync legacy global aliases."
+  (puthash (claude-code-ide-manager--scope-key scope)
+           state
+           claude-code-ide-manager--scope-state)
+  (when (eq (plist-get scope :type) 'global)
+    (setq claude-code-ide-manager--items (plist-get state :items)))
+  state)
+
+(defun claude-code-ide-manager--scope-items (scope)
+  "Return the current items stored for SCOPE."
+  (if (eq (plist-get scope :type) 'global)
+      (or (plist-get (claude-code-ide-manager--scope-state-entry scope) :items)
+          claude-code-ide-manager--items)
+    (plist-get (claude-code-ide-manager--scope-state-entry scope) :items)))
+
+(defun claude-code-ide-manager--set-scope-items (scope items)
+  "Store ITEMS for SCOPE."
+  (let ((state (copy-sequence (claude-code-ide-manager--scope-state-entry scope))))
+    (claude-code-ide-manager--set-scope-state-entry
+     scope
+     (plist-put state :items items))))
 
 (defun claude-code-ide-manager--current-git-root ()
   "Return the current Git root directory when available."
@@ -328,6 +359,31 @@
              claude-code-ide-manager--layouts)
     (nreverse layouts)))
 
+(defun claude-code-ide-manager--serialize-scope-state ()
+  "Return persisted scope view state as an alist."
+  (let ((global-scope '(:type global))
+        serialized)
+    ;; Keep the legacy global alias synchronized until all callers are scope-aware.
+    (claude-code-ide-manager--set-scope-items global-scope claude-code-ide-manager--items)
+    (maphash
+     (lambda (scope-key state)
+       (push (cons scope-key
+                   (list :items (mapcar #'claude-code-ide-manager--serialize-item
+                                        (plist-get state :items))))
+             serialized))
+     claude-code-ide-manager--scope-state)
+    (nreverse serialized)))
+
+(defun claude-code-ide-manager--deserialize-scope-state (scopes)
+  "Return hash table for persisted SCOPES."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (entry scopes)
+      (puthash (car entry)
+               (list :items (mapcar #'claude-code-ide-manager--deserialize-item
+                                    (plist-get (cdr entry) :items)))
+               table))
+    table))
+
 (defun claude-code-ide-manager--deserialize-layouts (layouts)
   "Return hash table for persisted LAYOUTS."
   (let ((table (make-hash-table :test 'equal)))
@@ -338,15 +394,22 @@
 (defun claude-code-ide-manager--serialize-state ()
   "Return current manager state as a plist."
   (list :version claude-code-ide-manager--state-version
-        :items (mapcar #'claude-code-ide-manager--serialize-item
-                       claude-code-ide-manager--items)
+        :scopes (claude-code-ide-manager--serialize-scope-state)
         :layouts (claude-code-ide-manager--serialize-layouts)))
 
 (defun claude-code-ide-manager--restore-state (data)
   "Restore manager state from persisted DATA."
+  (setq claude-code-ide-manager--scope-state
+        (if-let ((scopes (plist-get data :scopes)))
+            (claude-code-ide-manager--deserialize-scope-state scopes)
+          (let ((table (make-hash-table :test 'equal)))
+            (puthash "global"
+                     (list :items (mapcar #'claude-code-ide-manager--deserialize-item
+                                          (plist-get data :items)))
+                     table)
+            table)))
   (setq claude-code-ide-manager--items
-        (mapcar #'claude-code-ide-manager--deserialize-item
-                (plist-get data :items)))
+        (claude-code-ide-manager--scope-items '(:type global)))
   (setq claude-code-ide-manager--layouts
         (claude-code-ide-manager--deserialize-layouts
          (plist-get data :layouts))))
@@ -358,8 +421,8 @@
                     claude-code-ide-manager--persisted-state)
     (persist-load 'claude-code-ide-manager--persisted-state)
     (when (and (listp claude-code-ide-manager--persisted-state)
-               (= (or (plist-get claude-code-ide-manager--persisted-state :version) 0)
-                  claude-code-ide-manager--state-version))
+               (memq (or (plist-get claude-code-ide-manager--persisted-state :version) 0)
+                     '(1 2)))
       (claude-code-ide-manager--restore-state
        claude-code-ide-manager--persisted-state))))
 
@@ -379,11 +442,12 @@
 (defun claude-code-ide-manager--reset-state ()
   "Reset in-memory manager state."
   (setq claude-code-ide-manager--items nil)
+  (setq claude-code-ide-manager--scope-state (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--layouts (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--current-session-key nil)
   (setq claude-code-ide-manager--persisted-state
         `(:version ,claude-code-ide-manager--state-version
-                   :items nil
+                   :scopes nil
                    :layouts nil)))
 
 (defun claude-code-ide-manager--item-by-session-key (session-key)
