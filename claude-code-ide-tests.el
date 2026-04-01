@@ -456,6 +456,45 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (eq (get-text-property (point) 'face)
                 'claude-code-ide-manager-current-session-face))))
 
+(ert-deftest claude-code-ide-test-manager-switch-refreshes-sidebar-highlight ()
+  "Test switching sessions rerenders the manager highlight."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "/tmp/project-a"
+               :pinned nil
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-b"
+               :display-name "project-b"
+               :secondary-text "/tmp/project-b"
+               :pinned nil
+               :order-key 2
+               :live-p t)))
+  (setq claude-code-ide-manager--current-session-key "/tmp/project-a")
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render))
+  (cl-letf (((symbol-function 'claude-code-ide-manager--capture-layout)
+             (lambda (_session-key) nil))
+            ((symbol-function 'claude-code-ide-manager--save-state)
+             (lambda () nil))
+            ((symbol-function 'claude-code-ide-manager--restore-layout)
+             (lambda (session-key)
+               (setq claude-code-ide-manager--current-session-key session-key)
+               (selected-window))))
+    (claude-code-ide-manager-switch-to-session "/tmp/project-b"))
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (goto-char (point-min))
+    (should-not (get-text-property (point) 'face))
+    (forward-line 1)
+    (should (eq (get-text-property (point) 'face)
+                'claude-code-ide-manager-current-session-face))
+    (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                   "/tmp/project-b"))))
+
 (ert-deftest claude-code-ide-test-manager-render-moves-point-to-current-session ()
   "Test manager render places point on the active session row."
   (claude-code-ide-tests--reset-manager-state)
@@ -778,6 +817,49 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should (equal switched "/tmp/b"))
       (claude-code-ide-manager-switch-by-slot 2)
       (should (equal switched "/tmp/a")))))
+
+(ert-deftest claude-code-ide-test-manager-switch-by-slot-does-not-focus-manager-window ()
+  "Test slot switching does not select the manager window."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-session*"))
+        (content-buffer (get-buffer-create "*cc-content*"))
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-slot-switch" :buffer nil)))
+    (unwind-protect
+        (let ((content-window nil))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_directory) session-buffer)))
+            (setq claude-code-ide-manager--items
+                  (list (make-claude-code-ide-manager-item
+                         :session-key "/tmp/project-a"
+                         :display-name "project-a"
+                         :secondary-text "/tmp/project-a"
+                         :pinned nil
+                         :order-key 1
+                         :live-p t)))
+            (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+            (delete-other-windows)
+            (switch-to-buffer content-buffer)
+            (setq content-window (selected-window))
+            (let ((session-window (split-window content-window nil 'right)))
+              (set-window-buffer session-window session-buffer))
+            (claude-code-ide-manager-toggle-sidebar 1)
+            (puthash "/tmp/project-a"
+                     (claude-code-ide-manager--capture-layout "/tmp/project-a")
+                     claude-code-ide-manager--layouts)
+            (select-window content-window)
+            (claude-code-ide-manager-switch-by-slot 1)
+            (should-not (eq (window-buffer (selected-window))
+                            (claude-code-ide-manager--get-buffer)))
+            (should (eq (window-buffer (selected-window)) session-buffer))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer content-buffer
+                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
 (ert-deftest claude-code-ide-test-manager-saves-layout-before-switch ()
   "Test switching captures the current session layout first."

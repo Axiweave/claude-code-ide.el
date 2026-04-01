@@ -426,6 +426,15 @@ With a negative ARG, hide the sidebar."
         (when-let ((window (get-buffer-window buffer)))
           (set-window-point window position))))))
 
+(defun claude-code-ide-manager--refresh-sidebar-state ()
+  "Rerender the manager buffer and sync the sidebar window point."
+  (when-let ((buffer (get-buffer claude-code-ide-manager--buffer-name)))
+    (with-current-buffer buffer
+      (claude-code-ide-manager--render)
+      (let ((position (point)))
+        (when-let ((window (get-buffer-window buffer)))
+          (set-window-point window position))))))
+
 (defun claude-code-ide-manager--cycle-session-key (step)
   "Return the visible session key STEP positions away from point, cycling."
   (let* ((keys (claude-code-ide-manager--visible-session-keys))
@@ -515,6 +524,8 @@ Return the selected window when successful."
     (setq claude-code-ide-manager--current-session-key session-key)
     (let* ((selected-buffer-name (plist-get layout :selected-buffer-name))
            (selected-buffer (and selected-buffer-name
+                                 (not (equal selected-buffer-name
+                                             claude-code-ide-manager--buffer-name))
                                  (get-buffer selected-buffer-name)))
            (session-buffer (claude-code-ide--get-session-buffer session-key))
            (target-window (or (and selected-buffer
@@ -561,8 +572,10 @@ Return the selected window when successful."
               claude-code-ide-manager--current-session-key)
              claude-code-ide-manager--layouts)
     (claude-code-ide-manager--save-state))
-  (or (claude-code-ide-manager--restore-layout session-key)
-      (claude-code-ide-manager--build-default-layout session-key)))
+  (prog1
+      (or (claude-code-ide-manager--restore-layout session-key)
+          (claude-code-ide-manager--build-default-layout session-key))
+    (claude-code-ide-manager--refresh-sidebar-state)))
 
 (defun claude-code-ide-manager-switch-at-point ()
   "Switch to the session on the current row."
