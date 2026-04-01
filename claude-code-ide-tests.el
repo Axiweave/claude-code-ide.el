@@ -2391,8 +2391,10 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-transient-exposes-manager-commands ()
   "Test the main transient exposes cc-manager bindings."
   (should (transient-get-suffix 'claude-code-ide-menu "t"))
-  (should (transient-get-suffix 'claude-code-ide-menu "T"))
-  (should (transient-get-suffix 'claude-code-ide-menu "R"))
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "T")) :command)
+                 'claude-code-ide-manager-toggle-global-sidebar))
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "o")) :command)
+                 'claude-code-ide-manager-toggle-repo-sidebar))
   (should (transient-get-suffix 'claude-code-ide-menu "n"))
   (should (transient-get-suffix 'claude-code-ide-menu "p"))
   (should (transient-get-suffix 'claude-code-ide-menu "P"))

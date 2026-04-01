@@ -200,7 +200,7 @@ You can reach the manager in two ways:
 - Open the main transient and use:
   - =t= to toggle the default manager sidebar
   - =T= to toggle the global manager sidebar
-  - =R= to toggle the repo-local manager sidebar
+  - =o= to toggle the repo-local manager sidebar
   - =n= to move to the next manager session and switch to it
   - =p= to move to the previous manager session and switch to it
   - =P= to pin or unpin the current active manager session

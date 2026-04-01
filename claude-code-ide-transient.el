@@ -511,7 +511,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ["Manager"
     ("t" "Toggle default manager" claude-code-ide-manager-toggle-sidebar)
     ("T" "Toggle global manager" claude-code-ide-manager-toggle-global-sidebar)
-    ("R" "Toggle repo manager" claude-code-ide-manager-toggle-repo-sidebar)
+    ("o" "Toggle repo manager" claude-code-ide-manager-toggle-repo-sidebar)
     ("n" "Next manager session" claude-code-ide-manager-next-line)
     ("p" "Previous manager session" claude-code-ide-manager-previous-line)
     ("P" "Pin current manager session" claude-code-ide-manager-toggle-current-session-pin)
