@@ -236,6 +236,11 @@ return the string to insert."
   (funcall claude-code-ide-session-file-reference-reader-function
            (current-buffer)))
 
+(defun claude-code-ide-session--record-activity ()
+  "Reset idle monitoring after a package-owned input action."
+  (when (claude-code-ide-session-buffer-p (current-buffer))
+    (claude-code-ide-session-idle-reset-timer)))
+
 (defun claude-code-ide-session-insert-command (&optional command)
   "Insert COMMAND into the current Claude Code session buffer.
 
@@ -260,54 +265,63 @@ When REFERENCE is nil, use
 
 (defun claude-code-ide-session-send-string (string &optional paste)
   "Send STRING to the terminal in the current session buffer."
-  (pcase (claude-code-ide-session--current-terminal-backend)
-    ('vterm
-     (vterm-send-string string paste))
-    ('eat
-     (when eat-terminal
-       (if paste
-           (eat-term-send-string-as-yank eat-terminal string)
-         (eat-term-send-string eat-terminal string))))
-    (_
-     (error "Unknown terminal backend: %s"
-            (claude-code-ide-session--current-terminal-backend)))))
+  (prog1
+      (pcase (claude-code-ide-session--current-terminal-backend)
+        ('vterm
+         (vterm-send-string string paste))
+        ('eat
+         (when eat-terminal
+           (if paste
+               (eat-term-send-string-as-yank eat-terminal string)
+             (eat-term-send-string eat-terminal string))))
+        (_
+         (error "Unknown terminal backend: %s"
+                (claude-code-ide-session--current-terminal-backend))))
+    (claude-code-ide-session--record-activity)))
 
 (defun claude-code-ide-session-send-escape ()
   "Send escape key to the terminal in the current session buffer."
-  (pcase (claude-code-ide-session--current-terminal-backend)
-    ('vterm
-     (vterm-send-escape))
-    ('eat
-     (when eat-terminal
-       (eat-term-send-string eat-terminal "\e")))
-    (_
-     (error "Unknown terminal backend: %s"
-            (claude-code-ide-session--current-terminal-backend)))))
+  (prog1
+      (pcase (claude-code-ide-session--current-terminal-backend)
+        ('vterm
+         (vterm-send-escape))
+        ('eat
+         (when eat-terminal
+           (eat-term-send-string eat-terminal "\e")))
+        (_
+         (error "Unknown terminal backend: %s"
+                (claude-code-ide-session--current-terminal-backend))))
+    (claude-code-ide-session--record-activity)))
 
 (defun claude-code-ide-session-send-return ()
   "Send return key to the terminal in the current session buffer."
-  (pcase (claude-code-ide-session--current-terminal-backend)
-    ('vterm
-     (vterm-send-return))
-    ('eat
-     (when eat-terminal
-       (eat-term-send-string eat-terminal "\r")))
-    (_
-     (error "Unknown terminal backend: %s"
-            (claude-code-ide-session--current-terminal-backend)))))
+  (prog1
+      (pcase (claude-code-ide-session--current-terminal-backend)
+        ('vterm
+         (vterm-send-return))
+        ('eat
+         (when eat-terminal
+           (eat-term-send-string eat-terminal "\r")))
+        (_
+         (error "Unknown terminal backend: %s"
+                (claude-code-ide-session--current-terminal-backend))))
+    (claude-code-ide-session--record-activity)))
 
 (defun claude-code-ide-session-send-interrupt ()
   "Send an interrupt to the terminal in the current session buffer."
   (interactive)
-  (pcase (claude-code-ide-session--current-terminal-backend)
-    ('vterm
-     (vterm-send-key "c" nil nil t))
-    ('eat
-     (when eat-terminal
-       (eat-term-send-string eat-terminal "\003")))
-    (_
-     (error "Unknown terminal backend: %s"
-            (claude-code-ide-session--current-terminal-backend)))))
+  (claude-code-ide-session--ensure-session-buffer)
+  (prog1
+      (pcase (claude-code-ide-session--current-terminal-backend)
+        ('vterm
+         (vterm-send-key "c" nil nil t))
+        ('eat
+         (when eat-terminal
+           (eat-term-send-string eat-terminal "\003")))
+        (_
+         (error "Unknown terminal backend: %s"
+                (claude-code-ide-session--current-terminal-backend))))
+    (claude-code-ide-session--record-activity)))
 
 (defun claude-code-ide-session-setup-terminal-keybindings ()
   "Set up package-owned keybindings for the current session buffer."

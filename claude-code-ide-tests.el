@@ -141,6 +141,12 @@
 
 (provide (quote vterm))
 
+(defun eat--filter (_process _string)
+  "Mock eat filter function for testing."
+  nil)
+
+(provide (quote eat))
+
 ;; === Mock Emacs display functions ===
 (unless (fboundp 'display-buffer-in-side-window)
   (defun display-buffer-in-side-window (buffer _alist)
@@ -4744,6 +4750,178 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should vterm-key-called)
         (should-not eat-string-called)))))
 
+(ert-deftest claude-code-ide-test-session-send-string-resets-idle-state ()
+  "Test that sending a string clears stale idle state immediately."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'vterm-send-string)
+               (lambda (string &optional _paste)
+                 (setq sent-string string)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-string-idle]*" t)
+        (setq claude-code-ide--terminal-backend 'vterm
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t)
+        (claude-code-ide-session-send-string "status")
+        (should (equal sent-string "status"))
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-string-resets-idle-state-eat ()
+  "Test that sending a string clears stale idle state immediately on eat."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'eat-term-send-string)
+               (lambda (_terminal string)
+                 (setq sent-string string)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-string-idle-eat]*" t)
+        (setq claude-code-ide--terminal-backend 'eat
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t
+              eat-terminal t)
+        (claude-code-ide-session-send-string "status")
+        (should (equal sent-string "status"))
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-return-resets-idle-state ()
+  "Test that sending return clears stale idle state immediately."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((return-called nil))
+    (cl-letf (((symbol-function 'vterm-send-return)
+               (lambda ()
+                 (setq return-called t)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-return-idle]*" t)
+        (setq claude-code-ide--terminal-backend 'vterm
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t)
+        (claude-code-ide-session-send-return)
+        (should return-called)
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-return-resets-idle-state-eat ()
+  "Test that sending return clears stale idle state immediately on eat."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'eat-term-send-string)
+               (lambda (_terminal string)
+                 (setq sent-string string)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-return-idle-eat]*" t)
+        (setq claude-code-ide--terminal-backend 'eat
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t
+              eat-terminal t)
+        (claude-code-ide-session-send-return)
+        (should (equal sent-string "\r"))
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-escape-resets-idle-state ()
+  "Test that sending escape clears stale idle state immediately."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((escape-called nil))
+    (cl-letf (((symbol-function 'vterm-send-escape)
+               (lambda ()
+                 (setq escape-called t)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-escape-idle]*" t)
+        (setq claude-code-ide--terminal-backend 'vterm
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t)
+        (claude-code-ide-session-send-escape)
+        (should escape-called)
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-escape-resets-idle-state-eat ()
+  "Test that sending escape clears stale idle state immediately on eat."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'eat-term-send-string)
+               (lambda (_terminal string)
+                 (setq sent-string string)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-escape-idle-eat]*" t)
+        (setq claude-code-ide--terminal-backend 'eat
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t
+              eat-terminal t)
+        (claude-code-ide-session-send-escape)
+        (should (equal sent-string "\e"))
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-interrupt-resets-idle-state ()
+  "Test that sending interrupt clears stale idle state immediately."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((interrupt-called nil))
+    (cl-letf (((symbol-function 'vterm-send-key)
+               (lambda (&rest _args)
+                 (setq interrupt-called t)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-interrupt-idle]*" t)
+        (setq claude-code-ide--terminal-backend 'vterm
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t)
+        (claude-code-ide-session-send-interrupt)
+        (should interrupt-called)
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-interrupt-resets-idle-state-eat ()
+  "Test that sending interrupt clears stale idle state immediately on eat."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'eat-term-send-string)
+               (lambda (_terminal string)
+                 (setq sent-string string)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (&rest _args)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-interrupt-idle-eat]*" t)
+        (setq claude-code-ide--terminal-backend 'eat
+              claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t
+              eat-terminal t)
+        (claude-code-ide-session-send-interrupt)
+        (should (equal sent-string "\003"))
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-idle-timer)))))
+
+(ert-deftest claude-code-ide-test-session-send-interrupt-rejects-non-session-buffers ()
+  "Test that interrupt only applies to Claude session buffers."
+  (should (require 'claude-code-ide-session nil t))
+  (with-temp-buffer
+    (let ((claude-code-ide--terminal-backend 'vterm))
+      (should-error (claude-code-ide-session-send-interrupt)
+                    :type 'user-error))))
+
 (ert-deftest claude-code-ide-test-session-idle-observer-is-installed-on-session-buffers ()
   "Test that backend output filters reset idle only for session buffers."
   (should (require 'claude-code-ide-session-idle nil t))
@@ -4762,6 +4940,44 @@ have completed before cleanup.  Waits up to 5 seconds."
         (rename-buffer "*not-a-claude-buffer*" t)
         (vterm--filter nil "output")
         (should-not reset-called)))))
+
+(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer ()
+  "Test that backend output filters reset idle for the process buffer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((reset-buffer nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer]*"))
+        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process)
+                     session-buffer))
+                  ((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                   (lambda ()
+                     (setq reset-buffer (current-buffer)))))
+          (with-current-buffer other-buffer
+            (vterm--filter 'mock-process "output"))
+          (should (eq reset-buffer session-buffer)))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer-eat ()
+  "Test that eat output filters reset idle for the process buffer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((reset-buffer nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer-eat]*"))
+        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process)
+                     session-buffer))
+                  ((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                   (lambda ()
+                     (setq reset-buffer (current-buffer)))))
+          (with-current-buffer other-buffer
+            (eat--filter 'mock-process "output"))
+          (should (eq reset-buffer session-buffer)))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
 
 (ert-deftest claude-code-ide-test-session-insert-command-uses-reader-function ()
   "Test that the public command insert helper uses the configured reader."
@@ -4837,6 +5053,149 @@ have completed before cleanup.  Waits up to 5 seconds."
                       #'claude-code-ide-session-idle--fire-timer))
           (should (eq suppressed-buffer (current-buffer)))
           (should claude-code-ide-session-idle-timer))))))
+
+(ert-deftest claude-code-ide-test-session-idle-fire-timer-marks-buffer-idle ()
+  "Test that firing the idle timer marks the session buffer idle."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (with-temp-buffer
+    (rename-buffer "*claude-code[test-idle-fire]*" t)
+    (setq claude-code-ide-session-idle-enabled t
+          claude-code-ide-session-idle-p nil)
+    (claude-code-ide-session-idle--fire-timer (current-buffer))
+    (should claude-code-ide-session-idle-p)))
+
+(ert-deftest claude-code-ide-test-session-idle-fire-timer-does-not-mark-idle-when-disabled ()
+  "Test that a stale idle callback does not mark the buffer idle when disabled."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (with-temp-buffer
+    (rename-buffer "*claude-code[test-idle-disabled-fire]*" t)
+    (setq claude-code-ide-session-idle-enabled nil
+          claude-code-ide-session-idle-p nil)
+    (claude-code-ide-session-idle--fire-timer (current-buffer))
+    (should-not claude-code-ide-session-idle-p)))
+
+(ert-deftest claude-code-ide-test-session-idle-fire-timer-does-not-mark-idle-when-suppressed ()
+  "Test that a suppressed idle callback does not mark the buffer idle."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((claude-code-ide-session-idle-suppressed-predicate
+         (lambda (_buffer)
+           t)))
+    (with-temp-buffer
+      (rename-buffer "*claude-code[test-idle-suppressed-fire]*" t)
+      (setq claude-code-ide-session-idle-enabled t
+            claude-code-ide-session-idle-p nil)
+      (claude-code-ide-session-idle--fire-timer (current-buffer))
+      (should-not claude-code-ide-session-idle-p))))
+
+(ert-deftest claude-code-ide-test-session-idle-reset-clears-idle-flag ()
+  "Test that resetting idle monitoring clears the idle flag."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((timer-delay nil))
+    (cl-letf (((symbol-function 'run-with-idle-timer)
+               (lambda (delay repeat function &rest args)
+                 (setq timer-delay delay)
+                 'mock-idle-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-idle-reset]*" t)
+        (setq claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t)
+        (claude-code-ide-session-idle-reset-timer)
+        (should (equal timer-delay claude-code-ide-session-idle-delay))
+        (should-not claude-code-ide-session-idle-p)))))
+
+(ert-deftest claude-code-ide-test-session-idle-disable-clears-idle-flag ()
+  "Test that disabling idle monitoring clears the idle flag immediately."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (with-temp-buffer
+    (rename-buffer "*claude-code[test-idle-disable]*" t)
+    (setq claude-code-ide-session-idle-enabled t
+          claude-code-ide-session-idle-p t)
+    (claude-code-ide-session-idle-disable)
+    (should-not claude-code-ide-session-idle-p)))
+
+(ert-deftest claude-code-ide-test-session-idle-setup-clears-preexisting-idle-flag ()
+  "Test that session setup clears any preexisting idle flag."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((claude-code-ide-session-idle-default-enabled nil))
+    (with-temp-buffer
+      (rename-buffer "*claude-code[test-idle-setup]*" t)
+      (setq claude-code-ide-session-idle-p t)
+      (claude-code-ide-session-idle--setup-buffer)
+      (should-not claude-code-ide-session-idle-p))))
+
+(ert-deftest claude-code-ide-test-session-idle-old-callback-after-reset-does-not-mark-idle ()
+  "Test that an older queued callback is ignored after a later reset."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((scheduled-callbacks nil)
+        (hook-runs 0)
+        (timer-count 0))
+    (cl-letf (((symbol-function 'run-with-idle-timer)
+               (lambda (_delay _repeat function &rest args)
+                 (setq timer-count (1+ timer-count))
+                 (push (list function args) scheduled-callbacks)
+                 (intern (format "mock-idle-timer-%d" timer-count))))
+              ((symbol-function 'run-hook-with-args)
+               (lambda (&rest _args)
+                 (setq hook-runs (1+ hook-runs)))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-idle-old-callback]*" t)
+        (setq claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p nil)
+        (claude-code-ide-session-idle-reset-timer)
+        (claude-code-ide-session-idle-reset-timer)
+        (let* ((callbacks (nreverse scheduled-callbacks))
+               (old-callback (car callbacks)))
+          (apply (car old-callback) (cadr old-callback))
+          (should-not claude-code-ide-session-idle-p)
+          (should (= hook-runs 0)))))))
+
+(ert-deftest claude-code-ide-test-session-idle-old-callback-after-disable-does-not-mark-idle ()
+  "Test that an older queued callback is ignored after disable."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((scheduled-callback nil)
+        (hook-runs 0))
+    (cl-letf (((symbol-function 'run-with-idle-timer)
+               (lambda (_delay _repeat function &rest args)
+                 (setq scheduled-callback (list function args))
+                 'mock-idle-timer))
+              ((symbol-function 'run-hook-with-args)
+               (lambda (&rest _args)
+                 (setq hook-runs (1+ hook-runs)))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-idle-disable-old-callback]*" t)
+        (setq claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p nil)
+        (claude-code-ide-session-idle-reset-timer)
+        (claude-code-ide-session-idle-disable)
+        (apply (car scheduled-callback) (cadr scheduled-callback))
+        (should-not claude-code-ide-session-idle-p)
+        (should (= hook-runs 0))))))
+
+(ert-deftest claude-code-ide-test-session-idle-old-callback-after-suppression-does-not-mark-idle ()
+  "Test that an older queued callback is ignored after suppression."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((scheduled-callback nil)
+        (hook-runs 0)
+        (suppressed nil))
+    (cl-letf (((symbol-function 'run-with-idle-timer)
+               (lambda (_delay _repeat function &rest args)
+                 (setq scheduled-callback (list function args))
+                 'mock-idle-timer))
+              ((symbol-function 'run-hook-with-args)
+               (lambda (&rest _args)
+                 (setq hook-runs (1+ hook-runs)))))
+      (let ((claude-code-ide-session-idle-suppressed-predicate
+             (lambda (_buffer)
+               suppressed)))
+        (with-temp-buffer
+          (rename-buffer "*claude-code[test-idle-suppressed-old-callback]*" t)
+          (setq claude-code-ide-session-idle-enabled t
+                claude-code-ide-session-idle-p nil)
+          (claude-code-ide-session-idle-reset-timer)
+          (setq suppressed t)
+          (apply (car scheduled-callback) (cadr scheduled-callback))
+          (should-not claude-code-ide-session-idle-p)
+          (should (= hook-runs 0)))))))
 
 (ert-deftest claude-code-ide-test-session-idle-fire-timer-passes-buffer-to-hook ()
   "Test that the idle hook runs with the session buffer argument."
