@@ -318,6 +318,37 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (equal (claude-code-ide-manager--resolve-scope 'repo)
                    '(:type repo :git-root "/tmp/repo/")))))
 
+(ert-deftest claude-code-ide-test-manager-repo-scope-filters-by-exact-root ()
+  (let ((claude-code-ide-manager-repo-include-nested nil))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
+               (lambda (session-key)
+                 (cond
+                  ((equal session-key "/tmp/repo/a") "/tmp/repo/")
+                  ((equal session-key "/tmp/repo-nested/b") "/tmp/repo-nested/")))))
+      (should (equal (claude-code-ide-manager--scope-session-keys
+                      '(:type repo :git-root "/tmp/repo/")
+                      '("/tmp/repo/a" "/tmp/repo-nested/b"))
+                     '("/tmp/repo/a"))))))
+
+(ert-deftest claude-code-ide-test-manager-repo-label-falls-back-to-basename-when-detached ()
+  (let ((claude-code-ide-manager-repo-label-strategy 'branch-or-basename))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--session-branch-name)
+               (lambda (_session-key) nil)))
+      (should (equal (claude-code-ide-manager--scope-display-name
+                      '(:type repo :git-root "/tmp/repo/")
+                      "/tmp/repo/worktree-a")
+                     "worktree-a")))))
+
+(ert-deftest claude-code-ide-test-manager-repo-label-disambiguates-duplicate-branches ()
+  (let ((items (list (make-claude-code-ide-manager-item
+                      :session-key "/tmp/repo/backend"
+                      :display-name "feature-x")
+                     (make-claude-code-ide-manager-item
+                      :session-key "/tmp/repo/docs"
+                      :display-name "feature-x"))))
+    (should (equal (claude-code-ide-manager--disambiguate-display-names items)
+                   '("feature-x [backend]" "feature-x [docs]")))))
+
 (ert-deftest claude-code-ide-test-manager-repo-buffer-name-uses-git-root ()
   (let ((name (claude-code-ide-manager--buffer-name-for-scope
                '(:type repo :git-root "/tmp/my-repo/"))))

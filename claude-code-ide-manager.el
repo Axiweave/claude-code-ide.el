@@ -62,6 +62,18 @@
   :type 'integer
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-repo-include-nested nil
+  "Whether repo-local managers include nested git directories."
+  :type 'boolean
+  :group 'claude-code-ide-manager)
+
+(defcustom claude-code-ide-manager-repo-label-strategy 'branch-or-basename
+  "Visible label strategy for repo-local managers."
+  :type '(choice (const :tag "Branch" branch)
+                 (const :tag "Basename" basename)
+                 (const :tag "Branch or basename" branch-or-basename))
+  :group 'claude-code-ide-manager)
+
 (defface claude-code-ide-manager-current-session-face
   '((t :inherit highlight))
   "Face used to highlight the active session in the manager sidebar."
@@ -123,6 +135,16 @@
   (when-let ((root (ignore-errors (vc-git-root default-directory))))
     (file-name-as-directory (expand-file-name root))))
 
+(defun claude-code-ide-manager--session-git-root (session-key)
+  "Return the Git root for SESSION-KEY when available."
+  (let ((default-directory session-key))
+    (claude-code-ide-manager--current-git-root)))
+
+(defun claude-code-ide-manager--session-branch-name (session-key)
+  "Return the current branch name for SESSION-KEY when available."
+  (car (ignore-errors
+         (process-lines "git" "-C" session-key "branch" "--show-current"))))
+
 (defun claude-code-ide-manager--resolve-scope (target)
   "Resolve TARGET into a manager scope plist."
   (pcase target
@@ -132,6 +154,60 @@
              (user-error "No git repo for repo-local manager")))
     ((pred listp) target)
     (_ (error "Unknown manager target: %S" target))))
+
+(defun claude-code-ide-manager--scope-session-keys (scope session-keys)
+  "Return SESSION-KEYS visible within SCOPE."
+  (pcase (plist-get scope :type)
+    ('global session-keys)
+    ('repo
+     (cl-remove-if-not
+      (lambda (session-key)
+        (let ((root (claude-code-ide-manager--session-git-root session-key))
+              (target-root (plist-get scope :git-root)))
+          (if claude-code-ide-manager-repo-include-nested
+              (and root (string-prefix-p target-root root))
+            (equal root target-root))))
+      session-keys))
+    (_ (error "Unknown manager scope: %S" scope))))
+
+(defun claude-code-ide-manager--scope-display-name (scope session-key)
+  "Return the display name for SESSION-KEY within SCOPE."
+  (pcase (plist-get scope :type)
+    ('global
+     (file-name-nondirectory (directory-file-name session-key)))
+    ('repo
+     (pcase claude-code-ide-manager-repo-label-strategy
+       ('basename
+        (file-name-nondirectory (directory-file-name session-key)))
+       ('branch
+        (or (claude-code-ide-manager--session-branch-name session-key)
+            (file-name-nondirectory (directory-file-name session-key))))
+       ('branch-or-basename
+        (or (claude-code-ide-manager--session-branch-name session-key)
+            (file-name-nondirectory (directory-file-name session-key))))
+       (_ (error "Unknown repo label strategy: %S"
+                 claude-code-ide-manager-repo-label-strategy))))
+    (_ (error "Unknown manager scope: %S" scope))))
+
+(defun claude-code-ide-manager--disambiguate-display-names (items)
+  "Return display names for ITEMS with duplicate labels disambiguated."
+  (let ((counts (make-hash-table :test 'equal)))
+    (dolist (item items)
+      (puthash (claude-code-ide-manager-item-display-name item)
+               (1+ (gethash (claude-code-ide-manager-item-display-name item)
+                            counts 0))
+               counts))
+    (mapcar
+     (lambda (item)
+       (let ((display-name (claude-code-ide-manager-item-display-name item)))
+         (if (> (gethash display-name counts 0) 1)
+             (format "%s [%s]"
+                     display-name
+                     (file-name-nondirectory
+                      (directory-file-name
+                       (claude-code-ide-manager-item-session-key item))))
+           display-name)))
+     items)))
 
 (defvar claude-code-ide--processes)
 
