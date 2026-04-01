@@ -21,6 +21,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'persist)
+(require 'vc-git)
 
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
@@ -109,14 +110,17 @@
   "Return the manager buffer name for SCOPE."
   (pcase (plist-get scope :type)
     ('global claude-code-ide-manager--buffer-name)
-    ('repo (format "*claude-code-manager:%s*"
-                   (file-name-nondirectory
-                    (directory-file-name (plist-get scope :git-root)))))
+    ('repo (let* ((git-root (file-name-as-directory
+                             (expand-file-name (plist-get scope :git-root))))
+                  (repo-name (file-name-nondirectory
+                              (directory-file-name git-root)))
+                  (root-hash (substring (md5 git-root) 0 8)))
+             (format "*claude-code-manager:%s@%s*" repo-name root-hash)))
     (_ (error "Unknown manager scope: %S" scope))))
 
 (defun claude-code-ide-manager--current-git-root ()
   "Return the current Git root directory when available."
-  (when-let ((root (ignore-errors (vc-root-dir))))
+  (when-let ((root (ignore-errors (vc-git-root default-directory))))
     (file-name-as-directory (expand-file-name root))))
 
 (defun claude-code-ide-manager--resolve-scope (target)

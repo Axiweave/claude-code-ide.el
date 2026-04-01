@@ -319,15 +319,33 @@ have completed before cleanup.  Waits up to 5 seconds."
                    '(:type repo :git-root "/tmp/repo/")))))
 
 (ert-deftest claude-code-ide-test-manager-repo-buffer-name-uses-git-root ()
-  (should (equal (claude-code-ide-manager--buffer-name-for-scope
-                  '(:type repo :git-root "/tmp/my-repo/"))
-                 "*claude-code-manager:my-repo*")))
+  (let ((name (claude-code-ide-manager--buffer-name-for-scope
+               '(:type repo :git-root "/tmp/my-repo/"))))
+    (should (string-prefix-p "*claude-code-manager:my-repo@" name))
+    (should (string-suffix-p "*" name))))
+
+(ert-deftest claude-code-ide-test-manager-repo-buffer-name-is-unique-per-git-root ()
+  (let ((left (claude-code-ide-manager--buffer-name-for-scope
+               '(:type repo :git-root "/tmp/src/app/")))
+        (right (claude-code-ide-manager--buffer-name-for-scope
+                '(:type repo :git-root "/tmp/work/app/"))))
+    (should-not (equal left right))
+    (should (string-prefix-p "*claude-code-manager:app@" left))
+    (should (string-prefix-p "*claude-code-manager:app@" right))))
 
 (ert-deftest claude-code-ide-test-manager-resolve-repo-scope-errors-outside-git ()
   (cl-letf (((symbol-function 'claude-code-ide-manager--current-git-root)
              (lambda () nil)))
     (should-error (claude-code-ide-manager--resolve-scope 'repo)
                   :type 'user-error)))
+
+(ert-deftest claude-code-ide-test-manager-current-git-root-ignores-non-git-vc-roots ()
+  (let ((default-directory "/tmp/project/"))
+    (cl-letf (((symbol-function 'vc-git-root)
+               (lambda (&optional _file) nil))
+              ((symbol-function 'vc-root-dir)
+               (lambda (&optional _dir) "/tmp/project/")))
+      (should-not (claude-code-ide-manager--current-git-root)))))
 
 (ert-deftest claude-code-ide-test-manager-persistence-toggle-disables-reload ()
   "Test manager skips reload when persistence is disabled."
