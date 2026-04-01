@@ -187,6 +187,7 @@ You can reach the manager in two ways:
   - =t= to toggle the manager sidebar
   - =n= to move to the next manager session and switch to it
   - =p= to move to the previous manager session and switch to it
+  - =P= to pin or unpin the current active manager session
   - =1..9= to switch to manager slots 1 through 9
   - =0= to switch to manager slot 10
   - =M= to focus the manager window

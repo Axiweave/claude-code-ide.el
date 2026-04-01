@@ -510,6 +510,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("t" "Toggle manager" claude-code-ide-manager-toggle-sidebar)
     ("n" "Next manager session" claude-code-ide-manager-next-line)
     ("p" "Previous manager session" claude-code-ide-manager-previous-line)
+    ("P" "Pin current manager session" claude-code-ide-manager-toggle-current-session-pin)
     ("1" "Manager slot 1" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 1)))
     ("2" "Manager slot 2" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 2)))
     ("3" "Manager slot 3" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 3)))

@@ -623,6 +623,20 @@ With a negative ARG, hide the sidebar."
     (claude-code-ide-manager--save-state)
     (claude-code-ide-manager--render)))
 
+(defun claude-code-ide-manager-toggle-pin ()
+  "Toggle pin state for the item at point."
+  (interactive)
+  (when-let* ((item (claude-code-ide-manager--item-at-point))
+              (session-key (claude-code-ide-manager-item-session-key item)))
+    (claude-code-ide-manager--toggle-pin-for-session-key session-key)))
+
+(defun claude-code-ide-manager-toggle-current-session-pin ()
+  "Toggle pin state for the current active manager session."
+  (interactive)
+  (when claude-code-ide-manager--current-session-key
+    (claude-code-ide-manager--toggle-pin-for-session-key
+     claude-code-ide-manager--current-session-key)))
+
 (defun claude-code-ide-manager-move-up ()
   "Move the current row up within its pinned bucket."
   (interactive)

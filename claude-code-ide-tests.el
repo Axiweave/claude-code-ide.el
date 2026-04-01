@@ -1107,6 +1107,34 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (claude-code-ide-manager-item-pinned
              (car claude-code-ide-manager--items)))))
 
+(ert-deftest claude-code-ide-test-manager-toggle-current-session-pin-ignores-sidebar-point ()
+  "Test transient pin toggles the active session instead of sidebar point."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-a"
+               :display-name "project-a"
+               :secondary-text "/tmp/project-a"
+               :pinned nil
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "/tmp/project-b"
+               :display-name "project-b"
+               :secondary-text "/tmp/project-b"
+               :pinned nil
+               :order-key 2
+               :live-p t)))
+  (setq claude-code-ide-manager--current-session-key "/tmp/project-b")
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (goto-char (point-min))
+    (claude-code-ide-manager-toggle-current-session-pin))
+  (should-not (claude-code-ide-manager-item-pinned
+               (claude-code-ide-manager--item-by-session-key "/tmp/project-a")))
+  (should (claude-code-ide-manager-item-pinned
+           (claude-code-ide-manager--item-by-session-key "/tmp/project-b"))))
+
 (ert-deftest claude-code-ide-test-manager-space-switches-session-at-point ()
   "Test SPC activates the manager row at point."
   (claude-code-ide-tests--reset-manager-state)
@@ -2113,6 +2141,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (transient-get-suffix 'claude-code-ide-menu "t"))
   (should (transient-get-suffix 'claude-code-ide-menu "n"))
   (should (transient-get-suffix 'claude-code-ide-menu "p"))
+  (should (transient-get-suffix 'claude-code-ide-menu "P"))
   (should (transient-get-suffix 'claude-code-ide-menu "1"))
   (should (transient-get-suffix 'claude-code-ide-menu "0"))
   (should (transient-get-suffix 'claude-code-ide-menu "M"))
