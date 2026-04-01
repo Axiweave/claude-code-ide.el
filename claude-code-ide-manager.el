@@ -114,6 +114,21 @@
                     (directory-file-name (plist-get scope :git-root)))))
     (_ (error "Unknown manager scope: %S" scope))))
 
+(defun claude-code-ide-manager--current-git-root ()
+  "Return the current Git root directory when available."
+  (when-let ((root (ignore-errors (vc-root-dir))))
+    (file-name-as-directory (expand-file-name root))))
+
+(defun claude-code-ide-manager--resolve-scope (target)
+  "Resolve TARGET into a manager scope plist."
+  (pcase target
+    ('global '(:type global))
+    ('repo (if-let ((git-root (claude-code-ide-manager--current-git-root)))
+               (list :type 'repo :git-root git-root)
+             (user-error "No git repo for repo-local manager")))
+    ((pred listp) target)
+    (_ (error "Unknown manager target: %S" target))))
+
 (defvar claude-code-ide--processes)
 
 (defvar claude-code-ide-manager--current-session-key nil

@@ -312,6 +312,23 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (equal (claude-code-ide-manager--buffer-name-for-scope '(:type global))
                  "*claude-code-manager*")))
 
+(ert-deftest claude-code-ide-test-manager-current-scope-uses-git-root ()
+  (cl-letf (((symbol-function 'claude-code-ide-manager--current-git-root)
+             (lambda () "/tmp/repo/")))
+    (should (equal (claude-code-ide-manager--resolve-scope 'repo)
+                   '(:type repo :git-root "/tmp/repo/")))))
+
+(ert-deftest claude-code-ide-test-manager-repo-buffer-name-uses-git-root ()
+  (should (equal (claude-code-ide-manager--buffer-name-for-scope
+                  '(:type repo :git-root "/tmp/my-repo/"))
+                 "*claude-code-manager:my-repo*")))
+
+(ert-deftest claude-code-ide-test-manager-resolve-repo-scope-errors-outside-git ()
+  (cl-letf (((symbol-function 'claude-code-ide-manager--current-git-root)
+             (lambda () nil)))
+    (should-error (claude-code-ide-manager--resolve-scope 'repo)
+                  :type 'user-error)))
+
 (ert-deftest claude-code-ide-test-manager-persistence-toggle-disables-reload ()
   "Test manager skips reload when persistence is disabled."
   (claude-code-ide-tests--reset-manager-state)
