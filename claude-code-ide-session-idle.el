@@ -78,8 +78,8 @@ prevents idle timer scheduling and idle hook execution."
 (defvar-local claude-code-ide-session-idle-timer nil
   "Idle timer object for the current session buffer.")
 
-(defvar claude-code-ide-session-idle--selected-frame-visible-buffers nil
-  "Claude session buffers last seen visible on the selected frame.")
+(defvar claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame nil
+  "Hash table of Claude session buffers last seen visible per frame.")
 
 (defvar claude-code-ide-session-idle--in-visibility-refresh nil
   "Non-nil while handling selected-frame visibility changes.")
@@ -137,19 +137,28 @@ prevents idle timer scheduling and idle hook execution."
       (alert (format "Session idle: %s" (buffer-name buffer))
              :title "Claude Code"))))
 
+(defun claude-code-ide-session-idle--visible-buffers-table ()
+  "Return the selected-frame visibility table, initializing it when needed."
+  (unless (hash-table-p claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame)
+    (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
+          (make-hash-table :test 'eq)))
+  claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame)
+
 (defun claude-code-ide-session-idle--handle-selected-frame-visibility-change ()
   "Reset idle for session buffers that became newly visible on the selected frame."
   (unless claude-code-ide-session-idle--in-visibility-refresh
     (let* ((claude-code-ide-session-idle--in-visibility-refresh t)
+           (frame (selected-frame))
+           (table (claude-code-ide-session-idle--visible-buffers-table))
            (current (claude-code-ide-session-idle--visible-session-buffers-on-frame))
-           (previous claude-code-ide-session-idle--selected-frame-visible-buffers))
+           (previous (gethash frame table)))
       (dolist (buffer current)
         (when (and (buffer-live-p buffer)
                    (not (memq buffer previous)))
           (with-current-buffer buffer
             (when claude-code-ide-session-idle-enabled
               (claude-code-ide-session-idle-reset-timer)))))
-      (setq claude-code-ide-session-idle--selected-frame-visible-buffers current))))
+      (puthash frame current table))))
 
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
   "Run ORIG-FN, then reset the idle timer for session buffers."

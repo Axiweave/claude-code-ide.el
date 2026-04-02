@@ -1067,7 +1067,8 @@ have completed before cleanup.  Waits up to 5 seconds."
           (cl-letf (((symbol-function 'claude-code-ide-session-idle-reset-timer)
                      (lambda ()
                        (setq reset-count (1+ reset-count)))))
-            (setq claude-code-ide-session-idle--selected-frame-visible-buffers nil)
+            (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
+                  (make-hash-table :test 'eq))
             (delete-other-windows)
             (set-window-buffer (selected-window) other-buffer)
             (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
@@ -1086,6 +1087,53 @@ have completed before cleanup.  Waits up to 5 seconds."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list session-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-visibility-reset-tracks-selected-frame-separately ()
+  "Test selected-frame visibility history is tracked separately per frame."
+  (let ((session-buffer (get-buffer-create "*cc-visible-shared-frame*"))
+        (reset-count 0)
+        (frame-a 'frame-a)
+        (frame-b 'frame-b)
+        (window-a 'window-a)
+        (window-b 'window-b)
+        (current-frame nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'selected-frame)
+                   (lambda ()
+                     current-frame))
+                  ((symbol-function 'window-list)
+                   (lambda (&optional frame _minibuf _all-frames)
+                     (cond
+                      ((eq frame frame-a) (list window-a))
+                      ((eq frame frame-b) (list window-b))
+                      (t nil))))
+                  ((symbol-function 'window-buffer)
+                   (lambda (window)
+                     (pcase window
+                       ('window-a session-buffer)
+                       ('window-b session-buffer)
+                       (_ nil))))
+                  ((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                   (lambda ()
+                     (setq reset-count (1+ reset-count)))))
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[visible-shared-frame]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
+                (make-hash-table :test 'eq))
+          (setq current-frame frame-a)
+          (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+          (should (= reset-count 1))
+          (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+          (should (= reset-count 1))
+          (setq current-frame frame-b)
+          (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+          (should (= reset-count 2))
+          (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+          (should (= reset-count 2)))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
 
 (ert-deftest claude-code-ide-test-session-idle-visibility-ignores-non-selected-frame ()
   "Test idle reset ignores session windows visible only on a non-selected frame."
@@ -1149,7 +1197,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                         claude-code-ide-session-idle-p t))
           (with-current-buffer other-buffer
             (rename-buffer "*claude-code[selected-frame-visible]*" t))
-          (setq claude-code-ide-session-idle--selected-frame-visible-buffers nil)
+          (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
+                (make-hash-table :test 'eq))
           (with-current-buffer session-buffer
             (claude-code-ide-session-idle--handle-selected-frame-visibility-change))
           (should (= reset-count 0)))
