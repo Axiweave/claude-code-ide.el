@@ -642,11 +642,7 @@ Idle markers take precedence over pinned markers."
 
 (defun claude-code-ide-manager--visible-window (&optional scope)
   "Return the live manager window for SCOPE when the sidebar is visible."
-  (when-let* ((buffer (get-buffer
-                       (claude-code-ide-manager--buffer-name-for-scope
-                        (or scope '(:type global)))))
-              (window (get-buffer-window buffer)))
-    window))
+  (claude-code-ide-manager--sidebar-window scope))
 
 (defun claude-code-ide-manager--refresh-on-idle-transition (&rest _args)
   "Refresh visible manager sidebars after an idle state transition."
@@ -812,34 +808,94 @@ This mirrors mouse hover text for keyboard navigation in the manager."
       ('adaptive (max 1 (min max-top (/ (* total 3) 4))))
       (_ (max 1 (min max-top (round (/ total 2.0))))))))
 
+(defun claude-code-ide-manager--collocated-treemacs-params (treemacs-window)
+  "Capture Treemacs window parameters used by collocation."
+  (list :window-side (window-parameter treemacs-window 'window-side)
+        :no-delete-other-windows (window-parameter treemacs-window 'no-delete-other-windows)
+        :no-other-window (window-parameter treemacs-window 'no-other-window)
+        :window-size-fixed (window-parameter treemacs-window 'window-size-fixed)))
+
+(defun claude-code-ide-manager--restore-collocated-treemacs-params
+    (treemacs-window treemacs-params)
+  "Restore TREEMACS-WINDOW using TREEMACS-PARAMS."
+  (when (window-live-p treemacs-window)
+    (set-window-parameter treemacs-window
+                          'window-side
+                          (plist-get treemacs-params :window-side))
+    (set-window-parameter treemacs-window
+                          'no-delete-other-windows
+                          (plist-get treemacs-params :no-delete-other-windows))
+    (set-window-parameter treemacs-window
+                          'no-other-window
+                          (plist-get treemacs-params :no-other-window))
+    (set-window-parameter treemacs-window
+                          'window-size-fixed
+                          (plist-get treemacs-params :window-size-fixed))))
+
+(defun claude-code-ide-manager--sidebar-window (&optional scope)
+  "Return the manager-owned sidebar window for SCOPE."
+  (let ((buffer (claude-code-ide-manager--get-buffer scope)))
+    (cl-find-if
+     (lambda (window)
+       (and (window-live-p window)
+            (eq (window-buffer window) buffer)
+            (window-parameter window 'claude-code-ide-manager-sidebar)))
+     (window-list nil 'no-minibuf))))
+
+(defun claude-code-ide-manager--collocated-window-attached-p (window treemacs-window)
+  "Return non-nil when WINDOW is still collocated beneath TREEMACS-WINDOW."
+  (and (window-live-p window)
+       (window-live-p treemacs-window)
+       (window-parameter window 'claude-code-ide-manager-collocated)
+       (eq (window-parent window) (window-parent treemacs-window))
+       (> (nth 1 (window-edges window))
+          (nth 1 (window-edges treemacs-window)))))
+
 (defun claude-code-ide-manager--show-collocated-sidebar (treemacs-window scope)
   "Show the manager buffer beneath TREEMACS-WINDOW for SCOPE."
   (let* ((buffer (claude-code-ide-manager--get-buffer scope))
+         (existing-window (claude-code-ide-manager--sidebar-window scope))
          (height (claude-code-ide-manager--collocated-sidebar-height treemacs-window))
-         (treemacs-side (window-parameter treemacs-window 'window-side)))
-    (dolist (window (window-list nil 'no-minibuf))
-      (when (and (window-live-p window)
-                 (not (eq window treemacs-window))
-                 (eq (window-buffer window) buffer))
-        (delete-window window)))
-    ;; Emacs will not split a side window directly, so temporarily clear the
-    ;; side metadata, split below, and restore the Treemacs window as the top
-    ;; pane of the sidebar stack.
-    (set-window-parameter treemacs-window 'window-side nil)
-    (unwind-protect
-        (let ((manager-window (split-window treemacs-window height 'below)))
-          (set-window-buffer manager-window buffer)
-          (set-window-parameter manager-window
-                                'claude-code-ide-manager-collocated t)
-          (set-window-parameter treemacs-window 'window-side treemacs-side)
-          (dolist (window (list treemacs-window manager-window))
-            (set-window-parameter window 'no-delete-other-windows t)
-            (set-window-parameter window 'no-other-window t))
-          (set-window-parameter treemacs-window 'window-size-fixed 'both)
-          (set-window-parameter manager-window 'window-size-fixed nil)
-          manager-window)
-      (unless (eq (window-parameter treemacs-window 'window-side) treemacs-side)
-        (set-window-parameter treemacs-window 'window-side treemacs-side)))))
+         (treemacs-params (claude-code-ide-manager--collocated-treemacs-params
+                           treemacs-window))
+         (treemacs-side (plist-get treemacs-params :window-side)))
+    (if (claude-code-ide-manager--collocated-window-attached-p
+         existing-window treemacs-window)
+        (progn
+          (set-window-buffer existing-window buffer)
+          (set-window-parameter existing-window
+                                'claude-code-ide-manager-collocated-treemacs-params
+                                treemacs-params)
+          existing-window)
+      (dolist (window (window-list nil 'no-minibuf))
+        (when (and (window-live-p window)
+                   (not (eq window treemacs-window))
+                   (eq (window-buffer window) buffer)
+                   (window-parameter window 'claude-code-ide-manager-sidebar))
+          (delete-window window)))
+      ;; Emacs will not split a side window directly, so temporarily clear the
+      ;; side metadata, split below, and restore the Treemacs window as the top
+      ;; pane of the sidebar stack.
+      (set-window-parameter treemacs-window 'window-side nil)
+      (unwind-protect
+          (let ((manager-window (split-window treemacs-window height 'below)))
+            (set-window-buffer manager-window buffer)
+            (set-window-parameter manager-window
+                                  'claude-code-ide-manager-sidebar t)
+            (set-window-parameter manager-window
+                                  'claude-code-ide-manager-collocated t)
+            (set-window-parameter manager-window
+                                  'claude-code-ide-manager-collocated-treemacs-params
+                                  treemacs-params)
+            (set-window-parameter treemacs-window 'window-side treemacs-side)
+            (dolist (window (list treemacs-window manager-window))
+              (set-window-parameter window 'no-delete-other-windows t)
+              (set-window-parameter window 'no-other-window t))
+            (set-window-parameter treemacs-window 'window-size-fixed 'both)
+            (set-window-parameter manager-window 'window-size-fixed nil)
+            manager-window)
+        (unless (eq (window-parameter treemacs-window 'window-side) treemacs-side)
+          (set-window-parameter treemacs-window 'window-side treemacs-side))))))
 
 (defun claude-code-ide-manager--delete-stale-collocated-sidebar-windows (&optional scope)
   "Delete stale collocated manager windows for SCOPE."
@@ -852,14 +908,25 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 
 (defun claude-code-ide-manager--hide-collocated-sidebar (window)
   "Hide collocated sidebar WINDOW while preserving Treemacs."
-  (when-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
-    (let ((treemacs-side (window-parameter treemacs-window 'window-side)))
-      (set-window-parameter treemacs-window 'window-side nil)
-      (unwind-protect
-          (when (window-live-p window)
-            (delete-window window))
-        (when (window-live-p treemacs-window)
-          (set-window-parameter treemacs-window 'window-side treemacs-side))))))
+  (let* ((treemacs-window (claude-code-ide-manager--treemacs-window))
+         (treemacs-params (or (window-parameter
+                               window
+                               'claude-code-ide-manager-collocated-treemacs-params)
+                              (and (window-live-p treemacs-window)
+                                   (claude-code-ide-manager--collocated-treemacs-params
+                                    treemacs-window)))))
+    (if (window-live-p treemacs-window)
+        (let ((treemacs-side (plist-get treemacs-params :window-side)))
+          (set-window-parameter treemacs-window 'window-side nil)
+          (unwind-protect
+              (when (window-live-p window)
+                (delete-window window))
+            (claude-code-ide-manager--restore-collocated-treemacs-params
+             treemacs-window treemacs-params)
+            (when (window-live-p treemacs-window)
+              (set-window-parameter treemacs-window 'window-side treemacs-side))))
+      (when (window-live-p window)
+        (delete-window window)))))
 
 (defun claude-code-ide-manager--neighbor-in-bucket (scope session-key direction)
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
@@ -912,12 +979,13 @@ Otherwise, use the standalone left side window layout."
               (window-parameters . ((no-delete-other-windows . t)
                                     (no-other-window . t)
                                     (window-size-fixed . both)))))))
+        (set-window-parameter window 'claude-code-ide-manager-sidebar t)
         (window-preserve-size window t t)
         window))))
 
 (defun claude-code-ide-manager--hide-sidebar (&optional scope)
   "Hide the manager sidebar for SCOPE."
-  (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer scope))))
+  (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
     (if (window-parameter window 'claude-code-ide-manager-collocated)
         (claude-code-ide-manager--hide-collocated-sidebar window)
       (delete-window window))))
@@ -929,7 +997,7 @@ With a positive ARG, open and focus the sidebar.
 With a negative ARG, hide the sidebar."
   (let ((direction (and arg (prefix-numeric-value arg))))
     (if (or (and (null direction)
-                 (get-buffer-window (claude-code-ide-manager--get-buffer scope)))
+                 (claude-code-ide-manager--sidebar-window scope))
             (and direction (< direction 0)))
         (progn
           (claude-code-ide-manager--hide-sidebar scope)
@@ -977,7 +1045,7 @@ With a negative ARG, hide the sidebar."
     (with-current-buffer buffer
       (claude-code-ide-manager--move-point-to-session-key session-key)
       (let ((position (point)))
-        (when-let ((window (get-buffer-window buffer)))
+        (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
           (set-window-point window position))))))
 
 (defun claude-code-ide-manager--refresh-sidebar-state (&optional scope)
@@ -989,7 +1057,8 @@ With a negative ARG, hide the sidebar."
         (with-current-buffer buffer
           (claude-code-ide-manager--render buffer-scope)
           (let ((position (point)))
-            (when-let ((window (get-buffer-window buffer)))
+            (when-let ((window (claude-code-ide-manager--sidebar-window
+                                buffer-scope)))
               (set-window-point window position))))))))
 
 (defun claude-code-ide-manager--cycle-session-key (scope step)
@@ -1282,8 +1351,7 @@ session layout is updated."
             (claude-code-ide-manager--build-default-layout session-key scope))
       (claude-code-ide-manager--refresh-sidebar-state)
       (when keep-manager-focus
-        (when-let ((window (get-buffer-window
-                            (claude-code-ide-manager--get-buffer scope))))
+        (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
           (select-window window))))))
 
 (defun claude-code-ide-manager-switch-at-point ()
