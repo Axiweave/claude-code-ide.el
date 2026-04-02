@@ -1372,6 +1372,74 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let ((buffer (get-buffer "*content*")))
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-toggle-sidebar-closes-collocated-manager-pane ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-toggle-close" :buffer nil))
+        (treemacs-buffer (get-buffer-create "*Treemacs*")))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let ((treemacs-window (display-buffer-in-side-window
+                                  treemacs-buffer
+                                  '((side . left) (slot . -1)))))
+            (with-current-buffer treemacs-buffer
+              (setq major-mode 'treemacs-mode))
+            (let ((opened-window (claude-code-ide-manager-toggle-sidebar 1)))
+              (should (window-live-p opened-window))
+              (should (progn (claude-code-ide-manager-toggle-sidebar) t)))
+            (let ((manager-windows (cl-remove-if-not
+                                    (lambda (window)
+                                      (eq (window-buffer window)
+                                          (claude-code-ide-manager--get-buffer '(:type global))))
+                                    (window-list nil 'no-minibuf))))
+              (should (= 0 (length manager-windows)))
+              (should (window-live-p treemacs-window))
+              (should (eq (claude-code-ide-manager--treemacs-window) treemacs-window)))))
+      (ignore-errors (delete-process process-a))
+      (when (buffer-live-p treemacs-buffer)
+        (kill-buffer treemacs-buffer))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-hide-sidebar-closes-collocated-manager-pane ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-hide-close" :buffer nil))
+        (treemacs-buffer (get-buffer-create "*Treemacs*")))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let ((treemacs-window
+                 (display-buffer-in-side-window treemacs-buffer
+                                                '((side . left) (slot . -1)))))
+            (with-current-buffer treemacs-buffer
+              (setq major-mode 'treemacs-mode))
+            (let ((opened-window (claude-code-ide-manager-toggle-sidebar 1)))
+              (should (window-live-p opened-window)))
+            (should (window-live-p treemacs-window))
+            (should (eq (claude-code-ide-manager--treemacs-window) treemacs-window))
+            (should (progn
+                      (claude-code-ide-manager--hide-sidebar '(:type global))
+                      t))
+            (should (window-live-p treemacs-window))
+            (should (eq (claude-code-ide-manager--treemacs-window) treemacs-window))
+            (should (= 0
+                       (length (cl-remove-if-not
+                                (lambda (window)
+                                  (eq (window-buffer window)
+                                      (claude-code-ide-manager--get-buffer '(:type global))))
+                                (window-list nil 'no-minibuf)))))))
+      (ignore-errors (delete-process process-a))
+      (when (buffer-live-p treemacs-buffer)
+        (kill-buffer treemacs-buffer))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-show-sidebar-cleans-stale-collocated-pane-on-standalone-reopen ()
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide--processes (make-hash-table :test 'equal))

@@ -850,6 +850,17 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                  (window-parameter window 'claude-code-ide-manager-collocated))
         (delete-window window)))))
 
+(defun claude-code-ide-manager--hide-collocated-sidebar (window)
+  "Hide collocated sidebar WINDOW while preserving Treemacs."
+  (when-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+    (let ((treemacs-side (window-parameter treemacs-window 'window-side)))
+      (set-window-parameter treemacs-window 'window-side nil)
+      (unwind-protect
+          (when (window-live-p window)
+            (delete-window window))
+        (when (window-live-p treemacs-window)
+          (set-window-parameter treemacs-window 'window-side treemacs-side))))))
+
 (defun claude-code-ide-manager--neighbor-in-bucket (scope session-key direction)
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
 DIRECTION should be -1 for up or 1 for down."
@@ -907,7 +918,9 @@ Otherwise, use the standalone left side window layout."
 (defun claude-code-ide-manager--hide-sidebar (&optional scope)
   "Hide the manager sidebar for SCOPE."
   (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer scope))))
-    (delete-window window)))
+    (if (window-parameter window 'claude-code-ide-manager-collocated)
+        (claude-code-ide-manager--hide-collocated-sidebar window)
+      (delete-window window))))
 
 (defun claude-code-ide-manager-toggle-sidebar-for-scope (scope &optional arg)
   "Toggle the manager sidebar for SCOPE.
