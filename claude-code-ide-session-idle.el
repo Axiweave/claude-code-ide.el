@@ -42,6 +42,19 @@
   :type 'boolean
   :group 'claude-code-ide-session-idle)
 
+(defcustom claude-code-ide-session-idle-notification-policy 'manager
+  "How idle transitions should notify the user.
+
+`nil' means keep idle state only.
+`manager' means rely on manager/sidebar idle state only.
+`alert' means emit alerts in addition to idle state changes.
+`manager-and-alert' means preserve manager idle state and emit alerts."
+  :type '(choice (const :tag "Idle state only" nil)
+                 (const :tag "Manager only" manager)
+                 (const :tag "Alert only" alert)
+                 (const :tag "Manager and alert" manager-and-alert))
+  :group 'claude-code-ide-session-idle)
+
 (defcustom claude-code-ide-session-idle-suppressed-predicate nil
   "Predicate function used to suppress session idle monitoring.
 When non-nil, it is called with the session buffer.  A non-nil return value
@@ -64,6 +77,12 @@ prevents idle timer scheduling and idle hook execution."
 
 (defvar-local claude-code-ide-session-idle-timer nil
   "Idle timer object for the current session buffer.")
+
+(defvar claude-code-ide-session-idle--selected-frame-visible-buffers nil
+  "Claude session buffers last seen visible on the selected frame.")
+
+(defvar claude-code-ide-session-idle--in-visibility-refresh nil
+  "Non-nil while handling selected-frame visibility changes.")
 
 (defvaralias 'claude-code-ide-session-idle--enabled
   'claude-code-ide-session-idle-enabled)
@@ -99,6 +118,39 @@ prevents idle timer scheduling and idle hook execution."
       (with-current-buffer target-buffer
         (claude-code-ide-session-idle-reset-timer)))))
 
+(defun claude-code-ide-session-idle--visible-session-buffers-on-frame (&optional frame)
+  "Return Claude session buffers visible on FRAME."
+  (let ((frame (or frame (selected-frame)))
+        (buffers nil))
+    (dolist (window (window-list frame 'no-minibuffer))
+      (let ((buffer (window-buffer window)))
+        (when (and (buffer-live-p buffer)
+                   (claude-code-ide-session-buffer-p buffer))
+          (push buffer buffers))))
+    (nreverse (delete-dups buffers))))
+
+(defun claude-code-ide-session-idle--notify (buffer)
+  "Emit an idle notification for BUFFER when policy includes alerts."
+  (when (memq claude-code-ide-session-idle-notification-policy
+              '(alert manager-and-alert))
+    (when (fboundp 'alert)
+      (alert (format "Session idle: %s" (buffer-name buffer))
+             :title "Claude Code"))))
+
+(defun claude-code-ide-session-idle--handle-selected-frame-visibility-change ()
+  "Reset idle for session buffers that became newly visible on the selected frame."
+  (unless claude-code-ide-session-idle--in-visibility-refresh
+    (let* ((claude-code-ide-session-idle--in-visibility-refresh t)
+           (current (claude-code-ide-session-idle--visible-session-buffers-on-frame))
+           (previous claude-code-ide-session-idle--selected-frame-visible-buffers))
+      (dolist (buffer current)
+        (when (and (buffer-live-p buffer)
+                   (not (memq buffer previous)))
+          (with-current-buffer buffer
+            (when claude-code-ide-session-idle-enabled
+              (claude-code-ide-session-idle-reset-timer)))))
+      (setq claude-code-ide-session-idle--selected-frame-visible-buffers current))))
+
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
   "Run ORIG-FN, then reset the idle timer for session buffers."
   (let ((process-buffer (ignore-errors
@@ -123,9 +175,7 @@ prevents idle timer scheduling and idle hook execution."
     (claude-code-ide-session-idle--install-output-observer 'eat--filter)))
 
 (defun claude-code-ide-session-idle--fire-timer (buffer &optional generation)
-  "Run the idle hook for BUFFER if monitoring is still active.
-When GENERATION is non-nil, only accept the callback if it matches the
-currently scheduled idle generation for BUFFER."
+  "Run the idle hook for BUFFER if monitoring is still active."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when (or (null generation)
@@ -134,6 +184,7 @@ currently scheduled idle generation for BUFFER."
         (when (and claude-code-ide-session-idle-enabled
                    (not (claude-code-ide-session-idle--suppressed-p buffer)))
           (setq claude-code-ide-session-idle-p t)
+          (claude-code-ide-session-idle--notify buffer)
           (run-hook-with-args 'claude-code-ide-session-idle-hook buffer))))))
 
 (defun claude-code-ide-session-idle-reset-timer ()
@@ -183,6 +234,11 @@ currently scheduled idle generation for BUFFER."
       (claude-code-ide-session-idle--clear-timer))))
 
 (claude-code-ide-session-idle--install-output-observers)
+
+(unless (memq #'claude-code-ide-session-idle--handle-selected-frame-visibility-change
+              window-configuration-change-hook)
+  (add-hook 'window-configuration-change-hook
+            #'claude-code-ide-session-idle--handle-selected-frame-visibility-change))
 
 (add-hook 'claude-code-ide-session-setup-hook
           #'claude-code-ide-session-idle--setup-buffer)
