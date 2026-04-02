@@ -257,6 +257,19 @@ prevents idle timer scheduling and idle hook execution."
         (claude-code-ide-session-idle-reset-timer)
       (claude-code-ide-session-idle--clear-timer))))
 
+(defun claude-code-ide-session-idle-unload-function ()
+  "Clean up global hooks and timers installed by session idle."
+  (remove-hook 'window-configuration-change-hook
+               #'claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+  (remove-hook 'window-state-change-hook
+               #'claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+  (remove-function after-focus-change-function
+                   #'claude-code-ide-session-idle--schedule-visibility-refresh)
+  (when (timerp claude-code-ide-session-idle--visibility-refresh-timer)
+    (cancel-timer claude-code-ide-session-idle--visibility-refresh-timer))
+  (setq claude-code-ide-session-idle--visibility-refresh-timer nil)
+  nil)
+
 (claude-code-ide-session-idle--install-output-observers)
 
 (remove-hook 'window-configuration-change-hook

@@ -7521,6 +7521,24 @@ have completed before cleanup.  Waits up to 5 seconds."
     (claude-code-ide-session-idle-toggle)
     (should claude-code-ide-session-idle-enabled)))
 
+(ert-deftest claude-code-ide-test-session-idle-unload-cleans-focus-trigger ()
+  "Test unloading removes the deferred focus refresh from global focus handling."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((unload-error nil))
+    (unwind-protect
+        (progn
+          (setq claude-code-ide-session-idle--visibility-refresh-timer
+                (run-at-time 60 nil #'ignore))
+          (unload-feature 'claude-code-ide-session-idle t)
+          (setq unload-error
+                (condition-case err
+                    (progn
+                      (funcall after-focus-change-function)
+                      nil)
+                  (error err)))
+          (should-not unload-error))
+      (should (require 'claude-code-ide-session-idle nil t)))))
+
 (ert-deftest claude-code-ide-test-session-idle-reset-schedules-timer ()
   "Test that session idle reset schedules a timer."
   (should (require 'claude-code-ide-session-idle nil t))
