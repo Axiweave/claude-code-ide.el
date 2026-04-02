@@ -94,6 +94,12 @@ back to `project.el' otherwise."
                  (const :tag "Merged" merged))
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-treemacs-split-policy 'half
+  "How to split the sidebar when collocating cc-manager with Treemacs."
+  :type '(choice (const :tag "Half" half)
+                 (const :tag "Adaptive" adaptive))
+  :group 'claude-code-ide-manager)
+
 (defface claude-code-ide-manager-current-session-face
   '((t :inherit highlight))
   "Face used to highlight the active session in the manager sidebar."
@@ -780,6 +786,20 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                     (not (window-parameter window 'window-side)))
                   (window-list nil 'no-minibuf))
       (selected-window)))
+
+(defun claude-code-ide-manager--treemacs-window ()
+  "Return the visible Treemacs sidebar window when available."
+  (cl-find-if
+   (lambda (window)
+     (when-let ((buffer (window-buffer window)))
+       (with-current-buffer buffer
+         (and (eq major-mode 'treemacs-mode)
+              (eq (window-parameter window 'window-side) 'left)))))
+   (window-list nil 'no-minibuf)))
+
+(defun claude-code-ide-manager--treemacs-visible-p ()
+  "Return non-nil when Treemacs is currently visible in a sidebar."
+  (not (null (claude-code-ide-manager--treemacs-window))))
 
 (defun claude-code-ide-manager--neighbor-in-bucket (scope session-key direction)
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.

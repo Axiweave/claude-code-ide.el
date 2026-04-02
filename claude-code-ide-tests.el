@@ -1230,6 +1230,26 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test manager sidebar width default is narrow enough for basename rows."
   (should (= claude-code-ide-manager-window-width 22)))
 
+(ert-deftest claude-code-ide-test-manager-treemacs-split-policy-defaults-to-half ()
+  (should (eq claude-code-ide-manager-treemacs-split-policy 'half)))
+
+(ert-deftest claude-code-ide-test-manager-find-treemacs-window-returns-visible-left-sidebar ()
+  (let ((treemacs-buffer (get-buffer-create "*Treemacs*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let ((window (display-buffer-in-side-window
+                         treemacs-buffer
+                         '((side . left) (slot . -1)))))
+            (with-current-buffer treemacs-buffer
+              (setq major-mode 'treemacs-mode))
+            (should (eq (claude-code-ide-manager--treemacs-window) window))))
+      (when (buffer-live-p treemacs-buffer)
+        (kill-buffer treemacs-buffer))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-1-creates-left-side-window ()
   "Test forcing the manager open creates a left side window."
   (claude-code-ide-tests--reset-manager-state)
