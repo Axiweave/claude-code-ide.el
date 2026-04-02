@@ -325,6 +325,9 @@ back to `project.el' otherwise."
 (defvar claude-code-ide-manager--in-window-config-refresh nil
   "Non-nil while cc-manager is reasserting sidebar state after layout changes.")
 
+(defvar-local claude-code-ide-manager--managed-session nil
+  "Non-nil when the current session buffer has been shown through cc-manager.")
+
 (defvar-local claude-code-ide-manager--scope nil
   "Scope descriptor associated with the current manager buffer.")
 
@@ -912,6 +915,19 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   (dolist (scope scopes)
     (unless (claude-code-ide-manager--sidebar-window scope)
       (claude-code-ide-manager--show-sidebar scope))))
+
+(defun claude-code-ide-manager--session-managed-p (session-key)
+  "Return non-nil when SESSION-KEY already has manager-owned layout state."
+  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+    (and (buffer-live-p buffer)
+         (buffer-local-value 'claude-code-ide-manager--managed-session buffer))))
+
+(defun claude-code-ide-manager--mark-session-managed (session-key)
+  "Mark SESSION-KEY's live session buffer as manager-owned."
+  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq-local claude-code-ide-manager--managed-session t)))))
 
 (defun claude-code-ide-manager--evict-manager-buffer-from-window (window buffer)
   "Remove BUFFER from non-sidebar WINDOW."
@@ -1567,6 +1583,8 @@ session layout is updated."
   (let ((scope (or scope (claude-code-ide-manager--scope-for-command)))
         (visible-sidebar-scopes
          (claude-code-ide-manager--visible-sidebar-scopes))
+        (first-managed-switch
+         (not (claude-code-ide-manager--session-managed-p session-key)))
         (claude-code-ide-manager--command-scope
          (or scope (claude-code-ide-manager--scope-for-command))))
     (when claude-code-ide-manager--current-session-key
@@ -1576,11 +1594,14 @@ session layout is updated."
                claude-code-ide-manager--layouts)
       (claude-code-ide-manager--save-state))
     (let ((target-window
-           (or (claude-code-ide-manager--restore-layout session-key)
-               (claude-code-ide-manager--build-default-layout session-key scope))))
+           (if first-managed-switch
+               (claude-code-ide-manager--build-default-layout session-key scope)
+             (or (claude-code-ide-manager--restore-layout session-key)
+                 (claude-code-ide-manager--build-default-layout session-key scope)))))
       (let ((preferred-window (if (window-live-p target-window)
                                   target-window
                                   (selected-window))))
+        (claude-code-ide-manager--mark-session-managed session-key)
         (claude-code-ide-manager--adopt-visible-sidebars visible-sidebar-scopes)
         (claude-code-ide-manager--restore-visible-sidebars visible-sidebar-scopes)
         (when (claude-code-ide-manager--treemacs-window)
