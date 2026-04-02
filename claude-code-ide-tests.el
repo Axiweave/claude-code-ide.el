@@ -37,6 +37,8 @@
 
 ;;; Code:
 
+(add-to-list 'load-path (file-name-directory (or load-file-name buffer-file-name)))
+
 (require 'ert)
 (require 'cl-lib)
 
@@ -1013,6 +1015,89 @@ have completed before cleanup.  Waits up to 5 seconds."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list session-buffer manager-buffer content-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-notification-policy-gates-alerts ()
+  "Test idle notification policy gates alert emission without changing idle state."
+  (let ((session-buffer (get-buffer-create "*cc-idle-policy*"))
+        (alerts nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'alert)
+                   (lambda (message &rest args)
+                     (push (cons message args) alerts))))
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[idle-policy]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil))
+          (dolist (policy '(nil manager alert manager-and-alert))
+            (setq alerts nil
+                  claude-code-ide-session-idle-notification-policy policy)
+            (with-current-buffer session-buffer
+              (claude-code-ide-session-idle--notify session-buffer)
+              (pcase policy
+                ((or 'alert 'manager-and-alert)
+                 (should (= (length alerts) 1)))
+                (_
+                 (should-not alerts))))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-visibility-reset-is-edge-triggered ()
+  "Test selected-frame visibility resets idle only when a session becomes newly visible."
+  (let ((session-buffer (get-buffer-create "*cc-visible-idle*"))
+        (other-buffer (get-buffer-create "*cc-visible-other*"))
+        (reset-count 0))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[visible-idle]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (with-current-buffer other-buffer
+            (fundamental-mode))
+          (cl-letf (((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                     (lambda ()
+                       (setq reset-count (1+ reset-count)))))
+            (setq claude-code-ide-session-idle--selected-frame-visible-buffers nil)
+            (delete-other-windows)
+            (set-window-buffer (selected-window) other-buffer)
+            (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+            (should (= reset-count 0))
+            (set-window-buffer (selected-window) session-buffer)
+            (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+            (should (= reset-count 1))
+            (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+            (should (= reset-count 1))
+            (set-window-buffer (selected-window) other-buffer)
+            (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+            (set-window-buffer (selected-window) session-buffer)
+            (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+            (should (= reset-count 2)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-visibility-ignores-non-selected-frame ()
+  "Test idle reset ignores session windows visible only on a non-selected frame."
+  (let ((session-buffer (get-buffer-create "*cc-visible-other-frame*"))
+        (reset-count 0))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((other-window (split-window-right)))
+            (cl-letf (((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                       (lambda ()
+                         (setq reset-count (1+ reset-count)))))
+              (with-current-buffer session-buffer
+                (rename-buffer "*claude-code[visible-other-frame]*" t)
+                (setq-local claude-code-ide-session-idle-enabled t
+                            claude-code-ide-session-idle-p t))
+              (setq claude-code-ide-session-idle--selected-frame-visible-buffers nil)
+              (set-window-buffer other-window session-buffer)
+              (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+              (should (= reset-count 0)))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-non-idle-reset-does-not-rerender ()
   "Test ordinary reset calls do not rerender the visible manager."
