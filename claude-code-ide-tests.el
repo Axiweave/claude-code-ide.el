@@ -242,6 +242,42 @@ executes TEST-BODY, and ensures cleanup even if TEST-BODY fails."
           (funcall test-body))
       (delete-directory temp-dir t))))
 
+(defun claude-code-ide-tests--git (&rest args)
+  "Run git with ARGS and return trimmed stdout.
+Signal an error when git exits unsuccessfully."
+  (with-temp-buffer
+    (let ((status (apply #'process-file "git" nil t nil args)))
+      (unless (eq status 0)
+        (error "git %s failed: %s"
+               (mapconcat #'identity args " ")
+               (string-trim (buffer-string))))
+      (string-trim (buffer-string)))))
+
+(defun claude-code-ide-tests--with-temp-worktree-repo (test-body)
+  "Create a temporary repo with a sibling worktree and call TEST-BODY.
+TEST-BODY receives two arguments: the main repo root and a sibling worktree
+root.  Both paths are normalized directory names."
+  (let* ((temp-dir (make-temp-file "claude-code-ide-worktree-test-" t))
+         (main-root (expand-file-name "main" temp-dir))
+         (worktree-root (expand-file-name "feature" temp-dir)))
+    (unwind-protect
+        (progn
+          (make-directory main-root t)
+          (let ((default-directory main-root))
+            (claude-code-ide-tests--git "init")
+            (claude-code-ide-tests--git "config" "user.name" "Claude Code IDE Tests")
+            (claude-code-ide-tests--git "config" "user.email" "tests@example.com")
+            (with-temp-file (expand-file-name "README.md" main-root)
+              (insert "worktree test\n"))
+            (claude-code-ide-tests--git "add" "README.md")
+            (claude-code-ide-tests--git "commit" "-m" "initial")
+            (claude-code-ide-tests--git "branch" "feature")
+            (claude-code-ide-tests--git "worktree" "add" worktree-root "feature"))
+          (funcall test-body
+                   (file-name-as-directory (file-truename main-root))
+                   (file-name-as-directory (file-truename worktree-root))))
+      (ignore-errors (delete-directory temp-dir t)))))
+
 (defun claude-code-ide-tests--clear-processes ()
   "Clear the process hash table for testing.
 Ensures a clean state before each test that involves process management."
@@ -421,6 +457,24 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'vc-root-dir)
                (lambda (&optional _dir) "/tmp/project/")))
       (should-not (claude-code-ide-manager--current-git-root)))))
+
+(ert-deftest claude-code-ide-test-manager-current-git-root-uses-common-root-for-worktrees ()
+  "Repo scope should use the shared repo root, not the current worktree root."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main-root worktree-root)
+     (let ((default-directory worktree-root))
+       (should (equal (claude-code-ide-manager--current-git-root)
+                      main-root))))))
+
+(ert-deftest claude-code-ide-test-manager-repo-scope-includes-sibling-worktrees ()
+  "Repo scope should include sessions from sibling worktrees in the same repo."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main-root worktree-root)
+     (let ((scope (list :type 'repo :git-root main-root)))
+       (should (equal (claude-code-ide-manager--scope-session-keys
+                       scope
+                       (list main-root worktree-root))
+                      (list main-root worktree-root)))))))
 
 (ert-deftest claude-code-ide-test-manager-global-and-repo-scopes-keep-separate-pin-state ()
   (claude-code-ide-tests--reset-manager-state)

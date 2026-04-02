@@ -194,8 +194,20 @@ back to `project.el' otherwise."
 
 (defun claude-code-ide-manager--current-git-root ()
   "Return the current Git root directory when available."
-  (when-let ((root (ignore-errors (vc-git-root default-directory))))
-    (file-name-as-directory (expand-file-name root))))
+  (or
+   (when-let* ((default-directory (and default-directory
+                                       (file-name-as-directory
+                                        (expand-file-name default-directory))))
+               (common-dir-line (car (ignore-errors
+                                       (process-lines "git" "-C" default-directory
+                                                      "rev-parse" "--git-common-dir"))))
+               (common-dir (expand-file-name common-dir-line default-directory))
+               ((string-equal (file-name-nondirectory (directory-file-name common-dir))
+                              ".git")))
+     (file-name-as-directory
+      (file-name-directory (directory-file-name common-dir))))
+   (when-let ((root (ignore-errors (vc-git-root default-directory))))
+     (file-name-as-directory (expand-file-name root)))))
 
 (defun claude-code-ide-manager--session-git-root (session-key)
   "Return the Git root for SESSION-KEY when available."
