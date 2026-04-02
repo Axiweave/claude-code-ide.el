@@ -3023,6 +3023,64 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (kill-buffer buffer)))
             (list content-buffer repo-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-switch-by-slot-prefers-visible-repo-scope-over-default-global ()
+  "Test slot switching prefers a visible repo scope matching the current buffer."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/repo/"))
+         (content-buffer (get-buffer-create "*cc-slot-content-repo*"))
+         (global-buffer (claude-code-ide-manager--get-buffer global-scope))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
+         switched)
+    (unwind-protect
+        (save-window-excursion
+          (claude-code-ide-manager--set-scope-items
+           global-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/global-a"
+                  :display-name "global-a"
+                  :secondary-text "global-a"
+                  :order-key 1
+                  :live-p t)))
+          (claude-code-ide-manager--set-scope-items
+           repo-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/repo/worktree-b"
+                  :display-name "worktree-b"
+                  :secondary-text "worktree-b"
+                  :order-key 1
+                  :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (with-current-buffer content-buffer
+            (setq default-directory "/tmp/repo/worktree-b/"))
+          (let ((global-window (split-window-right))
+                repo-window)
+            (set-window-buffer global-window global-buffer)
+            (set-window-parameter global-window 'claude-code-ide-manager-sidebar t)
+            (setq repo-window (split-window global-window nil 'below))
+            (set-window-buffer repo-window repo-buffer)
+            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
+          (with-current-buffer global-buffer
+            (setq-local claude-code-ide-manager--scope global-scope))
+          (with-current-buffer repo-buffer
+            (setq-local claude-code-ide-manager--scope repo-scope))
+          (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+                     (lambda (session-key &optional _keep-manager-focus _scope)
+                       (setq switched session-key)))
+                    ((symbol-function 'claude-code-ide-manager--current-git-root)
+                     (lambda ()
+                       (when (eq (current-buffer) content-buffer)
+                         "/tmp/repo/")))
+                    ((symbol-function 'claude-code-ide-manager--default-target)
+                     (lambda () 'global)))
+            (claude-code-ide-manager-switch-by-slot 1)
+            (should (equal switched "/tmp/repo/worktree-b"))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list content-buffer global-buffer repo-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-space-switch-keeps-focus-on-manager ()
   "Test sidebar SPC switches sessions without leaving the manager window."
   (claude-code-ide-tests--reset-manager-state)

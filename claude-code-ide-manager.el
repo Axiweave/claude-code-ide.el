@@ -366,7 +366,9 @@ back to `project.el' otherwise."
 When multiple manager sidebars are visible, prefer the configured default
 scope when it is visible; otherwise return the first visible scope."
   (let* ((frame (or frame (selected-frame)))
-         (visible-scopes nil))
+         (visible-scopes nil)
+         (current-git-root (ignore-errors
+                             (claude-code-ide-manager--current-git-root))))
     (walk-windows
      (lambda (window)
        (when (and (window-live-p window)
@@ -380,6 +382,12 @@ scope when it is visible; otherwise return the first visible scope."
     (setq visible-scopes (nreverse visible-scopes))
     (or (and (= (length visible-scopes) 1)
              (car visible-scopes))
+        (cl-find-if (lambda (scope)
+                      (and (eq (plist-get scope :type) 'repo)
+                           current-git-root
+                           (equal (plist-get scope :git-root)
+                                  current-git-root)))
+                    visible-scopes)
         (let ((default-scope (claude-code-ide-manager--resolve-scope
                               (claude-code-ide-manager--default-target))))
           (when (member default-scope visible-scopes)
