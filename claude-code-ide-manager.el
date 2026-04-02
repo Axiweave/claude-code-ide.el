@@ -1578,14 +1578,19 @@ session layout is updated."
     (let ((target-window
            (or (claude-code-ide-manager--restore-layout session-key)
                (claude-code-ide-manager--build-default-layout session-key scope))))
-      (claude-code-ide-manager--adopt-visible-sidebars visible-sidebar-scopes)
-      (claude-code-ide-manager--restore-visible-sidebars visible-sidebar-scopes)
-      (when (claude-code-ide-manager--treemacs-window)
-        (claude-code-ide-manager--sync-treemacs-to-session session-key))
-      (claude-code-ide-manager--refresh-sidebar-state scope nil)
-      (when keep-manager-focus
-        (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
-          (select-window window)))
+      (let ((preferred-window (if (window-live-p target-window)
+                                  target-window
+                                  (selected-window))))
+        (claude-code-ide-manager--adopt-visible-sidebars visible-sidebar-scopes)
+        (claude-code-ide-manager--restore-visible-sidebars visible-sidebar-scopes)
+        (when (claude-code-ide-manager--treemacs-window)
+          (claude-code-ide-manager--sync-treemacs-to-session session-key))
+        (claude-code-ide-manager--refresh-sidebar-state scope nil)
+        (if keep-manager-focus
+            (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
+              (select-window window))
+          (when (window-live-p preferred-window)
+            (select-window preferred-window))))
       target-window)))
 
 (defun claude-code-ide-manager-switch-at-point ()

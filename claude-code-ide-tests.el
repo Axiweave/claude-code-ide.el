@@ -1946,6 +1946,39 @@ have completed before cleanup.  Waits up to 5 seconds."
       (claude-code-ide-manager-switch-to-session "/tmp/project-a" nil '(:type global))
       (should-not called))))
 
+(ert-deftest claude-code-ide-test-manager-switch-restores-target-focus-after-treemacs-sync ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((content-buffer (get-buffer-create "*content*"))
+        (session-buffer (get-buffer-create "*cc-session*"))
+        (treemacs-buffer (get-buffer-create "*Treemacs*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (let* ((content-window (selected-window))
+                 (treemacs-window (display-buffer-in-side-window
+                                   treemacs-buffer
+                                   '((side . left) (slot . -1)))))
+            (set-window-buffer content-window content-buffer)
+            (with-current-buffer treemacs-buffer
+              (setq major-mode 'treemacs-mode))
+            (cl-letf (((symbol-function 'claude-code-ide-manager--restore-layout)
+                       (lambda (_session-key)
+                         (set-window-buffer content-window session-buffer)
+                         (select-window content-window)
+                         content-window))
+                      ((symbol-function 'claude-code-ide-manager--sync-treemacs-to-session)
+                       (lambda (_session-key)
+                         (select-window treemacs-window))))
+              (claude-code-ide-manager-switch-to-session "/tmp/project-a" nil '(:type global))
+              (should (eq (selected-window) content-window))
+              (should (eq (window-buffer (selected-window)) session-buffer)))))
+      (when-let ((window (get-buffer-window treemacs-buffer)))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list content-buffer session-buffer treemacs-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-sync-treemacs-keeps-project-when-file-reveal-fails ()
   (let (project-call)
     (cl-letf (((symbol-function 'treemacs-add-and-display-current-project-exclusively)
