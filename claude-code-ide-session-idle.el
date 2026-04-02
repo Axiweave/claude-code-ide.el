@@ -85,6 +85,9 @@ prevents idle timer scheduling and idle hook execution."
 (defvaralias 'claude-code-ide-session-idle--timer
   'claude-code-ide-session-idle-timer)
 
+(defvar claude-code-ide-session-idle--in-visibility-refresh nil
+  "Non-nil while visible-session idle state is being refreshed.")
+
 (defun claude-code-ide-session-idle--suppressed-p (&optional buffer)
   "Return non-nil when idle monitoring should be suppressed."
   (and (functionp claude-code-ide-session-idle-suppressed-predicate)
@@ -118,6 +121,37 @@ prevents idle timer scheduling and idle hook execution."
                (claude-code-ide-session-buffer-p target-buffer))
       (with-current-buffer target-buffer
         (claude-code-ide-session-idle-reset-timer)))))
+
+(defun claude-code-ide-session-idle--buffer-visible-in-focused-frame-p (&optional buffer)
+  "Return non-nil when BUFFER is visible in a focused frame."
+  (let ((target-buffer (or buffer (current-buffer))))
+    (cl-some (lambda (window)
+               (frame-focus-state (window-frame window)))
+             (get-buffer-window-list target-buffer nil t))))
+
+(defun claude-code-ide-session-idle--refresh-visible-session-idle-state ()
+  "Clear idle state for session buffers visible in a focused frame."
+  (unless claude-code-ide-session-idle--in-visibility-refresh
+    (let ((claude-code-ide-session-idle--in-visibility-refresh t)
+          (seen-buffers nil))
+      (walk-windows
+       (lambda (window)
+         (let ((buffer (window-buffer window)))
+           (when (and (buffer-live-p buffer)
+                      (frame-focus-state (window-frame window))
+                      (claude-code-ide-session-buffer-p buffer)
+                      (not (memq buffer seen-buffers)))
+             (push buffer seen-buffers)
+             (with-current-buffer buffer
+               (when (and claude-code-ide-session-idle-enabled
+                          claude-code-ide-session-idle-p)
+                 (claude-code-ide-session-idle-clear-state))))))
+       'no-minibuf
+       'visible))))
+
+(defun claude-code-ide-session-idle--handle-visibility-change ()
+  "Refresh idle state after focus or window visibility changes."
+  (claude-code-ide-session-idle--refresh-visible-session-idle-state))
 
 (defun claude-code-ide-session-idle--notify (buffer)
   "Emit an idle notification for BUFFER when policy includes alerts."
@@ -180,11 +214,14 @@ prevents idle timer scheduling and idle hook execution."
       (when (or (null generation)
                 (= generation claude-code-ide-session-idle-generation))
         (setq claude-code-ide-session-idle-timer nil)
-        (when (and claude-code-ide-session-idle-enabled
-                   (not (claude-code-ide-session-idle--suppressed-p buffer)))
+        (cond
+         ((claude-code-ide-session-idle--buffer-visible-in-focused-frame-p buffer)
+          (claude-code-ide-session-idle-reset-timer))
+         ((and claude-code-ide-session-idle-enabled
+               (not (claude-code-ide-session-idle--suppressed-p buffer)))
           (setq claude-code-ide-session-idle-p t)
           (claude-code-ide-session-idle--notify buffer)
-          (run-hook-with-args 'claude-code-ide-session-idle-hook buffer))))))
+          (run-hook-with-args 'claude-code-ide-session-idle-hook buffer)))))))
 
 (defun claude-code-ide-session-idle-reset-timer ()
   "Reset the idle timer for the current session buffer."
@@ -232,9 +269,30 @@ prevents idle timer scheduling and idle hook execution."
 
 (defun claude-code-ide-session-idle-unload-function ()
   "Clean up global hooks and timers installed by session idle."
+  (remove-hook 'window-state-change-hook
+               #'claude-code-ide-session-idle--handle-visibility-change)
+  (remove-hook 'window-configuration-change-hook
+               #'claude-code-ide-session-idle--handle-visibility-change)
+  (remove-function after-focus-change-function
+                   #'claude-code-ide-session-idle--handle-visibility-change)
   nil)
 
 (claude-code-ide-session-idle--install-output-observers)
+
+(unless (memq #'claude-code-ide-session-idle--handle-visibility-change
+              window-state-change-hook)
+  (add-hook 'window-state-change-hook
+            #'claude-code-ide-session-idle--handle-visibility-change))
+
+(unless (memq #'claude-code-ide-session-idle--handle-visibility-change
+              window-configuration-change-hook)
+  (add-hook 'window-configuration-change-hook
+            #'claude-code-ide-session-idle--handle-visibility-change))
+
+(unless (advice-member-p #'claude-code-ide-session-idle--handle-visibility-change
+                         'after-focus-change-function)
+  (add-function :after after-focus-change-function
+                #'claude-code-ide-session-idle--handle-visibility-change))
 
 (add-hook 'claude-code-ide-session-setup-hook
           #'claude-code-ide-session-idle--setup-buffer)

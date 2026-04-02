@@ -683,6 +683,10 @@ Idle markers take precedence over pinned markers."
                          'claude-code-ide-session-idle-disable)
     (advice-remove 'claude-code-ide-session-idle-disable
                    #'claude-code-ide-manager--refresh-on-idle-transition))
+  (when (advice-member-p #'claude-code-ide-manager--refresh-on-idle-transition
+                         'claude-code-ide-session-idle-clear-state)
+    (advice-remove 'claude-code-ide-session-idle-clear-state
+                   #'claude-code-ide-manager--refresh-on-idle-transition))
   (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
                            'claude-code-ide-session-idle-reset-timer)
     (advice-add 'claude-code-ide-session-idle-reset-timer
@@ -690,6 +694,10 @@ Idle markers take precedence over pinned markers."
   (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
                            'claude-code-ide-session-idle-disable)
     (advice-add 'claude-code-ide-session-idle-disable
+                :around #'claude-code-ide-manager--refresh-after-idle-clear))
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
+                           'claude-code-ide-session-idle-clear-state)
+    (advice-add 'claude-code-ide-session-idle-clear-state
                 :around #'claude-code-ide-manager--refresh-after-idle-clear)))
 
 (defun claude-code-ide-manager--install-window-config-refresh-hook ()
