@@ -3296,6 +3296,108 @@ have completed before cleanup.  Waits up to 5 seconds."
             (list session-buffer status-buffer
                   (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
+(ert-deftest claude-code-ide-test-manager-reset-layout-at-point-builds-default-layout ()
+  "Test resetting the selected session layout rebuilds the default layout."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-reset-session*"))
+        (status-buffer (get-buffer-create "*cc-reset-status*"))
+        (manager-buffer (claude-code-ide-manager--get-buffer))
+        (content-buffer (get-buffer-create "*cc-reset-content*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (_directory) session-buffer))
+                  ((symbol-function 'magit-status-setup-buffer)
+                   (lambda (_directory) status-buffer)))
+          (claude-code-ide-manager--set-scope-items
+           '(:type global)
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/project-a"
+                  :display-name "project-a"
+                  :secondary-text "/tmp/project-a"
+                  :order-key 1
+                  :live-p t)))
+          (puthash "/tmp/project-a"
+                   '(:window-state stale-layout)
+                   claude-code-ide-manager--layouts)
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer content-buffer)
+            (let ((manager-window (split-window-right)))
+              (set-window-buffer manager-window manager-buffer)
+              (set-window-parameter manager-window 'claude-code-ide-manager-sidebar t)
+              (with-current-buffer manager-buffer
+                (claude-code-ide-manager--render '(:type global))
+                (goto-char (point-min))
+                (claude-code-ide-manager-reset-layout-at-point))
+              (should (get-buffer-window session-buffer))
+              (should (get-buffer-window status-buffer))
+              (should-not (gethash "/tmp/project-a"
+                                   claude-code-ide-manager--layouts)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer status-buffer manager-buffer content-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-mode-binds-R-to-reset-layout ()
+  "Test manager mode binds `R' to layout reset."
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "R"))
+              #'claude-code-ide-manager-reset-layout-at-point)))
+
+(ert-deftest claude-code-ide-test-manager-reset-layout-rebuilds-current-session-default-layout ()
+  "Test reset layout does not re-save stale layout for the current session."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-reset-current-session*"))
+        (status-buffer (get-buffer-create "*cc-reset-current-status*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (_directory) session-buffer))
+                  ((symbol-function 'magit-status-setup-buffer)
+                   (lambda (_directory) status-buffer))
+                  ((symbol-function 'claude-code-ide-manager--capture-layout)
+                   (lambda (_session-key)
+                     '(:window-state captured-layout))))
+          (setq claude-code-ide-manager--current-session-key "/tmp/project-a")
+          (puthash "/tmp/project-a"
+                   '(:window-state stale-layout)
+                   claude-code-ide-manager--layouts)
+          (save-window-excursion
+            (delete-other-windows)
+            (claude-code-ide-manager-reset-layout "/tmp/project-a")
+            (should (get-buffer-window session-buffer))
+            (should (get-buffer-window status-buffer))
+            (should-not (equal (gethash "/tmp/project-a"
+                                        claude-code-ide-manager--layouts)
+                               '(:window-state captured-layout)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer status-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-reset-layout-skips-treemacs-sync-when-hidden ()
+  "Test reset layout does not open Treemacs when it is hidden."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-reset-hidden-session*"))
+        (status-buffer (get-buffer-create "*cc-reset-hidden-status*"))
+        synced)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (_directory) session-buffer))
+                  ((symbol-function 'magit-status-setup-buffer)
+                   (lambda (_directory) status-buffer))
+                  ((symbol-function 'claude-code-ide-manager--treemacs-window)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide-manager--sync-treemacs-to-session)
+                   (lambda (_session-key)
+                     (setq synced t))))
+          (save-window-excursion
+            (delete-other-windows)
+            (claude-code-ide-manager-reset-layout "/tmp/project-a")
+            (should-not synced)))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer status-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-falls-back-to-dired-when-magit-unavailable ()
   "Test status buffer falls back to dired when magit fails."
   (let ((dired-buffer (get-buffer-create "*cc-dired*")))

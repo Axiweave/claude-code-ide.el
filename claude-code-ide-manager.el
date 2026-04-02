@@ -439,6 +439,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
+(define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
 (dotimes (index 10)
@@ -1677,6 +1678,42 @@ session layout is updated."
             (select-window preferred-window))))
       target-window)))
 
+(defun claude-code-ide-manager-reset-layout (session-key &optional keep-manager-focus scope)
+  "Reset SESSION-KEY to the default manager layout.
+
+When KEEP-MANAGER-FOCUS is non-nil, reselect the manager window after the
+default layout is rebuilt."
+  (interactive)
+  (let* ((scope (or scope (claude-code-ide-manager--scope-for-command)))
+         (visible-sidebar-scopes
+          (claude-code-ide-manager--visible-sidebar-scopes))
+         (claude-code-ide-manager--command-scope
+          (or scope (claude-code-ide-manager--scope-for-command))))
+    (when (and claude-code-ide-manager--current-session-key
+               (not (equal claude-code-ide-manager--current-session-key session-key)))
+      (puthash claude-code-ide-manager--current-session-key
+               (claude-code-ide-manager--capture-layout
+                claude-code-ide-manager--current-session-key)
+               claude-code-ide-manager--layouts))
+    (remhash session-key claude-code-ide-manager--layouts)
+    (claude-code-ide-manager--save-state)
+    (let ((target-window
+           (claude-code-ide-manager--build-default-layout session-key scope)))
+      (let ((preferred-window (if (window-live-p target-window)
+                                  target-window
+                                (selected-window))))
+        (claude-code-ide-manager--mark-session-managed session-key)
+        (claude-code-ide-manager--reset-session-idle-state session-key)
+        (claude-code-ide-manager--adopt-visible-sidebars visible-sidebar-scopes)
+        (claude-code-ide-manager--refresh-sidebar-state scope nil)
+        (when (claude-code-ide-manager--treemacs-window)
+          (claude-code-ide-manager--sync-treemacs-to-session session-key))
+        (if keep-manager-focus
+            (claude-code-ide-manager-focus)
+          (when (window-live-p preferred-window)
+            (select-window preferred-window))))
+      target-window)))
+
 (defun claude-code-ide-manager-switch-at-point ()
   "Switch to the session on the current row."
   (interactive)
@@ -1691,6 +1728,13 @@ session layout is updated."
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item)
      t)))
+
+(defun claude-code-ide-manager-reset-layout-at-point ()
+  "Reset the selected session to the default manager layout."
+  (interactive)
+  (when-let ((item (claude-code-ide-manager--item-at-point)))
+    (claude-code-ide-manager-reset-layout
+     (claude-code-ide-manager-item-session-key item))))
 
 (defun claude-code-ide-manager-switch-by-slot-preserve-focus (slot)
   "Switch to visible SLOT and keep focus in the manager."
