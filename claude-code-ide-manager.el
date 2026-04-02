@@ -842,6 +842,27 @@ This mirrors mouse hover text for keyboard navigation in the manager."
             (window-parameter window 'claude-code-ide-manager-sidebar)))
      (window-list nil 'no-minibuf))))
 
+(defun claude-code-ide-manager--evict-manager-buffer-from-window (window buffer)
+  "Remove BUFFER from non-sidebar WINDOW."
+  (condition-case nil
+      (delete-window window)
+    (error
+     (switch-to-prev-buffer window 'bury)
+     (when (eq (window-buffer window) buffer)
+       (set-window-buffer
+        window
+        (or (get-buffer "*scratch*")
+            (other-buffer buffer t)))))))
+
+(defun claude-code-ide-manager--normalize-visible-manager-windows (&optional scope)
+  "Ensure the manager buffer for SCOPE is only visible in the sidebar."
+  (let ((buffer (claude-code-ide-manager--get-buffer scope)))
+    (dolist (window (window-list nil 'no-minibuf))
+      (when (and (window-live-p window)
+                 (eq (window-buffer window) buffer)
+                 (not (window-parameter window 'claude-code-ide-manager-sidebar)))
+        (claude-code-ide-manager--evict-manager-buffer-from-window window buffer)))))
+
 (defun claude-code-ide-manager--sync-collocated-side-metadata
     (treemacs-window manager-window)
   "Make TREEMACS-WINDOW and MANAGER-WINDOW share side-window metadata."
@@ -1005,6 +1026,7 @@ DIRECTION should be -1 for up or 1 for down."
 When Treemacs is visible, collocate the manager beneath it.
 Otherwise, use the standalone left side window layout."
   (claude-code-ide-manager-refresh scope)
+  (claude-code-ide-manager--normalize-visible-manager-windows scope)
   (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
       (claude-code-ide-manager--show-collocated-sidebar treemacs-window scope)
     (progn

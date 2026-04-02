@@ -1739,7 +1739,7 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let ((buffer (get-buffer "*content*")))
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-manager-show-sidebar-preserves-content-window-with-manager-buffer ()
+(ert-deftest claude-code-ide-test-manager-show-sidebar-normalizes-content-window-manager-copy ()
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide--processes (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-content-preserve" :buffer nil))
@@ -1758,11 +1758,11 @@ have completed before cleanup.  Waits up to 5 seconds."
             (with-current-buffer treemacs-buffer
               (setq major-mode 'treemacs-mode))
             (let ((sidebar-window (claude-code-ide-manager--show-sidebar '(:type global))))
-              (should (window-live-p content-window))
-              (should (eq (window-buffer content-window) manager-buffer))
               (should (window-live-p sidebar-window))
               (should (not (eq sidebar-window content-window)))
-              (should (= 2
+              (when (window-live-p content-window)
+                (should-not (eq (window-buffer content-window) manager-buffer)))
+              (should (= 1
                          (length (cl-remove-if-not
                                   (lambda (window)
                                     (eq (window-buffer window) manager-buffer))
@@ -1774,7 +1774,7 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let ((buffer (get-buffer "*content*")))
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-manager-toggle-sidebar-hides-owned-sidebar-not-content-window ()
+(ert-deftest claude-code-ide-test-manager-toggle-sidebar-hides-normalized-manager-sidebar ()
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide--processes (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-toggle-owned-sidebar" :buffer nil))
@@ -1794,13 +1794,13 @@ have completed before cleanup.  Waits up to 5 seconds."
               (setq major-mode 'treemacs-mode))
             (let ((sidebar-window (claude-code-ide-manager-toggle-sidebar 1)))
               (should (window-live-p sidebar-window))
-              (select-window content-window)
+              (when (window-live-p content-window)
+                (should-not (eq (window-buffer content-window) manager-buffer))
+                (select-window content-window))
               (should (progn (claude-code-ide-manager-toggle-sidebar) t))
-              (should (window-live-p content-window))
-              (should (eq (window-buffer content-window) manager-buffer))
               (should (window-live-p treemacs-window))
               (should (not (window-live-p sidebar-window)))
-              (should (= 1
+              (should (= 0
                          (length (cl-remove-if-not
                                   (lambda (window)
                                     (eq (window-buffer window) manager-buffer))
@@ -1826,27 +1826,30 @@ have completed before cleanup.  Waits up to 5 seconds."
           (let* ((scope '(:type global))
                  (manager-buffer (claude-code-ide-manager--get-buffer scope))
                  (content-window (split-window-right))
+                 (content-buffer (get-buffer-create "*content-2*"))
                  (treemacs-window (display-buffer-in-side-window
                                    treemacs-buffer
                                    '((side . left) (slot . -1)))))
-            (set-window-buffer content-window manager-buffer)
+            (set-window-buffer content-window content-buffer)
             (with-current-buffer treemacs-buffer
               (setq major-mode 'treemacs-mode))
             (let ((sidebar-window (claude-code-ide-manager--show-sidebar scope)))
               (select-window content-window)
               (with-current-buffer manager-buffer
                 (claude-code-ide-manager--move-point-to-session-key "/tmp/project-b")
-                (set-window-point content-window (point))
                 (set-window-point sidebar-window (point-min)))
               (claude-code-ide-manager--refresh-sidebar-state scope)
               (should (= (window-point sidebar-window)
-                         (window-point content-window)))
+                         (with-current-buffer manager-buffer
+                           (point))))
               (should (window-live-p treemacs-window)))))
       (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b))
       (when (buffer-live-p treemacs-buffer)
         (kill-buffer treemacs-buffer))
       (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer))
+      (when-let ((buffer (get-buffer "*content-2*")))
         (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-switch-keep-focus-prefers-owned-sidebar-window ()
@@ -1860,12 +1863,12 @@ have completed before cleanup.  Waits up to 5 seconds."
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((scope '(:type global))
-                 (manager-buffer (claude-code-ide-manager--get-buffer scope))
                  (content-window (split-window-right))
+                 (content-buffer (get-buffer-create "*content-2*"))
                  (treemacs-window (display-buffer-in-side-window
                                    treemacs-buffer
                                    '((side . left) (slot . -1)))))
-            (set-window-buffer content-window manager-buffer)
+            (set-window-buffer content-window content-buffer)
             (with-current-buffer treemacs-buffer
               (setq major-mode 'treemacs-mode))
             (let ((sidebar-window (claude-code-ide-manager--show-sidebar scope)))
@@ -1882,6 +1885,8 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p treemacs-buffer)
         (kill-buffer treemacs-buffer))
       (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer))
+      (when-let ((buffer (get-buffer "*content-2*")))
         (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-switch-syncs-treemacs-project-and-file-when-visible ()
