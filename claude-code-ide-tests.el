@@ -2759,6 +2759,45 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (kill-buffer buffer)))
             (list session-a session-b status-buffer (get-buffer "*cc-focus*"))))))
 
+(ert-deftest claude-code-ide-test-manager-capture-layout-excludes-sidebar-window ()
+  "Test session layout snapshots exclude the manager sidebar."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((content-buffer (get-buffer-create "*cc-content*"))
+        (focus-buffer (get-buffer-create "*cc-focus*"))
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-capture-layout" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (split-window-right)
+          (other-window 1)
+          (switch-to-buffer focus-buffer)
+          (other-window -1)
+          (let ((sidebar-window (claude-code-ide-manager-toggle-sidebar 1)))
+            (should (window-live-p sidebar-window))
+            (select-window (get-buffer-window content-buffer))
+            (let ((layout (claude-code-ide-manager--capture-layout "/tmp/project-a")))
+              (claude-code-ide-manager--hide-sidebar '(:type global))
+              (delete-other-windows)
+              (window-state-put (plist-get layout :window-state)
+                                (window-main-window)
+                                'safe)
+              (should-not (get-buffer-window
+                           (claude-code-ide-manager--get-buffer '(:type global))))
+              (should (get-buffer-window content-buffer))
+              (should (get-buffer-window focus-buffer))))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list content-buffer
+                  focus-buffer
+                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))))
+
 (ert-deftest claude-code-ide-test-manager-builds-default-layout-with-magit ()
   "Test first-open layout uses magit when available."
   (claude-code-ide-tests--reset-manager-state)
@@ -2844,6 +2883,59 @@ have completed before cleanup.  Waits up to 5 seconds."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list session-buffer focus-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-switch-restores-visible-sidebar-after-layout-restore ()
+  "Test switching re-shows a visible sidebar after restoring session content."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-session*"))
+        (content-buffer (get-buffer-create "*cc-content*"))
+        (focus-buffer (get-buffer-create "*cc-focus*"))
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-switch-restore-sidebar-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-switch-restore-sidebar-b" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (split-window-right)
+          (other-window 1)
+          (switch-to-buffer focus-buffer)
+          (other-window -1)
+          (puthash "/tmp/project-a"
+                   (claude-code-ide-manager--capture-layout "/tmp/project-a")
+                   claude-code-ide-manager--layouts)
+          (setq claude-code-ide-manager--current-session-key "/tmp/project-b")
+          (should (window-live-p (claude-code-ide-manager-toggle-sidebar 1)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_directory) session-buffer))
+                    ((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                     (lambda (_directory)
+                       (get-buffer-create "*cc-status*"))))
+            (claude-code-ide-manager-switch-to-session "/tmp/project-a")
+            (should (window-live-p
+                     (claude-code-ide-manager--sidebar-window '(:type global))))
+            (should (= 1
+                       (length (cl-remove-if-not
+                                (lambda (window)
+                                  (eq (window-buffer window)
+                                      (claude-code-ide-manager--get-buffer '(:type global))))
+                                (window-list nil 'no-minibuf)))))
+            (should-not (eq (window-buffer (selected-window))
+                            (claude-code-ide-manager--get-buffer '(:type global)))))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer
+                  content-buffer
+                  focus-buffer
+                  (get-buffer "*cc-status*")
+                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))))
 
 (ert-deftest claude-code-ide-test-manager-switch-falls-back-to-session-buffer ()
   "Test restore falls back to session buffer when focused buffer is gone."

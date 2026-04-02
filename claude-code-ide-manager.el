@@ -1331,7 +1331,7 @@ With a negative ARG, hide the sidebar."
 (defun claude-code-ide-manager--capture-layout (session-key)
   "Capture current frame layout for SESSION-KEY."
   (list :session-key session-key
-        :window-state (window-state-get (frame-root-window) t)
+        :window-state (window-state-get (window-main-window) t)
         :selected-buffer-name (buffer-name (window-buffer (selected-window)))))
 
 (defun claude-code-ide-manager--open-status-buffer (directory)
@@ -1348,7 +1348,7 @@ With a negative ARG, hide the sidebar."
 Return the selected window when successful."
   (when-let* ((layout (gethash session-key claude-code-ide-manager--layouts))
               (window-state (plist-get layout :window-state)))
-    (window-state-put window-state (frame-root-window) 'safe)
+    (window-state-put window-state (window-main-window) 'safe)
     (setq claude-code-ide-manager--current-session-key session-key)
     (let* ((selected-buffer-name (plist-get layout :selected-buffer-name))
            (selected-buffer
