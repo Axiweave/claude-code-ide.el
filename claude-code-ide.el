@@ -108,6 +108,13 @@
 (defconst claude-code-ide-supported-agents '("claude" "codex" "gsd" "opencode")
   "Supported agent names for project-local CLI selection.")
 
+(defvar claude-code-ide--suppress-initial-display nil
+  "When non-nil, do not display a newly created session buffer immediately.
+
+Manager-driven session switches bind this so a newly created session is only
+revealed through the final restored or default layout, not in the current
+layout first.")
+
 (defun claude-code-ide--supported-agent-p (value)
   "Return non-nil when VALUE is a supported project-local agent."
   (and (stringp value)
@@ -1336,8 +1343,10 @@ This function handles:
                      (setq-local eat-kill-buffer-on-exit t))))
                 ;; Stabilization period for terminal layout initialization
                 (sleep-for claude-code-ide-terminal-initialization-delay)
-                ;; Display the buffer in a side window
-                (claude-code-ide--display-buffer-in-side-window buffer)
+                ;; Manager-driven opens restore or build the target layout next,
+                ;; so skip the intermediate display in the current session.
+                (unless claude-code-ide--suppress-initial-display
+                  (claude-code-ide--display-buffer-in-side-window buffer))
                 (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
                                      (cond (continue "continued and ")
                                            (resume "resumed and ")

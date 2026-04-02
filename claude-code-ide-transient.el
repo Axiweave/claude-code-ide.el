@@ -78,6 +78,7 @@
 (defvar claude-code-ide-debug)
 (defvar claude-code-ide-window-side)
 (defvar claude-code-ide-window-width)
+(defvar claude-code-ide--suppress-initial-display)
 (defvar claude-code-ide-window-height)
 (defvar claude-code-ide-focus-on-open)
 (defvar claude-code-ide-focus-claude-after-ediff)
@@ -266,6 +267,7 @@ When RESUME is non-nil, resume the selected target.
 When DANGEROUS is non-nil, append the agent-specific dangerous flag."
   (let ((target claude-code-ide-manager--open-target)
         (scope claude-code-ide-manager--open-scope)
+        (claude-code-ide--suppress-initial-display t)
         (claude-code-ide-cli-extra-flags
          (if dangerous
              (string-trim (concat claude-code-ide-cli-extra-flags
