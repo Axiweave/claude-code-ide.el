@@ -801,6 +801,33 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   "Return non-nil when Treemacs is currently visible in a sidebar."
   (not (null (claude-code-ide-manager--treemacs-window))))
 
+(defun claude-code-ide-manager--collocated-sidebar-height (treemacs-window)
+  "Return the height reserved for Treemacs in a collocated sidebar."
+  (let* ((total (max 2 (window-total-height treemacs-window)))
+         (max-top (1- total)))
+    (pcase claude-code-ide-manager-treemacs-split-policy
+      ('adaptive (max 1 (min max-top (/ (* total 3) 4))))
+      (_ (max 1 (min max-top (round (/ total 2.0))))))))
+
+(defun claude-code-ide-manager--show-collocated-sidebar (treemacs-window scope)
+  "Show the manager buffer beneath TREEMACS-WINDOW for SCOPE."
+  (let* ((buffer (claude-code-ide-manager--get-buffer scope))
+         (treemacs-slot (or (window-parameter treemacs-window 'window-slot) -1))
+         (height (claude-code-ide-manager--collocated-sidebar-height treemacs-window))
+         (manager-height (max 1 (- (window-total-height treemacs-window) height))))
+    (dolist (window (window-list nil 'no-minibuf))
+      (when (and (window-live-p window)
+                 (not (eq window treemacs-window))
+                 (eq (window-buffer window) buffer))
+        (delete-window window)))
+    (display-buffer-in-side-window
+     buffer
+     `((side . left)
+       (slot . ,(1- treemacs-slot))
+       (window-height . ,manager-height)
+       (window-parameters . ((no-delete-other-windows . t)
+                             (no-other-window . t)))))))
+
 (defun claude-code-ide-manager--neighbor-in-bucket (scope session-key direction)
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
 DIRECTION should be -1 for up or 1 for down."
@@ -837,17 +864,19 @@ DIRECTION should be -1 for up or 1 for down."
 (defun claude-code-ide-manager--show-sidebar (&optional scope)
   "Show the manager sidebar for SCOPE in a dedicated left side window."
   (claude-code-ide-manager-refresh scope)
-  (let ((window
-         (display-buffer-in-side-window
-          (claude-code-ide-manager--get-buffer scope)
-          `((side . left)
-            (slot . -1)
-            (window-width . ,claude-code-ide-manager-window-width)
-            (window-parameters . ((no-delete-other-windows . t)
-                                  (no-other-window . t)
-                                  (window-size-fixed . both)))))))
-    (window-preserve-size window t t)
-    window))
+  (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+      (claude-code-ide-manager--show-collocated-sidebar treemacs-window scope)
+    (let ((window
+           (display-buffer-in-side-window
+            (claude-code-ide-manager--get-buffer scope)
+            `((side . left)
+              (slot . -1)
+              (window-width . ,claude-code-ide-manager-window-width)
+              (window-parameters . ((no-delete-other-windows . t)
+                                    (no-other-window . t)
+                                    (window-size-fixed . both)))))))
+      (window-preserve-size window t t)
+      window)))
 
 (defun claude-code-ide-manager--hide-sidebar (&optional scope)
   "Hide the manager sidebar for SCOPE."

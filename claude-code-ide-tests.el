@@ -1233,6 +1233,15 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-treemacs-split-policy-defaults-to-half ()
   (should (eq claude-code-ide-manager-treemacs-split-policy 'half)))
 
+(ert-deftest claude-code-ide-test-manager-collocated-sidebar-honors-adaptive-policy ()
+  (let ((claude-code-ide-manager-treemacs-split-policy 'adaptive))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (delete-other-windows)
+      (let ((window (selected-window)))
+        (should (> (claude-code-ide-manager--collocated-sidebar-height window)
+                   (/ (window-total-height window) 4)))))))
+
 (ert-deftest claude-code-ide-test-manager-find-treemacs-window-returns-visible-left-sidebar ()
   (let ((treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
@@ -1245,6 +1254,48 @@ have completed before cleanup.  Waits up to 5 seconds."
             (with-current-buffer treemacs-buffer
               (setq major-mode 'treemacs-mode))
             (should (eq (claude-code-ide-manager--treemacs-window) window))))
+      (when (buffer-live-p treemacs-buffer)
+        (kill-buffer treemacs-buffer))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-show-sidebar-keeps-standalone-path-without-treemacs ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-standalone" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (cl-letf (((symbol-function 'claude-code-ide-manager--treemacs-window)
+                     (lambda () nil)))
+            (let ((window (claude-code-ide-manager--show-sidebar '(:type global))))
+              (should (eq (window-parameter window 'window-side) 'left))
+              (should (equal (window-buffer window)
+                             (claude-code-ide-manager--get-buffer '(:type global)))))))
+      (ignore-errors (delete-process process-a)))))
+
+(ert-deftest claude-code-ide-test-manager-show-sidebar-collocates-below-treemacs ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-collocated" :buffer nil))
+        (treemacs-buffer (get-buffer-create "*Treemacs*")))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let ((treemacs-window (display-buffer-in-side-window
+                                  treemacs-buffer
+                                  '((side . left) (slot . -1)))))
+            (with-current-buffer treemacs-buffer
+              (setq major-mode 'treemacs-mode))
+            (let ((manager-window (claude-code-ide-manager--show-sidebar '(:type global))))
+              (should (eq (window-parent manager-window)
+                          (window-parent treemacs-window)))
+              (should (eq (window-buffer treemacs-window) treemacs-buffer))
+              (should (equal (window-buffer manager-window)
+                             (claude-code-ide-manager--get-buffer '(:type global)))))))
+      (ignore-errors (delete-process process-a))
       (when (buffer-live-p treemacs-buffer)
         (kill-buffer treemacs-buffer))
       (when-let ((buffer (get-buffer "*content*")))
