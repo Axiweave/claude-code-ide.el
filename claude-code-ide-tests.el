@@ -1080,22 +1080,68 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-session-idle-visibility-ignores-non-selected-frame ()
   "Test idle reset ignores session windows visible only on a non-selected frame."
   (let ((session-buffer (get-buffer-create "*cc-visible-other-frame*"))
-        (reset-count 0))
+        (other-buffer (get-buffer-create "*cc-visible-selected-frame*"))
+        (reset-count 0)
+        (selected-frame 'selected-frame)
+        (other-frame 'other-frame)
+        (selected-window 'selected-window)
+        (other-window 'other-window))
     (unwind-protect
-        (save-window-excursion
-          (delete-other-windows)
-          (let ((other-window (split-window-right)))
-            (cl-letf (((symbol-function 'claude-code-ide-session-idle-reset-timer)
-                       (lambda ()
-                         (setq reset-count (1+ reset-count)))))
-              (with-current-buffer session-buffer
-                (rename-buffer "*claude-code[visible-other-frame]*" t)
-                (setq-local claude-code-ide-session-idle-enabled t
-                            claude-code-ide-session-idle-p t))
-              (setq claude-code-ide-session-idle--selected-frame-visible-buffers nil)
-              (set-window-buffer other-window session-buffer)
-              (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
-              (should (= reset-count 0)))))
+        (cl-letf (((symbol-function 'selected-frame)
+                   (lambda ()
+                     selected-frame))
+                  ((symbol-function 'frame-list)
+                   (lambda ()
+                     (list selected-frame other-frame)))
+                  ((symbol-function 'frame-selected-window)
+                   (lambda (frame)
+                     (if (eq frame other-frame)
+                         other-window
+                       selected-window)))
+                  ((symbol-function 'window-frame)
+                   (lambda (window)
+                     (if (eq window other-window)
+                         other-frame
+                       selected-frame)))
+                  ((symbol-function 'window-list)
+                   (lambda (&optional frame _minibuf _all-frames)
+                     (cond
+                      ((eq frame other-frame) (list other-window))
+                      ((eq frame selected-frame) (list selected-window))
+                      (t (list selected-window other-window)))))
+                  ((symbol-function 'get-buffer-window-list)
+                   (lambda (buffer &optional frame all-frames)
+                     (cond
+                      ((and all-frames (eq buffer session-buffer))
+                       (list other-window))
+                      ((and all-frames (eq buffer other-buffer))
+                       (list selected-window))
+                      ((eq frame other-frame)
+                       (when (eq buffer session-buffer)
+                         (list other-window)))
+                      (t (when (eq buffer other-buffer)
+                           (list selected-window))))))
+                  ((symbol-function 'window-buffer)
+                   (lambda (window)
+                     (if (eq window other-window)
+                         session-buffer
+                       other-buffer)))
+                  ((symbol-function 'window-live-p)
+                   (lambda (_window)
+                     t))
+                  ((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                   (lambda ()
+                     (setq reset-count (1+ reset-count)))))
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[visible-other-frame]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (with-current-buffer other-buffer
+            (rename-buffer "*claude-code[selected-frame-visible]*" t))
+          (setq claude-code-ide-session-idle--selected-frame-visible-buffers nil)
+          (with-current-buffer session-buffer
+            (claude-code-ide-session-idle--handle-selected-frame-visibility-change))
+          (should (= reset-count 0)))
       (when (buffer-live-p session-buffer)
         (kill-buffer session-buffer)))))
 
