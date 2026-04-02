@@ -1304,6 +1304,42 @@ Return the selected window when successful."
         (select-window target-window))
       target-window)))
 
+(defun claude-code-ide-manager--session-active-file (session-key)
+  "Return the active file for SESSION-KEY when the selected window visits one."
+  (let* ((project-root (file-name-as-directory (expand-file-name session-key)))
+         (buffer (window-buffer (selected-window)))
+         (file (buffer-local-value 'buffer-file-name buffer)))
+    (when (and (stringp file)
+               (ignore-errors
+                 (file-in-directory-p (expand-file-name file) project-root)))
+      (expand-file-name file))))
+
+(defun claude-code-ide-manager--sync-treemacs-to-session (session-key)
+  "Sync visible Treemacs state to SESSION-KEY."
+  (let ((project-root (file-name-as-directory (expand-file-name session-key)))
+        (active-file (claude-code-ide-manager--session-active-file session-key)))
+    (let ((default-directory project-root))
+      (cond
+       ((fboundp 'treemacs-add-and-display-current-project-exclusively)
+        (ignore-errors
+          (treemacs-add-and-display-current-project-exclusively)))
+       ((fboundp 'treemacs-display-current-project-exclusively)
+        (ignore-errors
+          (treemacs-display-current-project-exclusively)))
+       ((fboundp 'treemacs-add-and-display-current-project)
+        (ignore-errors
+          (treemacs-add-and-display-current-project)))))
+    (when (and active-file
+               (fboundp 'treemacs-find-file))
+      (condition-case nil
+          (treemacs-find-file active-file)
+        (wrong-number-of-arguments
+         (ignore-errors
+           (with-current-buffer (or (get-file-buffer active-file)
+                                    (find-file-noselect active-file))
+             (treemacs-find-file))))
+        (error nil)))))
+
 (defun claude-code-ide-manager--build-default-layout (session-key &optional scope)
   "Build the default layout for SESSION-KEY in SCOPE and return the session window."
   (let ((session-buffer (claude-code-ide--get-session-buffer session-key)))
@@ -1346,13 +1382,16 @@ session layout is updated."
                 claude-code-ide-manager--current-session-key)
                claude-code-ide-manager--layouts)
       (claude-code-ide-manager--save-state))
-    (prog1
-        (or (claude-code-ide-manager--restore-layout session-key)
-            (claude-code-ide-manager--build-default-layout session-key scope))
+    (let ((target-window
+           (or (claude-code-ide-manager--restore-layout session-key)
+               (claude-code-ide-manager--build-default-layout session-key scope))))
+      (when (claude-code-ide-manager--treemacs-window)
+        (claude-code-ide-manager--sync-treemacs-to-session session-key))
       (claude-code-ide-manager--refresh-sidebar-state)
       (when keep-manager-focus
         (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
-          (select-window window))))))
+          (select-window window)))
+      target-window)))
 
 (defun claude-code-ide-manager-switch-at-point ()
   "Switch to the session on the current row."
