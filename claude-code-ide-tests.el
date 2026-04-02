@@ -1416,7 +1416,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda () '("/tmp/project-a/" "/tmp/project-b/")))
               ((symbol-function 'completing-read)
                (lambda (_prompt collection &rest _)
-                 (car (last collection))))
+                 (car (funcall collection "/tmp/project-b/" nil t))))
               ((symbol-function 'claude-code-ide-manager--live-session-keys)
                (lambda () '("/tmp/project-b/")))
               ((symbol-function 'claude-code-ide-manager-switch-to-session)
@@ -1426,6 +1426,64 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-manager-open))
       (should (equal switch-call
                      '("/tmp/project-b/" nil (:type global)))))))
+
+(ert-deftest claude-code-ide-test-manager-known-project-roots-auto-prefers-projectile ()
+  "Test auto source prefers Projectile when Projectile is available."
+  (let ((claude-code-ide-manager-global-project-source 'auto))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--projectile-known-project-roots)
+               (lambda () '("/tmp/projectile-a/" "/tmp/projectile-b/")))
+              ((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
+               (lambda () '("/tmp/project-el/"))))
+      (should (equal (claude-code-ide-manager--known-project-roots)
+                     '("/tmp/projectile-a/" "/tmp/projectile-b/"))))))
+
+(ert-deftest claude-code-ide-test-manager-known-project-roots-auto-falls-back-to-project-el ()
+  "Test auto source falls back to project.el when Projectile is unavailable."
+  (let ((claude-code-ide-manager-global-project-source 'auto))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--projectile-known-project-roots)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
+               (lambda () '("/tmp/project-el/"))))
+      (should (equal (claude-code-ide-manager--known-project-roots)
+                     '("/tmp/project-el/"))))))
+
+(ert-deftest claude-code-ide-test-manager-known-project-roots-explicit-project-el ()
+  "Test explicit project-el source ignores Projectile."
+  (let ((claude-code-ide-manager-global-project-source 'project-el))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--projectile-known-project-roots)
+               (lambda () '("/tmp/projectile-a/")))
+              ((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
+               (lambda () '("/tmp/project-el/"))))
+      (should (equal (claude-code-ide-manager--known-project-roots)
+                     '("/tmp/project-el/"))))))
+
+(ert-deftest claude-code-ide-test-manager-known-project-roots-merged-deduplicates ()
+  "Test merged source combines Projectile and project.el roots without duplicates."
+  (let ((claude-code-ide-manager-global-project-source 'merged))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--projectile-known-project-roots)
+               (lambda () '("/tmp/shared/" "/tmp/projectile-a/")))
+              ((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
+                (lambda () '("/tmp/shared/" "/tmp/project-el/"))))
+      (should (equal (claude-code-ide-manager--known-project-roots)
+                     '("/tmp/projectile-a/" "/tmp/shared/" "/tmp/project-el/"))))))
+
+(ert-deftest claude-code-ide-test-manager-select-global-project-adds-project-metadata ()
+  "Test global project selection exposes project-file metadata to completion UIs."
+  (let ((claude-code-ide-manager-global-project-source 'project-el)
+        collection metadata first-match)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
+               (lambda () '("/tmp/project-a/" "/tmp/project-b/")))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt coll &rest _)
+                 (setq collection coll)
+                 (setq metadata (funcall coll "" nil 'metadata))
+                 (setq first-match (funcall coll "/tmp/project-a/" nil t))
+                 "/tmp/project-a/")))
+      (should (equal (claude-code-ide-manager--select-global-project)
+                     "/tmp/project-a/"))
+      (should (equal metadata
+                     '(metadata . ((category . project-file)))))
+      (should (equal first-match '("/tmp/project-a/"))))))
 
 (ert-deftest claude-code-ide-test-manager-open-global-shows-transient-for-new-target ()
   "Test global manager open hands a new target to the transient path."

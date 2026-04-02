@@ -83,6 +83,17 @@
                  (const :tag "Repo-local with global fallback" repo-local-always-fallback-global))
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-global-project-source 'auto
+  "Project source used by global manager open.
+
+When set to `auto', prefer Projectile when it is available and fall
+back to `project.el' otherwise."
+  :type '(choice (const :tag "Auto" auto)
+                 (const :tag "Projectile" projectile)
+                 (const :tag "project.el" project-el)
+                 (const :tag "Merged" merged))
+  :group 'claude-code-ide-manager)
+
 (defface claude-code-ide-manager-current-session-face
   '((t :inherit highlight))
   "Face used to highlight the active session in the manager sidebar."
@@ -910,14 +921,51 @@ With a negative ARG, hide the sidebar."
   "Return DIRECTORY as a normalized session key."
   (file-name-as-directory (expand-file-name directory)))
 
-(defun claude-code-ide-manager--known-project-roots ()
-  "Return known project roots for global manager open."
+(defun claude-code-ide-manager--project-el-known-project-roots ()
+  "Return known `project.el' roots."
   (cond
    ((fboundp 'project-known-project-roots)
     (project-known-project-roots))
    ((boundp 'project-known-project-roots)
     project-known-project-roots)
    (t nil)))
+
+(defun claude-code-ide-manager--projectile-known-project-roots ()
+  "Return known Projectile roots."
+  (cond
+   ((fboundp 'projectile-relevant-known-projects)
+    (projectile-relevant-known-projects))
+   ((boundp 'projectile-known-projects)
+    projectile-known-projects)
+   (t nil)))
+
+(defun claude-code-ide-manager--known-project-roots ()
+  "Return known project roots for global manager open."
+  (pcase claude-code-ide-manager-global-project-source
+    ('projectile
+     (claude-code-ide-manager--projectile-known-project-roots))
+    ('project-el
+     (claude-code-ide-manager--project-el-known-project-roots))
+    ('merged
+     (cl-delete-duplicates
+      (append (claude-code-ide-manager--projectile-known-project-roots)
+              (claude-code-ide-manager--project-el-known-project-roots))
+      :test #'equal))
+    ('auto
+     (or (claude-code-ide-manager--projectile-known-project-roots)
+         (claude-code-ide-manager--project-el-known-project-roots)))
+    (_
+     (error "Unknown manager global project source: %S"
+            claude-code-ide-manager-global-project-source))))
+
+(defun claude-code-ide-manager--project-completion-table (projects)
+  "Return a completion table for PROJECTS with project metadata."
+  (lambda (string pred action)
+    (cond
+     ((eq action 'metadata)
+      '(metadata . ((category . project-file))))
+     (t
+      (complete-with-action action projects string pred)))))
 
 (defun claude-code-ide-manager--select-global-project ()
   "Prompt for a known project and return its normalized root."
@@ -926,7 +974,9 @@ With a negative ARG, hide the sidebar."
     (unless projects
       (user-error "No known projects"))
     (claude-code-ide-manager--normalize-target-directory
-     (completing-read "Open project: " projects nil t))))
+     (completing-read "Open project: "
+                      (claude-code-ide-manager--project-completion-table projects)
+                      nil t))))
 
 (defun claude-code-ide-manager--repo-worktree-directories (git-root)
   "Return normalized worktree directories for GIT-ROOT."
