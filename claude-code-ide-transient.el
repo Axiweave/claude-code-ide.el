@@ -46,6 +46,8 @@
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
 (declare-function claude-code-ide--get-project-root "claude-code-ide" ())
+(declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory))
+(declare-function claude-code-ide-manager-switch-to-session "claude-code-ide-manager" (session-key &optional keep-manager-focus scope))
 (declare-function claude-code-ide-manager-toggle-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-global-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-repo-sidebar "claude-code-ide-manager" ())
@@ -86,6 +88,8 @@
 (defvar claude-code-ide-cli-debug)
 (defvar claude-code-ide-cli-extra-flags)
 (defvar claude-code-ide-system-prompt)
+(defvar claude-code-ide-manager--open-target)
+(defvar claude-code-ide-manager--open-scope)
 
 ;;; Helper Functions
 
@@ -248,6 +252,84 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   "Resume Claude Code with --dangerously-skip-permissions."
   (interactive)
   (claude-code-ide--resume-if-no-session t))
+
+(defun claude-code-ide-manager--open-target-label ()
+  "Return a readable label for the selected manager-open target."
+  (if claude-code-ide-manager--open-target
+      (abbreviate-file-name claude-code-ide-manager--open-target)
+    "<no target>"))
+
+(defun claude-code-ide-manager--run-open-action (continue resume &optional dangerous)
+  "Run a manager-open action against the selected target.
+When CONTINUE is non-nil, continue the selected target.
+When RESUME is non-nil, resume the selected target.
+When DANGEROUS is non-nil, append the agent-specific dangerous flag."
+  (let ((target claude-code-ide-manager--open-target)
+        (scope claude-code-ide-manager--open-scope)
+        (claude-code-ide-cli-extra-flags
+         (if dangerous
+             (string-trim (concat claude-code-ide-cli-extra-flags
+                                  " " (claude-code-ide--dangerous-permissions-flag)))
+           claude-code-ide-cli-extra-flags)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--start-session continue resume target)
+          (when scope
+            (claude-code-ide-manager-switch-to-session target nil scope)))
+      (setq claude-code-ide-manager--open-target nil)
+      (setq claude-code-ide-manager--open-scope nil))))
+
+(defun claude-code-ide-manager-open-start ()
+  "Start a new session in the manager-selected target."
+  (interactive)
+  (claude-code-ide-manager--run-open-action nil nil))
+
+(defun claude-code-ide-manager-open-start-skip-permissions ()
+  "Start a new session in the manager-selected target with dangerous permissions bypass."
+  (interactive)
+  (claude-code-ide-manager--run-open-action nil nil t))
+
+(defun claude-code-ide-manager-open-continue ()
+  "Continue in the manager-selected target."
+  (interactive)
+  (claude-code-ide-manager--run-open-action t nil))
+
+(defun claude-code-ide-manager-open-continue-skip-permissions ()
+  "Continue in the manager-selected target with dangerous permissions bypass."
+  (interactive)
+  (claude-code-ide-manager--run-open-action t nil t))
+
+(defun claude-code-ide-manager-open-resume ()
+  "Resume in the manager-selected target."
+  (interactive)
+  (claude-code-ide-manager--run-open-action nil t))
+
+(defun claude-code-ide-manager-open-resume-skip-permissions ()
+  "Resume in the manager-selected target with dangerous permissions bypass."
+  (interactive)
+  (claude-code-ide-manager--run-open-action nil t t))
+
+(transient-define-prefix claude-code-ide-manager-open-menu ()
+  "Transient for starting or resuming a manager-selected target."
+  [["Manager Open"
+    ("s" claude-code-ide-manager-open-start
+     :description (lambda () (format "Start %s"
+                                     (claude-code-ide-manager--open-target-label))))
+    ("S" claude-code-ide-manager-open-start-skip-permissions
+     :description (lambda () (format "Start %s (skip permissions)"
+                                     (claude-code-ide-manager--open-target-label))))
+    ("c" claude-code-ide-manager-open-continue
+     :description (lambda () (format "Continue %s"
+                                     (claude-code-ide-manager--open-target-label))))
+    ("C" claude-code-ide-manager-open-continue-skip-permissions
+     :description (lambda () (format "Continue %s (skip permissions)"
+                                     (claude-code-ide-manager--open-target-label))))
+    ("r" claude-code-ide-manager-open-resume
+     :description (lambda () (format "Resume %s"
+                                     (claude-code-ide-manager--open-target-label))))
+    ("R" claude-code-ide-manager-open-resume-skip-permissions
+     :description (lambda () (format "Resume %s (skip permissions)"
+                                     (claude-code-ide-manager--open-target-label))))]])
 
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."

@@ -19,6 +19,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'project)
 (require 'subr-x)
 (require 'persist)
 (require 'vc-git)
@@ -26,6 +27,7 @@
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
+(declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
 
 (defvar claude-code-ide-session-idle-hook)
 
@@ -297,6 +299,12 @@
 (defvar claude-code-ide-manager--command-scope nil
   "Dynamic scope override for manager command helpers.")
 
+(defvar claude-code-ide-manager--open-target nil
+  "Directory currently selected for manager-open transient actions.")
+
+(defvar claude-code-ide-manager--open-scope nil
+  "Manager scope currently associated with open transient actions.")
+
 (defvar-local claude-code-ide-manager--scope nil
   "Scope descriptor associated with the current manager buffer.")
 
@@ -359,6 +367,7 @@
 (define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)
 (define-key claude-code-ide-manager-mode-map (kbd "n") #'claude-code-ide-manager-next-line)
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
+(define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
@@ -897,6 +906,58 @@ With a negative ARG, hide the sidebar."
        ((> step 0) (car keys))
        (t (car (last keys)))))))
 
+(defun claude-code-ide-manager--normalize-target-directory (directory)
+  "Return DIRECTORY as a normalized session key."
+  (file-name-as-directory (expand-file-name directory)))
+
+(defun claude-code-ide-manager--known-project-roots ()
+  "Return known project roots for global manager open."
+  (cond
+   ((fboundp 'project-known-project-roots)
+    (project-known-project-roots))
+   ((boundp 'project-known-project-roots)
+    project-known-project-roots)
+   (t nil)))
+
+(defun claude-code-ide-manager--select-global-project ()
+  "Prompt for a known project and return its normalized root."
+  (let ((projects (mapcar #'claude-code-ide-manager--normalize-target-directory
+                          (claude-code-ide-manager--known-project-roots))))
+    (unless projects
+      (user-error "No known projects"))
+    (claude-code-ide-manager--normalize-target-directory
+     (completing-read "Open project: " projects nil t))))
+
+(defun claude-code-ide-manager--repo-worktree-directories (git-root)
+  "Return normalized worktree directories for GIT-ROOT."
+  (let ((default-directory git-root)
+        directories)
+    (dolist (line (ignore-errors
+                    (process-lines "git" "-C" git-root "worktree" "list" "--porcelain")))
+      (when (string-prefix-p "worktree " line)
+        (push (claude-code-ide-manager--normalize-target-directory
+               (string-remove-prefix "worktree " line))
+              directories)))
+    (nreverse directories)))
+
+(defun claude-code-ide-manager--select-repo-worktree (scope)
+  "Prompt for an existing worktree in SCOPE and return its normalized root."
+  (let* ((git-root (plist-get scope :git-root))
+         (worktrees (claude-code-ide-manager--repo-worktree-directories git-root)))
+    (unless git-root
+      (user-error "No repo scope for manager open"))
+    (unless worktrees
+      (user-error "No worktrees for %s" git-root))
+    (claude-code-ide-manager--normalize-target-directory
+     (completing-read "Open worktree: " worktrees nil t))))
+
+(defun claude-code-ide-manager--open-target-for-scope (scope)
+  "Prompt for an open target within SCOPE."
+  (pcase (plist-get scope :type)
+    ('global (claude-code-ide-manager--select-global-project))
+    ('repo (claude-code-ide-manager--select-repo-worktree scope))
+    (_ (error "Unknown manager scope: %S" scope))))
+
 (defun claude-code-ide-manager--sidebar-buffer-p ()
   "Return non-nil when the current buffer is the manager buffer."
   (not (null (derived-mode-p 'claude-code-ide-manager-mode))))
@@ -935,6 +996,17 @@ With a negative ARG, hide the sidebar."
   "Focus the repo-local manager sidebar."
   (interactive)
   (claude-code-ide-manager-toggle-repo-sidebar 1))
+
+(defun claude-code-ide-manager-open ()
+  "Open a project or worktree relevant to the current manager scope."
+  (interactive)
+  (let* ((scope (claude-code-ide-manager--scope-for-command))
+         (target (claude-code-ide-manager--open-target-for-scope scope)))
+    (if (member target (claude-code-ide-manager--live-session-keys))
+        (claude-code-ide-manager-switch-to-session target nil scope)
+      (setq claude-code-ide-manager--open-target target)
+      (setq claude-code-ide-manager--open-scope scope)
+      (claude-code-ide-manager-open-menu))))
 
 (defun claude-code-ide-manager--toggle-pin-for-session-key (scope session-key)
   "Toggle pin state for SESSION-KEY within SCOPE."
