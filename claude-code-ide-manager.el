@@ -841,6 +841,15 @@ This mirrors mouse hover text for keyboard navigation in the manager."
       (unless (eq (window-parameter treemacs-window 'window-side) treemacs-side)
         (set-window-parameter treemacs-window 'window-side treemacs-side)))))
 
+(defun claude-code-ide-manager--delete-stale-collocated-sidebar-windows (&optional scope)
+  "Delete stale collocated manager windows for SCOPE."
+  (let ((buffer (claude-code-ide-manager--get-buffer scope)))
+    (dolist (window (window-list nil 'no-minibuf))
+      (when (and (window-live-p window)
+                 (eq (window-buffer window) buffer)
+                 (window-parameter window 'claude-code-ide-manager-collocated))
+        (delete-window window)))))
+
 (defun claude-code-ide-manager--neighbor-in-bucket (scope session-key direction)
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
 DIRECTION should be -1 for up or 1 for down."
@@ -875,11 +884,15 @@ DIRECTION should be -1 for up or 1 for down."
     (claude-code-ide-manager--render scope)))
 
 (defun claude-code-ide-manager--show-sidebar (&optional scope)
-  "Show the manager sidebar for SCOPE in a dedicated left side window."
+  "Show the manager sidebar for SCOPE.
+When Treemacs is visible, collocate the manager beneath it.
+Otherwise, use the standalone left side window layout."
   (claude-code-ide-manager-refresh scope)
   (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
       (claude-code-ide-manager--show-collocated-sidebar treemacs-window scope)
-    (let ((window
+    (progn
+      (claude-code-ide-manager--delete-stale-collocated-sidebar-windows scope)
+      (let ((window
            (display-buffer-in-side-window
             (claude-code-ide-manager--get-buffer scope)
             `((side . left)
@@ -888,8 +901,8 @@ DIRECTION should be -1 for up or 1 for down."
               (window-parameters . ((no-delete-other-windows . t)
                                     (no-other-window . t)
                                     (window-size-fixed . both)))))))
-      (window-preserve-size window t t)
-      window)))
+        (window-preserve-size window t t)
+        window))))
 
 (defun claude-code-ide-manager--hide-sidebar (&optional scope)
   "Hide the manager sidebar for SCOPE."
