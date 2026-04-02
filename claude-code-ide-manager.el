@@ -322,6 +322,9 @@ back to `project.el' otherwise."
 (defvar claude-code-ide-manager--open-scope nil
   "Manager scope currently associated with open transient actions.")
 
+(defvar claude-code-ide-manager--in-window-config-refresh nil
+  "Non-nil while cc-manager is reasserting sidebar state after layout changes.")
+
 (defvar-local claude-code-ide-manager--scope nil
   "Scope descriptor associated with the current manager buffer.")
 
@@ -646,7 +649,13 @@ Idle markers take precedence over pinned markers."
 
 (defun claude-code-ide-manager--refresh-on-idle-transition (&rest _args)
   "Refresh visible manager sidebars after an idle state transition."
-  (claude-code-ide-manager--refresh-sidebar-state))
+  (claude-code-ide-manager--refresh-sidebar-state nil t))
+
+(defun claude-code-ide-manager--refresh-on-window-configuration-change ()
+  "Reassert visible manager sidebars after window configuration changes."
+  (unless claude-code-ide-manager--in-window-config-refresh
+    (let ((claude-code-ide-manager--in-window-config-refresh t))
+      (claude-code-ide-manager--reassert-visible-sidebar-state))))
 
 (defun claude-code-ide-manager--refresh-after-idle-clear (orig-fn &rest args)
   "Refresh the sidebar when ORIG-FN clears a previously idle session."
@@ -679,8 +688,17 @@ Idle markers take precedence over pinned markers."
     (advice-add 'claude-code-ide-session-idle-disable
                 :around #'claude-code-ide-manager--refresh-after-idle-clear)))
 
+(defun claude-code-ide-manager--install-window-config-refresh-hook ()
+  "Install a hook that keeps visible manager windows behaving like sidebars."
+  (unless (memq #'claude-code-ide-manager--refresh-on-window-configuration-change
+                window-configuration-change-hook)
+    (add-hook 'window-configuration-change-hook
+              #'claude-code-ide-manager--refresh-on-window-configuration-change)))
+
 (with-eval-after-load 'claude-code-ide-session-idle
   (claude-code-ide-manager--install-idle-refresh-hooks))
+
+(claude-code-ide-manager--install-window-config-refresh-hook)
 
 (defun claude-code-ide-manager-refresh-items (&optional scope)
   "Refresh manager items for SCOPE from the live session registry."
@@ -841,6 +859,59 @@ This mirrors mouse hover text for keyboard navigation in the manager."
             (eq (window-buffer window) buffer)
             (window-parameter window 'claude-code-ide-manager-sidebar)))
      (window-list nil 'no-minibuf))))
+
+(defun claude-code-ide-manager--visible-manager-window (&optional scope)
+  "Return any visible window displaying the manager buffer for SCOPE."
+  (let ((buffer (claude-code-ide-manager--get-buffer scope)))
+    (cl-find-if
+     (lambda (window)
+       (and (window-live-p window)
+            (eq (window-buffer window) buffer)))
+     (window-list nil 'no-minibuf))))
+
+(defun claude-code-ide-manager--visible-sidebar-scopes ()
+  "Return the scopes whose manager sidebars are currently visible."
+  (let (scopes)
+    (dolist (buffer (claude-code-ide-manager--manager-buffers))
+      (when-let ((scope (claude-code-ide-manager--scope-from-buffer buffer)))
+        (when (claude-code-ide-manager--sidebar-window scope)
+          (push scope scopes))))
+    (nreverse scopes)))
+
+(defun claude-code-ide-manager--adopt-visible-sidebar-window (window)
+  "Mark WINDOW as a manager-owned sidebar without changing its geometry."
+  (set-window-parameter window 'claude-code-ide-manager-sidebar t)
+  (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+      (if (claude-code-ide-manager--window-collocated-with-treemacs-p
+           window treemacs-window)
+          (let ((treemacs-params
+                 (claude-code-ide-manager--collocated-treemacs-params
+                  treemacs-window)))
+            (set-window-parameter window 'claude-code-ide-manager-collocated t)
+            (set-window-parameter
+             window
+             'claude-code-ide-manager-collocated-treemacs-params
+             treemacs-params))
+        (set-window-parameter window 'claude-code-ide-manager-collocated nil)
+        (set-window-parameter window
+                              'claude-code-ide-manager-collocated-treemacs-params
+                              nil))
+    (set-window-parameter window 'claude-code-ide-manager-collocated nil)
+    (set-window-parameter window
+                          'claude-code-ide-manager-collocated-treemacs-params
+                          nil)))
+
+(defun claude-code-ide-manager--adopt-visible-sidebars (scopes)
+  "Adopt any already-visible manager windows for SCOPES as sidebars."
+  (dolist (scope scopes)
+    (when-let ((window (claude-code-ide-manager--visible-manager-window scope)))
+      (claude-code-ide-manager--adopt-visible-sidebar-window window))))
+
+(defun claude-code-ide-manager--restore-visible-sidebars (scopes)
+  "Ensure each scope in SCOPES has a visible manager sidebar."
+  (dolist (scope scopes)
+    (unless (claude-code-ide-manager--sidebar-window scope)
+      (claude-code-ide-manager--show-sidebar scope))))
 
 (defun claude-code-ide-manager--evict-manager-buffer-from-window (window buffer)
   "Remove BUFFER from non-sidebar WINDOW."
@@ -1109,8 +1180,67 @@ With a negative ARG, hide the sidebar."
         (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
           (set-window-point window position))))))
 
-(defun claude-code-ide-manager--refresh-sidebar-state (&optional scope)
-  "Rerender visible manager sidebars for SCOPE and sync their window point."
+(defun claude-code-ide-manager--window-collocated-with-treemacs-p
+    (window treemacs-window)
+  "Return non-nil when WINDOW is the pane beneath TREEMACS-WINDOW."
+  (and (window-live-p window)
+       (window-live-p treemacs-window)
+       (eq (window-parent window) (window-parent treemacs-window))
+       (> (nth 1 (window-edges window))
+          (nth 1 (window-edges treemacs-window)))))
+
+(defun claude-code-ide-manager--reassert-standalone-sidebar-state (window)
+  "Restore standalone sidebar parameters on WINDOW."
+  (set-window-parameter window 'claude-code-ide-manager-sidebar t)
+  (set-window-parameter window 'claude-code-ide-manager-collocated nil)
+  (set-window-parameter window
+                        'claude-code-ide-manager-collocated-treemacs-params
+                        nil)
+  (set-window-parameter window 'window-side 'left)
+  (set-window-parameter window 'window-slot -1)
+  (set-window-parameter window 'no-delete-other-windows t)
+  (set-window-parameter window 'no-other-window t)
+  (set-window-parameter window 'window-size-fixed 'both)
+  (window-preserve-size window t t))
+
+(defun claude-code-ide-manager--reassert-visible-sidebar-state (&optional scope)
+  "Restore sidebar parameters for any visible manager window in SCOPE."
+  (dolist (buffer (claude-code-ide-manager--manager-buffers))
+    (let ((buffer-scope (claude-code-ide-manager--scope-from-buffer buffer)))
+      (when (or (null scope)
+                (equal buffer-scope scope))
+        (when-let ((window (claude-code-ide-manager--visible-manager-window
+                            buffer-scope)))
+          (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+              (if (claude-code-ide-manager--window-collocated-with-treemacs-p
+                   window treemacs-window)
+                  (let ((treemacs-params
+                         (claude-code-ide-manager--collocated-treemacs-params
+                          treemacs-window)))
+                    (set-window-parameter window 'claude-code-ide-manager-sidebar t)
+                    (set-window-parameter window 'claude-code-ide-manager-collocated t)
+                    (set-window-parameter
+                     window
+                     'claude-code-ide-manager-collocated-treemacs-params
+                     treemacs-params)
+                    (dolist (managed-window (list treemacs-window window))
+                      (set-window-parameter managed-window 'no-delete-other-windows t)
+                      (set-window-parameter managed-window 'no-other-window t))
+                    (set-window-parameter treemacs-window 'window-size-fixed 'both)
+                    (set-window-parameter window 'window-size-fixed nil)
+                    (claude-code-ide-manager--sync-collocated-side-metadata
+                     treemacs-window window))
+                (claude-code-ide-manager--show-sidebar buffer-scope))
+            (claude-code-ide-manager--reassert-standalone-sidebar-state
+             window)))))))
+
+(defun claude-code-ide-manager--refresh-sidebar-state (&optional scope reassert)
+  "Rerender visible manager sidebars for SCOPE and sync their window point.
+
+When REASSERT is non-nil, first normalize visible manager windows back into
+owned sidebar windows."
+  (when reassert
+    (claude-code-ide-manager--reassert-visible-sidebar-state scope))
   (dolist (buffer (claude-code-ide-manager--manager-buffers))
     (let ((buffer-scope (claude-code-ide-manager--scope-from-buffer buffer)))
       (when (or (null scope)
@@ -1331,7 +1461,7 @@ With a negative ARG, hide the sidebar."
 (defun claude-code-ide-manager--capture-layout (session-key)
   "Capture current frame layout for SESSION-KEY."
   (list :session-key session-key
-        :window-state (window-state-get (window-main-window) t)
+        :window-state (window-state-get (frame-root-window) t)
         :selected-buffer-name (buffer-name (window-buffer (selected-window)))))
 
 (defun claude-code-ide-manager--open-status-buffer (directory)
@@ -1348,7 +1478,7 @@ With a negative ARG, hide the sidebar."
 Return the selected window when successful."
   (when-let* ((layout (gethash session-key claude-code-ide-manager--layouts))
               (window-state (plist-get layout :window-state)))
-    (window-state-put window-state (window-main-window) 'safe)
+    (window-state-put window-state (frame-root-window) 'safe)
     (setq claude-code-ide-manager--current-session-key session-key)
     (let* ((selected-buffer-name (plist-get layout :selected-buffer-name))
            (selected-buffer
@@ -1435,6 +1565,8 @@ When KEEP-MANAGER-FOCUS is non-nil, reselect the manager window after the
 session layout is updated."
   (interactive)
   (let ((scope (or scope (claude-code-ide-manager--scope-for-command)))
+        (visible-sidebar-scopes
+         (claude-code-ide-manager--visible-sidebar-scopes))
         (claude-code-ide-manager--command-scope
          (or scope (claude-code-ide-manager--scope-for-command))))
     (when claude-code-ide-manager--current-session-key
@@ -1446,9 +1578,11 @@ session layout is updated."
     (let ((target-window
            (or (claude-code-ide-manager--restore-layout session-key)
                (claude-code-ide-manager--build-default-layout session-key scope))))
+      (claude-code-ide-manager--adopt-visible-sidebars visible-sidebar-scopes)
+      (claude-code-ide-manager--restore-visible-sidebars visible-sidebar-scopes)
       (when (claude-code-ide-manager--treemacs-window)
         (claude-code-ide-manager--sync-treemacs-to-session session-key))
-      (claude-code-ide-manager--refresh-sidebar-state)
+      (claude-code-ide-manager--refresh-sidebar-state scope nil)
       (when keep-manager-focus
         (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
           (select-window window)))
