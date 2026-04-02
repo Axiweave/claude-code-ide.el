@@ -25,6 +25,7 @@
 (require 'vc-git)
 
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
+(declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
@@ -652,7 +653,7 @@ Idle markers take precedence over pinned markers."
 
 (defun claude-code-ide-manager--refresh-on-idle-transition (&rest _args)
   "Refresh visible manager sidebars after an idle state transition."
-  (claude-code-ide-manager--refresh-sidebar-state nil t))
+  (claude-code-ide-manager--refresh-sidebar-state))
 
 (defun claude-code-ide-manager--refresh-on-window-configuration-change ()
   "Reassert visible manager sidebars after window configuration changes."
@@ -1574,6 +1575,13 @@ Return the selected window when successful."
     (claude-code-ide-manager-refresh)
     nil))
 
+(defun claude-code-ide-manager--reset-session-idle-state (session-key)
+  "Clear idle monitoring state for SESSION-KEY after an explicit manager switch."
+  (when-let ((session-buffer (claude-code-ide--get-session-buffer session-key)))
+    (with-current-buffer session-buffer
+      (when (bound-and-true-p claude-code-ide-session-idle-enabled)
+        (claude-code-ide-session-idle-clear-state)))))
+
 (defun claude-code-ide-manager-switch-to-session (session-key &optional keep-manager-focus scope)
   "Switch the current frame to SESSION-KEY.
 
@@ -1602,6 +1610,7 @@ session layout is updated."
                                   target-window
                                   (selected-window))))
         (claude-code-ide-manager--mark-session-managed session-key)
+        (claude-code-ide-manager--reset-session-idle-state session-key)
         (claude-code-ide-manager--adopt-visible-sidebars visible-sidebar-scopes)
         (claude-code-ide-manager--restore-visible-sidebars visible-sidebar-scopes)
         (when (claude-code-ide-manager--treemacs-window)

@@ -705,10 +705,17 @@ If DIRECTORY is not provided, use the current working directory."
   "Return the Claude session buffer for DIRECTORY or the attached session."
   (let ((attached-directory (or directory
                                 (when-let ((session (claude-code-ide-mcp--get-current-session)))
-                                  (claude-code-ide-mcp-session-project-dir session)))))
-    (get-buffer (if attached-directory
-                    (claude-code-ide--get-buffer-name attached-directory)
-                  (claude-code-ide--get-buffer-name)))))
+                                  (claude-code-ide-mcp-session-project-dir session))))
+        (fallback-directory (or directory
+                                (claude-code-ide--get-working-directory))))
+    (or (when attached-directory
+          (claude-code-ide--session-buffer-from-process
+           (claude-code-ide--get-process attached-directory)))
+        (claude-code-ide--session-buffer-from-process
+         (claude-code-ide--get-process fallback-directory))
+        (get-buffer (if attached-directory
+                        (claude-code-ide--get-buffer-name attached-directory)
+                      (claude-code-ide--get-buffer-name))))))
 
 (defun claude-code-ide--maybe-switch-to-window (buffer)
   "Select BUFFER's window if `claude-code-ide-switch-after-send' is non-nil.
@@ -769,6 +776,15 @@ range should be attached."
   "Get the Claude Code process for DIRECTORY or current working directory."
   (gethash (or directory (claude-code-ide--get-working-directory))
            claude-code-ide--processes))
+
+(defun claude-code-ide--session-buffer-from-process (process)
+  "Return the live session buffer attached to PROCESS, if any."
+  (cond
+   ((bufferp process)
+    (and (buffer-live-p process) process))
+   ((processp process)
+    (when-let ((buffer (process-buffer process)))
+      (and (buffer-live-p buffer) buffer)))))
 
 (defun claude-code-ide--set-process (process &optional directory)
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."

@@ -22,6 +22,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'claude-code-ide-debug)
 
 (declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
 
@@ -78,15 +79,6 @@ prevents idle timer scheduling and idle hook execution."
 (defvar-local claude-code-ide-session-idle-timer nil
   "Idle timer object for the current session buffer.")
 
-(defvar claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame nil
-  "Hash table of Claude session buffers last seen visible per frame.")
-
-(defvar claude-code-ide-session-idle--in-visibility-refresh nil
-  "Non-nil while handling selected-frame visibility changes.")
-
-(defvar claude-code-ide-session-idle--visibility-refresh-timer nil
-  "Timer used to defer focus-driven visibility refreshes.")
-
 (defvaralias 'claude-code-ide-session-idle--enabled
   'claude-code-ide-session-idle-enabled)
 
@@ -108,6 +100,12 @@ prevents idle timer scheduling and idle hook execution."
         claude-code-ide-session-idle-timer nil
         claude-code-ide-session-idle-p nil))
 
+(defun claude-code-ide-session-idle-clear-state ()
+  "Clear idle state in the current session buffer without rearming a timer."
+  (interactive)
+  (claude-code-ide-session-idle--ensure-session-buffer)
+  (claude-code-ide-session-idle--clear-timer))
+
 (defun claude-code-ide-session-idle--ensure-session-buffer ()
   "Signal a user error unless the current buffer is a session buffer."
   (unless (claude-code-ide-session-buffer-p (current-buffer))
@@ -121,17 +119,6 @@ prevents idle timer scheduling and idle hook execution."
       (with-current-buffer target-buffer
         (claude-code-ide-session-idle-reset-timer)))))
 
-(defun claude-code-ide-session-idle--visible-session-buffers-on-frame (&optional frame)
-  "Return Claude session buffers visible on FRAME."
-  (let ((frame (or frame (selected-frame)))
-        (buffers nil))
-    (dolist (window (window-list frame 'no-minibuffer))
-      (let ((buffer (window-buffer window)))
-        (when (and (buffer-live-p buffer)
-                   (claude-code-ide-session-buffer-p buffer))
-          (push buffer buffers))))
-    (nreverse (delete-dups buffers))))
-
 (defun claude-code-ide-session-idle--notify (buffer)
   "Emit an idle notification for BUFFER when policy includes alerts."
   (when (memq claude-code-ide-session-idle-notification-policy
@@ -140,46 +127,34 @@ prevents idle timer scheduling and idle hook execution."
       (alert (format "Session idle: %s" (buffer-name buffer))
              :title "Claude Code"))))
 
-(defun claude-code-ide-session-idle--visible-buffers-table ()
-  "Return the selected-frame visibility table, initializing it when needed."
-  (unless (hash-table-p claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame)
-    (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
-          (make-hash-table :test 'eq)))
-  claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame)
-
-(defun claude-code-ide-session-idle--handle-selected-frame-visibility-change ()
-  "Reset idle for session buffers that became newly visible on the selected frame."
-  (unless claude-code-ide-session-idle--in-visibility-refresh
-    (let* ((claude-code-ide-session-idle--in-visibility-refresh t)
-           (frame (selected-frame))
-           (table (claude-code-ide-session-idle--visible-buffers-table))
-           (current (claude-code-ide-session-idle--visible-session-buffers-on-frame))
-           (previous (gethash frame table)))
-      (dolist (buffer current)
-        (when (and (buffer-live-p buffer)
-                   (not (memq buffer previous)))
-          (with-current-buffer buffer
-            (when claude-code-ide-session-idle-enabled
-              (claude-code-ide-session-idle-reset-timer)))))
-      (puthash frame current table))))
-
-(defun claude-code-ide-session-idle--run-visibility-refresh ()
-  "Run the deferred selected-frame visibility refresh."
-  (setq claude-code-ide-session-idle--visibility-refresh-timer nil)
-  (claude-code-ide-session-idle--handle-selected-frame-visibility-change))
-
-(defun claude-code-ide-session-idle--schedule-visibility-refresh (&rest _)
-  "Schedule a selected-frame visibility refresh after focus changes settle."
-  (unless (timerp claude-code-ide-session-idle--visibility-refresh-timer)
-    (setq claude-code-ide-session-idle--visibility-refresh-timer
-          (run-at-time 0 nil
-                       #'claude-code-ide-session-idle--run-visibility-refresh))))
+(defun claude-code-ide-session-idle--debug-output-sample (output)
+  "Return a compact debug representation for terminal OUTPUT."
+  (let* ((text (format "%S" output))
+         (limit 200))
+    (if (> (length text) limit)
+        (concat (substring text 0 limit) "...")
+      text)))
 
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
   "Run ORIG-FN, then reset the idle timer for session buffers."
-  (let ((process-buffer (ignore-errors
-                          (process-buffer (car args)))))
+  (let* ((process (car args))
+         (output (cadr args))
+         (process-buffer (ignore-errors
+                           (process-buffer process))))
     (prog1 (apply orig-fn args)
+      (when (and claude-code-ide-debug
+                 process-buffer
+                 (buffer-live-p process-buffer))
+        (claude-code-ide-debug
+         "Idle observer output: process=%s buffer=%s bytes=%d payload=%s"
+         (if (processp process)
+             (process-name process)
+           (format "%S" process))
+         (buffer-name process-buffer)
+         (if (stringp output)
+             (string-bytes output)
+           0)
+         (claude-code-ide-session-idle--debug-output-sample output)))
       (claude-code-ide-session-idle--maybe-reset-timer process-buffer))))
 
 (defun claude-code-ide-session-idle--install-output-observer (symbol)
@@ -220,10 +195,10 @@ prevents idle timer scheduling and idle hook execution."
              (not (claude-code-ide-session-idle--suppressed-p (current-buffer)))
              (claude-code-ide-session-buffer-p (current-buffer)))
     (setq claude-code-ide-session-idle-timer
-          (run-with-idle-timer claude-code-ide-session-idle-delay nil
-                               #'claude-code-ide-session-idle--fire-timer
-                               (current-buffer)
-                               claude-code-ide-session-idle-generation)))
+          (run-with-timer claude-code-ide-session-idle-delay nil
+                          #'claude-code-ide-session-idle--fire-timer
+                          (current-buffer)
+                          claude-code-ide-session-idle-generation)))
   claude-code-ide-session-idle-timer)
 
 (defun claude-code-ide-session-idle-enable ()
@@ -231,7 +206,7 @@ prevents idle timer scheduling and idle hook execution."
   (interactive)
   (claude-code-ide-session-idle--ensure-session-buffer)
   (setq claude-code-ide-session-idle-enabled t)
-  (claude-code-ide-session-idle-reset-timer))
+  (claude-code-ide-session-idle--clear-timer))
 
 (defun claude-code-ide-session-idle-disable ()
   "Disable idle monitoring in the current session buffer."
@@ -253,35 +228,13 @@ prevents idle timer scheduling and idle hook execution."
   (when (claude-code-ide-session-buffer-p (current-buffer))
     (setq claude-code-ide-session-idle-enabled
           claude-code-ide-session-idle-default-enabled)
-    (if claude-code-ide-session-idle-enabled
-        (claude-code-ide-session-idle-reset-timer)
-      (claude-code-ide-session-idle--clear-timer))))
+    (claude-code-ide-session-idle--clear-timer)))
 
 (defun claude-code-ide-session-idle-unload-function ()
   "Clean up global hooks and timers installed by session idle."
-  (remove-hook 'window-configuration-change-hook
-               #'claude-code-ide-session-idle--handle-selected-frame-visibility-change)
-  (remove-hook 'window-state-change-hook
-               #'claude-code-ide-session-idle--handle-selected-frame-visibility-change)
-  (remove-function after-focus-change-function
-                   #'claude-code-ide-session-idle--schedule-visibility-refresh)
-  (when (timerp claude-code-ide-session-idle--visibility-refresh-timer)
-    (cancel-timer claude-code-ide-session-idle--visibility-refresh-timer))
-  (setq claude-code-ide-session-idle--visibility-refresh-timer nil)
   nil)
 
 (claude-code-ide-session-idle--install-output-observers)
-
-(remove-hook 'window-configuration-change-hook
-             #'claude-code-ide-session-idle--handle-selected-frame-visibility-change)
-
-(unless (memq #'claude-code-ide-session-idle--handle-selected-frame-visibility-change
-              window-state-change-hook)
-  (add-hook 'window-state-change-hook
-            #'claude-code-ide-session-idle--handle-selected-frame-visibility-change))
-
-(add-function :after after-focus-change-function
-              #'claude-code-ide-session-idle--schedule-visibility-refresh)
 
 (add-hook 'claude-code-ide-session-setup-hook
           #'claude-code-ide-session-idle--setup-buffer)
