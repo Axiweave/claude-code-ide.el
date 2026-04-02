@@ -802,7 +802,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   (not (null (claude-code-ide-manager--treemacs-window))))
 
 (defun claude-code-ide-manager--collocated-sidebar-height (treemacs-window)
-  "Return the height reserved for Treemacs in a collocated sidebar."
+  "Return the Treemacs top-pane height in a collocated sidebar."
   (let* ((total (max 2 (window-total-height treemacs-window)))
          (max-top (1- total)))
     (pcase claude-code-ide-manager-treemacs-split-policy
@@ -812,21 +812,29 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 (defun claude-code-ide-manager--show-collocated-sidebar (treemacs-window scope)
   "Show the manager buffer beneath TREEMACS-WINDOW for SCOPE."
   (let* ((buffer (claude-code-ide-manager--get-buffer scope))
-         (treemacs-slot (or (window-parameter treemacs-window 'window-slot) -1))
          (height (claude-code-ide-manager--collocated-sidebar-height treemacs-window))
-         (manager-height (max 1 (- (window-total-height treemacs-window) height))))
+         (treemacs-side (window-parameter treemacs-window 'window-side)))
     (dolist (window (window-list nil 'no-minibuf))
       (when (and (window-live-p window)
                  (not (eq window treemacs-window))
                  (eq (window-buffer window) buffer))
         (delete-window window)))
-    (display-buffer-in-side-window
-     buffer
-     `((side . left)
-       (slot . ,(1- treemacs-slot))
-       (window-height . ,manager-height)
-       (window-parameters . ((no-delete-other-windows . t)
-                             (no-other-window . t)))))))
+    ;; Emacs will not split a side window directly, so temporarily clear the
+    ;; side metadata, split below, and restore the Treemacs window as the top
+    ;; pane of the sidebar stack.
+    (set-window-parameter treemacs-window 'window-side nil)
+    (unwind-protect
+        (let ((manager-window (split-window treemacs-window height 'below)))
+          (set-window-buffer manager-window buffer)
+          (set-window-parameter treemacs-window 'window-side treemacs-side)
+          (dolist (window (list treemacs-window manager-window))
+            (set-window-parameter window 'no-delete-other-windows t)
+            (set-window-parameter window 'no-other-window t))
+          (set-window-parameter treemacs-window 'window-size-fixed 'both)
+          (set-window-parameter manager-window 'window-size-fixed nil)
+          manager-window)
+      (unless (eq (window-parameter treemacs-window 'window-side) treemacs-side)
+        (set-window-parameter treemacs-window 'window-side treemacs-side)))))
 
 (defun claude-code-ide-manager--neighbor-in-bucket (scope session-key direction)
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
