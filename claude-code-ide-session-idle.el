@@ -84,6 +84,9 @@ prevents idle timer scheduling and idle hook execution."
 (defvar claude-code-ide-session-idle--in-visibility-refresh nil
   "Non-nil while handling selected-frame visibility changes.")
 
+(defvar claude-code-ide-session-idle--visibility-refresh-timer nil
+  "Timer used to defer focus-driven visibility refreshes.")
+
 (defvaralias 'claude-code-ide-session-idle--enabled
   'claude-code-ide-session-idle-enabled)
 
@@ -159,6 +162,18 @@ prevents idle timer scheduling and idle hook execution."
             (when claude-code-ide-session-idle-enabled
               (claude-code-ide-session-idle-reset-timer)))))
       (puthash frame current table))))
+
+(defun claude-code-ide-session-idle--run-visibility-refresh ()
+  "Run the deferred selected-frame visibility refresh."
+  (setq claude-code-ide-session-idle--visibility-refresh-timer nil)
+  (claude-code-ide-session-idle--handle-selected-frame-visibility-change))
+
+(defun claude-code-ide-session-idle--schedule-visibility-refresh (&rest _)
+  "Schedule a selected-frame visibility refresh after focus changes settle."
+  (unless (timerp claude-code-ide-session-idle--visibility-refresh-timer)
+    (setq claude-code-ide-session-idle--visibility-refresh-timer
+          (run-at-time 0 nil
+                       #'claude-code-ide-session-idle--run-visibility-refresh))))
 
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
   "Run ORIG-FN, then reset the idle timer for session buffers."
@@ -244,10 +259,16 @@ prevents idle timer scheduling and idle hook execution."
 
 (claude-code-ide-session-idle--install-output-observers)
 
+(remove-hook 'window-configuration-change-hook
+             #'claude-code-ide-session-idle--handle-selected-frame-visibility-change)
+
 (unless (memq #'claude-code-ide-session-idle--handle-selected-frame-visibility-change
-              window-configuration-change-hook)
-  (add-hook 'window-configuration-change-hook
+              window-state-change-hook)
+  (add-hook 'window-state-change-hook
             #'claude-code-ide-session-idle--handle-selected-frame-visibility-change))
+
+(add-function :after after-focus-change-function
+              #'claude-code-ide-session-idle--schedule-visibility-refresh)
 
 (add-hook 'claude-code-ide-session-setup-hook
           #'claude-code-ide-session-idle--setup-buffer)

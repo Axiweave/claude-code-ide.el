@@ -282,6 +282,30 @@ have completed before cleanup.  Waits up to 5 seconds."
         (sleep-for 0.1)
         (setq max-wait (1- max-wait))))))
 
+(defun claude-code-ide-tests--run-session-idle-window-state-trigger ()
+  "Run the installed selected-frame visibility trigger for window state changes."
+  (run-hooks 'window-state-change-hook))
+
+(defun claude-code-ide-tests--run-session-idle-focus-trigger ()
+  "Run the installed focus trigger and any deferred visibility refresh."
+  (let (pending-calls)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_time _repeat function &rest args)
+                 (push (cons function args) pending-calls)
+                 'mock-focus-timer))
+              ((symbol-function 'run-with-timer)
+               (lambda (_time _repeat function &rest args)
+                 (push (cons function args) pending-calls)
+                 'mock-focus-timer))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (_time _repeat function &rest args)
+                 (push (cons function args) pending-calls)
+                 'mock-focus-timer)))
+      (when (functionp after-focus-change-function)
+        (funcall after-focus-change-function)))
+    (dolist (call (nreverse pending-calls))
+      (apply (car call) (cdr call)))))
+
 ;;; Tests for Helper Functions
 
 (ert-deftest claude-code-ide-test-default-buffer-name ()
@@ -1082,11 +1106,11 @@ have completed before cleanup.  Waits up to 5 seconds."
             (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
             (set-window-buffer (selected-window) session-buffer)
             (claude-code-ide-session-idle--handle-selected-frame-visibility-change)
-            (should (= reset-count 2)))))
+            (should (= reset-count 2))))
       (mapc (lambda (buffer)
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
-            (list session-buffer other-buffer))))
+            (list session-buffer other-buffer)))))
 
 (ert-deftest claude-code-ide-test-session-idle-visibility-reset-tracks-selected-frame-separately ()
   "Test selected-frame visibility history is tracked separately per frame."
@@ -1206,6 +1230,145 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer session-buffer))
       (when (buffer-live-p other-buffer)
         (kill-buffer other-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-installed-window-configuration-trigger-ignores-background-frame ()
+  "Test background frame changes do not clear idle through the installed trigger path."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (get-buffer-create "*cc-installed-background-frame*"))
+        (foreground-buffer (get-buffer-create "*cc-installed-foreground-frame*"))
+        (reset-count 0)
+        (background-frame 'background-frame)
+        (foreground-frame 'foreground-frame)
+        (background-window 'background-window)
+        (foreground-window 'foreground-window))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'selected-frame)
+                     (lambda ()
+                       background-frame))
+                    ((symbol-function 'window-list)
+                     (lambda (&optional frame _minibuf _all-frames)
+                       (cond
+                        ((eq frame background-frame) (list background-window))
+                        ((eq frame foreground-frame) (list foreground-window))
+                        (t nil))))
+                    ((symbol-function 'window-buffer)
+                     (lambda (window)
+                       (cond
+                        ((eq window background-window) session-buffer)
+                        ((eq window foreground-window) foreground-buffer)
+                        (t nil))))
+                    ((symbol-function 'window-live-p)
+                     (lambda (_window)
+                       t))
+                    ((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                     (lambda ()
+                       (setq reset-count (1+ reset-count)))))
+            (with-current-buffer session-buffer
+              (rename-buffer "*claude-code[installed-background-frame]*" t)
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p t))
+            (with-current-buffer foreground-buffer
+              (fundamental-mode))
+            (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
+                  (make-hash-table :test 'eq))
+            (run-hooks 'window-configuration-change-hook)
+            (should (= reset-count 0))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer))
+      (when (buffer-live-p foreground-buffer)
+        (kill-buffer foreground-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-installed-focus-trigger-clears-visible-selected-frame ()
+  "Test focus changes clear idle when a session is already visible on the selected frame."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (get-buffer-create "*cc-installed-focus-visible*"))
+        (other-buffer (get-buffer-create "*cc-installed-focus-other*"))
+        (reset-count 0)
+        (frame-a 'frame-a)
+        (frame-b 'frame-b)
+        (window-a 'window-a)
+        (window-b 'window-b)
+        (current-frame nil))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'selected-frame)
+                     (lambda ()
+                       current-frame))
+                    ((symbol-function 'window-list)
+                     (lambda (&optional frame _minibuf _all-frames)
+                       (cond
+                        ((eq frame frame-a) (list window-a))
+                        ((eq frame frame-b) (list window-b))
+                        (t nil))))
+                    ((symbol-function 'window-buffer)
+                     (lambda (window)
+                       (cond
+                        ((eq window window-a) other-buffer)
+                        ((eq window window-b) session-buffer)
+                        (t nil))))
+                    ((symbol-function 'window-live-p)
+                     (lambda (_window)
+                       t))
+                    ((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                     (lambda ()
+                       (setq reset-count (1+ reset-count)))))
+            (with-current-buffer session-buffer
+              (rename-buffer "*claude-code[installed-focus-visible]*" t)
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p t))
+            (with-current-buffer other-buffer
+              (fundamental-mode))
+            (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
+                  (make-hash-table :test 'eq))
+            (puthash frame-a nil
+                     claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame)
+            (setq current-frame frame-b)
+            (claude-code-ide-tests--run-session-idle-focus-trigger)
+            (should (= reset-count 1))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer))
+      (when (buffer-live-p other-buffer)
+        (kill-buffer other-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-installed-window-state-trigger-is-edge-triggered ()
+  "Test selected-frame visibility resets idle only when newly visible via installed hooks."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (get-buffer-create "*cc-installed-window-state*"))
+        (other-buffer (get-buffer-create "*cc-installed-window-state-other*"))
+        (reset-count 0))
+    (unwind-protect
+        (progn
+          (save-window-excursion
+            (with-current-buffer session-buffer
+              (rename-buffer "*claude-code[installed-window-state]*" t)
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p t))
+            (with-current-buffer other-buffer
+              (fundamental-mode))
+            (cl-letf (((symbol-function 'claude-code-ide-session-idle-reset-timer)
+                       (lambda ()
+                         (setq reset-count (1+ reset-count)))))
+              (setq claude-code-ide-session-idle--selected-frame-visible-buffers-by-frame
+                    (make-hash-table :test 'eq))
+              (delete-other-windows)
+              (set-window-buffer (selected-window) other-buffer)
+              (claude-code-ide-tests--run-session-idle-window-state-trigger)
+              (should (= reset-count 0))
+              (set-window-buffer (selected-window) session-buffer)
+              (claude-code-ide-tests--run-session-idle-window-state-trigger)
+              (should (= reset-count 1))
+              (claude-code-ide-tests--run-session-idle-window-state-trigger)
+              (should (= reset-count 1))
+              (set-window-buffer (selected-window) other-buffer)
+              (claude-code-ide-tests--run-session-idle-window-state-trigger)
+              (set-window-buffer (selected-window) session-buffer)
+              (claude-code-ide-tests--run-session-idle-window-state-trigger)
+              (should (= reset-count 2)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer other-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-non-idle-reset-does-not-rerender ()
   "Test ordinary reset calls do not rerender the visible manager."
