@@ -2978,6 +2978,51 @@ have completed before cleanup.  Waits up to 5 seconds."
             (list session-buffer content-buffer
                   (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
+(ert-deftest claude-code-ide-test-manager-switch-by-slot-prefers-visible-sidebar-scope ()
+  "Test slot switching from a content buffer follows the visible sidebar scope."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/repo/"))
+         (content-buffer (get-buffer-create "*cc-slot-content*"))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
+         switched)
+    (unwind-protect
+        (save-window-excursion
+          (claude-code-ide-manager--set-scope-items
+           global-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/global-a"
+                  :display-name "global-a"
+                  :secondary-text "global-a"
+                  :order-key 1
+                  :live-p t)))
+          (claude-code-ide-manager--set-scope-items
+           repo-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/repo/worktree-b"
+                  :display-name "worktree-b"
+                  :secondary-text "worktree-b"
+                  :order-key 1
+                  :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (let ((repo-window (split-window-right)))
+            (set-window-buffer repo-window repo-buffer)
+            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
+          (with-current-buffer repo-buffer
+            (setq-local claude-code-ide-manager--scope repo-scope))
+          (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+                     (lambda (session-key &optional _keep-manager-focus _scope)
+                       (setq switched session-key)))
+                    ((symbol-function 'claude-code-ide-manager--default-target)
+                     (lambda () 'global)))
+            (claude-code-ide-manager-switch-by-slot 1)
+            (should (equal switched "/tmp/repo/worktree-b"))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list content-buffer repo-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-space-switch-keeps-focus-on-manager ()
   "Test sidebar SPC switches sessions without leaving the manager window."
   (claude-code-ide-tests--reset-manager-state)

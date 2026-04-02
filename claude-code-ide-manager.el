@@ -361,14 +361,40 @@ back to `project.el' otherwise."
                   claude-code-ide-manager--scope)))
       '(:type global)))
 
+(defun claude-code-ide-manager--visible-sidebar-scope-for-frame (&optional frame)
+  "Return the visible manager sidebar scope for FRAME, if any.
+When multiple manager sidebars are visible, prefer the configured default
+scope when it is visible; otherwise return the first visible scope."
+  (let* ((frame (or frame (selected-frame)))
+         (visible-scopes nil))
+    (walk-windows
+     (lambda (window)
+       (when (and (window-live-p window)
+                  (eq (window-frame window) frame)
+                  (window-parameter window 'claude-code-ide-manager-sidebar))
+         (when-let ((scope (claude-code-ide-manager--scope-from-buffer
+                            (window-buffer window))))
+           (push scope visible-scopes))))
+     'no-minibuf
+     frame)
+    (setq visible-scopes (nreverse visible-scopes))
+    (or (and (= (length visible-scopes) 1)
+             (car visible-scopes))
+        (let ((default-scope (claude-code-ide-manager--resolve-scope
+                              (claude-code-ide-manager--default-target))))
+          (when (member default-scope visible-scopes)
+            default-scope))
+        (car visible-scopes))))
+
 (defun claude-code-ide-manager--scope-for-command ()
   "Return the manager scope for the current command context."
   (if claude-code-ide-manager--command-scope
       claude-code-ide-manager--command-scope
     (if (claude-code-ide-manager--manager-buffer-p)
       (claude-code-ide-manager--scope-from-buffer (current-buffer))
+      (or (claude-code-ide-manager--visible-sidebar-scope-for-frame)
       (claude-code-ide-manager--resolve-scope
-       (claude-code-ide-manager--default-target)))))
+       (claude-code-ide-manager--default-target))))))
 
 (defun claude-code-ide-manager--manager-buffers ()
   "Return all live manager buffers."
