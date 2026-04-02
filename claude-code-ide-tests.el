@@ -1343,6 +1343,35 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let ((buffer (get-buffer "*content*")))
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-content-window-skips-collocated-manager-pane ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-content-window" :buffer nil))
+        (treemacs-buffer (get-buffer-create "*Treemacs*")))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let ((content-window (selected-window))
+                (treemacs-window (display-buffer-in-side-window
+                                  treemacs-buffer
+                                  '((side . left) (slot . -1)))))
+            (with-current-buffer treemacs-buffer
+              (setq major-mode 'treemacs-mode))
+            (let ((manager-window (claude-code-ide-manager--show-sidebar '(:type global))))
+              (select-window manager-window)
+              (should (eq (claude-code-ide-manager--content-window) content-window))
+              (should (not (eq (claude-code-ide-manager--content-window) manager-window)))
+              (should (eq (window-buffer treemacs-window) treemacs-buffer))
+              (should (eq (window-buffer manager-window)
+                          (claude-code-ide-manager--get-buffer '(:type global)))))))
+      (ignore-errors (delete-process process-a))
+      (when (buffer-live-p treemacs-buffer)
+        (kill-buffer treemacs-buffer))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-1-creates-left-side-window ()
   "Test forcing the manager open creates a left side window."
   (claude-code-ide-tests--reset-manager-state)

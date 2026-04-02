@@ -781,9 +781,12 @@ This mirrors mouse hover text for keyboard navigation in the manager."
          claude-code-ide-manager--current-session-key))))))
 
 (defun claude-code-ide-manager--content-window ()
-  "Return a non-side content window for layout operations."
+  "Return a non-sidebar content window for layout operations."
   (or (cl-find-if (lambda (window)
-                    (not (window-parameter window 'window-side)))
+                    (and (not (window-parameter window 'window-side))
+                         (not (window-parameter
+                               window
+                               'claude-code-ide-manager-collocated))))
                   (window-list nil 'no-minibuf))
       (selected-window)))
 
@@ -826,6 +829,8 @@ This mirrors mouse hover text for keyboard navigation in the manager."
     (unwind-protect
         (let ((manager-window (split-window treemacs-window height 'below)))
           (set-window-buffer manager-window buffer)
+          (set-window-parameter manager-window
+                                'claude-code-ide-manager-collocated t)
           (set-window-parameter treemacs-window 'window-side treemacs-side)
           (dolist (window (list treemacs-window manager-window))
             (set-window-parameter window 'no-delete-other-windows t)
