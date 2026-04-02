@@ -1027,17 +1027,27 @@ have completed before cleanup.  Waits up to 5 seconds."
           (with-current-buffer session-buffer
             (rename-buffer "*claude-code[idle-policy]*" t)
             (setq-local claude-code-ide-session-idle-enabled t
-                        claude-code-ide-session-idle-p nil))
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-idle-generation 17
+                        claude-code-ide-session-idle-timer 'mock-idle-timer))
           (dolist (policy '(nil manager alert manager-and-alert))
             (setq alerts nil
                   claude-code-ide-session-idle-notification-policy policy)
             (with-current-buffer session-buffer
-              (claude-code-ide-session-idle--notify session-buffer)
-              (pcase policy
-                ((or 'alert 'manager-and-alert)
-                 (should (= (length alerts) 1)))
-                (_
-                 (should-not alerts))))))
+              (let ((before-enabled claude-code-ide-session-idle-enabled)
+                    (before-idle claude-code-ide-session-idle-p)
+                    (before-generation claude-code-ide-session-idle-generation)
+                    (before-timer claude-code-ide-session-idle-timer))
+                (claude-code-ide-session-idle--notify session-buffer)
+                (pcase policy
+                  ((or 'alert 'manager-and-alert)
+                   (should (= (length alerts) 1)))
+                  (_
+                   (should-not alerts)))
+                (should (eq before-enabled claude-code-ide-session-idle-enabled))
+                (should (eq before-idle claude-code-ide-session-idle-p))
+                (should (equal before-generation claude-code-ide-session-idle-generation))
+                (should (eq before-timer claude-code-ide-session-idle-timer))))))
       (when (buffer-live-p session-buffer)
         (kill-buffer session-buffer)))))
 
@@ -1082,7 +1092,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-buffer (get-buffer-create "*cc-visible-other-frame*"))
         (other-buffer (get-buffer-create "*cc-visible-selected-frame*"))
         (reset-count 0)
-        (selected-frame 'selected-frame)
+        (selected-frame (selected-frame))
         (other-frame 'other-frame)
         (selected-window 'selected-window)
         (other-window 'other-window))
@@ -1114,11 +1124,12 @@ have completed before cleanup.  Waits up to 5 seconds."
                      (cond
                       ((and all-frames (eq buffer session-buffer))
                        (list other-window))
-                      ((and all-frames (eq buffer other-buffer))
-                       (list selected-window))
                       ((eq frame other-frame)
                        (when (eq buffer session-buffer)
                          (list other-window)))
+                      ((eq frame selected-frame)
+                       (when (eq buffer other-buffer)
+                         (list selected-window)))
                       (t (when (eq buffer other-buffer)
                            (list selected-window))))))
                   ((symbol-function 'window-buffer)
@@ -1143,7 +1154,9 @@ have completed before cleanup.  Waits up to 5 seconds."
             (claude-code-ide-session-idle--handle-selected-frame-visibility-change))
           (should (= reset-count 0)))
       (when (buffer-live-p session-buffer)
-        (kill-buffer session-buffer)))))
+        (kill-buffer session-buffer))
+      (when (buffer-live-p other-buffer)
+        (kill-buffer other-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-non-idle-reset-does-not-rerender ()
   "Test ordinary reset calls do not rerender the visible manager."
