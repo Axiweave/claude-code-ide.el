@@ -842,6 +842,39 @@ This mirrors mouse hover text for keyboard navigation in the manager."
             (window-parameter window 'claude-code-ide-manager-sidebar)))
      (window-list nil 'no-minibuf))))
 
+(defun claude-code-ide-manager--sync-collocated-side-metadata
+    (treemacs-window manager-window)
+  "Make TREEMACS-WINDOW and MANAGER-WINDOW share side-window metadata."
+  (let ((side (window-parameter treemacs-window 'window-side))
+        (slot (window-parameter treemacs-window 'window-slot)))
+    (when (window-live-p manager-window)
+      (set-window-parameter manager-window 'window-side side)
+      (set-window-parameter manager-window 'window-slot slot))
+    (when-let ((parent (window-parent treemacs-window)))
+      (set-window-parameter parent 'window-side side))))
+
+(defun claude-code-ide-manager--clear-collocated-side-metadata
+    (treemacs-window manager-window)
+  "Clear side-window metadata for a collocated Treemacs branch."
+  (when (window-live-p treemacs-window)
+    (set-window-parameter treemacs-window 'window-side nil))
+  (when (window-live-p manager-window)
+    (set-window-parameter manager-window 'window-side nil))
+  (when-let ((parent (or (and (window-live-p treemacs-window)
+                              (window-parent treemacs-window))
+                         (and (window-live-p manager-window)
+                              (window-parent manager-window)))))
+    (set-window-parameter parent 'window-side nil)))
+
+(defun claude-code-ide-manager--clear-sidebar-markers (window)
+  "Clear cc-manager bookkeeping parameters from WINDOW."
+  (when (window-live-p window)
+    (set-window-parameter window 'claude-code-ide-manager-sidebar nil)
+    (set-window-parameter window 'claude-code-ide-manager-collocated nil)
+    (set-window-parameter window
+                          'claude-code-ide-manager-collocated-treemacs-params
+                          nil)))
+
 (defun claude-code-ide-manager--collocated-window-attached-p (window treemacs-window)
   "Return non-nil when WINDOW is still collocated beneath TREEMACS-WINDOW."
   (and (window-live-p window)
@@ -859,10 +892,13 @@ This mirrors mouse hover text for keyboard navigation in the manager."
          (treemacs-params (claude-code-ide-manager--collocated-treemacs-params
                            treemacs-window))
          (treemacs-side (plist-get treemacs-params :window-side)))
+    (claude-code-ide-manager--clear-sidebar-markers treemacs-window)
     (if (claude-code-ide-manager--collocated-window-attached-p
          existing-window treemacs-window)
         (progn
           (set-window-buffer existing-window buffer)
+          (claude-code-ide-manager--sync-collocated-side-metadata
+           treemacs-window existing-window)
           (set-window-parameter existing-window
                                 'claude-code-ide-manager-collocated-treemacs-params
                                 treemacs-params)
@@ -893,6 +929,8 @@ This mirrors mouse hover text for keyboard navigation in the manager."
               (set-window-parameter window 'no-other-window t))
             (set-window-parameter treemacs-window 'window-size-fixed 'both)
             (set-window-parameter manager-window 'window-size-fixed nil)
+            (claude-code-ide-manager--sync-collocated-side-metadata
+             treemacs-window manager-window)
             manager-window)
         (unless (eq (window-parameter treemacs-window 'window-side) treemacs-side)
           (set-window-parameter treemacs-window 'window-side treemacs-side))))))
@@ -917,7 +955,8 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                                     treemacs-window)))))
     (if (window-live-p treemacs-window)
         (let ((treemacs-side (plist-get treemacs-params :window-side)))
-          (set-window-parameter treemacs-window 'window-side nil)
+          (claude-code-ide-manager--clear-collocated-side-metadata
+           treemacs-window window)
           (unwind-protect
               (when (window-live-p window)
                 (delete-window window))

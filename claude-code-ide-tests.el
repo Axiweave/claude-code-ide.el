@@ -1259,6 +1259,35 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let ((buffer (get-buffer "*content*")))
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-collocated-sidebar-propagates-side-metadata ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-collocated-side-metadata" :buffer nil))
+        (treemacs-buffer (get-buffer-create "*Treemacs*")))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let* ((treemacs-window (display-buffer-in-side-window
+                                   treemacs-buffer
+                                   '((side . left) (slot . -1))))
+                 (manager-window nil)
+                 (parent nil))
+            (with-current-buffer treemacs-buffer
+              (setq major-mode 'treemacs-mode))
+            (setq manager-window
+                  (claude-code-ide-manager--show-sidebar '(:type global)))
+            (setq parent (window-parent treemacs-window))
+            (should (eq (window-parent manager-window) parent))
+            (should (eq (window-parameter manager-window 'window-side) 'left))
+            (should (eq (window-parameter parent 'window-side) 'left))))
+      (ignore-errors (delete-process process-a))
+      (when (buffer-live-p treemacs-buffer)
+        (kill-buffer treemacs-buffer))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-show-sidebar-keeps-standalone-path-without-treemacs ()
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide--processes (make-hash-table :test 'equal))
@@ -1503,7 +1532,10 @@ have completed before cleanup.  Waits up to 5 seconds."
                   (should (window-live-p reopened-treemacs-window))
                   (should (window-live-p new-sidebar-window))
                   (should (not (eq new-sidebar-window old-sidebar-window)))
-                  (should (not (window-live-p old-sidebar-window)))
+                  (should (or (not (window-live-p old-sidebar-window))
+                              (eq old-sidebar-window reopened-treemacs-window)))
+                  (should-not (window-parameter reopened-treemacs-window
+                                                'claude-code-ide-manager-sidebar))
                   (should (eq (window-parent new-sidebar-window)
                               (window-parent reopened-treemacs-window)))
                   (should (< (nth 1 (window-edges reopened-treemacs-window))
