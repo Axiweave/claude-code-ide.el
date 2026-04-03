@@ -8312,57 +8312,187 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (require 'claude-code-ide-session-idle nil t))
   (should (advice-member-p #'claude-code-ide-session-idle--filter-advice
                            'vterm--filter))
-  (let ((reset-called nil))
-    (cl-letf (((symbol-function 'claude-code-ide-session-idle-reset-timer)
-               (lambda ()
-                 (setq reset-called t))))
+  (let ((activity-buffer nil))
+    (cl-letf (((symbol-function 'claude-code-ide-session-idle-record-activity)
+               (lambda (&optional buffer)
+                 (setq activity-buffer (or buffer (current-buffer))))))
       (with-temp-buffer
         (rename-buffer "*claude-code[test-idle-observer]*" t)
         (vterm--filter nil "output")
-        (should reset-called))
-      (setq reset-called nil)
+        (should (eq activity-buffer (current-buffer))))
+      (setq activity-buffer nil)
       (with-temp-buffer
         (rename-buffer "*not-a-claude-buffer*" t)
         (vterm--filter nil "output")
-        (should-not reset-called)))))
+        (should-not activity-buffer)))))
 
 (ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer ()
   "Test that backend output filters reset idle for the process buffer."
   (should (require 'claude-code-ide-session-idle nil t))
-  (let ((reset-buffer nil)
+  (let ((activity-buffer nil)
         (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer]*"))
         (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
     (unwind-protect
         (cl-letf (((symbol-function 'process-buffer)
                    (lambda (_process)
                      session-buffer))
-                  ((symbol-function 'claude-code-ide-session-idle-reset-timer)
-                   (lambda ()
-                     (setq reset-buffer (current-buffer)))))
+                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                   (lambda (&optional buffer)
+                     (setq activity-buffer (or buffer (current-buffer))))))
           (with-current-buffer other-buffer
             (vterm--filter 'mock-process "output"))
-          (should (eq reset-buffer session-buffer)))
+          (should (eq activity-buffer session-buffer)))
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer-eat ()
   "Test that eat output filters reset idle for the process buffer."
   (should (require 'claude-code-ide-session-idle nil t))
-  (let ((reset-buffer nil)
+  (let ((activity-buffer nil)
         (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer-eat]*"))
         (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
     (unwind-protect
         (cl-letf (((symbol-function 'process-buffer)
                    (lambda (_process)
                      session-buffer))
-                  ((symbol-function 'claude-code-ide-session-idle-reset-timer)
-                   (lambda ()
-                     (setq reset-buffer (current-buffer)))))
+                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                   (lambda (&optional buffer)
+                     (setq activity-buffer (or buffer (current-buffer))))))
           (with-current-buffer other-buffer
             (eat--filter 'mock-process "output"))
-          (should (eq reset-buffer session-buffer)))
+          (should (eq activity-buffer session-buffer)))
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-record-activity-does-not-arm-visible-session ()
+  "Visible focused sessions clear idle state without arming a timer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-visible-activity]*"))
+        (scheduled nil)
+        (cancelled nil))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer session-buffer)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'timerp)
+                     (lambda (timer)
+                       (eq timer 'old-timer)))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (timer)
+                       (when (eq timer 'old-timer)
+                         (setq cancelled t))))
+                    ((symbol-function 'run-with-timer)
+                     (lambda (&rest _args)
+                       (setq scheduled t)
+                       'mock-idle-timer)))
+            (with-current-buffer session-buffer
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p nil
+                          claude-code-ide-session-idle-timer 'old-timer)
+              (claude-code-ide-session-idle-record-activity)
+              (should cancelled)
+              (should-not scheduled)
+              (should-not claude-code-ide-session-idle-p)
+              (should-not claude-code-ide-session-idle-timer))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-record-activity-arms-hidden-session ()
+  "Hidden sessions arm a fresh timer when output activity arrives."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((scheduled-delay nil)
+        (cancelled nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-idle-hidden-activity]*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'timerp)
+                   (lambda (timer)
+                     (eq timer 'old-timer)))
+                  ((symbol-function 'cancel-timer)
+                   (lambda (timer)
+                     (when (eq timer 'old-timer)
+                       (setq cancelled t))))
+                  ((symbol-function 'run-with-timer)
+                   (lambda (delay _repeat _fn &rest _args)
+                     (setq scheduled-delay delay)
+                     'mock-idle-timer)))
+          (with-current-buffer session-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t
+                        claude-code-ide-session-idle-timer 'old-timer)
+            (claude-code-ide-session-idle-record-activity)
+            (should cancelled)
+            (should (equal scheduled-delay claude-code-ide-session-idle-delay))
+            (should-not claude-code-ide-session-idle-p)
+            (should (eq claude-code-ide-session-idle-timer 'mock-idle-timer))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-visibility-refresh-clears-visible-timer ()
+  "Visibility refresh cancels pending timers for visible focused sessions."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((visible-buffer (generate-new-buffer "*claude-code[test-idle-visible-timer-clear]*"))
+        (cancelled nil))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer visible-buffer)
+          (with-current-buffer visible-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-idle-timer 'visible-timer))
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'timerp)
+                     (lambda (timer)
+                       (eq timer 'visible-timer)))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (timer)
+                       (when (eq timer 'visible-timer)
+                         (setq cancelled t)))))
+            (claude-code-ide-session-idle--handle-visibility-change)
+            (with-current-buffer visible-buffer
+              (should cancelled)
+              (should-not claude-code-ide-session-idle-p)
+              (should-not claude-code-ide-session-idle-timer))))
+      (when (buffer-live-p visible-buffer)
+        (kill-buffer visible-buffer)))))
+
+(ert-deftest claude-code-ide-test-session-idle-reset-does-not-arm-visible-session ()
+  "Visible focused sessions do not schedule a timer when reset directly."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-visible-reset]*"))
+        (scheduled nil)
+        (cancelled nil))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer session-buffer)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'timerp)
+                     (lambda (timer)
+                       (eq timer 'old-timer)))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (timer)
+                       (when (eq timer 'old-timer)
+                         (setq cancelled t))))
+                    ((symbol-function 'run-with-timer)
+                     (lambda (&rest _args)
+                       (setq scheduled t)
+                       'mock-idle-timer)))
+            (with-current-buffer session-buffer
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p nil
+                          claude-code-ide-session-idle-timer 'old-timer)
+              (claude-code-ide-session-idle-reset-timer)
+              (should cancelled)
+              (should-not scheduled)
+              (should-not claude-code-ide-session-idle-p)
+              (should-not claude-code-ide-session-idle-timer))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
 
 (ert-deftest claude-code-ide-test-session-insert-command-uses-reader-function ()
   "Test that the public command insert helper uses the configured reader."
@@ -8508,25 +8638,20 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-session-idle-fire-timer-defers-while-visible-and-focused ()
   "Test visible focused sessions do not transition to idle."
   (should (require 'claude-code-ide-session-idle nil t))
-  (let ((scheduled-delay nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-idle-visible-focused]*")))
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-visible-focused]*")))
     (unwind-protect
         (save-window-excursion
           (delete-other-windows)
           (switch-to-buffer session-buffer)
           (cl-letf (((symbol-function 'frame-focus-state)
-                     (lambda (_frame) t))
-                    ((symbol-function 'run-with-timer)
-                     (lambda (delay _repeat _function &rest _args)
-                       (setq scheduled-delay delay)
-                       'mock-idle-timer)))
+                     (lambda (_frame) t)))
             (with-current-buffer session-buffer
               (setq-local claude-code-ide-session-idle-enabled t
-                          claude-code-ide-session-idle-p nil)
+                          claude-code-ide-session-idle-p nil
+                          claude-code-ide-session-idle-timer 'mock-idle-timer)
               (claude-code-ide-session-idle--fire-timer session-buffer)
               (should-not claude-code-ide-session-idle-p)
-              (should (eq claude-code-ide-session-idle-timer 'mock-idle-timer))
-              (should (equal scheduled-delay claude-code-ide-session-idle-delay)))))
+              (should-not claude-code-ide-session-idle-timer))))
       (when (buffer-live-p session-buffer)
         (kill-buffer session-buffer)))))
 

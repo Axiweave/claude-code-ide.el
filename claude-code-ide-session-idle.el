@@ -114,13 +114,30 @@ prevents idle timer scheduling and idle hook execution."
   (unless (claude-code-ide-session-buffer-p (current-buffer))
     (user-error "Idle monitoring only applies to Claude Code session buffers")))
 
-(defun claude-code-ide-session-idle--maybe-reset-timer (&optional buffer)
-  "Reset idle monitoring for BUFFER when it is a session buffer."
+(defun claude-code-ide-session-idle--arm-timer ()
+  "Arm the idle timer for the current session buffer."
+  (when (and claude-code-ide-session-idle-enabled
+             (not (claude-code-ide-session-idle--suppressed-p (current-buffer)))
+             (claude-code-ide-session-buffer-p (current-buffer)))
+    (setq claude-code-ide-session-idle-timer
+          (run-with-timer claude-code-ide-session-idle-delay nil
+                          #'claude-code-ide-session-idle--fire-timer
+                          (current-buffer)
+                          claude-code-ide-session-idle-generation)))
+  claude-code-ide-session-idle-timer)
+
+(defun claude-code-ide-session-idle-record-activity (&optional buffer)
+  "Record output activity for BUFFER and rearm only when hidden.
+The current idle state is cleared first so stale idle state never survives
+fresh output from the session backend."
   (let ((target-buffer (or buffer (current-buffer))))
     (when (and (buffer-live-p target-buffer)
                (claude-code-ide-session-buffer-p target-buffer))
       (with-current-buffer target-buffer
-        (claude-code-ide-session-idle-reset-timer)))))
+        (claude-code-ide-session-idle-clear-state)
+        (unless (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p
+                 target-buffer)
+          (claude-code-ide-session-idle--arm-timer))))))
 
 (defun claude-code-ide-session-idle--buffer-visible-in-focused-frame-p (&optional buffer)
   "Return non-nil when BUFFER is visible in a focused frame."
@@ -143,9 +160,7 @@ prevents idle timer scheduling and idle hook execution."
                       (not (memq buffer seen-buffers)))
              (push buffer seen-buffers)
              (with-current-buffer buffer
-               (when (and claude-code-ide-session-idle-enabled
-                          claude-code-ide-session-idle-p)
-                 (claude-code-ide-session-idle-clear-state))))))
+               (claude-code-ide-session-idle-clear-state)))))
        'no-minibuf
        'visible))))
 
@@ -170,11 +185,12 @@ prevents idle timer scheduling and idle hook execution."
       text)))
 
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
-  "Run ORIG-FN, then reset the idle timer for session buffers."
+  "Run ORIG-FN, then forward session-buffer activity to the idle helper."
   (let* ((process (car args))
          (output (cadr args))
          (process-buffer (ignore-errors
-                           (process-buffer process))))
+                           (process-buffer process)))
+         (target-buffer (or process-buffer (current-buffer))))
     (prog1 (apply orig-fn args)
       (when (and claude-code-ide-debug
                  process-buffer
@@ -189,7 +205,10 @@ prevents idle timer scheduling and idle hook execution."
              (string-bytes output)
            0)
          (claude-code-ide-session-idle--debug-output-sample output)))
-      (claude-code-ide-session-idle--maybe-reset-timer process-buffer))))
+      (when (and (buffer-live-p target-buffer)
+                 (claude-code-ide-session-buffer-p target-buffer))
+        (with-current-buffer target-buffer
+          (claude-code-ide-session-idle-record-activity))))))
 
 (defun claude-code-ide-session-idle--install-output-observer (symbol)
   "Install the output observer for SYMBOL when available."
@@ -216,7 +235,7 @@ prevents idle timer scheduling and idle hook execution."
         (setq claude-code-ide-session-idle-timer nil)
         (cond
          ((claude-code-ide-session-idle--buffer-visible-in-focused-frame-p buffer)
-          (claude-code-ide-session-idle-reset-timer))
+          (claude-code-ide-session-idle-clear-state))
          ((and claude-code-ide-session-idle-enabled
                (not (claude-code-ide-session-idle--suppressed-p buffer)))
           (setq claude-code-ide-session-idle-p t)
@@ -224,18 +243,13 @@ prevents idle timer scheduling and idle hook execution."
           (run-hook-with-args 'claude-code-ide-session-idle-hook buffer)))))))
 
 (defun claude-code-ide-session-idle-reset-timer ()
-  "Reset the idle timer for the current session buffer."
+  "Reset the idle timer for the current session buffer when hidden."
   (interactive)
   (claude-code-ide-session-idle--ensure-session-buffer)
   (claude-code-ide-session-idle--clear-timer)
-  (when (and claude-code-ide-session-idle-enabled
-             (not (claude-code-ide-session-idle--suppressed-p (current-buffer)))
-             (claude-code-ide-session-buffer-p (current-buffer)))
-    (setq claude-code-ide-session-idle-timer
-          (run-with-timer claude-code-ide-session-idle-delay nil
-                          #'claude-code-ide-session-idle--fire-timer
-                          (current-buffer)
-                          claude-code-ide-session-idle-generation)))
+  (unless (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p
+           (current-buffer))
+    (claude-code-ide-session-idle--arm-timer))
   claude-code-ide-session-idle-timer)
 
 (defun claude-code-ide-session-idle-enable ()
