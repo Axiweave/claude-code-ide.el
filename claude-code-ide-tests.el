@@ -8466,22 +8466,23 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (require 'claude-code-ide-session-idle nil t))
   (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-prompt-activity]*"))
         (prompt-buffer (generate-new-buffer "*cc-prompt-activity.md*"))
+        (session-dir "/tmp/claude-code-idle-prompt-activity/")
         (scheduled nil))
     (unwind-protect
         (save-window-excursion
           (delete-other-windows)
           (switch-to-buffer prompt-buffer)
           (with-current-buffer prompt-buffer
-            (setq-local leo/ai-tmp-prompt-file-mode t))
-          (cl-letf (((symbol-function 'claude-code-ide-manager--session-key-for-buffer)
-                     (lambda (buffer)
-                       (and (eq buffer session-buffer) 'session-1)))
-                    ((symbol-function 'claude-code-ide-manager--scope-for-command)
-                     (lambda ()
-                       '(:type global)))
-                    ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
-                     (lambda (_scope)
-                       'session-1))
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory session-dir))
+          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+                     (lambda (&optional directory)
+                       (when (equal directory session-dir)
+                         (list session-dir))))
+                    ((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (&optional directory)
+                       (and (equal directory session-dir)
+                            session-buffer)))
                     ((symbol-function 'run-with-timer)
                      (lambda (&rest _args)
                        (setq scheduled t)
@@ -8504,22 +8505,23 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (require 'claude-code-ide-session-idle nil t))
   (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-prompt-fire]*"))
         (prompt-buffer (generate-new-buffer "*cc-prompt-fire.md*"))
+        (session-dir "/tmp/claude-code-idle-prompt-fire/")
         (hook-runs 0))
     (unwind-protect
         (save-window-excursion
           (delete-other-windows)
           (switch-to-buffer prompt-buffer)
           (with-current-buffer prompt-buffer
-            (setq-local leo/ai-tmp-prompt-file-mode t))
-          (cl-letf (((symbol-function 'claude-code-ide-manager--session-key-for-buffer)
-                     (lambda (buffer)
-                       (and (eq buffer session-buffer) 'session-1)))
-                    ((symbol-function 'claude-code-ide-manager--scope-for-command)
-                     (lambda ()
-                       '(:type global)))
-                    ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
-                     (lambda (_scope)
-                       'session-1))
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory session-dir))
+          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+                     (lambda (&optional directory)
+                       (when (equal directory session-dir)
+                         (list session-dir))))
+                    ((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (&optional directory)
+                       (and (equal directory session-dir)
+                            session-buffer)))
                     ((symbol-function 'run-hook-with-args)
                      (lambda (&rest _args)
                        (setq hook-runs (1+ hook-runs)))))
@@ -8569,26 +8571,27 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (require 'claude-code-ide-session-idle nil t))
   (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-prompt-visible]*"))
         (prompt-buffer (generate-new-buffer "*cc-prompt-visible.md*"))
+        (session-dir "/tmp/claude-code-idle-prompt-visible/")
         (cancelled nil))
     (unwind-protect
         (save-window-excursion
           (delete-other-windows)
           (switch-to-buffer prompt-buffer)
           (with-current-buffer prompt-buffer
-            (setq-local leo/ai-tmp-prompt-file-mode t))
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory session-dir))
           (with-current-buffer session-buffer
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-idle-timer 'prompt-timer))
-          (cl-letf (((symbol-function 'claude-code-ide-manager--scope-for-command)
-                     (lambda ()
-                       '(:type global)))
-                    ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
-                     (lambda (_scope)
-                       'session-1))
+          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+                     (lambda (&optional directory)
+                       (when (equal directory session-dir)
+                         (list session-dir))))
                     ((symbol-function 'claude-code-ide--get-session-buffer)
-                     (lambda (session-key)
-                       (and (eq session-key 'session-1) session-buffer)))
+                     (lambda (&optional directory)
+                       (and (equal directory session-dir)
+                            session-buffer)))
                     ((symbol-function 'timerp)
                      (lambda (timer)
                        (eq timer 'prompt-timer)))
@@ -8611,26 +8614,27 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (require 'claude-code-ide-session-idle nil t))
   (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-prompt-exit]*"))
         (prompt-buffer (generate-new-buffer "*cc-prompt-exit.md*"))
+        (session-dir "/tmp/claude-code-idle-prompt-exit/")
         (scheduled nil))
     (unwind-protect
         (save-window-excursion
           (delete-other-windows)
           (switch-to-buffer prompt-buffer)
           (with-current-buffer prompt-buffer
-            (setq-local leo/ai-tmp-prompt-file-mode t))
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory session-dir))
           (with-current-buffer session-buffer
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-idle-timer 'old-timer))
-          (cl-letf (((symbol-function 'claude-code-ide-manager--scope-for-command)
-                     (lambda ()
-                       '(:type global)))
-                    ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
-                     (lambda (_scope)
-                       'session-1))
+          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+                     (lambda (&optional directory)
+                       (when (equal directory session-dir)
+                         (list session-dir))))
                     ((symbol-function 'claude-code-ide--get-session-buffer)
-                     (lambda (session-key)
-                       (and (eq session-key 'session-1) session-buffer)))
+                     (lambda (&optional directory)
+                       (and (equal directory session-dir)
+                            session-buffer)))
                     ((symbol-function 'timerp)
                      (lambda (timer)
                        (eq timer 'old-timer)))
@@ -8657,13 +8661,16 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-owning-session]*"))
         (other-session-buffer (generate-new-buffer "*claude-code[test-idle-other-session]*"))
         (prompt-buffer (generate-new-buffer "*cc-prompt-other.md*"))
+        (session-dir "/tmp/claude-code-idle-owning-session/")
+        (other-session-dir "/tmp/claude-code-idle-other-session/")
         (cancelled nil))
     (unwind-protect
         (save-window-excursion
           (delete-other-windows)
           (switch-to-buffer prompt-buffer)
           (with-current-buffer prompt-buffer
-            (setq-local leo/ai-tmp-prompt-file-mode t))
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory session-dir))
           (with-current-buffer session-buffer
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
@@ -8672,20 +8679,15 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-idle-timer 'other-timer))
-          (cl-letf (((symbol-function 'claude-code-ide-manager--session-key-for-buffer)
-                     (lambda (buffer)
-                       (cond
-                        ((eq buffer session-buffer) 'session-1)
-                        ((eq buffer other-session-buffer) 'session-2))))
-                    ((symbol-function 'claude-code-ide-manager--scope-for-command)
-                     (lambda ()
-                       '(:type global)))
-                    ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
-                     (lambda (_scope)
-                       'session-1))
+          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+                     (lambda (&optional directory)
+                       (when (equal directory session-dir)
+                         (list session-dir))))
                     ((symbol-function 'claude-code-ide--get-session-buffer)
-                     (lambda (session-key)
-                       (and (eq session-key 'session-1) session-buffer)))
+                     (lambda (&optional directory)
+                       (cond
+                        ((equal directory session-dir) session-buffer)
+                        ((equal directory other-session-dir) other-session-buffer))))
                     ((symbol-function 'timerp)
                      (lambda (timer)
                        (memq timer '(session-timer other-timer))))
@@ -8703,6 +8705,63 @@ have completed before cleanup.  Waits up to 5 seconds."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list session-buffer other-session-buffer prompt-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-prompt-buffer-context-beats-manager-state ()
+  "Selected prompt buffer context determines the owning session."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-1-buffer (generate-new-buffer "*claude-code[test-idle-prompt-session-1]*"))
+        (session-2-buffer (generate-new-buffer "*claude-code[test-idle-prompt-session-2]*"))
+        (prompt-buffer (generate-new-buffer "*cc-prompt-context.md*"))
+        (session-1-dir "/tmp/claude-code-idle-session-1/")
+        (session-2-dir "/tmp/claude-code-idle-session-2/")
+        (cancelled nil))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer prompt-buffer)
+          (with-current-buffer prompt-buffer
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory session-2-dir))
+          (with-current-buffer session-1-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-idle-timer 'session-1-timer))
+          (with-current-buffer session-2-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-idle-timer 'session-2-timer))
+          (cl-letf (((symbol-function 'claude-code-ide-manager--scope-for-command)
+                     (lambda ()
+                       '(:type global)))
+                    ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
+                     (lambda (_scope)
+                       'session-1))
+                    ((symbol-function 'claude-code-ide--get-related-session-directories)
+                     (lambda (&optional directory)
+                       (when (equal directory session-2-dir)
+                         (list session-2-dir))))
+                    ((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (&optional directory)
+                       (cond
+                        ((equal directory session-1-dir) session-1-buffer)
+                        ((equal directory session-2-dir) session-2-buffer))))
+                    ((symbol-function 'timerp)
+                     (lambda (timer)
+                       (memq timer '(session-1-timer session-2-timer))))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (timer)
+                       (push timer cancelled))))
+            (claude-code-ide-session-idle--handle-visibility-change)
+            (with-current-buffer session-1-buffer
+              (should-not (memq 'session-1-timer cancelled))
+              (should (eq claude-code-ide-session-idle-timer 'session-1-timer)))
+            (with-current-buffer session-2-buffer
+              (should (memq 'session-2-timer cancelled))
+              (should-not claude-code-ide-session-idle-timer)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-1-buffer session-2-buffer prompt-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-reset-does-not-arm-visible-session ()
   "Visible focused sessions do not schedule a timer when reset directly."

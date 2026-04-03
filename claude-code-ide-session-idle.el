@@ -25,11 +25,9 @@
 (require 'subr-x)
 (require 'claude-code-ide-debug)
 
+(declare-function claude-code-ide--get-related-session-directories "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
-(declare-function claude-code-ide--get-session-buffer "claude-code-ide" (session-key))
-(declare-function claude-code-ide-manager--scope-for-command "claude-code-ide-manager" ())
-(declare-function claude-code-ide-manager--scope-active-session-key "claude-code-ide-manager" (scope))
-(declare-function claude-code-ide-manager--session-key-for-buffer "claude-code-ide-manager" (buffer))
+(declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 
 (defvar claude-code-ide-session-setup-hook)
 
@@ -153,36 +151,42 @@ fresh output from the session backend."
                (frame-focus-state (window-frame window)))
              (get-buffer-window-list target-buffer nil t))))
 
-(defun claude-code-ide-session-idle--selected-prompt-session-key ()
-  "Return the session key associated with the selected prompt-edit buffer."
-  (when (and (window-live-p (selected-window))
-             (fboundp 'claude-code-ide-manager--scope-for-command)
-             (fboundp 'claude-code-ide-manager--scope-active-session-key))
+(defun claude-code-ide-session-idle--selected-prompt-buffer ()
+  "Return the selected prompt-edit buffer, if any."
+  (when (window-live-p (selected-window))
     (let ((buffer (window-buffer (selected-window))))
       (when (and (buffer-live-p buffer)
                  (with-current-buffer buffer
                    (bound-and-true-p leo/ai-tmp-prompt-file-mode)))
-        (claude-code-ide-manager--scope-active-session-key
-         (claude-code-ide-manager--scope-for-command))))))
+        buffer))))
+
+(defun claude-code-ide-session-idle--selected-prompt-session-buffer ()
+  "Return the live session buffer owned by the selected prompt-edit buffer."
+  (when-let ((prompt-buffer
+              (claude-code-ide-session-idle--selected-prompt-buffer)))
+    (with-current-buffer prompt-buffer
+      (when (and (fboundp 'claude-code-ide--get-related-session-directories)
+                 (fboundp 'claude-code-ide--get-session-buffer))
+        (cl-some (lambda (directory)
+                   (let ((buffer
+                          (claude-code-ide--get-session-buffer directory)))
+                     (and (buffer-live-p buffer)
+                          buffer)))
+                 (claude-code-ide--get-related-session-directories
+                  default-directory))))))
 
 (defun claude-code-ide-session-idle--prompt-edit-suppressed-p (&optional buffer)
   "Return non-nil when BUFFER belongs to the session currently editing a prompt."
-  (let* ((target-buffer (or buffer (current-buffer)))
-         (session-key (and (fboundp 'claude-code-ide-manager--session-key-for-buffer)
-                           (claude-code-ide-manager--session-key-for-buffer
-                            target-buffer)))
-         (prompt-session-key
-          (claude-code-ide-session-idle--selected-prompt-session-key)))
-    (and session-key
-         prompt-session-key
-         (equal session-key prompt-session-key))))
+  (let ((target-buffer (or buffer (current-buffer)))
+        (prompt-session-buffer
+         (claude-code-ide-session-idle--selected-prompt-session-buffer)))
+    (and (buffer-live-p target-buffer)
+         (eq target-buffer prompt-session-buffer))))
 
 (defun claude-code-ide-session-idle--clear-selected-prompt-session-idle-state ()
   "Clear idle state for the session that owns the selected prompt-edit buffer."
-  (when-let* ((session-key
-               (claude-code-ide-session-idle--selected-prompt-session-key))
-              ((fboundp 'claude-code-ide--get-session-buffer))
-              (buffer (claude-code-ide--get-session-buffer session-key)))
+  (when-let ((buffer
+              (claude-code-ide-session-idle--selected-prompt-session-buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (and claude-code-ide-session-idle-enabled
