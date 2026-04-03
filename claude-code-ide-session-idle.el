@@ -22,9 +22,14 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'claude-code-ide-debug)
 
 (declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
+(declare-function claude-code-ide--get-session-buffer "claude-code-ide" (session-key))
+(declare-function claude-code-ide-manager--scope-for-command "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager--scope-active-session-key "claude-code-ide-manager" (scope))
+(declare-function claude-code-ide-manager--session-key-for-buffer "claude-code-ide-manager" (buffer))
 
 (defvar claude-code-ide-session-setup-hook)
 
@@ -90,9 +95,11 @@ prevents idle timer scheduling and idle hook execution."
 
 (defun claude-code-ide-session-idle--suppressed-p (&optional buffer)
   "Return non-nil when idle monitoring should be suppressed."
-  (and (functionp claude-code-ide-session-idle-suppressed-predicate)
-       (funcall claude-code-ide-session-idle-suppressed-predicate
-                (or buffer (current-buffer)))))
+  (or (claude-code-ide-session-idle--prompt-edit-suppressed-p
+       (or buffer (current-buffer)))
+      (and (functionp claude-code-ide-session-idle-suppressed-predicate)
+           (funcall claude-code-ide-session-idle-suppressed-predicate
+                    (or buffer (current-buffer))))))
 
 (defun claude-code-ide-session-idle--clear-timer ()
   "Cancel the current session idle timer, if any."
@@ -146,6 +153,42 @@ fresh output from the session backend."
                (frame-focus-state (window-frame window)))
              (get-buffer-window-list target-buffer nil t))))
 
+(defun claude-code-ide-session-idle--selected-prompt-session-key ()
+  "Return the session key associated with the selected prompt-edit buffer."
+  (when (and (window-live-p (selected-window))
+             (fboundp 'claude-code-ide-manager--scope-for-command)
+             (fboundp 'claude-code-ide-manager--scope-active-session-key))
+    (let ((buffer (window-buffer (selected-window))))
+      (when (and (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (bound-and-true-p leo/ai-tmp-prompt-file-mode)))
+        (claude-code-ide-manager--scope-active-session-key
+         (claude-code-ide-manager--scope-for-command))))))
+
+(defun claude-code-ide-session-idle--prompt-edit-suppressed-p (&optional buffer)
+  "Return non-nil when BUFFER belongs to the session currently editing a prompt."
+  (let* ((target-buffer (or buffer (current-buffer)))
+         (session-key (and (fboundp 'claude-code-ide-manager--session-key-for-buffer)
+                           (claude-code-ide-manager--session-key-for-buffer
+                            target-buffer)))
+         (prompt-session-key
+          (claude-code-ide-session-idle--selected-prompt-session-key)))
+    (and session-key
+         prompt-session-key
+         (equal session-key prompt-session-key))))
+
+(defun claude-code-ide-session-idle--clear-selected-prompt-session-idle-state ()
+  "Clear idle state for the session that owns the selected prompt-edit buffer."
+  (when-let* ((session-key
+               (claude-code-ide-session-idle--selected-prompt-session-key))
+              ((fboundp 'claude-code-ide--get-session-buffer))
+              (buffer (claude-code-ide--get-session-buffer session-key)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (and claude-code-ide-session-idle-enabled
+                   (claude-code-ide-session-buffer-p buffer))
+          (claude-code-ide-session-idle-clear-state))))))
+
 (defun claude-code-ide-session-idle--refresh-visible-session-idle-state ()
   "Clear idle state for session buffers visible in a focused frame."
   (unless claude-code-ide-session-idle--in-visibility-refresh
@@ -166,7 +209,8 @@ fresh output from the session backend."
 
 (defun claude-code-ide-session-idle--handle-visibility-change ()
   "Refresh idle state after focus or window visibility changes."
-  (claude-code-ide-session-idle--refresh-visible-session-idle-state))
+  (claude-code-ide-session-idle--refresh-visible-session-idle-state)
+  (claude-code-ide-session-idle--clear-selected-prompt-session-idle-state))
 
 (defun claude-code-ide-session-idle--notify (buffer)
   "Emit an idle notification for BUFFER when policy includes alerts."
