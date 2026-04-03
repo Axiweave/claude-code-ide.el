@@ -631,6 +631,37 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (car claude-code-ide-manager--items))
                3))))
 
+(ert-deftest claude-code-ide-test-manager-scope-selection-state-persists-when-enabled ()
+  "Test manager saves and reloads scope-local selected and active sessions."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t)
+        (repo-scope '(:type repo :git-root "/tmp/repo/")))
+    (claude-code-ide-manager--set-scope-items
+     repo-scope
+     (list (make-claude-code-ide-manager-item
+            :session-key "/tmp/repo/worktree-a"
+            :display-name "main"
+            :secondary-text "worktree-a"
+            :order-key 1
+            :live-p t)
+           (make-claude-code-ide-manager-item
+            :session-key "/tmp/repo/worktree-b"
+            :display-name "test"
+            :secondary-text "worktree-b"
+            :order-key 2
+            :live-p t)))
+    (claude-code-ide-manager--set-scope-selected-session-key
+     repo-scope "/tmp/repo/worktree-a")
+    (claude-code-ide-manager--set-scope-active-session-key
+     repo-scope "/tmp/repo/worktree-b")
+    (claude-code-ide-manager--save-state)
+    (claude-code-ide-manager--reset-state)
+    (claude-code-ide-manager--load-state)
+    (should (equal (claude-code-ide-manager--scope-selected-session-key repo-scope)
+                   "/tmp/repo/worktree-a"))
+    (should (equal (claude-code-ide-manager--scope-active-session-key repo-scope)
+                   "/tmp/repo/worktree-b"))))
+
 (ert-deftest claude-code-ide-test-manager-reloads-persisted-state-on-initialize ()
   "Test manager initialization restores persisted items and layouts."
   (claude-code-ide-tests--reset-manager-state)
@@ -1410,6 +1441,72 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p content-buffer)
         (kill-buffer content-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-switch-persists-new-active-session-before-sidebar-restore ()
+  "Test switch saves the new active session before sidebar restore reloads state."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t)
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-persist-highlight-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-persist-highlight-b" :buffer nil))
+        (content-buffer (get-buffer-create "*cc-manager-persist-highlight-content*")))
+    (unwind-protect
+        (save-window-excursion
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)
+                      (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-b"
+                       :display-name "project-b"
+                       :secondary-text "/tmp/project-b"
+                       :pinned nil
+                       :order-key 2
+                       :live-p t)))
+          (setq claude-code-ide-manager--current-session-key "/tmp/project-a")
+          (claude-code-ide-manager--set-scope-active-session-key
+           '(:type global) "/tmp/project-a")
+          (claude-code-ide-manager--save-state)
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (set-window-buffer (split-window-right)
+                             (claude-code-ide-manager--get-buffer))
+          (with-current-buffer (claude-code-ide-manager--get-buffer)
+            (claude-code-ide-manager--render))
+          (cl-letf (((symbol-function 'claude-code-ide-manager--capture-layout)
+                     (lambda (_session-key) nil))
+                    ((symbol-function 'claude-code-ide-manager--session-managed-p)
+                     (lambda (_session-key) t))
+                    ((symbol-function 'claude-code-ide-manager--restore-layout)
+                     (lambda (session-key)
+                       (setq claude-code-ide-manager--current-session-key session-key)
+                       (selected-window)))
+                    ((symbol-function 'claude-code-ide-manager--restore-visible-sidebars)
+                     (lambda (_scopes)
+                       (claude-code-ide-manager--load-state))))
+            (claude-code-ide-manager-switch-to-session "/tmp/project-b"))
+          (should (equal (claude-code-ide-manager--scope-active-session-key '(:type global))
+                         "/tmp/project-b"))
+          (with-current-buffer (claude-code-ide-manager--get-buffer)
+            (goto-char (point-min))
+            (should-not (eq (get-text-property (point) 'face)
+                            'claude-code-ide-manager-current-session-face))
+            (forward-line 1)
+            (should (eq (get-text-property (point) 'face)
+                        'claude-code-ide-manager-current-session-face))
+            (should (equal (get-text-property
+                            (point) 'claude-code-ide-manager-session-key)
+                           "/tmp/project-b"))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when (buffer-live-p content-buffer)
+        (kill-buffer content-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-render-moves-point-to-current-session ()
   "Test manager render places point on the active session row."
   (claude-code-ide-tests--reset-manager-state)
@@ -1433,6 +1530,142 @@ have completed before cleanup.  Waits up to 5 seconds."
     (claude-code-ide-manager--render)
     (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
                    "/tmp/project-b"))))
+
+(ert-deftest claude-code-ide-test-manager-render-keeps-scope-local-point-selection ()
+  "Test repo manager activity does not move the global manager selection."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/repo/"))
+         (global-items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "/tmp/global-a"
+                 :display-name "global-a"
+                 :secondary-text "global-a"
+                 :order-key 1
+                 :live-p t)
+                (make-claude-code-ide-manager-item
+                 :session-key "/tmp/repo/worktree-b"
+                 :display-name "worktree-b"
+                 :secondary-text "worktree-b"
+                 :order-key 2
+                 :live-p t)))
+         (repo-items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "/tmp/repo/worktree-b"
+                 :display-name "worktree-b"
+                 :secondary-text "worktree-b"
+                 :order-key 1
+                 :live-p t)))
+         (global-buffer (claude-code-ide-manager--get-buffer global-scope))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope)))
+    (claude-code-ide-manager--set-scope-items global-scope global-items)
+    (claude-code-ide-manager--set-scope-items repo-scope repo-items)
+    (with-current-buffer global-buffer
+      (claude-code-ide-manager--render global-scope)
+      (goto-char (point-min)))
+    (with-current-buffer repo-buffer
+      (claude-code-ide-manager--render repo-scope)
+      (goto-char (point-min)))
+    (setq claude-code-ide-manager--current-session-key "/tmp/repo/worktree-b")
+    (with-current-buffer global-buffer
+      (claude-code-ide-manager--render global-scope)
+      (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                     "/tmp/global-a")))))
+
+(ert-deftest claude-code-ide-test-manager-render-keeps-scope-local-highlight ()
+  "Test repo manager highlight does not depend on the global current session."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/repo/"))
+         (global-buffer (claude-code-ide-manager--get-buffer global-scope))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope)))
+    (claude-code-ide-manager--set-scope-items
+     global-scope
+     (list (make-claude-code-ide-manager-item
+            :session-key "/tmp/global-a"
+            :display-name "global-a"
+            :secondary-text "global-a"
+            :order-key 1
+            :live-p t)))
+    (claude-code-ide-manager--set-scope-items
+     repo-scope
+     (list (make-claude-code-ide-manager-item
+            :session-key "/tmp/repo/worktree-a"
+            :display-name "main"
+            :secondary-text "worktree-a"
+            :order-key 1
+            :live-p t)
+           (make-claude-code-ide-manager-item
+            :session-key "/tmp/repo/worktree-b"
+            :display-name "test"
+            :secondary-text "worktree-b"
+            :order-key 2
+            :live-p t)))
+    (setq claude-code-ide-manager--current-session-key "/tmp/global-a")
+    (claude-code-ide-manager--set-scope-selected-session-key
+     repo-scope "/tmp/repo/worktree-a")
+    (claude-code-ide-manager--set-scope-state-entry
+     repo-scope
+     (plist-put (copy-sequence (claude-code-ide-manager--scope-state-entry repo-scope))
+                :active-session-key "/tmp/repo/worktree-b"))
+    (with-current-buffer global-buffer
+      (claude-code-ide-manager--render global-scope))
+    (with-current-buffer repo-buffer
+      (claude-code-ide-manager--render repo-scope)
+      (goto-char (point-min))
+      (should-not (eq (get-text-property (point) 'face)
+                      'claude-code-ide-manager-current-session-face))
+      (forward-line 1)
+      (should (eq (get-text-property (point) 'face)
+                  'claude-code-ide-manager-current-session-face))
+      (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                     "/tmp/repo/worktree-b")))))
+
+(ert-deftest claude-code-ide-test-manager-render-preserves-visible-window-point ()
+  "Test render preserves the visible sidebar row even when buffer point differs."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-render-window-point-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-render-window-point-b" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/a" process-a claude-code-ide--processes)
+          (puthash "/tmp/b" process-b claude-code-ide--processes)
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/a"
+                       :display-name "a"
+                       :secondary-text "/tmp/a"
+                       :order-key 1
+                       :live-p t)
+                      (make-claude-code-ide-manager-item
+                       :session-key "/tmp/b"
+                       :display-name "b"
+                       :secondary-text "/tmp/b"
+                       :order-key 2
+                       :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*cc-render-window-point*"))
+          (let ((sidebar-window (claude-code-ide-manager-toggle-sidebar 1)))
+            (with-current-buffer (window-buffer sidebar-window)
+              (claude-code-ide-manager--render '(:type global))
+              (goto-char (point-min))
+              (forward-line 1)
+              (set-window-point sidebar-window (point)))
+            (select-window (next-window sidebar-window))
+            (with-current-buffer (window-buffer sidebar-window)
+              (goto-char (point-min)))
+            (claude-code-ide-manager--refresh-sidebar-state '(:type global))
+            (with-current-buffer (window-buffer sidebar-window)
+              (goto-char (window-point sidebar-window))
+              (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                             "/tmp/b")))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (when-let ((buffer (get-buffer "*cc-render-window-point*")))
+        (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-default-window-width ()
   "Test manager sidebar width default is narrow enough for basename rows."
@@ -2077,6 +2310,10 @@ have completed before cleanup.  Waits up to 5 seconds."
             (set-window-parameter sidebar-window 'no-other-window nil)
             (set-window-parameter sidebar-window 'window-size-fixed nil)
             (claude-code-ide-manager--refresh-on-window-configuration-change)
+            (setq sidebar-window
+                  (claude-code-ide-manager--sidebar-window '(:type global)))
+            (should (window-live-p sidebar-window))
+            (should (window-at-side-p sidebar-window 'left))
             (should (eq (window-parameter sidebar-window
                                           'claude-code-ide-manager-sidebar)
                         t))
@@ -2090,6 +2327,285 @@ have completed before cleanup.  Waits up to 5 seconds."
         (delete-window window))
       (when-let ((buffer (get-buffer "*content*")))
         (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-manager-window-config-hook-recreates-sidebar-from-restored-ordinary-window ()
+  "Test window-config changes rebuild a real sidebar from an ordinary restored window."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-window-config-restored-a" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let* ((scope '(:type global))
+                 (manager-buffer (claude-code-ide-manager--get-buffer scope))
+                 (restored-window (split-window-right)))
+            (set-window-buffer restored-window manager-buffer)
+            (with-current-buffer manager-buffer
+              (setq-local claude-code-ide-manager--scope scope))
+            (claude-code-ide-manager--refresh-on-window-configuration-change)
+            (let ((sidebar-window (claude-code-ide-manager--sidebar-window scope)))
+              (should (window-live-p sidebar-window))
+              (should (window-at-side-p sidebar-window 'left))
+              (should (eq (window-parameter sidebar-window 'window-side) 'left))
+              (should (eq (window-parameter sidebar-window 'window-slot) -1))
+              (should-not (eq sidebar-window restored-window))
+              (should (= 1
+                         (length (cl-remove-if-not
+                                  (lambda (window)
+                                    (eq (window-buffer window) manager-buffer))
+                                  (window-list nil 'no-minibuf))))))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-window-config-hook-restores-focus-to-recreated-sidebar ()
+  "Test window-config changes keep focus on the recreated sidebar."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-window-config-focus-a" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*content*"))
+          (let* ((scope '(:type global))
+                 (manager-buffer (claude-code-ide-manager--get-buffer scope))
+                 (restored-window (split-window-right)))
+            (set-window-buffer restored-window manager-buffer)
+            (with-current-buffer manager-buffer
+              (setq-local claude-code-ide-manager--scope scope))
+            (select-window restored-window)
+            (claude-code-ide-manager--refresh-on-window-configuration-change)
+            (let ((sidebar-window (claude-code-ide-manager--sidebar-window scope)))
+              (should (window-live-p sidebar-window))
+              (should-not (eq sidebar-window restored-window))
+              (should (eq (selected-window) sidebar-window)))))
+      (ignore-errors (delete-process process-a))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (when-let ((buffer (get-buffer "*content*")))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-window-config-hook-preserves-global-selection-after-repo-switch ()
+  "Test global sidebar restore keeps its selected row after repo-local manager use."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/crs-root/"))
+         (global-buffer (claude-code-ide-manager--get-buffer global-scope))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
+         (content-buffer (get-buffer-create "*cc-persp-content*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-items)
+                   (lambda (&optional _scope) nil)))
+          (claude-code-ide-manager--set-scope-items
+           global-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/.spacemacs.d-30"
+                  :display-name ".spacemacs.d-30"
+                  :secondary-text ".spacemacs.d-30"
+                  :order-key 1
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/claude-code-ide.el"
+                  :display-name "claude-code-ide.el"
+                  :secondary-text "claude-code-ide.el"
+                  :order-key 2
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/CRSBench"
+                  :display-name "CRSBench"
+                  :secondary-text "CRSBench"
+                  :order-key 3
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/worktree-test"
+                  :display-name "worktree-test"
+                  :secondary-text "worktree-test"
+                  :order-key 4
+                  :live-p t)))
+          (claude-code-ide-manager--set-scope-items
+           repo-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/CRSBench"
+                  :display-name "main"
+                  :secondary-text "CRSBench"
+                  :order-key 1
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/worktree-test"
+                  :display-name "test"
+                  :secondary-text "worktree-test"
+                  :order-key 2
+                  :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (let ((restored-window (split-window-right)))
+            (set-window-buffer restored-window global-buffer)
+            (with-current-buffer global-buffer
+              (claude-code-ide-manager--render global-scope)
+              (goto-char (point-min))
+              (forward-line 1)
+              (set-window-point restored-window (point)))
+            (with-current-buffer repo-buffer
+              (claude-code-ide-manager--render repo-scope))
+            (setq claude-code-ide-manager--current-session-key "/tmp/CRSBench")
+            (select-window restored-window)
+            (claude-code-ide-manager--refresh-on-window-configuration-change)
+            (let ((sidebar-window (claude-code-ide-manager--sidebar-window global-scope)))
+              (should (window-live-p sidebar-window))
+              (should (eq (selected-window) sidebar-window))
+              (with-current-buffer global-buffer
+                (goto-char (window-point sidebar-window))
+                (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                               "/tmp/claude-code-ide.el"))))))
+      (when-let ((window (get-buffer-window global-buffer)))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list global-buffer repo-buffer content-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-window-config-hook-syncs-current-session-from-restored-layout ()
+  "Test restored content layout updates the active global manager session."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (global-buffer (claude-code-ide-manager--get-buffer global-scope))
+         (session-a (get-buffer-create "*cc-persp-session-a*"))
+         (session-b (get-buffer-create "*cc-persp-session-b*"))
+         (claude-code-ide--processes (make-hash-table :test 'equal))
+         (process-a (make-pipe-process :name "cc-manager-window-config-session-a"
+                                       :buffer session-a))
+         (process-b (make-pipe-process :name "cc-manager-window-config-session-b"
+                                       :buffer session-b)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/claude-code-ide.el" process-a claude-code-ide--processes)
+          (puthash "/tmp/CRSBench" process-b claude-code-ide--processes)
+          (claude-code-ide-manager--set-scope-items
+           global-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/claude-code-ide.el"
+                  :display-name "claude-code-ide.el"
+                  :secondary-text "claude-code-ide.el"
+                  :order-key 1
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/CRSBench"
+                  :display-name "CRSBench"
+                  :secondary-text "CRSBench"
+                  :order-key 2
+                  :live-p t)))
+          (setq claude-code-ide-manager--current-session-key "/tmp/CRSBench")
+          (claude-code-ide-manager--set-scope-active-session-key
+           global-scope "/tmp/CRSBench")
+          (delete-other-windows)
+          (switch-to-buffer session-a)
+          (let ((restored-window (split-window-right)))
+            (set-window-buffer restored-window global-buffer)
+            (with-current-buffer global-buffer
+              (claude-code-ide-manager--render global-scope)
+              (goto-char (point-min))
+              (set-window-point restored-window (point)))
+            (select-window restored-window)
+            (claude-code-ide-manager--refresh-on-window-configuration-change)
+            (should (equal claude-code-ide-manager--current-session-key
+                           "/tmp/claude-code-ide.el"))
+            (should (equal (claude-code-ide-manager--scope-active-session-key global-scope)
+                           "/tmp/claude-code-ide.el"))
+            (let ((sidebar-window (claude-code-ide-manager--sidebar-window global-scope)))
+              (should (window-live-p sidebar-window))
+              (with-current-buffer global-buffer
+                (goto-char (window-point sidebar-window))
+                (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                               "/tmp/claude-code-ide.el"))
+                (should (eq (get-text-property (point) 'face)
+                            'claude-code-ide-manager-current-session-face))))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when-let ((window (get-buffer-window global-buffer)))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list global-buffer session-a session-b)))))
+
+(ert-deftest claude-code-ide-test-manager-focus-global-preserves-last-selection-after-hidden-repo-switch ()
+  "Test force-opening the global manager keeps its last selected row."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/crs-root/"))
+         (global-buffer (claude-code-ide-manager--get-buffer global-scope))
+         (content-buffer (get-buffer-create "*cc-hidden-global-content*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-items)
+                   (lambda (&optional _scope) nil)))
+          (claude-code-ide-manager--set-scope-items
+           global-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/.spacemacs.d-30"
+                  :display-name ".spacemacs.d-30"
+                  :secondary-text ".spacemacs.d-30"
+                  :order-key 1
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/claude-code-ide.el"
+                  :display-name "claude-code-ide.el"
+                  :secondary-text "claude-code-ide.el"
+                  :order-key 2
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/CRSBench"
+                  :display-name "CRSBench"
+                  :secondary-text "CRSBench"
+                  :order-key 3
+                  :live-p t)))
+          (claude-code-ide-manager--set-scope-items
+           repo-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/CRSBench"
+                  :display-name "main"
+                  :secondary-text "CRSBench"
+                  :order-key 1
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/worktree-test"
+                  :display-name "test"
+                  :secondary-text "worktree-test"
+                  :order-key 2
+                  :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (let ((global-window (display-buffer-in-side-window
+                                global-buffer
+                                '((side . left) (slot . -1)))))
+            (set-window-parameter global-window 'claude-code-ide-manager-sidebar t)
+            (with-current-buffer global-buffer
+              (claude-code-ide-manager--render global-scope))
+            (claude-code-ide-manager--sync-point-to-session-key
+             global-scope "/tmp/claude-code-ide.el")
+            (delete-window global-window))
+          (with-current-buffer global-buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (setq claude-code-ide-manager--current-session-key "/tmp/CRSBench")
+          (let ((claude-code-ide-manager-default-target 'global))
+            (claude-code-ide-manager-focus))
+          (let ((global-window (claude-code-ide-manager--sidebar-window global-scope)))
+            (should (window-live-p global-window))
+            (with-current-buffer global-buffer
+              (goto-char (window-point global-window))
+              (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                             "/tmp/claude-code-ide.el")))))
+      (when-let ((window (get-buffer-window global-buffer)))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list global-buffer content-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-switch-keep-focus-prefers-owned-sidebar-window ()
   (claude-code-ide-tests--reset-manager-state)
@@ -2871,6 +3387,71 @@ have completed before cleanup.  Waits up to 5 seconds."
                   (get-buffer "*cc-nav-status*")
                   (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
+(ert-deftest claude-code-ide-test-manager-sidebar-navigation-resets-point-to-row-start ()
+  "Test sidebar n/p leave point at column zero of the selected row."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-a (get-buffer-create "*cc-nav-col-a*"))
+        (session-b (get-buffer-create "*cc-nav-col-b*"))
+        (content-buffer (get-buffer-create "*cc-nav-col-content*"))
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-nav-col-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-nav-col-b" :buffer nil)))
+    (unwind-protect
+        (let ((manager-window nil))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (directory)
+                       (cond
+                        ((equal directory "/tmp/a") session-a)
+                        ((equal directory "/tmp/b") session-b))))
+                    ((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                     (lambda (_directory)
+                       (get-buffer-create "*cc-nav-col-status*"))))
+            (setq claude-code-ide-manager--items
+                  (list (make-claude-code-ide-manager-item
+                         :session-key "/tmp/a"
+                         :display-name "a"
+                         :secondary-text "/tmp/a"
+                         :pinned nil
+                         :order-key 1
+                         :live-p t)
+                        (make-claude-code-ide-manager-item
+                         :session-key "/tmp/b"
+                         :display-name "b"
+                         :secondary-text "/tmp/b"
+                         :pinned nil
+                         :order-key 2
+                         :live-p t)))
+            (puthash "/tmp/a" process-a claude-code-ide--processes)
+            (puthash "/tmp/b" process-b claude-code-ide--processes)
+            (delete-other-windows)
+            (switch-to-buffer content-buffer)
+            (claude-code-ide-manager-toggle-sidebar 1)
+            (setq manager-window (selected-window))
+            (with-current-buffer (window-buffer manager-window)
+              (goto-char (point-min))
+              (forward-char 3)
+              (call-interactively (key-binding (kbd "n")))
+              (should (eq (selected-window) manager-window))
+              (should (= (current-column) 0))
+              (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                             "/tmp/b"))
+              (forward-char 3)
+              (call-interactively (key-binding (kbd "p")))
+              (should (eq (selected-window) manager-window))
+              (should (= (current-column) 0))
+              (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                             "/tmp/a")))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-a session-b content-buffer
+                  (get-buffer "*cc-nav-col-status*")
+                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
+
 (ert-deftest claude-code-ide-test-manager-move-up-swaps-order-within-bucket ()
   "Test move-up swaps row order within the same pin bucket."
   (claude-code-ide-tests--reset-manager-state)
@@ -3006,11 +3587,12 @@ have completed before cleanup.  Waits up to 5 seconds."
                   :live-p t)))
           (delete-other-windows)
           (switch-to-buffer content-buffer)
-          (let ((repo-window (split-window-right)))
-            (set-window-buffer repo-window repo-buffer)
-            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
           (with-current-buffer repo-buffer
             (setq-local claude-code-ide-manager--scope repo-scope))
+          (let ((repo-window (display-buffer-in-side-window
+                              repo-buffer
+                              '((side . left) (slot . -1)))))
+            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
           (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
                      (lambda (session-key &optional _keep-manager-focus _scope)
                        (setq switched session-key)))
@@ -3054,17 +3636,18 @@ have completed before cleanup.  Waits up to 5 seconds."
           (switch-to-buffer content-buffer)
           (with-current-buffer content-buffer
             (setq default-directory "/tmp/repo/worktree-b/"))
-          (let ((global-window (split-window-right))
-                repo-window)
-            (set-window-buffer global-window global-buffer)
-            (set-window-parameter global-window 'claude-code-ide-manager-sidebar t)
-            (setq repo-window (split-window global-window nil 'below))
-            (set-window-buffer repo-window repo-buffer)
-            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
           (with-current-buffer global-buffer
             (setq-local claude-code-ide-manager--scope global-scope))
           (with-current-buffer repo-buffer
             (setq-local claude-code-ide-manager--scope repo-scope))
+          (let ((global-window (display-buffer-in-side-window
+                                global-buffer
+                                '((side . left) (slot . -1))))
+                (repo-window (display-buffer-in-side-window
+                              repo-buffer
+                              '((side . left) (slot . 0)))))
+            (set-window-parameter global-window 'claude-code-ide-manager-sidebar t)
+            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
           (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
                      (lambda (session-key &optional _keep-manager-focus _scope)
                        (setq switched session-key)))
@@ -3080,6 +3663,114 @@ have completed before cleanup.  Waits up to 5 seconds."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list content-buffer global-buffer repo-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-switch-by-slot-passes-resolved-scope-to-switch ()
+  "Test slot switching passes the resolved sidebar scope into session switching."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((repo-scope '(:type repo :git-root "/tmp/repo/"))
+         (content-buffer (get-buffer-create "*cc-slot-scope-content*"))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
+         call)
+    (unwind-protect
+        (save-window-excursion
+          (claude-code-ide-manager--set-scope-items
+           repo-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/repo/worktree-b"
+                  :display-name "worktree-b"
+                  :secondary-text "worktree-b"
+                  :order-key 1
+                  :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (with-current-buffer repo-buffer
+            (setq-local claude-code-ide-manager--scope repo-scope))
+          (let ((repo-window (display-buffer-in-side-window
+                              repo-buffer
+                              '((side . left) (slot . -1)))))
+            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
+          (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+                     (lambda (session-key &optional keep-manager-focus scope)
+                       (setq call (list session-key keep-manager-focus scope)))))
+            (claude-code-ide-manager-switch-by-slot 1)
+            (should (equal call
+                           '("/tmp/repo/worktree-b"
+                             nil
+                             (:type repo :git-root "/tmp/repo/"))))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list content-buffer repo-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-switch-by-slot-refreshes-visible-sidebar-highlight ()
+  "Test slot switching from a content buffer updates the visible sidebar highlight."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((repo-scope '(:type repo :git-root "/tmp/repo/"))
+         (content-buffer (get-buffer-create "*cc-slot-highlight-content*"))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
+         (session-a (get-buffer-create "*cc-slot-highlight-a*"))
+         (session-b (get-buffer-create "*cc-slot-highlight-b*"))
+         (claude-code-ide--processes (make-hash-table :test 'equal))
+         (process-a (make-pipe-process :name "cc-manager-slot-highlight-a"
+                                       :buffer session-a))
+         (process-b (make-pipe-process :name "cc-manager-slot-highlight-b"
+                                       :buffer session-b)))
+    (unwind-protect
+        (save-window-excursion
+          (puthash "/tmp/repo/worktree-a" process-a claude-code-ide--processes)
+          (puthash "/tmp/repo/worktree-b" process-b claude-code-ide--processes)
+          (claude-code-ide-manager--set-scope-items
+           repo-scope
+           (list (make-claude-code-ide-manager-item
+                  :session-key "/tmp/repo/worktree-a"
+                  :display-name "main"
+                  :secondary-text "worktree-a"
+                  :order-key 1
+                  :live-p t)
+                 (make-claude-code-ide-manager-item
+                  :session-key "/tmp/repo/worktree-b"
+                  :display-name "test"
+                  :secondary-text "worktree-b"
+                  :order-key 2
+                  :live-p t)))
+          (setq claude-code-ide-manager--current-session-key "/tmp/repo/worktree-a")
+          (claude-code-ide-manager--set-scope-active-session-key
+           repo-scope "/tmp/repo/worktree-a")
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (with-current-buffer repo-buffer
+            (setq-local claude-code-ide-manager--scope repo-scope)
+            (claude-code-ide-manager--render repo-scope))
+          (let ((repo-window (display-buffer-in-side-window
+                              repo-buffer
+                              '((side . left) (slot . -1)))))
+            (set-window-parameter repo-window 'claude-code-ide-manager-sidebar t))
+          (cl-letf (((symbol-function 'claude-code-ide-manager--capture-layout)
+                     (lambda (_session-key) nil))
+                    ((symbol-function 'claude-code-ide-manager--save-state)
+                     (lambda () nil))
+                    ((symbol-function 'claude-code-ide-manager--session-managed-p)
+                     (lambda (_session-key) t))
+                    ((symbol-function 'claude-code-ide-manager--restore-layout)
+                     (lambda (session-key)
+                       (setq claude-code-ide-manager--current-session-key session-key)
+                       (selected-window))))
+            (claude-code-ide-manager-switch-by-slot 2))
+          (with-current-buffer repo-buffer
+            (goto-char (point-min))
+            (should-not (eq (get-text-property (point) 'face)
+                            'claude-code-ide-manager-current-session-face))
+            (forward-line 1)
+            (should (eq (get-text-property (point) 'face)
+                        'claude-code-ide-manager-current-session-face))
+            (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                           "/tmp/repo/worktree-b"))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list content-buffer repo-buffer session-a session-b)))))
 
 (ert-deftest claude-code-ide-test-manager-space-switch-keeps-focus-on-manager ()
   "Test sidebar SPC switches sessions without leaving the manager window."
