@@ -151,42 +151,59 @@ fresh output from the session backend."
                (frame-focus-state (window-frame window)))
              (get-buffer-window-list target-buffer nil t))))
 
-(defun claude-code-ide-session-idle--selected-prompt-buffer ()
-  "Return the selected prompt-edit buffer, if any."
-  (when (window-live-p (selected-window))
-    (let ((buffer (window-buffer (selected-window))))
-      (when (and (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (bound-and-true-p leo/ai-tmp-prompt-file-mode)))
-        buffer))))
+(defun claude-code-ide-session-idle--visible-prompt-buffers ()
+  "Return visible prompt-edit buffers shown in focused frames."
+  (let (buffers)
+    (walk-windows
+     (lambda (window)
+       (let ((buffer (window-buffer window)))
+         (when (and (buffer-live-p buffer)
+                    (frame-focus-state (window-frame window))
+                    (with-current-buffer buffer
+                      (bound-and-true-p leo/ai-tmp-prompt-file-mode))
+                    (not (memq buffer buffers)))
+           (push buffer buffers))))
+     'no-minibuf
+     'visible)
+    (nreverse buffers)))
 
-(defun claude-code-ide-session-idle--selected-prompt-session-buffer ()
-  "Return the live session buffer owned by the selected prompt-edit buffer."
-  (when-let ((prompt-buffer
-              (claude-code-ide-session-idle--selected-prompt-buffer)))
+(defun claude-code-ide-session-idle--prompt-buffer-session-buffer (prompt-buffer)
+  "Return the live session buffer owned by PROMPT-BUFFER."
+  (when (and (buffer-live-p prompt-buffer)
+             (fboundp 'claude-code-ide--get-related-session-directories)
+             (fboundp 'claude-code-ide--get-session-buffer))
     (with-current-buffer prompt-buffer
-      (when (and (fboundp 'claude-code-ide--get-related-session-directories)
-                 (fboundp 'claude-code-ide--get-session-buffer))
-        (cl-some (lambda (directory)
-                   (let ((buffer
-                          (claude-code-ide--get-session-buffer directory)))
-                     (and (buffer-live-p buffer)
-                          buffer)))
-                 (claude-code-ide--get-related-session-directories
-                  default-directory))))))
+      (cl-some (lambda (directory)
+                 (let ((buffer
+                        (claude-code-ide--get-session-buffer directory)))
+                   (and (buffer-live-p buffer)
+                        buffer)))
+               (claude-code-ide--get-related-session-directories
+                default-directory)))))
+
+(defun claude-code-ide-session-idle--visible-prompt-session-buffers ()
+  "Return live session buffers owned by visible prompt-edit buffers."
+  (let (buffers)
+    (dolist (prompt-buffer
+             (claude-code-ide-session-idle--visible-prompt-buffers))
+      (when-let ((buffer
+                  (claude-code-ide-session-idle--prompt-buffer-session-buffer
+                   prompt-buffer)))
+        (cl-pushnew buffer buffers)))
+    (nreverse buffers)))
 
 (defun claude-code-ide-session-idle--prompt-edit-suppressed-p (&optional buffer)
   "Return non-nil when BUFFER belongs to the session currently editing a prompt."
   (let ((target-buffer (or buffer (current-buffer)))
-        (prompt-session-buffer
-         (claude-code-ide-session-idle--selected-prompt-session-buffer)))
+        (prompt-session-buffers
+         (claude-code-ide-session-idle--visible-prompt-session-buffers)))
     (and (buffer-live-p target-buffer)
-         (eq target-buffer prompt-session-buffer))))
+         (memq target-buffer prompt-session-buffers))))
 
-(defun claude-code-ide-session-idle--clear-selected-prompt-session-idle-state ()
-  "Clear idle state for the session that owns the selected prompt-edit buffer."
-  (when-let ((buffer
-              (claude-code-ide-session-idle--selected-prompt-session-buffer)))
+(defun claude-code-ide-session-idle--clear-visible-prompt-session-idle-state ()
+  "Clear idle state for sessions that own visible prompt-edit buffers."
+  (dolist (buffer
+           (claude-code-ide-session-idle--visible-prompt-session-buffers))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (and claude-code-ide-session-idle-enabled
@@ -214,7 +231,7 @@ fresh output from the session backend."
 (defun claude-code-ide-session-idle--handle-visibility-change ()
   "Refresh idle state after focus or window visibility changes."
   (claude-code-ide-session-idle--refresh-visible-session-idle-state)
-  (claude-code-ide-session-idle--clear-selected-prompt-session-idle-state))
+  (claude-code-ide-session-idle--clear-visible-prompt-session-idle-state))
 
 (defun claude-code-ide-session-idle--notify (buffer)
   "Emit an idle notification for BUFFER when policy includes alerts."

@@ -8475,7 +8475,9 @@ have completed before cleanup.  Waits up to 5 seconds."
           (with-current-buffer prompt-buffer
             (setq-local leo/ai-tmp-prompt-file-mode t
                         default-directory session-dir))
-          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'claude-code-ide--get-related-session-directories)
                      (lambda (&optional directory)
                        (when (equal directory session-dir)
                          (list session-dir))))
@@ -8514,7 +8516,9 @@ have completed before cleanup.  Waits up to 5 seconds."
           (with-current-buffer prompt-buffer
             (setq-local leo/ai-tmp-prompt-file-mode t
                         default-directory session-dir))
-          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'claude-code-ide--get-related-session-directories)
                      (lambda (&optional directory)
                        (when (equal directory session-dir)
                          (list session-dir))))
@@ -8584,7 +8588,9 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-idle-timer 'prompt-timer))
-          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'claude-code-ide--get-related-session-directories)
                      (lambda (&optional directory)
                        (when (equal directory session-dir)
                          (list session-dir))))
@@ -8627,7 +8633,9 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-idle-timer 'old-timer))
-          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'claude-code-ide--get-related-session-directories)
                      (lambda (&optional directory)
                        (when (equal directory session-dir)
                          (list session-dir))))
@@ -8679,7 +8687,9 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-idle-timer 'other-timer))
-          (cl-letf (((symbol-function 'claude-code-ide--get-related-session-directories)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'claude-code-ide--get-related-session-directories)
                      (lambda (&optional directory)
                        (when (equal directory session-dir)
                          (list session-dir))))
@@ -8730,7 +8740,9 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-idle-timer 'session-2-timer))
-          (cl-letf (((symbol-function 'claude-code-ide-manager--scope-for-command)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'claude-code-ide-manager--scope-for-command)
                      (lambda ()
                        '(:type global)))
                     ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
@@ -8762,6 +8774,48 @@ have completed before cleanup.  Waits up to 5 seconds."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list session-1-buffer session-2-buffer prompt-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-visible-unselected-prompt-suppresses-idle ()
+  "A visible prompt buffer suppresses idle even when another window is selected."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-visible-unselected-prompt]*"))
+        (prompt-buffer (generate-new-buffer "*cc-prompt-visible-unselected.md*"))
+        (other-buffer (generate-new-buffer "*cc-visible-unselected-other*"))
+        (session-dir "/tmp/claude-code-idle-visible-unselected/")
+        (hook-runs 0))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer other-buffer)
+          (let ((prompt-window (split-window-right)))
+            (set-window-buffer prompt-window prompt-buffer)
+            (select-window (get-buffer-window other-buffer)))
+          (with-current-buffer prompt-buffer
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory session-dir))
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'claude-code-ide--get-related-session-directories)
+                     (lambda (&optional directory)
+                       (when (equal directory session-dir)
+                         (list session-dir))))
+                    ((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (&optional directory)
+                       (and (equal directory session-dir)
+                            session-buffer)))
+                    ((symbol-function 'run-hook-with-args)
+                     (lambda (&rest _args)
+                       (setq hook-runs (1+ hook-runs)))))
+            (with-current-buffer session-buffer
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p nil)
+              (claude-code-ide-session-idle--fire-timer session-buffer)
+              (should-not claude-code-ide-session-idle-p)
+              (should (= hook-runs 0))))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer prompt-buffer other-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-reset-does-not-arm-visible-session ()
   "Visible focused sessions do not schedule a timer when reset directly."
