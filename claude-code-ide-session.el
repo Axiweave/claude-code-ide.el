@@ -53,8 +53,8 @@
 (declare-function eat--filter "eat" (process input))
 
 (declare-function claude-code-ide--current-terminal-backend "claude-code-ide" ())
-(declare-function claude-code-ide-session-idle-reset-timer
-                  "claude-code-ide-session-idle" ())
+(declare-function claude-code-ide-session-idle-record-activity
+                  "claude-code-ide-session-idle" (&optional buffer))
 
 (defgroup claude-code-ide-session nil
   "Session support for Claude Code IDE."
@@ -237,9 +237,9 @@ return the string to insert."
            (current-buffer)))
 
 (defun claude-code-ide-session--record-activity ()
-  "Reset idle monitoring after a package-owned input action."
+  "Record shared idle activity after a package-owned input action."
   (when (claude-code-ide-session-buffer-p (current-buffer))
-    (claude-code-ide-session-idle-reset-timer)))
+    (claude-code-ide-session-idle-record-activity)))
 
 (defun claude-code-ide-session-insert-command (&optional command)
   "Insert COMMAND into the current Claude Code session buffer.
