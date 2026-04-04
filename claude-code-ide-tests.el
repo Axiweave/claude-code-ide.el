@@ -4831,6 +4831,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "T")) :command)
                  'claude-code-ide-manager-toggle-global-sidebar))
   (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "o")) :command)
+                 'claude-code-ide-transient-manager-open))
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "w")) :command)
                  'claude-code-ide-manager-toggle-repo-sidebar))
   (should (transient-get-suffix 'claude-code-ide-menu "n"))
   (should (transient-get-suffix 'claude-code-ide-menu "p"))
