@@ -48,9 +48,11 @@
 (declare-function claude-code-ide--get-project-root "claude-code-ide" ())
 (declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory))
 (declare-function claude-code-ide-manager-switch-to-session "claude-code-ide-manager" (session-key &optional keep-manager-focus scope))
+(declare-function claude-code-ide-manager--visible-sidebar-scope-for-frame "claude-code-ide-manager" (&optional frame))
 (declare-function claude-code-ide-manager-toggle-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-global-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-repo-sidebar "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-open "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-next-line "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-previous-line "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-by-slot "claude-code-ide-manager" (slot))
@@ -89,6 +91,7 @@
 (defvar claude-code-ide-cli-debug)
 (defvar claude-code-ide-cli-extra-flags)
 (defvar claude-code-ide-system-prompt)
+(defvar claude-code-ide-manager--command-scope)
 (defvar claude-code-ide-manager--open-target)
 (defvar claude-code-ide-manager--open-scope)
 
@@ -259,6 +262,16 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if claude-code-ide-manager--open-target
       (abbreviate-file-name claude-code-ide-manager--open-target)
     "<no target>"))
+
+(defun claude-code-ide-transient-manager-open ()
+  "Open against the currently visible manager sidebar scope.
+This transient entry does not require point to be in a manager buffer."
+  (interactive)
+  (let ((scope (claude-code-ide-manager--visible-sidebar-scope-for-frame)))
+    (unless scope
+      (user-error "No manager sidebar is visible"))
+    (let ((claude-code-ide-manager--command-scope scope))
+      (claude-code-ide-manager-open))))
 
 (defun claude-code-ide-manager--run-open-action (continue resume &optional dangerous)
   "Run a manager-open action against the selected target.
@@ -595,7 +608,8 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ["Manager"
     ("t" "Toggle default manager" claude-code-ide-manager-toggle-sidebar)
     ("T" "Toggle global manager" claude-code-ide-manager-toggle-global-sidebar)
-    ("o" "Toggle repo manager" claude-code-ide-manager-toggle-repo-sidebar)
+    ("o" "Open from visible manager" claude-code-ide-transient-manager-open)
+    ("w" "Toggle repo manager" claude-code-ide-manager-toggle-repo-sidebar)
     ("n" "Next manager session" claude-code-ide-manager-next-line)
     ("p" "Previous manager session" claude-code-ide-manager-previous-line)
     ("P" "Pin current manager session" claude-code-ide-manager-toggle-current-session-pin)
@@ -613,8 +627,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("g" "Refresh manager" claude-code-ide-manager-refresh)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
-    ("w" "Toggle window visibility" claude-code-ide-toggle-window)
-    ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
+    ;; ("w" "Toggle window visibility" claude-code-ide-toggle-window)
+    ;; ("W" "Toggle recent window" claude-code-ide-toggle-recent)
+    ]
    ["Interaction"
     ("i" "Implement TODO" claude-code-ide-implement-todo)
     ("@" "Send current file @path" claude-code-ide-send-current-file)
