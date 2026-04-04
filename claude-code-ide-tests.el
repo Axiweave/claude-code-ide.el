@@ -4840,6 +4840,62 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (transient-get-suffix 'claude-code-ide-menu "M"))
   (should (transient-get-suffix 'claude-code-ide-menu "g")))
 
+(ert-deftest claude-code-ide-test-transient-exposes-manager-open-and-repo-toggle-bindings ()
+  "Main transient binds `o` to manager-open and `w` to repo manager toggle."
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "o")) :command)
+                 'claude-code-ide-transient-manager-open))
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "w")) :command)
+                 'claude-code-ide-manager-toggle-repo-sidebar)))
+
+(ert-deftest claude-code-ide-test-transient-manager-open-uses-visible-repo-scope ()
+  "Transient manager-open uses the visible repo sidebar scope."
+  (let ((captured-scope nil)
+        (repo-scope '(:type repo :git-root "/tmp/repo/")))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--visible-sidebar-scope-for-frame)
+               (lambda (&optional _frame)
+                 repo-scope))
+              ((symbol-function 'claude-code-ide-manager-open)
+               (lambda ()
+                 (setq captured-scope claude-code-ide-manager--command-scope))))
+      (claude-code-ide-transient-manager-open)
+      (should (equal captured-scope repo-scope)))))
+
+(ert-deftest claude-code-ide-test-transient-manager-open-uses-visible-global-scope ()
+  "Transient manager-open uses the visible global sidebar scope."
+  (let ((captured-scope nil)
+        (global-scope '(:type global)))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--visible-sidebar-scope-for-frame)
+               (lambda (&optional _frame)
+                 global-scope))
+              ((symbol-function 'claude-code-ide-manager-open)
+               (lambda ()
+                 (setq captured-scope claude-code-ide-manager--command-scope))))
+      (claude-code-ide-transient-manager-open)
+      (should (equal captured-scope global-scope)))))
+
+(ert-deftest claude-code-ide-test-transient-manager-open-errors-without-visible-sidebar ()
+  "Transient manager-open errors when no manager sidebar is visible."
+  (cl-letf (((symbol-function 'claude-code-ide-manager--visible-sidebar-scope-for-frame)
+             (lambda (&optional _frame)
+               nil)))
+    (should-error (claude-code-ide-transient-manager-open)
+                  :type 'error)))
+
+(ert-deftest claude-code-ide-test-transient-manager-open-does-not-require-manager-buffer ()
+  "Transient manager-open can run outside a manager buffer."
+  (with-temp-buffer
+    (let ((called nil)
+          (repo-scope '(:type repo :git-root "/tmp/repo/")))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--visible-sidebar-scope-for-frame)
+                 (lambda (&optional _frame)
+                   repo-scope))
+                ((symbol-function 'claude-code-ide-manager-open)
+                 (lambda ()
+                   (setq called t)
+                   (should (equal claude-code-ide-manager--command-scope repo-scope)))))
+        (claude-code-ide-transient-manager-open)
+        (should called)))))
+
 (ert-deftest claude-code-ide-test-transient-manager-slots-are-visible ()
   "Test manager slot entries are present in the transient."
   (dolist (key '("1" "2" "3" "4" "5" "6" "7" "8" "9" "0"))
