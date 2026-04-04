@@ -4880,8 +4880,10 @@ have completed before cleanup.  Waits up to 5 seconds."
   (cl-letf (((symbol-function 'claude-code-ide-manager--visible-sidebar-scope-for-frame)
              (lambda (&optional _frame)
                nil)))
-    (should-error (claude-code-ide-transient-manager-open)
-                  :type 'error)))
+    (let ((err (should-error (claude-code-ide-transient-manager-open)
+                             :type 'user-error)))
+      (should (string-match-p "No manager sidebar is visible"
+                              (error-message-string err))))))
 
 (ert-deftest claude-code-ide-test-transient-manager-open-does-not-require-manager-buffer ()
   "Transient manager-open can run outside a manager buffer."
