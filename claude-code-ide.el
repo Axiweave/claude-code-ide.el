@@ -1554,7 +1554,7 @@ Use this to balance between visual smoothness and raw responsiveness."
              "disabled (direct rendering, maximum responsiveness)")))
 
 ;;;###autoload
-(defun claude-code-ide-send-prompt (&optional prompt)
+(cl-defun claude-code-ide-send-prompt (&optional prompt (paste t))
   "Send a prompt to the Claude Code terminal.
 When called interactively, reads a prompt from the minibuffer.
 When called programmatically, sends the given PROMPT string."
@@ -1563,7 +1563,7 @@ When called programmatically, sends the given PROMPT string."
       (let ((prompt-to-send (or prompt (read-string "Claude prompt: "))))
         (when (not (string-empty-p prompt-to-send))
           (with-current-buffer buffer
-            (claude-code-ide--terminal-send-string prompt-to-send)
+            (claude-code-ide--terminal-send-string prompt-to-send paste)
             ;; Small delay to ensure prompt text is processed before sending return
             (sit-for 0.1)
             (claude-code-ide--terminal-send-return))
