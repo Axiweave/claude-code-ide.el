@@ -583,9 +583,31 @@ have completed before cleanup.  Waits up to 5 seconds."
               (should (string-match-p "feature-x" (buffer-string)))
               (should-not (string-match-p "worktree-b" (buffer-string)))
               (should (equal (get-text-property (point) 'help-echo)
-                             "/tmp/repo/worktree-a")))))
+                             "/tmp/repo/worktree-a [feature-x]")))))
       (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b))
+      (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer scope)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-repo-scope-hover-path-omits-detached-head-branch ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-detached-a" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/repo/worktree-a" process-a claude-code-ide--processes)
+          (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
+                     (lambda (_session-key) "/tmp/repo/"))
+                    ((symbol-function 'claude-code-ide-manager--session-branch-name)
+                     (lambda (_session-key) nil)))
+            (claude-code-ide-manager-refresh-items scope)
+            (claude-code-ide-manager--render scope)
+            (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+              (goto-char (point-min))
+              (should (equal (get-text-property (point) 'help-echo)
+                             "/tmp/repo/worktree-a")))))
+      (ignore-errors (delete-process process-a))
       (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer scope)))))
         (kill-buffer buffer)))))
 
@@ -790,6 +812,36 @@ have completed before cleanup.  Waits up to 5 seconds."
           (goto-char (point-min))
           (claude-code-ide-manager--show-point-path)
           (should (equal message-output "/tmp/project-a")))
+      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (unless (one-window-p t)
+          (delete-window window)))
+      (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-point-shows-path-and-branch-in-echo-area ()
+  "Test manager point movement shows repo path plus branch in the echo area."
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "/tmp/repo/worktree-a"
+               :display-name "feature-x"
+               :secondary-text "/tmp/repo/worktree-a"
+               :pinned nil
+               :order-key 1
+               :live-p t)))
+  (let (message-output)
+    (unwind-protect
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (setq message-output (apply #'format format-string args))))
+                  ((symbol-function 'claude-code-ide-manager--session-branch-name)
+                   (lambda (_session-key) "feature-x")))
+          (delete-other-windows)
+          (switch-to-buffer (claude-code-ide-manager--get-buffer))
+          (claude-code-ide-manager--render)
+          (goto-char (point-min))
+          (claude-code-ide-manager--show-point-path)
+          (should (equal message-output "/tmp/repo/worktree-a [feature-x]")))
       (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
         (unless (one-window-p t)
           (delete-window window)))
