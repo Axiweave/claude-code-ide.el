@@ -753,6 +753,63 @@ have completed before cleanup.  Waits up to 5 seconds."
                            (claude-code-ide-manager--sorted-items (list a b c)))
                    '("b" "c" "a")))))
 
+(ert-deftest claude-code-ide-test-manager-repo-sorts-fallback-by-display-name ()
+  "Test repo scope falls back to visible label ordering."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-repo-sort-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-repo-sort-b" :buffer nil)))
+    (unwind-protect
+        (progn
+          (puthash "/tmp/repo/zeta" process-a claude-code-ide--processes)
+          (puthash "/tmp/repo/alpha" process-b claude-code-ide--processes)
+          (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
+                     (lambda (_session-key) "/tmp/repo/"))
+                    ((symbol-function 'claude-code-ide-manager--session-branch-name)
+                     (lambda (session-key)
+                       (if (equal session-key "/tmp/repo/zeta")
+                           "alpha"
+                         "beta"))))
+            (claude-code-ide-manager-refresh-items scope)
+            (should (equal (claude-code-ide-manager--visible-session-keys scope)
+                           '("/tmp/repo/zeta" "/tmp/repo/alpha")))
+            (claude-code-ide-manager--render scope)
+            (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+              (goto-char (point-min))
+              (should (string-match-p "alpha" (buffer-substring-no-properties
+                                               (line-beginning-position)
+                                               (line-end-position))))
+              (forward-line 1)
+              (should (string-match-p "beta" (buffer-substring-no-properties
+                                              (line-beginning-position)
+                                              (line-end-position)))))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer scope)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-repo-sort-keeps-order-key-precedence ()
+  "Test repo scope still honors explicit order keys before label sorting."
+  (let* ((scope '(:type repo :git-root "/tmp/repo/"))
+         (a (make-claude-code-ide-manager-item
+             :session-key "/tmp/repo/a"
+             :display-name "zeta"
+             :secondary-text "a"
+             :pinned nil
+             :order-key 1
+             :live-p t))
+         (b (make-claude-code-ide-manager-item
+             :session-key "/tmp/repo/b"
+             :display-name "alpha"
+             :secondary-text "b"
+             :pinned nil
+             :order-key 2
+             :live-p t)))
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items (list a b) scope))
+                   '("/tmp/repo/a" "/tmp/repo/b")))))
+
 (ert-deftest claude-code-ide-test-manager-assigns-visible-slots-1-to-10 ()
   "Test visible rows map to slot numbers in order."
   (let ((items
