@@ -356,7 +356,7 @@ The package owns session buffer setup and idle monitoring. Your configuration ca
 
 - =claude-code-ide-session-mode= and =claude-code-ide-session-mode-map= are package-owned
 - =claude-code-ide-session-setup-hook= runs in each session buffer for local UI or workflow setup
-- =claude-code-ide-session-idle-delay= controls the idle timeout before a session is considered idle
+- =claude-code-ide-session-idle-delay= controls the idle timeout before a session is considered idle; it defaults to 5 seconds
 - =claude-code-ide-session-idle-default-enabled= enables or disables idle monitoring by default
 - =claude-code-ide-session-idle-enabled= is the buffer-local switch for whether idle monitoring is active
 - =claude-code-ide-session-idle-p= is the buffer-local current idle state for the session buffer
@@ -374,7 +374,7 @@ The package owns session buffer setup and idle monitoring. Your configuration ca
 
 ;; Enable idle monitoring and add your own notification behavior
 (setq claude-code-ide-session-idle-default-enabled t
-      claude-code-ide-session-idle-delay 30)
+      claude-code-ide-session-idle-delay 5)
 
 (add-hook 'claude-code-ide-session-idle-hook
           (lambda (buffer)

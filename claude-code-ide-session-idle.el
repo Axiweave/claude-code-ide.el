@@ -36,7 +36,7 @@
   :group 'claude-code-ide-session
   :prefix "claude-code-ide-session-idle-")
 
-(defcustom claude-code-ide-session-idle-delay 30
+(defcustom claude-code-ide-session-idle-delay 5
   "Idle delay in seconds before the session idle hook runs."
   :type 'number
   :group 'claude-code-ide-session-idle)
