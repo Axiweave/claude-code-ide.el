@@ -51,6 +51,11 @@
   :type 'number
   :group 'claude-code-ide-session-idle)
 
+(defcustom claude-code-ide-session-working-resize-suppress-delay 0.75
+  "Seconds to ignore working detection after a terminal resize."
+  :type 'number
+  :group 'claude-code-ide-session-idle)
+
 (defcustom claude-code-ide-session-tracking-start-delay 10
   "Seconds to ignore idle and working tracking after session setup."
   :type 'number
@@ -106,6 +111,9 @@ prevents idle timer scheduling and idle hook execution."
 
 (defvar-local claude-code-ide-session-working-timer nil
   "Working timer object for the current session buffer.")
+
+(defvar-local claude-code-ide-session-working-suppress-until nil
+  "Absolute time in seconds until working detection stays suppressed.")
 
 (defvar-local claude-code-ide-session-tracking-start-timer nil
   "Timer object that enables tracking after the startup grace window.")
@@ -206,13 +214,31 @@ prevents idle timer scheduling and idle hook execution."
                           claude-code-ide-session-working-generation)))
   claude-code-ide-session-working-timer)
 
+(defun claude-code-ide-session-working--suppressed-p ()
+  "Return non-nil when working detection is temporarily suppressed."
+  (and claude-code-ide-session-working-suppress-until
+       (< (float-time (current-time))
+          claude-code-ide-session-working-suppress-until)))
+
+(defun claude-code-ide-session-working-suppress-after-resize (&optional buffer)
+  "Suppress working detection briefly for session BUFFER after a resize."
+  (let ((target-buffer (or buffer (current-buffer))))
+    (when (and (buffer-live-p target-buffer)
+               (claude-code-ide-session-buffer-p target-buffer))
+      (with-current-buffer target-buffer
+        (setq claude-code-ide-session-working-suppress-until
+              (when (> claude-code-ide-session-working-resize-suppress-delay 0)
+                (+ (float-time (current-time))
+                   claude-code-ide-session-working-resize-suppress-delay)))))))
+
 (defun claude-code-ide-session-working-record-output (&optional buffer)
   "Record terminal output activity for BUFFER."
   (let ((target-buffer (or buffer (current-buffer))))
     (when (and (buffer-live-p target-buffer)
                (claude-code-ide-session-buffer-p target-buffer))
       (with-current-buffer target-buffer
-        (when (claude-code-ide-session-tracking--active-p)
+        (when (and (claude-code-ide-session-tracking--active-p)
+                   (not (claude-code-ide-session-working--suppressed-p)))
           (claude-code-ide-session-working--clear-timer)
           (claude-code-ide-session-working--set-state t)
           (claude-code-ide-session-working--arm-timer))))))
@@ -548,6 +574,7 @@ fresh output from the session backend."
     (claude-code-ide-session-tracking--clear-timer)
     (setq claude-code-ide-session-idle-enabled
           claude-code-ide-session-idle-default-enabled
+          claude-code-ide-session-working-suppress-until nil
           claude-code-ide-session-tracking-started-p
           (<= claude-code-ide-session-tracking-start-delay 0))
     (claude-code-ide-session-idle--clear-timer)

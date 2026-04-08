@@ -597,6 +597,13 @@ from the window where it was initially created."
     ('eat (not (bound-and-true-p eat--semi-char-mode)))
     (_ nil)))
 
+(defun claude-code-ide--terminal-working-resize-observer (original-fn &rest args)
+  "Run ORIGINAL-FN and suppress working detection for the resized session."
+  (prog1 (apply original-fn args)
+    (when (claude-code-ide--session-buffer-p (current-buffer))
+      (claude-code-ide-session-working-suppress-after-resize
+       (current-buffer)))))
+
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
   "Filter terminal reflows to prevent height-only resize triggers.
 This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
@@ -624,6 +631,19 @@ width has actually changed, working around the scrolling glitch."
       base-result)
      ;; No width change - suppress reflow
      (t nil))))
+
+(defun claude-code-ide--install-terminal-resize-observer ()
+  "Install resize observation used by working-state detection."
+  (let ((handler (claude-code-ide--terminal-resize-handler)))
+    (unless (advice-member-p #'claude-code-ide--terminal-working-resize-observer
+                             handler)
+      (advice-add handler :around
+                  #'claude-code-ide--terminal-working-resize-observer))))
+
+(defun claude-code-ide--remove-terminal-resize-observer ()
+  "Remove resize observation used by working-state detection."
+  (advice-remove (claude-code-ide--terminal-resize-handler)
+                 #'claude-code-ide--terminal-working-resize-observer))
 
 
 ;;; Helper Functions
@@ -789,12 +809,13 @@ range should be attached."
 (defun claude-code-ide--set-process (process &optional directory)
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."
   ;; Check if this is the first session starting
-  (when (and (eq (claude-code-ide--current-cli-type) 'claude)
-             claude-code-ide-prevent-reflow-glitch
-             (= (hash-table-count claude-code-ide--processes) 0))
-    ;; Apply advice globally for the first session
-    (advice-add (claude-code-ide--terminal-resize-handler)
-                :around #'claude-code-ide--terminal-reflow-filter))
+  (when (= (hash-table-count claude-code-ide--processes) 0)
+    (claude-code-ide--install-terminal-resize-observer)
+    (when (and (eq (claude-code-ide--current-cli-type) 'claude)
+               claude-code-ide-prevent-reflow-glitch)
+      ;; Apply advice globally for the first Claude session when enabled.
+      (advice-add (claude-code-ide--terminal-resize-handler)
+                  :around #'claude-code-ide--terminal-reflow-filter)))
   (puthash (or directory (claude-code-ide--get-working-directory))
            process
            claude-code-ide--processes))
@@ -889,11 +910,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           ;; Remove from process table
           (remhash directory claude-code-ide--processes)
           ;; Check if this was the last session
-          (when (and claude-code-ide-prevent-reflow-glitch
-                     (= (hash-table-count claude-code-ide--processes) 0))
-            ;; Remove advice globally when no sessions remain
-            (advice-remove (claude-code-ide--terminal-resize-handler)
-                           #'claude-code-ide--terminal-reflow-filter))
+          (when (= (hash-table-count claude-code-ide--processes) 0)
+            (claude-code-ide--remove-terminal-resize-observer)
+            (when claude-code-ide-prevent-reflow-glitch
+              ;; Remove advice globally when no sessions remain
+              (advice-remove (claude-code-ide--terminal-resize-handler)
+                             #'claude-code-ide--terminal-reflow-filter)))
           ;; Remove vterm rendering optimization if no sessions remain
           (when (and claude-code-ide-vterm-anti-flicker
                      (= (hash-table-count claude-code-ide--processes) 0))

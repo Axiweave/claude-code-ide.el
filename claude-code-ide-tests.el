@@ -4772,6 +4772,30 @@ have completed before cleanup.  Waits up to 5 seconds."
            (should (eq (claude-code-ide--get-process) mock-process)))))
     (claude-code-ide-tests--clear-processes)))
 
+(ert-deftest claude-code-ide-test-set-process-installs-working-resize-observer-for-first-session ()
+  "Test first session setup installs resize-based working detection independently."
+  (claude-code-ide-tests--clear-processes)
+  (let ((claude-code-ide-prevent-reflow-glitch nil)
+        (added-advices nil))
+    (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
+               (lambda ()
+                 'codex))
+              ((symbol-function 'claude-code-ide--terminal-resize-handler)
+               (lambda ()
+                 'eat--adjust-process-window-size))
+              ((symbol-function 'advice-add)
+               (lambda (symbol where function &rest _props)
+                 (push (list symbol where function) added-advices))))
+      (claude-code-ide--set-process 'mock-process "/tmp/test")
+      (should (member '(eat--adjust-process-window-size
+                        :around
+                        claude-code-ide--terminal-working-resize-observer)
+                      added-advices))
+      (should-not (member '(eat--adjust-process-window-size
+                            :around
+                            claude-code-ide--terminal-reflow-filter)
+                          added-advices)))))
+
 (ert-deftest claude-code-ide-test-cleanup-dead-processes ()
   "Test cleanup of dead processes."
   (claude-code-ide-tests--clear-processes)
@@ -4798,6 +4822,33 @@ have completed before cleanup.  Waits up to 5 seconds."
         ;; Clean up the live process
         (delete-process live-process))
     (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-cleanup-removes-working-resize-observer-for-last-session ()
+  "Test last-session cleanup removes resize-based working detection advice."
+  (let ((removed-advices nil)
+        (claude-code-ide-vterm-anti-flicker nil)
+        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--cleanup-in-progress nil))
+    (cl-letf (((symbol-function 'claude-code-ide--terminal-resize-handler)
+               (lambda ()
+                 'eat--adjust-process-window-size))
+              ((symbol-function 'advice-remove)
+               (lambda (symbol function)
+                 (push (list symbol function) removed-advices)))
+              ((symbol-function 'claude-code-ide-mcp-stop-session)
+               (lambda (_directory)
+                 nil))
+              ((symbol-function 'claude-code-ide-mcp-server-session-ended)
+               (lambda (_session-id)
+                 nil))
+              ((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda (_directory)
+                 "*test-buffer*")))
+      (puthash "/tmp/test" (current-buffer) claude-code-ide--processes)
+      (claude-code-ide--cleanup-on-exit "/tmp/test")
+      (should (member '(eat--adjust-process-window-size
+                        claude-code-ide--terminal-working-resize-observer)
+                      removed-advices)))))
 
 ;;; Tests for CLI Detection
 
@@ -9556,6 +9607,64 @@ have completed before cleanup.  Waits up to 5 seconds."
     (claude-code-ide-session-working--fire-timer (current-buffer))
     (should-not claude-code-ide-session-working-p)
     (should-not claude-code-ide-session-working-timer)))
+
+(ert-deftest claude-code-ide-test-session-working-record-output-is-suppressed-after-resize ()
+  "Test resize suppression prevents output from marking working."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (cl-letf (((symbol-function 'current-time)
+             (lambda ()
+               100.0))
+            ((symbol-function 'run-with-timer)
+             (lambda (&rest _args)
+               'mock-working-timer)))
+    (with-temp-buffer
+      (rename-buffer "*claude-code[test-working-resize-suppress]*" t)
+      (setq claude-code-ide-session-working-p nil
+            claude-code-ide-session-working-suppress-until 100.5)
+      (claude-code-ide-session-working-record-output)
+      (should-not claude-code-ide-session-working-p)
+      (should-not claude-code-ide-session-working-timer))))
+
+(ert-deftest claude-code-ide-test-session-working-record-output-resumes-after-resize-window ()
+  "Test working detection resumes once resize suppression expires."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((scheduled-delay nil))
+    (cl-letf (((symbol-function 'current-time)
+               (lambda ()
+                 101.0))
+              ((symbol-function 'run-with-timer)
+               (lambda (delay _repeat _function &rest _args)
+                 (setq scheduled-delay delay)
+                 'mock-working-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-working-resize-expired]*" t)
+        (setq claude-code-ide-session-working-p nil
+              claude-code-ide-session-working-suppress-until 100.5)
+        (claude-code-ide-session-working-record-output)
+        (should claude-code-ide-session-working-p)
+        (should (equal scheduled-delay claude-code-ide-session-working-delay))
+        (should (eq claude-code-ide-session-working-timer 'mock-working-timer))))))
+
+(ert-deftest claude-code-ide-test-terminal-working-resize-observer-suppresses-working-after-resize ()
+  "Test terminal resize observer marks the session to suppress working output briefly."
+  (should (require 'claude-code-ide nil t))
+  (let ((suppressed-buffer nil))
+    (save-window-excursion
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-working-resize-observer]*" t)
+        (let ((session-buffer (current-buffer)))
+          (switch-to-buffer session-buffer)
+          (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                     (lambda (&optional _buffer)
+                       t))
+                    ((symbol-function 'claude-code-ide-session-working-suppress-after-resize)
+                     (lambda (&optional buffer)
+                       (setq suppressed-buffer (or buffer (current-buffer))))))
+            (should (eq :base-result
+                        (claude-code-ide--terminal-working-resize-observer
+                         (lambda (&rest _args)
+                           :base-result))))
+            (should (eq suppressed-buffer session-buffer))))))))
 
 (ert-deftest claude-code-ide-test-session-tracking-grace-setup-defers-start ()
   "Test session setup defers idle and working tracking during startup grace."
