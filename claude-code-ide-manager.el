@@ -118,6 +118,9 @@ back to `project.el' otherwise."
   :group 'claude-code-ide-manager)
 
 (defconst claude-code-ide-manager--bell-glyph "🔔"
+  ;; NOTE: Some fonts render this emoji taller than surrounding fixed-pitch
+  ;; text, which can make manager rows look uneven. Keep the current glyph for
+  ;; now, but prefer a text-style or ASCII marker if we revisit the gutter UI.
   "Bell glyph used to mark idle sessions in the manager sidebar.")
 
 (defconst claude-code-ide-manager--working-glyph "⚙︎"
