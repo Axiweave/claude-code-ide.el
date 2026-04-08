@@ -46,6 +46,16 @@
   :type 'boolean
   :group 'claude-code-ide-session-idle)
 
+(defcustom claude-code-ide-session-working-delay 3
+  "Seconds a session stays in working state after terminal output."
+  :type 'number
+  :group 'claude-code-ide-session-idle)
+
+(defcustom claude-code-ide-session-tracking-start-delay 10
+  "Seconds to ignore idle and working tracking after session setup."
+  :type 'number
+  :group 'claude-code-ide-session-idle)
+
 (defcustom claude-code-ide-session-idle-notification-policy 'manager
   "How idle transitions should notify the user.
 
@@ -70,17 +80,38 @@ prevents idle timer scheduling and idle hook execution."
 (defvar claude-code-ide-session-idle-hook nil
   "Hook run when a session idle timer fires.")
 
+(defvar claude-code-ide-session-working-hook nil
+  "Hook run when a session's working state changes.")
+
 (defvar-local claude-code-ide-session-idle-enabled nil
   "Non-nil when idle monitoring is enabled for the current session buffer.")
 
 (defvar-local claude-code-ide-session-idle-p nil
   "Non-nil when the current session buffer is idle.")
 
+(defvar-local claude-code-ide-session-working-p nil
+  "Non-nil when the current session buffer has seen recent terminal output.")
+
 (defvar-local claude-code-ide-session-idle-generation 0
   "Monotonic token for the currently scheduled idle callback.")
 
+(defvar-local claude-code-ide-session-working-generation 0
+  "Monotonic token for the currently scheduled working callback.")
+
+(defvar-local claude-code-ide-session-tracking-start-generation 0
+  "Monotonic token for the currently scheduled tracking-start callback.")
+
 (defvar-local claude-code-ide-session-idle-timer nil
   "Idle timer object for the current session buffer.")
+
+(defvar-local claude-code-ide-session-working-timer nil
+  "Working timer object for the current session buffer.")
+
+(defvar-local claude-code-ide-session-tracking-start-timer nil
+  "Timer object that enables tracking after the startup grace window.")
+
+(defvar-local claude-code-ide-session-tracking-started-p t
+  "Non-nil when idle and working tracking are active for this session.")
 
 (defvaralias 'claude-code-ide-session-idle--enabled
   'claude-code-ide-session-idle-enabled)
@@ -111,6 +142,90 @@ prevents idle timer scheduling and idle hook execution."
         claude-code-ide-session-idle-timer nil
         claude-code-ide-session-idle-p nil))
 
+(defun claude-code-ide-session-working--set-state (state)
+  "Set the current session buffer's working STATE and run hooks on change."
+  (let ((new-state (and state t)))
+    (unless (eq claude-code-ide-session-working-p new-state)
+      (setq claude-code-ide-session-working-p new-state)
+      (run-hook-with-args 'claude-code-ide-session-working-hook
+                          (current-buffer)))))
+
+(defun claude-code-ide-session-working--clear-timer ()
+  "Cancel the current session working timer, if any."
+  (when (timerp claude-code-ide-session-working-timer)
+    (cancel-timer claude-code-ide-session-working-timer))
+  (setq claude-code-ide-session-working-generation
+        (1+ claude-code-ide-session-working-generation)
+        claude-code-ide-session-working-timer nil))
+
+(defun claude-code-ide-session-working-clear-state ()
+  "Clear working state in the current session buffer."
+  (claude-code-ide-session-working--clear-timer)
+  (claude-code-ide-session-working--set-state nil))
+
+(defun claude-code-ide-session-tracking--active-p ()
+  "Return non-nil when idle and working tracking are active."
+  claude-code-ide-session-tracking-started-p)
+
+(defun claude-code-ide-session-tracking--clear-timer ()
+  "Cancel the current session tracking-start timer, if any."
+  (when (timerp claude-code-ide-session-tracking-start-timer)
+    (cancel-timer claude-code-ide-session-tracking-start-timer))
+  (setq claude-code-ide-session-tracking-start-generation
+        (1+ claude-code-ide-session-tracking-start-generation)
+        claude-code-ide-session-tracking-start-timer nil))
+
+(defun claude-code-ide-session-tracking--arm-start-timer ()
+  "Arm the startup grace timer for the current session buffer."
+  (when (> claude-code-ide-session-tracking-start-delay 0)
+    (setq claude-code-ide-session-tracking-start-timer
+          (run-with-timer claude-code-ide-session-tracking-start-delay nil
+                          #'claude-code-ide-session-tracking--fire-start-timer
+                          (current-buffer)
+                          claude-code-ide-session-tracking-start-generation))))
+
+(defun claude-code-ide-session-tracking--fire-start-timer (buffer &optional generation)
+  "Enable tracking for BUFFER when GENERATION is still current."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (or (null generation)
+                (= generation claude-code-ide-session-tracking-start-generation))
+        (setq claude-code-ide-session-tracking-start-timer nil
+              claude-code-ide-session-tracking-started-p t)
+        (unless (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p
+                 buffer)
+          (claude-code-ide-session-idle--arm-timer))))))
+
+(defun claude-code-ide-session-working--arm-timer ()
+  "Arm the working timer for the current session buffer."
+  (when (> claude-code-ide-session-working-delay 0)
+    (setq claude-code-ide-session-working-timer
+          (run-with-timer claude-code-ide-session-working-delay nil
+                          #'claude-code-ide-session-working--fire-timer
+                          (current-buffer)
+                          claude-code-ide-session-working-generation)))
+  claude-code-ide-session-working-timer)
+
+(defun claude-code-ide-session-working-record-output (&optional buffer)
+  "Record terminal output activity for BUFFER."
+  (let ((target-buffer (or buffer (current-buffer))))
+    (when (and (buffer-live-p target-buffer)
+               (claude-code-ide-session-buffer-p target-buffer))
+      (with-current-buffer target-buffer
+        (when (claude-code-ide-session-tracking--active-p)
+          (claude-code-ide-session-working--clear-timer)
+          (claude-code-ide-session-working--set-state t)
+          (claude-code-ide-session-working--arm-timer))))))
+
+(defun claude-code-ide-session-working--fire-timer (buffer &optional generation)
+  "Clear BUFFER's working state if GENERATION is still current."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (or (null generation)
+                (= generation claude-code-ide-session-working-generation))
+        (setq claude-code-ide-session-working-timer nil)
+        (claude-code-ide-session-working--set-state nil)))))
+
 (defun claude-code-ide-session-idle-clear-state ()
   "Clear idle state in the current session buffer without rearming a timer."
   (interactive)
@@ -125,6 +240,7 @@ prevents idle timer scheduling and idle hook execution."
 (defun claude-code-ide-session-idle--arm-timer ()
   "Arm the idle timer for the current session buffer."
   (when (and claude-code-ide-session-idle-enabled
+             (claude-code-ide-session-tracking--active-p)
              (not (claude-code-ide-session-idle--suppressed-p (current-buffer)))
              (claude-code-ide-session-buffer-p (current-buffer)))
     (setq claude-code-ide-session-idle-timer
@@ -142,10 +258,11 @@ fresh output from the session backend."
     (when (and (buffer-live-p target-buffer)
                (claude-code-ide-session-buffer-p target-buffer))
       (with-current-buffer target-buffer
-        (claude-code-ide-session-idle-clear-state)
-        (unless (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p
-                 target-buffer)
-          (claude-code-ide-session-idle--arm-timer))))))
+        (when (claude-code-ide-session-tracking--active-p)
+          (claude-code-ide-session-idle-clear-state)
+          (unless (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p
+                   target-buffer)
+            (claude-code-ide-session-idle--arm-timer)))))))
 
 (defun claude-code-ide-session-idle--buffer-visible-in-focused-frame-p (&optional buffer)
   "Return non-nil when BUFFER is visible in a focused frame."
@@ -354,7 +471,8 @@ fresh output from the session backend."
       (when (and (buffer-live-p target-buffer)
                  (claude-code-ide-session-buffer-p target-buffer))
         (with-current-buffer target-buffer
-          (claude-code-ide-session-idle-record-activity))))))
+          (claude-code-ide-session-idle-record-activity)
+          (claude-code-ide-session-working-record-output))))))
 
 (defun claude-code-ide-session-idle--install-output-observer (symbol)
   "Install the output observer for SYMBOL when available."
@@ -382,8 +500,11 @@ fresh output from the session backend."
         (cond
          ((claude-code-ide-session-idle--buffer-visible-in-focused-frame-p buffer)
           (claude-code-ide-session-idle-clear-state))
+         ((not (claude-code-ide-session-tracking--active-p))
+          nil)
          ((and claude-code-ide-session-idle-enabled
                (not (claude-code-ide-session-idle--suppressed-p buffer)))
+          (claude-code-ide-session-working-clear-state)
           (setq claude-code-ide-session-idle-p t)
           (claude-code-ide-session-idle--notify buffer)
           (run-hook-with-args 'claude-code-ide-session-idle-hook buffer)))))))
@@ -410,7 +531,8 @@ fresh output from the session backend."
   (interactive)
   (claude-code-ide-session-idle--ensure-session-buffer)
   (setq claude-code-ide-session-idle-enabled nil)
-  (claude-code-ide-session-idle--clear-timer))
+  (claude-code-ide-session-idle--clear-timer)
+  (claude-code-ide-session-working-clear-state))
 
 (defun claude-code-ide-session-idle-toggle ()
   "Toggle idle monitoring in the current session buffer."
@@ -423,9 +545,15 @@ fresh output from the session backend."
 (defun claude-code-ide-session-idle--setup-buffer ()
   "Initialize idle monitoring state for the current session buffer."
   (when (claude-code-ide-session-buffer-p (current-buffer))
+    (claude-code-ide-session-tracking--clear-timer)
     (setq claude-code-ide-session-idle-enabled
-          claude-code-ide-session-idle-default-enabled)
-    (claude-code-ide-session-idle--clear-timer)))
+          claude-code-ide-session-idle-default-enabled
+          claude-code-ide-session-tracking-started-p
+          (<= claude-code-ide-session-tracking-start-delay 0))
+    (claude-code-ide-session-idle--clear-timer)
+    (claude-code-ide-session-working-clear-state)
+    (unless claude-code-ide-session-tracking-started-p
+      (claude-code-ide-session-tracking--arm-start-timer))))
 
 (defun claude-code-ide-session-idle-unload-function ()
   "Clean up global hooks and timers installed by session idle."

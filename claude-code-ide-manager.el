@@ -30,7 +30,8 @@
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
 
-(defvar claude-code-ide-session-idle-hook)
+(defvar claude-code-ide-session-idle-hook nil)
+(defvar claude-code-ide-session-working-hook nil)
 
 (defgroup claude-code-ide-manager nil
   "Session manager for Claude Code IDE."
@@ -111,8 +112,16 @@ back to `project.el' otherwise."
   "Face used to highlight idle sessions in the manager sidebar."
   :group 'claude-code-ide-manager)
 
+(defface claude-code-ide-manager-working-session-face
+  '((t :background "#3f6b4f" :foreground "white"))
+  "Face used to highlight working sessions in the manager sidebar."
+  :group 'claude-code-ide-manager)
+
 (defconst claude-code-ide-manager--bell-glyph "🔔"
   "Bell glyph used to mark idle sessions in the manager sidebar.")
+
+(defconst claude-code-ide-manager--working-glyph "⚙︎"
+  "Gear glyph used to mark working sessions in the manager sidebar.")
 
 (defconst claude-code-ide-manager--pin-glyph "📌"
   "Pin glyph used to mark pinned sessions in the manager sidebar.")
@@ -732,13 +741,24 @@ default to the global scope for backward compatibility."
          (claude-code-ide-manager--buffer-local-value
           'claude-code-ide-session-idle-p buffer))))
 
+(defun claude-code-ide-manager--session-working-p (session-key)
+  "Return non-nil when SESSION-KEY's live buffer has tracked activity."
+  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+    (and (claude-code-ide-manager--buffer-local-value
+          'claude-code-ide-session-idle-enabled buffer)
+         (claude-code-ide-manager--buffer-local-value
+          'claude-code-ide-session-working-p buffer))))
+
 (defun claude-code-ide-manager--marker-gutter (item)
   "Return a fixed-width marker gutter for ITEM.
-Idle markers take precedence over pinned markers."
+Idle markers take precedence over working and pinned markers."
   (let* ((marker (cond
                   ((claude-code-ide-manager--session-idle-p
                     (claude-code-ide-manager-item-session-key item))
                    claude-code-ide-manager--bell-glyph)
+                  ((claude-code-ide-manager--session-working-p
+                    (claude-code-ide-manager-item-session-key item))
+                   claude-code-ide-manager--working-glyph)
                   ((claude-code-ide-manager-item-pinned item)
                    claude-code-ide-manager--pin-glyph)
                   (t "")))
@@ -754,7 +774,9 @@ Idle markers take precedence over pinned markers."
                claude-code-ide-manager--current-session-key))
     'claude-code-ide-manager-current-session-face)
    ((claude-code-ide-manager--session-idle-p session-key)
-    'claude-code-ide-manager-idle-session-face)))
+    'claude-code-ide-manager-idle-session-face)
+   ((claude-code-ide-manager--session-working-p session-key)
+    'claude-code-ide-manager-working-session-face)))
 
 (defun claude-code-ide-manager--session-key-for-buffer (buffer)
   "Return the session key whose live buffer is BUFFER."
@@ -834,12 +856,18 @@ Idle markers take precedence over pinned markers."
                     (claude-code-ide-manager--sidebar-window selected-scope)))
           (select-window sidebar-window))))))
 
-(defun claude-code-ide-manager--refresh-after-idle-clear (orig-fn &rest args)
-  "Refresh the sidebar when ORIG-FN clears a previously idle session."
-  (let ((was-idle (and (bound-and-true-p claude-code-ide-session-idle-enabled)
-                       (bound-and-true-p claude-code-ide-session-idle-p))))
+(defun claude-code-ide-manager--session-status-snapshot ()
+  "Return the current buffer's manager-visible idle/working status."
+  (list (bound-and-true-p claude-code-ide-session-idle-enabled)
+        (bound-and-true-p claude-code-ide-session-idle-p)
+        (bound-and-true-p claude-code-ide-session-working-p)))
+
+(defun claude-code-ide-manager--refresh-after-session-status-change (orig-fn &rest args)
+  "Refresh the sidebar when ORIG-FN changes manager-visible session status."
+  (let ((before (claude-code-ide-manager--session-status-snapshot)))
     (prog1 (apply orig-fn args)
-      (when was-idle
+      (unless (equal before
+                     (claude-code-ide-manager--session-status-snapshot))
         (claude-code-ide-manager--refresh-on-idle-transition)))))
 
 (defun claude-code-ide-manager--install-idle-refresh-hooks ()
@@ -847,6 +875,10 @@ Idle markers take precedence over pinned markers."
   (unless (memq #'claude-code-ide-manager--refresh-on-idle-transition
                 claude-code-ide-session-idle-hook)
     (add-hook 'claude-code-ide-session-idle-hook
+              #'claude-code-ide-manager--refresh-on-idle-transition))
+  (unless (memq #'claude-code-ide-manager--refresh-on-idle-transition
+                claude-code-ide-session-working-hook)
+    (add-hook 'claude-code-ide-session-working-hook
               #'claude-code-ide-manager--refresh-on-idle-transition))
   (when (advice-member-p #'claude-code-ide-manager--refresh-on-idle-transition
                          'claude-code-ide-session-idle-reset-timer)
@@ -860,18 +892,22 @@ Idle markers take precedence over pinned markers."
                          'claude-code-ide-session-idle-clear-state)
     (advice-remove 'claude-code-ide-session-idle-clear-state
                    #'claude-code-ide-manager--refresh-on-idle-transition))
-  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-session-status-change
                            'claude-code-ide-session-idle-reset-timer)
     (advice-add 'claude-code-ide-session-idle-reset-timer
-                :around #'claude-code-ide-manager--refresh-after-idle-clear))
-  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
+                :around #'claude-code-ide-manager--refresh-after-session-status-change))
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-session-status-change
                            'claude-code-ide-session-idle-disable)
     (advice-add 'claude-code-ide-session-idle-disable
-                :around #'claude-code-ide-manager--refresh-after-idle-clear))
-  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-clear
+                :around #'claude-code-ide-manager--refresh-after-session-status-change))
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-session-status-change
                            'claude-code-ide-session-idle-clear-state)
     (advice-add 'claude-code-ide-session-idle-clear-state
-                :around #'claude-code-ide-manager--refresh-after-idle-clear)))
+                :around #'claude-code-ide-manager--refresh-after-session-status-change))
+  (when (advice-member-p #'claude-code-ide-manager--refresh-after-session-status-change
+                         'claude-code-ide-session-idle-record-activity)
+    (advice-remove 'claude-code-ide-session-idle-record-activity
+                   #'claude-code-ide-manager--refresh-after-session-status-change)))
 
 (defun claude-code-ide-manager--install-window-config-refresh-hook ()
   "Install a hook that keeps visible manager windows behaving like sidebars."

@@ -1083,6 +1083,187 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (kill-buffer buffer)))
             (list idle-buffer current-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-render-working-marker-shows-gear ()
+  "Test working rows render the gear marker."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((working-buffer (get-buffer-create "*cc-working-marker*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer working-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-working-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) working-buffer)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (let ((row (claude-code-ide-tests--manager-row-text)))
+                (should (string-match-p "⚙︎" row))
+                (should-not (string-match-p "📌" row))
+                (should-not (string-match-p "🔔" row))))))
+      (when (buffer-live-p working-buffer)
+        (kill-buffer working-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-render-working-face-applies-unless-priority-overrides ()
+  "Test working rows use the working face when no higher-priority face applies."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((working-buffer (get-buffer-create "*cc-working-face*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer working-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-working-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) working-buffer)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (should (eq (get-text-property (point) 'face)
+                          'claude-code-ide-manager-working-session-face)))))
+      (when (buffer-live-p working-buffer)
+        (kill-buffer working-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-render-working-current-session-face-overrides-working-face ()
+  "Test current rows keep the current-session face even when working."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((working-buffer (get-buffer-create "*cc-working-current*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer working-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-working-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (setq claude-code-ide-manager--current-session-key "/tmp/project-a")
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) working-buffer)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (should (eq (get-text-property (point) 'face)
+                          'claude-code-ide-manager-current-session-face)))))
+      (when (buffer-live-p working-buffer)
+        (kill-buffer working-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-render-working-disabled-idle-monitoring-does-not-render-working-state ()
+  "Test sessions with idle monitoring disabled do not render as working."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((working-buffer (get-buffer-create "*cc-working-idle*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer working-buffer
+            (setq-local claude-code-ide-session-idle-enabled nil
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-working-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned t
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) working-buffer)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (should-not (eq (get-text-property (point) 'face)
+                              'claude-code-ide-manager-working-session-face))
+              (let ((row (claude-code-ide-tests--manager-row-text)))
+                (should-not (string-match-p "⚙︎" row))
+                (should-not (string-match-p "🔔" row))
+                (should (string-match-p "📌" row))))))
+      (when (buffer-live-p working-buffer)
+        (kill-buffer working-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-render-working-marker-overrides-pin-marker ()
+  "Test working rows show the working marker instead of the pin marker."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((working-buffer (get-buffer-create "*cc-working-pin*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer working-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-working-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned t
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) working-buffer)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (let ((row (claude-code-ide-tests--manager-row-text)))
+                (should (string-match-p "⚙︎" row))
+                (should-not (string-match-p "📌" row))
+                (should-not (string-match-p "\\[P\\]" row))))))
+      (when (buffer-live-p working-buffer)
+        (kill-buffer working-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-render-working-requires-explicit-activity-state ()
+  "Test fresh non-idle sessions do not render as working without activity."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-working-fresh*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer session-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-working-p nil))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned t
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) session-buffer)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (should-not (eq (get-text-property (point) 'face)
+                              'claude-code-ide-manager-working-session-face))
+              (let ((row (claude-code-ide-tests--manager-row-text)))
+                (should-not (string-match-p "⚙︎" row))
+                (should-not (string-match-p "🔔" row))
+                (should (string-match-p "📌" row))))))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-idle-indicator-uses-live-session-state ()
   "Test the bell follows live buffer state after rerender without mutating items."
   (claude-code-ide-tests--reset-manager-state)
@@ -8565,6 +8746,25 @@ have completed before cleanup.  Waits up to 5 seconds."
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
+(ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer ()
+  "Test that backend output marks the process buffer as working."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((working-buffer nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-working-process-buffer]*"))
+        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process)
+                     session-buffer))
+                  ((symbol-function 'claude-code-ide-session-working-record-output)
+                   (lambda (&optional buffer)
+                     (setq working-buffer (or buffer (current-buffer))))))
+          (with-current-buffer other-buffer
+            (vterm--filter 'mock-process "output"))
+          (should (eq working-buffer session-buffer)))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
+
 (ert-deftest claude-code-ide-test-session-idle-record-activity-does-not-arm-visible-session ()
   "Visible focused sessions clear idle state without arming a timer."
   (should (require 'claude-code-ide-session-idle nil t))
@@ -9270,8 +9470,8 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p hidden-buffer)
         (kill-buffer hidden-buffer)))))
 
-(ert-deftest claude-code-ide-test-session-idle-reset-clears-idle-flag ()
-  "Test that resetting idle monitoring clears the idle flag."
+(ert-deftest claude-code-ide-test-session-idle-reset-preserves-working-flag ()
+  "Test that resetting idle monitoring clears idle without clearing working."
   (should (require 'claude-code-ide-session-idle nil t))
   (let ((timer-delay nil))
     (cl-letf (((symbol-function 'run-with-timer)
@@ -9281,10 +9481,12 @@ have completed before cleanup.  Waits up to 5 seconds."
       (with-temp-buffer
         (rename-buffer "*claude-code[test-idle-reset]*" t)
         (setq claude-code-ide-session-idle-enabled t
-              claude-code-ide-session-idle-p t)
+              claude-code-ide-session-idle-p t
+              claude-code-ide-session-working-p t)
         (claude-code-ide-session-idle-reset-timer)
         (should (equal timer-delay claude-code-ide-session-idle-delay))
-        (should-not claude-code-ide-session-idle-p)))))
+        (should-not claude-code-ide-session-idle-p)
+        (should claude-code-ide-session-working-p)))))
 
 (ert-deftest claude-code-ide-test-session-idle-disable-clears-idle-flag ()
   "Test that disabling idle monitoring clears the idle flag immediately."
@@ -9292,9 +9494,11 @@ have completed before cleanup.  Waits up to 5 seconds."
   (with-temp-buffer
     (rename-buffer "*claude-code[test-idle-disable]*" t)
     (setq claude-code-ide-session-idle-enabled t
-          claude-code-ide-session-idle-p t)
+          claude-code-ide-session-idle-p t
+          claude-code-ide-session-working-p t)
     (claude-code-ide-session-idle-disable)
-    (should-not claude-code-ide-session-idle-p)))
+    (should-not claude-code-ide-session-idle-p)
+    (should-not claude-code-ide-session-working-p)))
 
 (ert-deftest claude-code-ide-test-session-idle-setup-clears-preexisting-idle-flag ()
   "Test that session setup clears any preexisting idle flag."
@@ -9302,24 +9506,144 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((claude-code-ide-session-idle-default-enabled nil))
     (with-temp-buffer
       (rename-buffer "*claude-code[test-idle-setup]*" t)
-      (setq claude-code-ide-session-idle-p t)
+      (setq claude-code-ide-session-idle-p t
+            claude-code-ide-session-working-p t)
       (claude-code-ide-session-idle--setup-buffer)
-      (should-not claude-code-ide-session-idle-p))))
+      (should-not claude-code-ide-session-idle-p)
+      (should-not claude-code-ide-session-working-p))))
 
-(ert-deftest claude-code-ide-test-session-idle-setup-enabled-does-not-schedule-timer ()
-  "Test setup leaves monitoring disarmed until there is activity."
+(ert-deftest claude-code-ide-test-session-idle-record-activity-does-not-set-working-flag ()
+  "Test idle activity tracking does not also mark the session as working."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+             (lambda (&optional _buffer)
+               t)))
+    (with-temp-buffer
+      (rename-buffer "*claude-code[test-idle-working-activity]*" t)
+      (setq claude-code-ide-session-idle-enabled t
+            claude-code-ide-session-idle-p t
+            claude-code-ide-session-working-p nil)
+      (claude-code-ide-session-idle-record-activity)
+      (should-not claude-code-ide-session-idle-p)
+      (should-not claude-code-ide-session-working-p))))
+
+(ert-deftest claude-code-ide-test-session-working-record-output-sets-working-flag ()
+  "Test backend output marks the session as working and arms a clear timer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((scheduled-delay nil)
+        (scheduled-callback nil))
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (delay _repeat function &rest args)
+                 (setq scheduled-delay delay
+                       scheduled-callback (list function args))
+                 'mock-working-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-working-output]*" t)
+        (setq claude-code-ide-session-working-p nil)
+        (claude-code-ide-session-working-record-output)
+        (should claude-code-ide-session-working-p)
+        (should (equal scheduled-delay claude-code-ide-session-working-delay))
+        (should scheduled-callback)
+        (should (eq claude-code-ide-session-working-timer 'mock-working-timer))))))
+
+(ert-deftest claude-code-ide-test-session-working-fire-timer-clears-working-flag ()
+  "Test the working timer clears the working flag."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (with-temp-buffer
+    (rename-buffer "*claude-code[test-working-fire]*" t)
+    (setq claude-code-ide-session-working-p t
+          claude-code-ide-session-working-timer 'mock-working-timer)
+    (claude-code-ide-session-working--fire-timer (current-buffer))
+    (should-not claude-code-ide-session-working-p)
+    (should-not claude-code-ide-session-working-timer)))
+
+(ert-deftest claude-code-ide-test-session-tracking-grace-setup-defers-start ()
+  "Test session setup defers idle and working tracking during startup grace."
   (should (require 'claude-code-ide-session-idle nil t))
   (let ((claude-code-ide-session-idle-default-enabled t)
-        (scheduled nil))
+        (scheduled-delay nil)
+        (scheduled-callback nil))
     (cl-letf (((symbol-function 'run-with-timer)
-               (lambda (&rest _args)
-                 (setq scheduled t)
+               (lambda (delay _repeat function &rest args)
+                 (setq scheduled-delay delay
+                       scheduled-callback (list function args))
+                 'mock-startup-tracking-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-tracking-setup]*" t)
+        (claude-code-ide-session-idle--setup-buffer)
+        (should claude-code-ide-session-idle-enabled)
+        (should-not claude-code-ide-session-working-p)
+        (should-not claude-code-ide-session-idle-p)
+        (should (equal scheduled-delay claude-code-ide-session-tracking-start-delay))
+        (should scheduled-callback)
+        (should (eq claude-code-ide-session-tracking-start-timer
+                    'mock-startup-tracking-timer))
+        (should-not claude-code-ide-session-tracking-started-p)))))
+
+(ert-deftest claude-code-ide-test-session-tracking-grace-ignores-startup-output ()
+  "Test startup output is ignored until tracking grace expires."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((scheduled-delay nil)
+        (working-scheduled nil))
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (delay _repeat _function &rest _args)
+                 (if (equal delay claude-code-ide-session-working-delay)
+                     (setq working-scheduled t)
+                   (setq scheduled-delay delay))
+                 'mock-timer)))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-tracking-output-grace]*" t)
+        (setq claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-tracking-started-p nil)
+        (claude-code-ide-session-idle-record-activity)
+        (claude-code-ide-session-working-record-output)
+        (should-not claude-code-ide-session-idle-p)
+        (should-not claude-code-ide-session-working-p)
+        (should-not claude-code-ide-session-idle-timer)
+        (should-not claude-code-ide-session-working-timer)
+        (should-not scheduled-delay)
+        (should-not working-scheduled)))))
+
+(ert-deftest claude-code-ide-test-session-tracking-grace-expiry-arms-hidden-idle-timer ()
+  "Test grace expiry starts idle detection for hidden enabled sessions."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((claude-code-ide-session-idle-default-enabled t)
+        (scheduled-delay nil)
+        (scheduled-startup-callback nil)
+        (startup-timer-count 0))
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (delay _repeat function &rest args)
+                 (if (equal delay claude-code-ide-session-tracking-start-delay)
+                     (progn
+                       (setq startup-timer-count (1+ startup-timer-count)
+                             scheduled-startup-callback (list function args))
+                       'mock-startup-timer)
+                   (setq scheduled-delay delay)
+                   'mock-idle-timer))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-tracking-grace-expiry]*" t)
+        (claude-code-ide-session-idle--setup-buffer)
+        (should (= startup-timer-count 1))
+        (apply (car scheduled-startup-callback) (cadr scheduled-startup-callback))
+        (should claude-code-ide-session-tracking-started-p)
+        (should (equal scheduled-delay claude-code-ide-session-idle-delay))
+        (should (eq claude-code-ide-session-idle-timer 'mock-idle-timer))))))
+
+(ert-deftest claude-code-ide-test-session-idle-setup-enabled-defers-idle-timer-until-grace-expires ()
+  "Test setup arms only the tracking-start timer, not the idle timer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((claude-code-ide-session-idle-default-enabled t)
+        (scheduled-delays nil))
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (delay _repeat _function &rest _args)
+                 (push delay scheduled-delays)
                  'mock-idle-timer)))
       (with-temp-buffer
         (rename-buffer "*claude-code[test-idle-setup-enabled]*" t)
         (claude-code-ide-session-idle--setup-buffer)
         (should claude-code-ide-session-idle-enabled)
-        (should-not scheduled)
+        (should (equal scheduled-delays
+                       (list claude-code-ide-session-tracking-start-delay)))
         (should-not claude-code-ide-session-idle-timer)))))
 
 (ert-deftest claude-code-ide-test-session-idle-old-callback-after-reset-does-not-mark-idle ()
@@ -9409,6 +9733,24 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-session-idle-enable)
         (claude-code-ide-session-idle--fire-timer (current-buffer))
         (should (eq hook-buffer (current-buffer)))))))
+
+(ert-deftest claude-code-ide-test-session-idle-fire-timer-clears-working-flag ()
+  "Test that becoming idle clears the working flag."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+             (lambda (&optional _buffer)
+               nil))
+            ((symbol-function 'run-hook-with-args)
+             (lambda (&rest _args)
+               nil)))
+    (with-temp-buffer
+      (rename-buffer "*claude-code[test-idle-working-fire]*" t)
+      (setq claude-code-ide-session-idle-enabled t
+            claude-code-ide-session-idle-p nil
+            claude-code-ide-session-working-p t)
+      (claude-code-ide-session-idle--fire-timer (current-buffer))
+      (should claude-code-ide-session-idle-p)
+      (should-not claude-code-ide-session-working-p))))
 
 (provide 'claude-code-ide-tests)
 
