@@ -8666,10 +8666,10 @@ have completed before cleanup.  Waits up to 5 seconds."
               (should-not scheduled)
               (should-not claude-code-ide-session-idle-p)
               (should-not claude-code-ide-session-idle-timer)))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer prompt-buffer))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer prompt-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-fire-timer-does-not-mark-idle-during-prompt-edit ()
   "Prompt editing suppresses idle transition for the owning session."
@@ -8704,10 +8704,10 @@ have completed before cleanup.  Waits up to 5 seconds."
               (claude-code-ide-session-idle--fire-timer session-buffer)
               (should-not claude-code-ide-session-idle-p)
               (should (= hook-runs 0))))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer prompt-buffer))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer prompt-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-visibility-refresh-clears-visible-timer ()
   "Visibility refresh cancels pending timers for visible focused sessions."
@@ -8779,10 +8779,10 @@ have completed before cleanup.  Waits up to 5 seconds."
               (should cancelled)
               (should-not claude-code-ide-session-idle-timer)
               (should-not claude-code-ide-session-idle-p)))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer prompt-buffer))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer prompt-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-prompt-exit-does-not-auto-rearm ()
   "Leaving prompt editing does not start a fresh idle timer."
@@ -8827,10 +8827,10 @@ have completed before cleanup.  Waits up to 5 seconds."
             (with-current-buffer session-buffer
               (should-not scheduled)
               (should-not claude-code-ide-session-idle-timer)))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer prompt-buffer))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer prompt-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-prompt-editing-does-not-suppress-other-session ()
   "Prompt editing only clears the timer for the owning session."
@@ -8880,10 +8880,10 @@ have completed before cleanup.  Waits up to 5 seconds."
             (with-current-buffer other-session-buffer
               (should-not (memq 'other-timer cancelled))
               (should (eq claude-code-ide-session-idle-timer 'other-timer))))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer other-session-buffer prompt-buffer))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer other-session-buffer prompt-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-prompt-buffer-context-beats-manager-state ()
   "Selected prompt buffer context determines the owning session."
@@ -8939,10 +8939,10 @@ have completed before cleanup.  Waits up to 5 seconds."
             (with-current-buffer session-2-buffer
               (should (memq 'session-2-timer cancelled))
               (should-not claude-code-ide-session-idle-timer)))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-1-buffer session-2-buffer prompt-buffer))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-1-buffer session-2-buffer prompt-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-visible-unselected-prompt-suppresses-idle ()
   "A visible prompt buffer suppresses idle even when another window is selected."
@@ -8981,10 +8981,67 @@ have completed before cleanup.  Waits up to 5 seconds."
               (claude-code-ide-session-idle--fire-timer session-buffer)
               (should-not claude-code-ide-session-idle-p)
               (should (= hook-runs 0))))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer prompt-buffer other-buffer))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer prompt-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-tmp-prompt-window-history-suppresses-idle ()
+  "A tmp prompt buffer suppresses idle when it replaced the session in the same window."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-tmp-prompt-history]*"))
+        (prompt-buffer (generate-new-buffer "*cc-prompt-tmp-history.md*"))
+        (hook-runs 0))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer session-buffer)
+          (with-current-buffer prompt-buffer
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory "/tmp/claude-code-idle-tmp-history/"))
+          (switch-to-buffer prompt-buffer)
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t))
+                    ((symbol-function 'run-hook-with-args)
+                     (lambda (&rest _args)
+                       (setq hook-runs (1+ hook-runs)))))
+            (with-current-buffer session-buffer
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p nil)
+              (claude-code-ide-session-idle--fire-timer session-buffer)
+              (should-not claude-code-ide-session-idle-p)
+              (should (= hook-runs 0))))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer prompt-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-tmp-prompt-visible-session-fallback-resolves-owner ()
+  "A tmp prompt buffer resolves its owner from a visible sibling session buffer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-idle-tmp-prompt-visible-session]*"))
+        (prompt-buffer (generate-new-buffer "*cc-prompt-tmp-visible-session.md*"))
+        (other-buffer (generate-new-buffer "*cc-tmp-prompt-visible-session-other*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer other-buffer)
+          (let ((session-window (selected-window))
+                (prompt-window (split-window-right)))
+            (set-window-buffer session-window session-buffer)
+            (set-window-buffer prompt-window prompt-buffer)
+            (select-window session-window))
+          (with-current-buffer prompt-buffer
+            (setq-local leo/ai-tmp-prompt-file-mode t
+                        default-directory "/tmp/claude-code-idle-tmp-visible-session/"))
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t)))
+            (should (equal (claude-code-ide-session-idle--visible-prompt-session-buffers)
+                           (list session-buffer))))))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer prompt-buffer other-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-reset-does-not-arm-visible-session ()
   "Visible focused sessions do not schedule a timer when reset directly."

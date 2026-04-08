@@ -91,6 +91,9 @@ prevents idle timer scheduling and idle hook execution."
 (defvar claude-code-ide-session-idle--in-visibility-refresh nil
   "Non-nil while visible-session idle state is being refreshed.")
 
+(defvar-local claude-code-ide-session-idle--prompt-owner-directory nil
+  "Cached session directory that owns the current prompt-edit buffer.")
+
 (defun claude-code-ide-session-idle--suppressed-p (&optional buffer)
   "Return non-nil when idle monitoring should be suppressed."
   (or (claude-code-ide-session-idle--prompt-edit-suppressed-p
@@ -167,19 +170,97 @@ fresh output from the session backend."
      'visible)
     (nreverse buffers)))
 
+(defun claude-code-ide-session-idle--visible-session-buffers (&optional frame)
+  "Return visible session buffers shown in focused FRAME or any focused frame."
+  (let (buffers)
+    (walk-windows
+     (lambda (window)
+       (let ((buffer (window-buffer window))
+             (window-frame (window-frame window)))
+         (when (and (buffer-live-p buffer)
+                    (frame-focus-state window-frame)
+                    (claude-code-ide-session-buffer-p buffer)
+                    (or (null frame)
+                        (eq frame window-frame))
+                    (not (memq buffer buffers)))
+           (push buffer buffers))))
+     'no-minibuf
+     'visible)
+    (nreverse buffers)))
+
+(defun claude-code-ide-session-idle--cache-prompt-owner (prompt-buffer session-buffer)
+  "Cache SESSION-BUFFER ownership on PROMPT-BUFFER."
+  (when (and (buffer-live-p prompt-buffer)
+             (buffer-live-p session-buffer))
+    (with-current-buffer prompt-buffer
+      (setq-local claude-code-ide-session-idle--prompt-owner-directory
+                  (file-name-as-directory
+                   (expand-file-name
+                    (with-current-buffer session-buffer
+                      default-directory)))))))
+
+(defun claude-code-ide-session-idle--prompt-buffer-cached-session-buffer (prompt-buffer)
+  "Return the cached owner session buffer for PROMPT-BUFFER."
+  (when (buffer-live-p prompt-buffer)
+    (with-current-buffer prompt-buffer
+      (when claude-code-ide-session-idle--prompt-owner-directory
+        (when-let ((buffer
+                    (claude-code-ide--get-session-buffer
+                     claude-code-ide-session-idle--prompt-owner-directory)))
+          (and (buffer-live-p buffer)
+               buffer))))))
+
+(defun claude-code-ide-session-idle--prompt-buffer-window-history-session-buffer (prompt-buffer)
+  "Return the owner session buffer for PROMPT-BUFFER from window history."
+  (cl-some (lambda (window)
+             (when (and (window-live-p window)
+                        (frame-focus-state (window-frame window)))
+               (cl-some (lambda (entry)
+                          (let ((buffer (car entry)))
+                            (and (buffer-live-p buffer)
+                                 (claude-code-ide-session-buffer-p buffer)
+                                 buffer)))
+                        (window-prev-buffers window))))
+           (get-buffer-window-list prompt-buffer nil t)))
+
+(defun claude-code-ide-session-idle--prompt-buffer-visible-session-buffer (prompt-buffer)
+  "Return the sole visible session buffer in PROMPT-BUFFER's focused frame."
+  (cl-some (lambda (window)
+             (when (and (window-live-p window)
+                        (frame-focus-state (window-frame window)))
+               (let ((buffers
+                      (claude-code-ide-session-idle--visible-session-buffers
+                       (window-frame window))))
+                 (and (= (length buffers) 1)
+                      (car buffers)))))
+           (get-buffer-window-list prompt-buffer nil t)))
+
 (defun claude-code-ide-session-idle--prompt-buffer-session-buffer (prompt-buffer)
   "Return the live session buffer owned by PROMPT-BUFFER."
-  (when (and (buffer-live-p prompt-buffer)
-             (fboundp 'claude-code-ide--get-related-session-directories)
-             (fboundp 'claude-code-ide--get-session-buffer))
-    (with-current-buffer prompt-buffer
-      (cl-some (lambda (directory)
-                 (let ((buffer
-                        (claude-code-ide--get-session-buffer directory)))
-                   (and (buffer-live-p buffer)
-                        buffer)))
-               (claude-code-ide--get-related-session-directories
-                default-directory)))))
+  (when (buffer-live-p prompt-buffer)
+    (let ((session-buffer
+           (or (claude-code-ide-session-idle--prompt-buffer-cached-session-buffer
+                prompt-buffer)
+               (claude-code-ide-session-idle--prompt-buffer-window-history-session-buffer
+                prompt-buffer)
+               (claude-code-ide-session-idle--prompt-buffer-visible-session-buffer
+                prompt-buffer)
+               (when (and (fboundp 'claude-code-ide--get-related-session-directories)
+                          (fboundp 'claude-code-ide--get-session-buffer))
+                 (with-current-buffer prompt-buffer
+                   (cl-some (lambda (directory)
+                              (let ((buffer
+                                     (claude-code-ide--get-session-buffer
+                                      directory)))
+                                (and (buffer-live-p buffer)
+                                     buffer)))
+                            (claude-code-ide--get-related-session-directories
+                             default-directory)))))))
+      (when session-buffer
+        (claude-code-ide-session-idle--cache-prompt-owner
+         prompt-buffer
+         session-buffer))
+      session-buffer)))
 
 (defun claude-code-ide-session-idle--visible-prompt-session-buffers ()
   "Return live session buffers owned by visible prompt-edit buffers."
