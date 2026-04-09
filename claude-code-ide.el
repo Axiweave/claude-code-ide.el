@@ -1221,7 +1221,9 @@ Returns a cons cell of (buffer . process) on success."
                         (format "EMACS_BUFFER_NAME=%s" buffer-name)
                         "ENABLE_IDE_INTEGRATION=true"
                         "TERM_PROGRAM=emacs"
-                        "FORCE_CODE_TERMINAL=true")))
+                        "FORCE_CODE_TERMINAL=true"
+                        ;; "CLAUDE_CODE_NO_FLICKER=1"
+                        )))
     (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
