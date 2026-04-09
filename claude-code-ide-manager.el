@@ -1597,8 +1597,8 @@ owned sidebar windows."
 (defun claude-code-ide-manager--projectile-known-project-roots ()
   "Return known Projectile roots."
   (cond
-   ((fboundp 'projectile-relevant-known-projects)
-    (projectile-relevant-known-projects))
+   ((fboundp 'projectile-known-projects)
+    (projectile-known-projects))
    ((boundp 'projectile-known-projects)
     projectile-known-projects)
    (t nil)))
