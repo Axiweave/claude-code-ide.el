@@ -634,7 +634,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ["Interaction"
     ("i" "Implement TODO" claude-code-ide-implement-todo)
     ("@" "Send current file @path" claude-code-ide-send-current-file)
-    ("#" "Send current file path:line" claude-code-ide-send-current-file-line-reference)
+    ("#" "Send current file path[:range]" claude-code-ide-send-current-file-line-reference)
     ("f" "Send file @path" claude-code-ide-send-file)
     ("F" "Send file @path (from root)" claude-code-ide-send-file-from-root)
     ("e" "Send escape key" claude-code-ide-send-escape)

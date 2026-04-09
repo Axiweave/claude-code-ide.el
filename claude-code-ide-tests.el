@@ -8150,7 +8150,7 @@ have completed before cleanup.  Waits up to 5 seconds."
       (kill-buffer file-buf))))
 
 (ert-deftest claude-code-ide-test-send-current-file-line-reference ()
-  "Test send-current-file-line-reference sends an absolute path with line number."
+  "Test send-current-file-line-reference sends an absolute path by default."
   (let ((sent-string nil))
     (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
                (lambda () "*test-claude-buffer*"))
@@ -8171,11 +8171,11 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (forward-line 1)
                 (claude-code-ide-send-current-file-line-reference)
                 (should (equal sent-string
-                               "/home/user/project/src/main.el:2 ")))
+                               "/home/user/project/src/main.el ")))
             (kill-buffer test-source-buf)))))))
 
 (ert-deftest claude-code-ide-test-send-current-file-line-reference-from-claude-buffer ()
-  "Test send-current-file-line-reference uses the context buffer line."
+  "Test send-current-file-line-reference uses the context file path."
   (let ((sent-string nil)
         (file-buf (generate-new-buffer "test-ctx-line-send")))
     (unwind-protect
@@ -8199,9 +8199,65 @@ have completed before cleanup.  Waits up to 5 seconds."
               (rename-buffer "*test-claude-buffer*")
               (claude-code-ide-send-current-file-line-reference)
               (should (equal sent-string
-                             "/home/user/project/src/main.el:3 ")))))
+                             "/home/user/project/src/main.el ")))))
       (with-current-buffer file-buf (setq buffer-file-name nil))
       (kill-buffer file-buf))))
+
+(ert-deftest claude-code-ide-test-send-current-file-line-reference-with-range-selection ()
+  "Test send-current-file-line-reference appends a line range for an active region."
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'claude-code-ide--find-prompt-buffer)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+               (lambda (_buf) nil)))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((test-source-buf (generate-new-buffer "test-source-line-ref-range")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (transient-mark-mode 1)
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (insert "line1\nline2\nline3\nline4\n")
+                (goto-char (point-min))
+                (forward-line 1)
+                (push-mark (point) t t)
+                (forward-line 2)
+                (claude-code-ide-send-current-file-line-reference)
+                (should (equal sent-string
+                               "/home/user/project/src/main.el:2-3 ")))
+            (kill-buffer test-source-buf)))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-line-reference-with-single-line-selection ()
+  "Test send-current-file-line-reference appends a single selected line."
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'claude-code-ide--find-prompt-buffer)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+               (lambda (_buf) nil)))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((test-source-buf (generate-new-buffer "test-source-line-ref-single")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (transient-mark-mode 1)
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (insert "line1\nline2\nline3\n")
+                (goto-char (point-min))
+                (forward-line 1)
+                (push-mark (point) t t)
+                (end-of-line)
+                (claude-code-ide-send-current-file-line-reference)
+                (should (equal sent-string
+                               "/home/user/project/src/main.el:2 ")))
+            (kill-buffer test-source-buf)))))))
 
 (ert-deftest claude-code-ide-test-cli-type-detection ()
   "Test CLI type detection from cli-path."

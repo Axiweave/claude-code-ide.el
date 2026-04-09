@@ -1900,6 +1900,16 @@ Line numbers are 1-based."
       (cons (line-number-at-pos start)
             adjusted-end)))))
 
+(defun claude-code-ide--format-selection-line-suffix (range prefix)
+  "Return a line suffix for RANGE using PREFIX, or an empty string.
+RANGE is a cons cell of 1-based start and end lines."
+  (cond
+   ((null range) "")
+   ((= (car range) (cdr range))
+    (format "%s%d" prefix (car range)))
+   (t
+    (format "%s%d-%d" prefix (car range) (cdr range)))))
+
 ;;;###autoload
 (defun claude-code-ide-send-current-file ()
   "Send current buffer's file path with @ prefix to the Claude Code terminal.
@@ -1921,11 +1931,7 @@ recent visible file-visiting buffer on the current frame."
              (relative (file-relative-name file root))
              (range (when ctx-buf
                       (claude-code-ide--get-selection-line-range)))
-             (suffix (cond
-                      ((null range) "")
-                      ((= (car range) (cdr range))
-                       (format "#L%d" (car range)))
-                      (t (format "#L%d-%d" (car range) (cdr range)))))
+             (suffix (claude-code-ide--format-selection-line-suffix range "#L"))
              (reference-body (concat "@" relative suffix)))
         (claude-code-ide--send-reference-body reference-body)))))
 
@@ -1954,10 +1960,11 @@ Like `claude-code-ide-send-file' with prefix argument."
 
 ;;;###autoload
 (defun claude-code-ide-send-current-file-line-reference ()
-  "Send the current file's absolute path with the current line number.
-The reference format is /absolute/path:LINE.  Unlike
+  "Send the current file's absolute path, with an optional selected line suffix.
+The reference format is /absolute/path or /absolute/path:LINE[-END]
+when an evil visual selection or Emacs region is active.  Unlike
 `claude-code-ide-send-current-file', this requires a live file buffer
-context so the reported line number comes from the target file."
+context so selection state comes from the target file."
   (interactive)
   (let* ((context (claude-code-ide--get-file-reference-context))
          (file (car context))
@@ -1967,9 +1974,9 @@ context so the reported line number comes from the target file."
     (unless ctx-buf
       (user-error "Current context does not provide a file line number"))
     (with-current-buffer ctx-buf
-      (let ((reference-body (format "%s:%d"
-                                    file
-                                    (line-number-at-pos (point)))))
+      (let* ((range (claude-code-ide--get-selection-line-range))
+             (suffix (claude-code-ide--format-selection-line-suffix range ":"))
+             (reference-body (concat file suffix)))
         (claude-code-ide--send-reference-body reference-body)))))
 
 ;;;###autoload
