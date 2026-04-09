@@ -70,6 +70,7 @@
 (declare-function claude-code-ide--get-working-directory "claude-code-ide" ())
 (declare-function claude-code-ide--current-cli-type "claude-code-ide" ())
 (declare-function claude-code-ide-send-current-file "claude-code-ide" ())
+(declare-function claude-code-ide-send-current-file-line-reference "claude-code-ide" ())
 (declare-function claude-code-ide-send-file "claude-code-ide" (arg))
 (declare-function claude-code-ide-send-file-from-root "claude-code-ide" ())
 (declare-function claude-code-ide-implement-todo "claude-code-ide" (arg))
@@ -633,6 +634,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ["Interaction"
     ("i" "Implement TODO" claude-code-ide-implement-todo)
     ("@" "Send current file @path" claude-code-ide-send-current-file)
+    ("#" "Send current file path:line" claude-code-ide-send-current-file-line-reference)
     ("f" "Send file @path" claude-code-ide-send-file)
     ("F" "Send file @path (from root)" claude-code-ide-send-file-from-root)
     ("e" "Send escape key" claude-code-ide-send-escape)

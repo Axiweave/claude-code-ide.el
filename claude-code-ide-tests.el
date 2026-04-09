@@ -5159,6 +5159,11 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test the main transient exposes the TODO implementation command."
   (should (transient-get-suffix 'claude-code-ide-menu "i")))
 
+(ert-deftest claude-code-ide-test-transient-exposes-current-file-line-reference ()
+  "Test the main transient exposes the absolute path with line binding."
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "#")) :command)
+                 'claude-code-ide-send-current-file-line-reference)))
+
 (ert-deftest claude-code-ide-test-transient-exposes-current-dir-and-session-lists ()
   "Test the main transient exposes current-dir and session list bindings."
   (should (transient-get-suffix 'claude-code-ide-menu "d"))
@@ -8141,6 +8146,60 @@ have completed before cleanup.  Waits up to 5 seconds."
               ;; Call from a buffer with no file (simulating claude buffer)
               (claude-code-ide-send-current-file)
               (should (equal sent-string "@src/main.el ")))))
+      (with-current-buffer file-buf (setq buffer-file-name nil))
+      (kill-buffer file-buf))))
+
+(ert-deftest claude-code-ide-test-send-current-file-line-reference ()
+  "Test send-current-file-line-reference sends an absolute path with line number."
+  (let ((sent-string nil))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'claude-code-ide--find-prompt-buffer)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+               (lambda (_buf) nil)))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        (let ((test-source-buf (generate-new-buffer "test-source-line-ref")))
+          (unwind-protect
+              (with-current-buffer test-source-buf
+                (setq buffer-file-name "/home/user/project/src/main.el")
+                (insert "line1\nline2\nline3\n")
+                (goto-char (point-min))
+                (forward-line 1)
+                (claude-code-ide-send-current-file-line-reference)
+                (should (equal sent-string
+                               "/home/user/project/src/main.el:2 ")))
+            (kill-buffer test-source-buf)))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-line-reference-from-claude-buffer ()
+  "Test send-current-file-line-reference uses the context buffer line."
+  (let ((sent-string nil)
+        (file-buf (generate-new-buffer "test-ctx-line-send")))
+    (unwind-protect
+        (progn
+          (with-current-buffer file-buf
+            (setq buffer-file-name "/home/user/project/src/main.el")
+            (insert "line1\nline2\nline3\n")
+            (goto-char (point-min))
+            (forward-line 2))
+          (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                     (lambda () "*test-claude-buffer*"))
+                    ((symbol-function 'claude-code-ide--terminal-send-string)
+                     (lambda (str &optional _paste) (setq sent-string str)))
+                    ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                     (lambda () nil))
+                    ((symbol-function 'claude-code-ide--get-file-reference-context)
+                     (lambda () (cons "/home/user/project/src/main.el" file-buf)))
+                    ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                     (lambda (_buf) nil)))
+            (with-temp-buffer
+              (rename-buffer "*test-claude-buffer*")
+              (claude-code-ide-send-current-file-line-reference)
+              (should (equal sent-string
+                             "/home/user/project/src/main.el:3 ")))))
       (with-current-buffer file-buf (setq buffer-file-name nil))
       (kill-buffer file-buf))))
 
