@@ -1199,7 +1199,7 @@ Signals an error if terminal fails to initialize."
        ;; eat backend
        ((eq backend 'eat)
         (let* ((buffer (get-buffer-create buffer-name))
-               (eat-term-name "xterm-256color")
+               ;; (eat-term-name "xterm-256color")
                (cmd-parts (claude-code-ide--parse-command-string cmd))
                (program (car cmd-parts))
                (args (cdr cmd-parts)))
