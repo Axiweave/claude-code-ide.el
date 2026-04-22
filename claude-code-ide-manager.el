@@ -731,10 +731,10 @@ default to the global scope for backward compatibility."
 
 (defun claude-code-ide-manager--buffer-local-value (variable buffer)
   "Return VARIABLE's value in BUFFER when VARIABLE is bound there."
-  (when (and (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (boundp variable)))
-    (buffer-local-value variable buffer)))
+  (when (buffer-live-p buffer)
+    (condition-case nil
+        (buffer-local-value variable buffer)
+      (void-variable nil))))
 
 (defun claude-code-ide-manager--session-idle-p (session-key)
   "Return non-nil when SESSION-KEY's live buffer is idle-enabled and idle."

@@ -1673,6 +1673,46 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (kill-buffer buffer)))
             (list session-buffer manager-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-render-does-not-enter-session-buffers-for-status ()
+  "Test manager render reads status without switching into live session buffers."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-no-session-status-switch*"))
+        (manager-buffer (claude-code-ide-manager--get-buffer))
+        (entered-session-buffer nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer session-buffer
+            (rename-buffer "*claude-code[no-session-status-switch]*" t)
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-working-p t))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key "/tmp/project-a"
+                       :display-name "project-a"
+                       :secondary-text "/tmp/project-a"
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (_session-key) session-buffer))
+                    ((symbol-function 'set-buffer)
+                     (let ((orig-set-buffer (symbol-function 'set-buffer)))
+                       (lambda (buffer-or-name)
+                         (let ((buffer (get-buffer buffer-or-name)))
+                           (when (eq buffer session-buffer)
+                             (setq entered-session-buffer t)))
+                         (funcall orig-set-buffer buffer-or-name)))))
+            (with-current-buffer manager-buffer
+              (claude-code-ide-manager--render)
+              (should (string-match-p "⚙︎"
+                                      (claude-code-ide-tests--manager-row-text)))
+              (should-not entered-session-buffer))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer manager-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-switch-refreshes-sidebar-highlight ()
   "Test switching sessions rerenders the manager highlight."
   (claude-code-ide-tests--reset-manager-state)
