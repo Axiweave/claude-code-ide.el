@@ -446,7 +446,7 @@ Claude Code IDE supports =vterm=, =eat=, and =ghostel= as terminal backends. By 
 (setq claude-code-ide-terminal-backend 'vterm)
 #+end_src
 
-The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. The =ghostel= backend currently has basic integration only: session creation, core input dispatch, idle/working-state tracking, and backend selection work, but the vterm/eat-specific flicker and reflow workarounds are intentionally not enabled there yet.
+The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. The =ghostel= backend currently supports session creation, core input dispatch, idle/working-state tracking, backend selection, and the resize/reflow guard. The =eat=-specific scroll position keeper and terminal filter batching remain backend-specific.
 
 You can also override the terminal backend per CLI while keeping a global default for everything else:
 
@@ -499,11 +499,11 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 | =C-c C-c=   | =claude-code-ide-session-send-interrupt= | Send interrupt to the session |
 | =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
 
-These keybindings are automatically set up for both =vterm= and =eat= backends and only apply within Claude Code terminal buffers.
+These keybindings are automatically set up for =vterm=, =eat=, and =ghostel= backends and only apply within Claude Code terminal buffers.
 
 **** Terminal Reflow Glitch Prevention (Temporary)
 
-Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default but can be disabled if needed:
+Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default for supported terminal backends, including =vterm=, =eat=, and =ghostel=, but can be disabled if needed:
 
 #+begin_src emacs-lisp
 ;; Disable the terminal reflow glitch prevention (not recommended until bug is fixed)

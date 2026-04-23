@@ -157,6 +157,10 @@
   "Mock ghostel filter function for testing."
   nil)
 
+(defun ghostel--window-adjust-process-window-size (_process _windows)
+  "Mock Ghostel resize handler for testing."
+  nil)
+
 (defun ghostel-send-C-c ()
   "Mock Ghostel interrupt command for testing."
   nil)
@@ -4837,7 +4841,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda ()
                  'codex))
               ((symbol-function 'claude-code-ide--terminal-resize-handler)
-               (lambda ()
+               (lambda (&optional _backend)
                  'eat--adjust-process-window-size))
               ((symbol-function 'advice-add)
                (lambda (symbol where function &rest _props)
@@ -4886,7 +4890,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide--processes (make-hash-table :test 'equal))
         (claude-code-ide--cleanup-in-progress nil))
     (cl-letf (((symbol-function 'claude-code-ide--terminal-resize-handler)
-               (lambda ()
+               (lambda (&optional _backend)
                  'eat--adjust-process-window-size))
               ((symbol-function 'advice-remove)
                (lambda (symbol function)
@@ -4909,26 +4913,38 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-set-process-uses-session-backend-for-reflow-guard ()
   "Test reflow guard follows the launched session backend, not the global default."
   (claude-code-ide-tests--clear-processes)
-  (let ((claude-code-ide-terminal-backend 'ghostel)
+  (let ((claude-code-ide-terminal-backend 'vterm)
         (claude-code-ide-prevent-reflow-glitch t)
-        (added-advices nil))
+        (added-advices nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-ghostel-reflow]*")))
     (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
                (lambda ()
                  'claude))
-              ((symbol-function 'claude-code-ide--current-terminal-backend)
-               (lambda ()
-                 'vterm))
-              ((symbol-function 'claude-code-ide--terminal-resize-handler)
-               (lambda ()
-                 'vterm--window-adjust-process-window-size))
               ((symbol-function 'advice-add)
                (lambda (symbol where function &rest _props)
                  (push (list symbol where function) added-advices))))
-      (claude-code-ide--set-process 'mock-process "/tmp/test")
-      (should (member '(vterm--window-adjust-process-window-size
-                        :around
-                        claude-code-ide--terminal-reflow-filter)
-                      added-advices)))))
+      (unwind-protect
+          (with-current-buffer session-buffer
+            (setq-local claude-code-ide--terminal-backend 'ghostel)
+            (claude-code-ide--set-process session-buffer "/tmp/test")
+            (should (member '(ghostel--window-adjust-process-window-size
+                              :around
+                              claude-code-ide--terminal-working-resize-observer)
+                            added-advices))
+            (should (member '(ghostel--window-adjust-process-window-size
+                              :around
+                              claude-code-ide--terminal-reflow-filter)
+                            added-advices)))
+        (when (buffer-live-p session-buffer)
+          (kill-buffer session-buffer))))))
+
+(ert-deftest claude-code-ide-test-terminal-resize-handler-supports-ghostel ()
+  "Test terminal resize handler dispatches to Ghostel's backend hook."
+  (with-temp-buffer
+    (setq-local claude-code-ide--terminal-backend 'ghostel)
+    (should (eq (claude-code-ide--terminal-resize-handler)
+                #'ghostel--window-adjust-process-window-size))
+    (should (claude-code-ide--terminal-supports-reflow-guard-p 'ghostel))))
 
 ;;; Tests for CLI Detection
 

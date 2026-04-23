@@ -99,6 +99,8 @@
 (declare-function ghostel-mode "ghostel" ())
 (declare-function ghostel--filter "ghostel" (process output))
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
+(declare-function ghostel--window-adjust-process-window-size
+                  "ghostel" (process windows))
 
 ;; External function declarations from MCP
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
@@ -613,17 +615,19 @@ from the window where it was initially created."
 ;; the upstream bug is fixed.
 ;; See: https://github.com/anthropics/claude-code/issues/1422
 
-(defun claude-code-ide--terminal-resize-handler ()
+(defun claude-code-ide--terminal-resize-handler (&optional backend)
   "Retrieve the terminal's resize handling function based on backend."
-  (pcase (claude-code-ide--current-terminal-backend)
+  (pcase (or backend (claude-code-ide--current-terminal-backend))
     ('vterm #'vterm--window-adjust-process-window-size)
     ('eat #'eat--adjust-process-window-size)
-    (_ (error "Unsupported terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
+    ('ghostel #'ghostel--window-adjust-process-window-size)
+    (_ (error "Unsupported terminal backend: %s"
+              (or backend (claude-code-ide--current-terminal-backend))))))
 
 (defun claude-code-ide--terminal-supports-reflow-guard-p (&optional backend)
   "Return non-nil when BACKEND supports the reflow workaround hooks."
   (memq (or backend (claude-code-ide--current-terminal-backend))
-        '(vterm eat)))
+        '(vterm eat ghostel)))
 
 (defun claude-code-ide--backend-for-process (process)
   "Return the terminal backend associated with PROCESS, when known."
@@ -672,17 +676,17 @@ width has actually changed, working around the scrolling glitch."
      ;; No width change - suppress reflow
      (t nil))))
 
-(defun claude-code-ide--install-terminal-resize-observer ()
+(defun claude-code-ide--install-terminal-resize-observer (&optional backend)
   "Install resize observation used by working-state detection."
-  (let ((handler (claude-code-ide--terminal-resize-handler)))
+  (let ((handler (claude-code-ide--terminal-resize-handler backend)))
     (unless (advice-member-p #'claude-code-ide--terminal-working-resize-observer
                              handler)
       (advice-add handler :around
                   #'claude-code-ide--terminal-working-resize-observer))))
 
-(defun claude-code-ide--remove-terminal-resize-observer ()
+(defun claude-code-ide--remove-terminal-resize-observer (&optional backend)
   "Remove resize observation used by working-state detection."
-  (advice-remove (claude-code-ide--terminal-resize-handler)
+  (advice-remove (claude-code-ide--terminal-resize-handler backend)
                  #'claude-code-ide--terminal-working-resize-observer))
 
 
@@ -851,12 +855,12 @@ range should be attached."
   (let ((backend (claude-code-ide--backend-for-process process)))
     ;; Check if this is the first session starting
     (when (= (hash-table-count claude-code-ide--processes) 0)
-      (claude-code-ide--install-terminal-resize-observer)
+      (claude-code-ide--install-terminal-resize-observer backend)
       (when (and (eq (claude-code-ide--current-cli-type) 'claude)
                  claude-code-ide-prevent-reflow-glitch
                  (claude-code-ide--terminal-supports-reflow-guard-p backend))
         ;; Apply advice globally for the first Claude session when enabled.
-        (advice-add (claude-code-ide--terminal-resize-handler)
+        (advice-add (claude-code-ide--terminal-resize-handler backend)
                     :around #'claude-code-ide--terminal-reflow-filter))))
   (puthash (or directory (claude-code-ide--get-working-directory))
            process
@@ -955,11 +959,11 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           (remhash directory claude-code-ide--processes)
           ;; Check if this was the last session
           (when (= (hash-table-count claude-code-ide--processes) 0)
-            (claude-code-ide--remove-terminal-resize-observer)
+            (claude-code-ide--remove-terminal-resize-observer backend)
             (when (and claude-code-ide-prevent-reflow-glitch
                        (claude-code-ide--terminal-supports-reflow-guard-p backend))
               ;; Remove advice globally when no sessions remain
-              (advice-remove (claude-code-ide--terminal-resize-handler)
+              (advice-remove (claude-code-ide--terminal-resize-handler backend)
                              #'claude-code-ide--terminal-reflow-filter)))
           ;; Remove vterm rendering optimization if no sessions remain
           (when (and claude-code-ide-vterm-anti-flicker
