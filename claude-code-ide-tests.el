@@ -6618,6 +6618,60 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-visible-codex-terminal-syncs-after-window-restore ()
+  "Test Codex terminal windows are pushed back to the prompt after layout restore."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-codex-position*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 80)
+                               "\n"))
+            (goto-char (point-max))
+            (setq-local claude-code-ide--session-cli-type 'codex
+                        claude-code-ide--terminal-backend 'vterm)
+            (let ((target-point (point))
+                  (session-window (selected-window)))
+              (set-window-point session-window (point-min))
+              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                         (lambda (candidate)
+                           (eq candidate buffer)))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () t)))
+                (claude-code-ide--sync-visible-codex-terminal-windows))
+              (should (= (window-point session-window) target-point)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-visible-codex-ghostel-terminal-syncs-after-window-restore ()
+  "Test Codex ghostel terminal windows are pushed back after layout restore."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-codex-ghostel-position*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 80)
+                               "\n"))
+            (goto-char (point-max))
+            (setq-local claude-code-ide--session-cli-type 'codex
+                        claude-code-ide--terminal-backend 'ghostel)
+            (let ((target-point (point))
+                  (session-window (selected-window)))
+              (set-window-point session-window (point-min))
+              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                         (lambda (candidate)
+                           (eq candidate buffer)))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () t)))
+                (claude-code-ide--sync-visible-codex-terminal-windows))
+              (should (= (window-point session-window) target-point)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 ;;; Tests for Diagnostics
 
 (ert-deftest claude-code-ide-test-diagnostics-severity-mapping ()

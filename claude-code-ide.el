@@ -1176,6 +1176,45 @@ when navigating between terminal and other buffers."
               (goto-char terminal-point)
               (recenter recenter-line))))))))
 
+(defun claude-code-ide--codex-terminal-window-target-point ()
+  "Return the live prompt position for the current Codex terminal buffer."
+  (if (and (eq (claude-code-ide--current-terminal-backend) 'eat)
+           (bound-and-true-p eat-terminal)
+           (fboundp 'eat-term-display-cursor))
+      (eat-term-display-cursor eat-terminal)
+    (point-max)))
+
+(defun claude-code-ide--sync-visible-codex-terminal-windows ()
+  "Keep visible Codex terminal windows pinned to the live prompt.
+Perspective/window-state restores can resurrect stale `window-point' values
+without any terminal output event, so synchronize visible Codex terminal
+windows after window configuration changes."
+  (dolist (win (window-list nil 'no-minibuf))
+    (when-let ((buffer (window-buffer win)))
+      (when (and (window-live-p win)
+                 (claude-code-ide--session-buffer-p buffer))
+        (with-current-buffer buffer
+          (when (and (eq (claude-code-ide--current-cli-type) 'codex)
+                     (memq (claude-code-ide--current-terminal-backend)
+                           '(vterm eat ghostel))
+                     (or (not (fboundp 'evil-emacs-state-p))
+                         (evil-emacs-state-p)))
+            (let ((target-point
+                   (claude-code-ide--codex-terminal-window-target-point)))
+              (with-selected-window win
+                (set-window-point win target-point)
+                (goto-char target-point)
+                (recenter -4)))))))))
+
+(defun claude-code-ide--install-codex-terminal-window-sync ()
+  "Install hooks that keep Codex terminal windows at the live prompt."
+  (unless (memq #'claude-code-ide--sync-visible-codex-terminal-windows
+                window-configuration-change-hook)
+    (add-hook 'window-configuration-change-hook
+              #'claude-code-ide--sync-visible-codex-terminal-windows)))
+
+(claude-code-ide--install-codex-terminal-window-sync)
+
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.
 COMMAND-STRING is a shell command line to parse.
