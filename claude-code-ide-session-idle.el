@@ -465,35 +465,13 @@ fresh output from the session backend."
       (alert (format "Session idle: %s" (buffer-name buffer))
              :title "Claude Code"))))
 
-(defun claude-code-ide-session-idle--debug-output-sample (output)
-  "Return a compact debug representation for terminal OUTPUT."
-  (let* ((text (format "%S" output))
-         (limit 200))
-    (if (> (length text) limit)
-        (concat (substring text 0 limit) "...")
-      text)))
-
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
   "Run ORIG-FN, then forward session-buffer activity to the idle helper."
   (let* ((process (car args))
-         (output (cadr args))
          (process-buffer (ignore-errors
                            (process-buffer process)))
          (target-buffer (or process-buffer (current-buffer))))
     (prog1 (apply orig-fn args)
-      (when (and claude-code-ide-debug
-                 process-buffer
-                 (buffer-live-p process-buffer))
-        (claude-code-ide-debug
-         "Idle observer output: process=%s buffer=%s bytes=%d payload=%s"
-         (if (processp process)
-             (process-name process)
-           (format "%S" process))
-         (buffer-name process-buffer)
-         (if (stringp output)
-             (string-bytes output)
-           0)
-         (claude-code-ide-session-idle--debug-output-sample output)))
       (when (and (buffer-live-p target-buffer)
                  (claude-code-ide-session-buffer-p target-buffer))
         (with-current-buffer target-buffer

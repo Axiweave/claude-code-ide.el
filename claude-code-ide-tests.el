@@ -9129,6 +9129,31 @@ have completed before cleanup.  Waits up to 5 seconds."
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
+(ert-deftest claude-code-ide-test-session-idle-filter-does-not-log-terminal-output ()
+  "Test that terminal output observers do not log raw backend payloads."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((debug-calls nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-idle-no-output-log]*")))
+    (unwind-protect
+        (let ((claude-code-ide-debug t))
+          (cl-letf (((symbol-function 'process-buffer)
+                     (lambda (_process)
+                       session-buffer))
+                    ((symbol-function 'claude-code-ide-debug)
+                     (lambda (&rest args)
+                       (push args debug-calls)))
+                    ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                     (lambda (&optional _buffer)
+                       nil))
+                    ((symbol-function 'claude-code-ide-session-working-record-output)
+                     (lambda (&optional _buffer)
+                       nil)))
+            (claude-code-ide-session-idle--filter-advice
+             (lambda (&rest _args) nil)
+             'mock-process "SECRET TERMINAL OUTPUT")
+            (should-not debug-calls)))
+      (kill-buffer session-buffer))))
+
 (ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer ()
   "Test that backend output marks the process buffer as working."
   (should (require 'claude-code-ide-session-idle nil t))
