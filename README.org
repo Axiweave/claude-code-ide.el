@@ -327,7 +327,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-cli-debug~                     | Enable CLI debug mode (-d flag)             | ~nil~                                  |
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
-| ~claude-code-ide-terminal-backend~              | Terminal backend (vterm or eat)             | ~'vterm~                               |
+| ~claude-code-ide-terminal-backend~              | Terminal backend (vterm, eat, or ghostel)   | ~'vterm~                               |
 | ~claude-code-ide-cli-terminal-backends~         | Per-CLI terminal backend overrides          | ~nil~                                  |
 | ~claude-code-ide-vterm-anti-flicker~            | Enable vterm flicker reduction              | ~t~                                    |
 | ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
@@ -433,17 +433,20 @@ Or, if you'd prefer to use a regular window:
 
 *** Terminal Backend Configuration
 
-Claude Code IDE supports both =vterm= and =eat= as terminal backends. By default, it uses =vterm=, but you can switch to =eat= if preferred:
+Claude Code IDE supports =vterm=, =eat=, and =ghostel= as terminal backends. By default, it uses =vterm=, but you can switch to either alternative if preferred:
 
 #+begin_src emacs-lisp
 ;; Use eat instead of vterm
 (setq claude-code-ide-terminal-backend 'eat)
 
+;; Or use ghostel for basic terminal integration
+(setq claude-code-ide-terminal-backend 'ghostel)
+
 ;; Or switch back to vterm (default)
 (setq claude-code-ide-terminal-backend 'vterm)
 #+end_src
 
-The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. Both backends provide full terminal functionality including color support and special key handling.
+The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. The =ghostel= backend currently has basic integration only: session creation, core input dispatch, idle/working-state tracking, and backend selection work, but the vterm/eat-specific flicker and reflow workarounds are intentionally not enabled there yet.
 
 You can also override the terminal backend per CLI while keeping a global default for everything else:
 
@@ -451,7 +454,7 @@ You can also override the terminal backend per CLI while keeping a global defaul
 (setq claude-code-ide-terminal-backend 'vterm
       claude-code-ide-cli-terminal-backends '((claude . vterm)
                                               (gsd . vterm)
-                                              (codex . eat)
+                                              (codex . ghostel)
                                               (opencode . vterm)))
 #+end_src
 

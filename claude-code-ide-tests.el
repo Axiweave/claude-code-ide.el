@@ -149,6 +149,20 @@
 
 (provide (quote eat))
 
+;; === Mock ghostel module ===
+(defvar ghostel-set-title-function #'ignore
+  "Mock Ghostel title callback.")
+
+(defun ghostel--filter (_process _string)
+  "Mock ghostel filter function for testing."
+  nil)
+
+(defun ghostel-send-C-c ()
+  "Mock Ghostel interrupt command for testing."
+  nil)
+
+(provide 'ghostel)
+
 ;; === Mock Emacs display functions ===
 (unless (fboundp 'display-buffer-in-side-window)
   (defun display-buffer-in-side-window (buffer _alist)
@@ -1353,7 +1367,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                         claude-code-ide-session-idle-p t))
           (with-current-buffer active-buffer
             (setq-local claude-code-ide-session-idle-enabled t
-                        claude-code-ide-session-idle-p nil))
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-tracking-started-p nil))
           (puthash directory-a process-a claude-code-ide--processes)
           (setq claude-code-ide-manager--items
                 (list (make-claude-code-ide-manager-item
@@ -1600,7 +1615,8 @@ have completed before cleanup.  Waits up to 5 seconds."
           (with-current-buffer session-buffer
             (rename-buffer "*claude-code[non-idle-output]*" t)
             (setq-local claude-code-ide-session-idle-enabled t
-                        claude-code-ide-session-idle-p nil))
+                        claude-code-ide-session-idle-p nil
+                        claude-code-ide-session-tracking-started-p nil))
           (setq claude-code-ide-manager--items
                 (list (make-claude-code-ide-manager-item
                        :session-key "/tmp/project-a"
@@ -4890,6 +4906,30 @@ have completed before cleanup.  Waits up to 5 seconds."
                         claude-code-ide--terminal-working-resize-observer)
                       removed-advices)))))
 
+(ert-deftest claude-code-ide-test-set-process-uses-session-backend-for-reflow-guard ()
+  "Test reflow guard follows the launched session backend, not the global default."
+  (claude-code-ide-tests--clear-processes)
+  (let ((claude-code-ide-terminal-backend 'ghostel)
+        (claude-code-ide-prevent-reflow-glitch t)
+        (added-advices nil))
+    (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
+               (lambda ()
+                 'claude))
+              ((symbol-function 'claude-code-ide--current-terminal-backend)
+               (lambda ()
+                 'vterm))
+              ((symbol-function 'claude-code-ide--terminal-resize-handler)
+               (lambda ()
+                 'vterm--window-adjust-process-window-size))
+              ((symbol-function 'advice-add)
+               (lambda (symbol where function &rest _props)
+                 (push (list symbol where function) added-advices))))
+      (claude-code-ide--set-process 'mock-process "/tmp/test")
+      (should (member '(vterm--window-adjust-process-window-size
+                        :around
+                        claude-code-ide--terminal-reflow-filter)
+                      added-advices)))))
+
 ;;; Tests for CLI Detection
 
 (ert-deftest claude-code-ide-test-detect-cli ()
@@ -4991,6 +5031,18 @@ have completed before cleanup.  Waits up to 5 seconds."
     (let ((claude-code-ide-cli-path "gsd"))
       (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))))
 
+(ert-deftest claude-code-ide-test-terminal-backend-resolution-ghostel ()
+  "Test terminal backend resolution supports `ghostel'."
+  (let ((claude-code-ide-terminal-backend 'ghostel)
+        (claude-code-ide-cli-terminal-backends '((codex . ghostel)
+                                                 (gsd . eat))))
+    (let ((claude-code-ide-cli-path "claude"))
+      (should (eq (claude-code-ide--resolve-terminal-backend) 'ghostel)))
+    (let ((claude-code-ide-cli-path "codex"))
+      (should (eq (claude-code-ide--resolve-terminal-backend) 'ghostel)))
+    (let ((claude-code-ide-cli-path "gsd"))
+      (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))))
+
 (ert-deftest claude-code-ide-test-terminal-send-functions ()
   "Test terminal send wrapper functions."
   ;; Mock vterm functions
@@ -5046,6 +5098,24 @@ have completed before cleanup.  Waits up to 5 seconds."
           (claude-code-ide--terminal-send-string "test")
           (should (equal eat-string-sent "test")))))))
 
+(ert-deftest claude-code-ide-test-terminal-send-functions-ghostel ()
+  "Test terminal send wrapper functions dispatch to ghostel."
+  (let ((ghostel-string-sent nil))
+    (cl-letf (((symbol-function 'ghostel--send-string)
+               (lambda (str) (setq ghostel-string-sent str))))
+      (with-temp-buffer
+        (let ((claude-code-ide-terminal-backend 'ghostel))
+          (claude-code-ide--terminal-send-string "test")
+          (should (equal ghostel-string-sent "test"))
+
+          (setq ghostel-string-sent nil)
+          (claude-code-ide--terminal-send-escape)
+          (should (equal ghostel-string-sent "\e"))
+
+          (setq ghostel-string-sent nil)
+          (claude-code-ide--terminal-send-return)
+          (should (equal ghostel-string-sent "\r")))))))
+
 (ert-deftest claude-code-ide-test-send-prompt-command ()
   "Test the claude-code-ide-send-prompt command."
   (let ((test-prompt "Test prompt from minibuffer")
@@ -5060,7 +5130,7 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'claude-code-ide--get-buffer-name)
                (lambda () "*test-claude-buffer*"))
               ((symbol-function 'claude-code-ide--terminal-send-string)
-               (lambda (str) (setq sent-string str)))
+               (lambda (str &optional _paste) (setq sent-string str)))
               ((symbol-function 'claude-code-ide--terminal-send-return)
                (lambda () (setq sent-return t))))
 
@@ -8091,7 +8161,7 @@ have completed before cleanup.  Waits up to 5 seconds."
     (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
                (lambda () "*test-claude-buffer*"))
               ((symbol-function 'claude-code-ide--terminal-send-string)
-               (lambda (str) nil))
+               (lambda (_str &optional _paste) nil))
               ((symbol-function 'claude-code-ide--terminal-send-return)
                (lambda () nil))
               ((symbol-function 'claude-code-ide--maybe-switch-to-window)
@@ -8480,6 +8550,44 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p mock-eat-buffer)
         (kill-buffer mock-eat-buffer)))))
 
+(ert-deftest claude-code-ide-test-create-codex-terminal-session-uses-ghostel-backend-override ()
+  "Test Codex terminal session creation respects `ghostel' backend overrides."
+  (let ((claude-code-ide-cli-path "codex")
+        (claude-code-ide-terminal-backend 'vterm)
+        (claude-code-ide-cli-terminal-backends '((codex . ghostel)))
+        (claude-code-ide--cli-available t)
+        (claude-code-ide-cli-extra-flags "")
+        (mock-ghostel-buffer nil)
+        (title-disabled-before-exec nil)
+        (mock-process (start-process "mock-codex-ghostel" nil "true")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                   (lambda (&optional _backend) nil))
+                  ((symbol-function 'ghostel-mode)
+                   (lambda () nil))
+                  ((symbol-function 'ghostel-exec)
+                   (lambda (buffer _program &optional _args)
+                     (setq title-disabled-before-exec
+                           (null (buffer-local-value 'ghostel-set-title-function
+                                                     buffer)))
+                     (setq mock-ghostel-buffer buffer)
+                     mock-process))
+                  ((symbol-function 'claude-code-ide--build-codex-command)
+                   (lambda (&rest _) "codex")))
+          (let* ((result (claude-code-ide--create-terminal-session
+                          "*test-codex-ghostel*" "/tmp" 12345 nil nil "test-session"))
+                 (buffer (car result)))
+            (should (consp result))
+            (should (eq buffer mock-ghostel-buffer))
+            (should (eq (cdr result) mock-process))
+            (should title-disabled-before-exec)
+            (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
+                        'ghostel))))
+      (when (process-live-p mock-process)
+        (delete-process mock-process))
+      (when (buffer-live-p mock-ghostel-buffer)
+        (kill-buffer mock-ghostel-buffer)))))
+
 (ert-deftest claude-code-ide-test-create-terminal-session-snapshots-cli-type ()
   "Test terminal buffers keep the launch-time CLI type."
   (let ((claude-code-ide-cli-path "codex")
@@ -8839,6 +8947,38 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should (equal sent-string "\003"))
         (should activity-called)))))
 
+(ert-deftest claude-code-ide-test-session-send-interrupt-dispatches-to-ghostel ()
+  "Test that session interrupt dispatches to ghostel."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((ghostel-interrupt-called nil))
+    (cl-letf (((symbol-function 'ghostel-send-C-c)
+               (lambda ()
+                 (setq ghostel-interrupt-called t))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-ghostel-interrupt]*" t)
+        (claude-code-ide-session-mode 1)
+        (let ((claude-code-ide--terminal-backend 'ghostel))
+          (claude-code-ide-session-send-interrupt))
+        (should ghostel-interrupt-called)))))
+
+(ert-deftest claude-code-ide-test-session-send-string-resets-idle-state-ghostel ()
+  "Test that sending a string records shared activity on ghostel."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil)
+        (activity-called nil))
+    (cl-letf (((symbol-function 'ghostel--send-string)
+               (lambda (string)
+                 (setq sent-string string)))
+              ((symbol-function 'claude-code-ide-session-idle-record-activity)
+               (lambda (&optional _buffer)
+                 (setq activity-called t))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-string-idle-ghostel]*" t)
+        (setq claude-code-ide--terminal-backend 'ghostel)
+        (claude-code-ide-session-send-string "status")
+        (should (equal sent-string "status"))
+        (should activity-called)))))
+
 (ert-deftest claude-code-ide-test-session-send-string-clears-visible-session-idle-state-without-arming-timer ()
   "Visible explicit input clears stale idle state without arming a timer."
   (should (require 'claude-code-ide-session nil t))
@@ -8952,6 +9092,27 @@ have completed before cleanup.  Waits up to 5 seconds."
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
+(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer-ghostel ()
+  "Test that ghostel output filters reset idle for the process buffer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (should (advice-member-p #'claude-code-ide-session-idle--filter-advice
+                           'ghostel--filter))
+  (let ((activity-buffer nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer-ghostel]*"))
+        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process)
+                     session-buffer))
+                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                   (lambda (&optional buffer)
+                     (setq activity-buffer (or buffer (current-buffer))))))
+          (with-current-buffer other-buffer
+            (ghostel--filter 'mock-process "output"))
+          (should (eq activity-buffer session-buffer)))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
+
 (ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer ()
   "Test that backend output marks the process buffer as working."
   (should (require 'claude-code-ide-session-idle nil t))
@@ -8967,6 +9128,25 @@ have completed before cleanup.  Waits up to 5 seconds."
                      (setq working-buffer (or buffer (current-buffer))))))
           (with-current-buffer other-buffer
             (vterm--filter 'mock-process "output"))
+          (should (eq working-buffer session-buffer)))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer-ghostel ()
+  "Test that ghostel backend output marks the process buffer as working."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((working-buffer nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-working-process-buffer-ghostel]*"))
+        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process)
+                     session-buffer))
+                  ((symbol-function 'claude-code-ide-session-working-record-output)
+                   (lambda (&optional buffer)
+                     (setq working-buffer (or buffer (current-buffer))))))
+          (with-current-buffer other-buffer
+            (ghostel--filter 'mock-process "output"))
           (should (eq working-buffer session-buffer)))
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))

@@ -78,6 +78,7 @@
 (defvar vterm-environment)
 (defvar eat-term-name)
 (defvar vterm--process)
+(defvar ghostel-set-title-function)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -93,6 +94,11 @@
 (declare-function eat-term-display-cursor "eat" (terminal))
 (declare-function eat--adjust-process-window-size "eat" (process windows))
 (declare-function eat--filter "eat" (process input))
+
+;; External function declarations for ghostel
+(declare-function ghostel-mode "ghostel" ())
+(declare-function ghostel--filter "ghostel" (process output))
+(declare-function ghostel-exec "ghostel" (buffer program &optional args))
 
 ;; External function declarations from MCP
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
@@ -233,25 +239,28 @@ display-buffer behavior."
 
 (defcustom claude-code-ide-terminal-backend 'vterm
   "Terminal backend to use for Claude Code sessions.
-Can be either `vterm' or `eat'.  The vterm backend is the default
-and provides a fully-featured terminal emulator.  The eat backend
-is an alternative terminal emulator that may work better in some
-environments."
+Can be `vterm', `eat', or `ghostel'.  The vterm backend is the
+default and provides a fully-featured terminal emulator.  The eat
+backend is an alternative terminal emulator that may work better
+in some environments.  The ghostel backend currently has only
+basic integration."
   :type '(choice (const :tag "vterm" vterm)
-                 (const :tag "eat" eat))
+                 (const :tag "eat" eat)
+                 (const :tag "ghostel" ghostel))
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-cli-terminal-backends nil
   "Per-CLI terminal backend overrides.
 Each entry maps `claude', `codex', `gsd', or `opencode' to either `vterm'
-or `eat'.  When a CLI has no override, `claude-code-ide-terminal-backend'
-is used."
+`eat', or `ghostel'.  When a CLI has no override,
+`claude-code-ide-terminal-backend' is used."
   :type '(alist :key-type (choice (const :tag "Claude" claude)
                                   (const :tag "Codex" codex)
                                   (const :tag "GSD" gsd)
                                   (const :tag "OpenCode" opencode))
                 :value-type (choice (const :tag "vterm" vterm)
-                                    (const :tag "eat" eat)))
+                                    (const :tag "eat" eat)
+                                    (const :tag "ghostel" ghostel)))
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-prevent-reflow-glitch t
@@ -611,6 +620,16 @@ from the window where it was initially created."
     ('eat #'eat--adjust-process-window-size)
     (_ (error "Unsupported terminal backend: %s" (claude-code-ide--current-terminal-backend)))))
 
+(defun claude-code-ide--terminal-supports-reflow-guard-p (&optional backend)
+  "Return non-nil when BACKEND supports the reflow workaround hooks."
+  (memq (or backend (claude-code-ide--current-terminal-backend))
+        '(vterm eat)))
+
+(defun claude-code-ide--backend-for-process (process)
+  "Return the terminal backend associated with PROCESS, when known."
+  (when-let ((buffer (claude-code-ide--session-buffer-from-process process)))
+    (buffer-local-value 'claude-code-ide--terminal-backend buffer)))
+
 (defun claude-code-ide--terminal-scroll-mode-active-p ()
   "Determine if terminal is currently in scroll/copy mode."
   (pcase (claude-code-ide--current-terminal-backend)
@@ -829,14 +848,16 @@ range should be attached."
 
 (defun claude-code-ide--set-process (process &optional directory)
   "Set the Claude Code PROCESS for DIRECTORY or current working directory."
-  ;; Check if this is the first session starting
-  (when (= (hash-table-count claude-code-ide--processes) 0)
-    (claude-code-ide--install-terminal-resize-observer)
-    (when (and (eq (claude-code-ide--current-cli-type) 'claude)
-               claude-code-ide-prevent-reflow-glitch)
-      ;; Apply advice globally for the first Claude session when enabled.
-      (advice-add (claude-code-ide--terminal-resize-handler)
-                  :around #'claude-code-ide--terminal-reflow-filter)))
+  (let ((backend (claude-code-ide--backend-for-process process)))
+    ;; Check if this is the first session starting
+    (when (= (hash-table-count claude-code-ide--processes) 0)
+      (claude-code-ide--install-terminal-resize-observer)
+      (when (and (eq (claude-code-ide--current-cli-type) 'claude)
+                 claude-code-ide-prevent-reflow-glitch
+                 (claude-code-ide--terminal-supports-reflow-guard-p backend))
+        ;; Apply advice globally for the first Claude session when enabled.
+        (advice-add (claude-code-ide--terminal-resize-handler)
+                    :around #'claude-code-ide--terminal-reflow-filter))))
   (puthash (or directory (claude-code-ide--get-working-directory))
            process
            claude-code-ide--processes))
@@ -928,12 +949,15 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
     (setq claude-code-ide--cleanup-in-progress t)
     (unwind-protect
         (progn
+          (let* ((process (gethash directory claude-code-ide--processes))
+                 (backend (claude-code-ide--backend-for-process process)))
           ;; Remove from process table
           (remhash directory claude-code-ide--processes)
           ;; Check if this was the last session
           (when (= (hash-table-count claude-code-ide--processes) 0)
             (claude-code-ide--remove-terminal-resize-observer)
-            (when claude-code-ide-prevent-reflow-glitch
+            (when (and claude-code-ide-prevent-reflow-glitch
+                       (claude-code-ide--terminal-supports-reflow-guard-p backend))
               ;; Remove advice globally when no sessions remain
               (advice-remove (claude-code-ide--terminal-resize-handler)
                              #'claude-code-ide--terminal-reflow-filter)))
@@ -958,7 +982,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                       (kill-buffer-query-functions nil)) ; Don't ask for confirmation
                   (kill-buffer buffer)))))
           (claude-code-ide-debug "Cleaned up Claude Code session for %s"
-                                 (file-name-nondirectory (directory-file-name directory))))
+                                 (file-name-nondirectory (directory-file-name directory)))))
       (setq claude-code-ide--cleanup-in-progress nil))))
 
 ;;; CLI Detection
@@ -1223,6 +1247,28 @@ Signals an error if terminal fails to initialize."
               (unless process
                 (error "Failed to create eat process.  Please ensure eat is properly installed"))
               (cons buffer process)))))
+
+       ;; ghostel backend
+       ((eq backend 'ghostel)
+        (let* ((buffer (get-buffer-create buffer-name))
+               (program (or shell-file-name "/bin/sh"))
+               (args (list "-lc" cmd))
+               (process-environment (append env-vars process-environment))
+               process)
+          (with-current-buffer buffer
+            ;; Ghostel may emit an OSC title very early in startup.
+            ;; Disable title tracking before the process exists so the
+            ;; session buffer keeps its deterministic package-managed name.
+            (setq-local ghostel-set-title-function nil))
+          (setq process (ghostel-exec buffer program args))
+          (unless process
+            (error "Failed to create ghostel process.  Please ensure ghostel is properly installed"))
+          (with-current-buffer buffer
+            (setq-local claude-code-ide--session-cli-type cli-type)
+            (setq-local claude-code-ide--terminal-backend backend)
+            (claude-code-ide-session-mode 1)
+            (claude-code-ide-session-setup-buffer))
+          (cons buffer process)))
 
        (t
         (error "Unknown terminal backend: %s" backend))))))

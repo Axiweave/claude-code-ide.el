@@ -511,10 +511,14 @@ fresh output from the session backend."
     (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
   (with-eval-after-load 'eat
     (claude-code-ide-session-idle--install-output-observer 'eat--filter))
+  (with-eval-after-load 'ghostel
+    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter))
   (when (featurep 'vterm)
     (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
   (when (featurep 'eat)
-    (claude-code-ide-session-idle--install-output-observer 'eat--filter)))
+    (claude-code-ide-session-idle--install-output-observer 'eat--filter))
+  (when (featurep 'ghostel)
+    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)))
 
 (defun claude-code-ide-session-idle--fire-timer (buffer &optional generation)
   "Run the idle hook for BUFFER if monitoring is still active."
