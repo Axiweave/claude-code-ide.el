@@ -152,9 +152,17 @@
 ;; === Mock ghostel module ===
 (defvar ghostel-set-title-function #'ignore
   "Mock Ghostel title callback.")
+(defvar ghostel--term nil
+  "Mock Ghostel terminal object.")
+(defvar ghostel--term-rows nil
+  "Mock Ghostel terminal row count.")
 
 (defun ghostel--filter (_process _string)
   "Mock ghostel filter function for testing."
+  nil)
+
+(defun ghostel--cursor-position (_term)
+  "Mock Ghostel cursor position."
   nil)
 
 (defun ghostel--window-adjust-process-window-size (_process _windows)
@@ -6646,7 +6654,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-visible-codex-ghostel-terminal-syncs-after-window-restore ()
-  "Test Codex ghostel terminal windows are pushed back after layout restore."
+  "Test Codex ghostel terminal windows sync to Ghostel's cursor after restore."
   (let ((buffer (generate-new-buffer " *claude-code-ide-codex-ghostel-position*")))
     (unwind-protect
         (save-window-excursion
@@ -6656,15 +6664,21 @@ have completed before cleanup.  Waits up to 5 seconds."
             (insert (mapconcat (lambda (n) (format "line %d" n))
                                (number-sequence 1 80)
                                "\n"))
-            (goto-char (point-max))
+            (goto-char (point-min))
+            (forward-line 78)
+            (move-to-column 2)
             (setq-local claude-code-ide--session-cli-type 'codex
-                        claude-code-ide--terminal-backend 'ghostel)
+                        claude-code-ide--terminal-backend 'ghostel
+                        ghostel--term 'mock-term
+                        ghostel--term-rows 3)
             (let ((target-point (point))
                   (session-window (selected-window)))
               (set-window-point session-window (point-min))
               (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
                          (lambda (candidate)
                            (eq candidate buffer)))
+                        ((symbol-function 'ghostel--cursor-position)
+                         (lambda (_term) (cons 2 1)))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t)))
                 (claude-code-ide--sync-visible-codex-terminal-windows))

@@ -79,6 +79,8 @@
 (defvar eat-term-name)
 (defvar vterm--process)
 (defvar ghostel-set-title-function)
+(defvar ghostel--term)
+(defvar ghostel--term-rows)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -101,6 +103,7 @@
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
 (declare-function ghostel--window-adjust-process-window-size
                   "ghostel" (process windows))
+(declare-function ghostel--cursor-position "ghostel" (term))
 
 ;; External function declarations from MCP
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
@@ -1178,11 +1181,27 @@ when navigating between terminal and other buffers."
 
 (defun claude-code-ide--codex-terminal-window-target-point ()
   "Return the live prompt position for the current Codex terminal buffer."
-  (if (and (eq (claude-code-ide--current-terminal-backend) 'eat)
-           (bound-and-true-p eat-terminal)
-           (fboundp 'eat-term-display-cursor))
-      (eat-term-display-cursor eat-terminal)
-    (point-max)))
+  (pcase (claude-code-ide--current-terminal-backend)
+    ('eat
+     (if (and (bound-and-true-p eat-terminal)
+              (fboundp 'eat-term-display-cursor))
+         (eat-term-display-cursor eat-terminal)
+       (point-max)))
+    ('ghostel
+     (if (and (bound-and-true-p ghostel--term)
+              (bound-and-true-p ghostel--term-rows)
+              (fboundp 'ghostel--cursor-position))
+         (if-let ((pos (ghostel--cursor-position ghostel--term)))
+             (save-excursion
+               (let ((scrollback (max 0 (- (line-number-at-pos (point-max))
+                                           ghostel--term-rows))))
+                 (goto-char (point-min))
+                 (forward-line (+ scrollback (cdr pos)))
+                 (move-to-column (car pos))
+                 (point)))
+           (point-max))
+       (point-max)))
+    (_ (point-max))))
 
 (defun claude-code-ide--sync-visible-codex-terminal-windows ()
   "Keep visible Codex terminal windows pinned to the live prompt.
