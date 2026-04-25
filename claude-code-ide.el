@@ -369,6 +369,9 @@ the target window is already visible."
 (defvar claude-code-ide--last-accessed-buffer nil
   "The most recently accessed Claude Code buffer.")
 
+(defvar claude-code-ide--codex-terminal-window-sync-timer nil
+  "Timer used to coalesce deferred Codex terminal window sync passes.")
+
 ;;; Vterm Rendering Optimization
 
 (defvar-local claude-code-ide--vterm-render-queue nil
@@ -1225,12 +1228,28 @@ windows after window configuration changes."
                 (goto-char target-point)
                 (recenter -4)))))))))
 
+(defun claude-code-ide--run-codex-terminal-window-sync ()
+  "Run the deferred Codex terminal window sync pass."
+  (setq claude-code-ide--codex-terminal-window-sync-timer nil)
+  (claude-code-ide--sync-visible-codex-terminal-windows))
+
+(defun claude-code-ide--schedule-codex-terminal-window-sync ()
+  "Sync Codex terminal windows now and queue one deferred follow-up pass.
+Some popup and minibuffer flows restore stale window state after
+`window-configuration-change-hook' has already run.  The deferred
+pass corrects those late restores without waiting for terminal output."
+  (claude-code-ide--sync-visible-codex-terminal-windows)
+  (when claude-code-ide--codex-terminal-window-sync-timer
+    (cancel-timer claude-code-ide--codex-terminal-window-sync-timer))
+  (setq claude-code-ide--codex-terminal-window-sync-timer
+        (run-at-time 0 nil #'claude-code-ide--run-codex-terminal-window-sync)))
+
 (defun claude-code-ide--install-codex-terminal-window-sync ()
   "Install hooks that keep Codex terminal windows at the live prompt."
-  (unless (memq #'claude-code-ide--sync-visible-codex-terminal-windows
+  (unless (memq #'claude-code-ide--schedule-codex-terminal-window-sync
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
-              #'claude-code-ide--sync-visible-codex-terminal-windows)))
+              #'claude-code-ide--schedule-codex-terminal-window-sync)))
 
 (claude-code-ide--install-codex-terminal-window-sync)
 
