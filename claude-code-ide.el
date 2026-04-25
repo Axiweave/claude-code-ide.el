@@ -1206,6 +1206,14 @@ when navigating between terminal and other buffers."
        (point-max)))
     (_ (point-max))))
 
+(defun claude-code-ide--window-start-for-point-near-bottom (win point &optional bottom-margin)
+  "Return a `window-start' that shows POINT near the bottom of WIN.
+BOTTOM-MARGIN defaults to 4 lines, matching the Codex terminal layout."
+  (save-excursion
+    (goto-char point)
+    (forward-line (- (max 0 (- (window-body-height win) (or bottom-margin 4) 1))))
+    (line-beginning-position)))
+
 (defun claude-code-ide--sync-visible-codex-terminal-windows ()
   "Keep visible Codex terminal windows pinned to the live prompt.
 Perspective/window-state restores can resurrect stale `window-point' values
@@ -1227,8 +1235,16 @@ windows after window configuration changes."
               (with-selected-window win
                 (set-window-point win target-point)
                 (goto-char target-point)
-                (unless (eq backend 'ghostel)
-                  (recenter -4))))))))))
+                (cond
+                 ((eq backend 'ghostel)
+                  (unless (pos-visible-in-window-p target-point win)
+                    (set-window-start
+                     win
+                     (claude-code-ide--window-start-for-point-near-bottom
+                      win target-point)
+                     t)))
+                 (t
+                  (recenter -4)))))))))))
 
 (defun claude-code-ide--run-codex-terminal-window-sync ()
   "Run the deferred Codex terminal window sync pass."

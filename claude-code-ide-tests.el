@@ -6724,6 +6724,56 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-visible-codex-ghostel-terminal-sync-restores-unfocused-window-viewport ()
+  "Ghostel Codex sync should restore viewport for unfocused session windows."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-codex-ghostel-unfocused*"))
+        (other-buffer (generate-new-buffer " *claude-code-ide-other*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 120)
+                               "\n"))
+            (goto-char (point-min))
+            (forward-line 118)
+            (move-to-column 2)
+            (setq-local claude-code-ide--session-cli-type 'codex
+                        claude-code-ide--terminal-backend 'ghostel
+                        ghostel--term 'mock-term
+                        ghostel--term-rows 3)
+            (let ((target-point (point))
+                  (session-window (selected-window))
+                  (other-window (split-window-right)))
+              (set-window-buffer other-window other-buffer)
+              (select-window other-window)
+              (set-window-point session-window (point-min))
+              (set-window-start session-window (point-min))
+              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                         (lambda (candidate)
+                           (eq candidate buffer)))
+                        ((symbol-function 'ghostel--cursor-position)
+                         (lambda (_term) (cons 2 1)))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () t)))
+                (claude-code-ide--sync-visible-codex-terminal-windows))
+              (should (= (window-point session-window) target-point))
+              (should (> (window-start session-window) (point-min)))
+              (should
+               (=
+                (window-start session-window)
+                (with-current-buffer buffer
+                  (save-excursion
+                    (goto-char target-point)
+                    (forward-line (- (max 0 (- (window-body-height session-window)
+                                               5))))
+                    (line-beginning-position))))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p other-buffer)
+        (kill-buffer other-buffer)))))
+
 (ert-deftest claude-code-ide-test-schedule-codex-terminal-window-sync-runs-now-and-later ()
   "Window sync scheduling should run immediately and queue a deferred pass."
   (let ((sync-calls 0)
