@@ -1222,11 +1222,13 @@ windows after window configuration changes."
                      (or (not (fboundp 'evil-emacs-state-p))
                          (evil-emacs-state-p)))
             (let ((target-point
-                   (claude-code-ide--codex-terminal-window-target-point)))
+                   (claude-code-ide--codex-terminal-window-target-point))
+                  (backend (claude-code-ide--current-terminal-backend)))
               (with-selected-window win
                 (set-window-point win target-point)
                 (goto-char target-point)
-                (recenter -4)))))))))
+                (unless (eq backend 'ghostel)
+                  (recenter -4))))))))))
 
 (defun claude-code-ide--run-codex-terminal-window-sync ()
   "Run the deferred Codex terminal window sync pass."

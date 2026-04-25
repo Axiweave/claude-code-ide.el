@@ -6686,6 +6686,44 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-visible-codex-ghostel-terminal-sync-skips-recenter ()
+  "Ghostel Codex sync should not force recenter on layout changes."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-codex-ghostel-no-recenter*"))
+        (recenter-calls 0))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 80)
+                               "\n"))
+            (goto-char (point-min))
+            (forward-line 78)
+            (move-to-column 2)
+            (setq-local claude-code-ide--session-cli-type 'codex
+                        claude-code-ide--terminal-backend 'ghostel
+                        ghostel--term 'mock-term
+                        ghostel--term-rows 3)
+            (let ((target-point (point))
+                  (session-window (selected-window)))
+              (set-window-point session-window (point-min))
+              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                         (lambda (candidate)
+                           (eq candidate buffer)))
+                        ((symbol-function 'ghostel--cursor-position)
+                         (lambda (_term) (cons 2 1)))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () t))
+                        ((symbol-function 'recenter)
+                         (lambda (&optional _arg)
+                           (setq recenter-calls (1+ recenter-calls)))))
+                (claude-code-ide--sync-visible-codex-terminal-windows))
+              (should (= (window-point session-window) target-point))
+              (should (= recenter-calls 0)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-schedule-codex-terminal-window-sync-runs-now-and-later ()
   "Window sync scheduling should run immediately and queue a deferred pass."
   (let ((sync-calls 0)
