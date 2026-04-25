@@ -9063,6 +9063,29 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should (equal sent-string "status"))
         (should activity-called)))))
 
+(ert-deftest claude-code-ide-test-session-send-string-uses-ghostel-paste-when-requested ()
+  "Test that pasted text uses Ghostel's bracketed paste path."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((pasted-string nil)
+        (raw-string nil)
+        (activity-called nil))
+    (cl-letf (((symbol-function 'ghostel-paste-string)
+               (lambda (string)
+                 (setq pasted-string string)))
+              ((symbol-function 'ghostel--send-string)
+               (lambda (string)
+                 (setq raw-string string)))
+              ((symbol-function 'claude-code-ide-session-idle-record-activity)
+               (lambda (&optional _buffer)
+                 (setq activity-called t))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-string-paste-ghostel]*" t)
+        (setq claude-code-ide--terminal-backend 'ghostel)
+        (claude-code-ide-session-send-string "status" t)
+        (should (equal pasted-string "status"))
+        (should-not raw-string)
+        (should activity-called)))))
+
 (ert-deftest claude-code-ide-test-session-send-string-clears-visible-session-idle-state-without-arming-timer ()
   "Visible explicit input clears stale idle state without arming a timer."
   (should (require 'claude-code-ide-session nil t))

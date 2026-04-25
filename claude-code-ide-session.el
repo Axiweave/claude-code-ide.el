@@ -55,6 +55,7 @@
 
 (declare-function ghostel-mode "ghostel" ())
 (declare-function ghostel--send-string "ghostel" (string))
+(declare-function ghostel-paste-string "ghostel" (string))
 (declare-function ghostel-send-C-c "ghostel" ())
 
 (declare-function claude-code-ide--current-terminal-backend "claude-code-ide" ())
@@ -297,7 +298,9 @@ When REFERENCE is nil, use
                (eat-term-send-string-as-yank eat-terminal string)
              (eat-term-send-string eat-terminal string))))
         ('ghostel
-         (ghostel--send-string string))
+         (if paste
+             (ghostel-paste-string string)
+           (ghostel--send-string string)))
         (_
          (error "Unknown terminal backend: %s"
                 (claude-code-ide-session--current-terminal-backend))))
