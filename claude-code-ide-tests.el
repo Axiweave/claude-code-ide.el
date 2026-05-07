@@ -152,6 +152,8 @@
 ;; === Mock ghostel module ===
 (defvar ghostel-set-title-function #'ignore
   "Mock Ghostel title callback.")
+(defvar ghostel-enable-url-detection t
+  "Mock Ghostel URL detection setting.")
 (defvar ghostel--term nil
   "Mock Ghostel terminal object.")
 (defvar ghostel--term-rows nil
@@ -8777,6 +8779,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-cli-extra-flags "")
         (mock-ghostel-buffer nil)
         (title-disabled-before-exec nil)
+        (url-detection-disabled-before-exec nil)
         (mock-process (start-process "mock-codex-ghostel" nil "true")))
     (unwind-protect
         (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
@@ -8787,6 +8790,9 @@ have completed before cleanup.  Waits up to 5 seconds."
                    (lambda (buffer _program &optional _args)
                      (setq title-disabled-before-exec
                            (null (buffer-local-value 'ghostel-set-title-function
+                                                     buffer)))
+                     (setq url-detection-disabled-before-exec
+                           (null (buffer-local-value 'ghostel-enable-url-detection
                                                      buffer)))
                      (setq mock-ghostel-buffer buffer)
                      mock-process))
@@ -8799,6 +8805,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (eq buffer mock-ghostel-buffer))
             (should (eq (cdr result) mock-process))
             (should title-disabled-before-exec)
+            (should url-detection-disabled-before-exec)
             (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
                         'ghostel))))
       (when (process-live-p mock-process)

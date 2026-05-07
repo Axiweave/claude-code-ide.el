@@ -79,6 +79,7 @@
 (defvar eat-term-name)
 (defvar vterm--process)
 (defvar ghostel-set-title-function)
+(defvar ghostel-enable-url-detection)
 (defvar ghostel--term)
 (defvar ghostel--term-rows)
 
@@ -1358,7 +1359,8 @@ Signals an error if terminal fails to initialize."
             ;; Ghostel may emit an OSC title very early in startup.
             ;; Disable title tracking before the process exists so the
             ;; session buffer keeps its deterministic package-managed name.
-            (setq-local ghostel-set-title-function nil))
+            (setq-local ghostel-set-title-function nil)
+            (setq-local ghostel-enable-url-detection nil))
           (setq process (ghostel-exec buffer program args))
           (unless process
             (error "Failed to create ghostel process.  Please ensure ghostel is properly installed"))

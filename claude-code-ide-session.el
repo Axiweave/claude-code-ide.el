@@ -37,6 +37,7 @@
 (defvar claude-code-ide-vterm-anti-flicker)
 (defvar claude-code-ide-vterm-render-delay)
 (defvar ghostel-set-title-function)
+(defvar ghostel-enable-url-detection)
 
 (declare-function vterm "vterm" (&optional arg))
 (declare-function vterm-send-string "vterm" (string &optional paste))
@@ -212,6 +213,7 @@ return the string to insert."
   (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)
   (setq-local ghostel-set-title-function nil)
+  (setq-local ghostel-enable-url-detection nil)
   (when (featurep 'hl-line)
     (hl-line-mode -1))
   (face-remap-add-relative 'nobreak-space :inherit 'default))
