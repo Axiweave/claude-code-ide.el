@@ -7831,6 +7831,30 @@ have completed before cleanup.  Waits up to 5 seconds."
                   (should (equal sent-string "@src/from-dired.el ")))))))
       (kill-buffer terminal-buf))))
 
+(ert-deftest claude-code-ide-test-send-current-file-from-magit-status ()
+  "Test send-current-file uses the file at point in Magit status."
+  (let ((sent-string nil)
+        (terminal-buf (generate-new-buffer "*test-claude-buffer*")))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                     (lambda () "*test-claude-buffer*"))
+                    ((symbol-function 'claude-code-ide--terminal-send-string)
+                     (lambda (str &optional _paste) (setq sent-string str)))
+                    ((symbol-function 'project-current)
+                     (lambda (&rest _) '(vc . "/home/user/project/")))
+                    ((symbol-function 'project-root)
+                     (lambda (_) "/home/user/project/"))
+                    ((symbol-function 'magit-file-at-point)
+                     (lambda () "src/from-magit.el")))
+            (with-temp-buffer
+              (let ((default-directory "/home/user/project/"))
+                (cl-letf (((symbol-function 'derived-mode-p)
+                           (lambda (&rest modes) (memq 'magit-status-mode modes))))
+                  (claude-code-ide-send-current-file)
+                  (should (equal sent-string "@src/from-magit.el ")))))))
+      (kill-buffer terminal-buf))))
+
 (ert-deftest claude-code-ide-test-send-current-file-from-treemacs ()
   "Test send-current-file uses the file at point in treemacs."
   (let ((sent-string nil)

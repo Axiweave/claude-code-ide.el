@@ -110,6 +110,9 @@
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 
+;; External function declarations from Magit
+(declare-function magit-file-at-point "magit" ())
+
 ;;; Customization
 
 (defgroup claude-code-ide nil
@@ -833,6 +836,10 @@ range should be attached."
    ((and (derived-mode-p 'dired-mode)
          (fboundp 'dired-get-filename))
     (when-let ((path (dired-get-filename nil t)))
+      (cons path nil)))
+   ((and (derived-mode-p 'magit-status-mode)
+         (fboundp 'magit-file-at-point))
+    (when-let ((path (magit-file-at-point)))
       (cons path nil)))
    ((derived-mode-p 'treemacs-mode)
     (when-let ((path (claude-code-ide--treemacs-path-at-point)))
