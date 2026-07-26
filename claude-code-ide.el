@@ -6,7 +6,7 @@
 ;; Version: 0.2.6
 ;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2") (persist "0.6.1"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
-;; URL: https://github.com/manzaltu/claude-code-ide.el
+;; URL: https://github.com/axiweave/claude-code-ide.el
 
 ;; This file is not part of GNU Emacs.
 

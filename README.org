@@ -5,13 +5,15 @@
 #+KEYWORDS: emacs, claude, ai, code-assistant
 #+OPTIONS: toc:t num:nil
 
-[[https://github.com/manzaltu/claude-code-ide.el/actions/workflows/test.yml][file:https://github.com/manzaltu/claude-code-ide.el/workflows/CI/badge.svg]]
+[[https://github.com/axiweave/claude-code-ide.el/actions/workflows/test.yml][file:https://github.com/axiweave/claude-code-ide.el/workflows/CI/badge.svg]]
 [[https://www.gnu.org/software/emacs/][file:https://img.shields.io/badge/GNU%20Emacs-28--30-blueviolet.svg]]
 [[https://www.gnu.org/licenses/gpl-3.0][file:https://img.shields.io/badge/License-GPL%20v3-blue.svg]]
 
 * Overview
 
 Claude Code IDE for Emacs provides native integration with Claude Code CLI through the Model Context Protocol (MCP). Unlike simple terminal wrappers, this package creates a bidirectional bridge between Claude and Emacs, enabling Claude to understand and leverage Emacs' powerful features—from LSP and project management to custom Elisp functions. This transforms Claude into a true Emacs-aware AI assistant that works within your existing workflow and can interact with your entire Emacs ecosystem.
+
+This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manzaltu/claude-code-ide.el]] and has substantially diverged with a session sidebar/manager, persistent layouts, activity tracking, expanded transient workflows, and Ghostel support. The project name is provisional; please open an issue with naming suggestions.
 
 ** Features
 
@@ -87,7 +89,7 @@ To install using =emacs-version= >= 30 and =use-package= with the =vc= binding:
 
 #+begin_src elisp
 (use-package claude-code-ide
-  :vc (:url "https://github.com/manzaltu/claude-code-ide.el" :rev :newest)
+  :vc (:url "https://github.com/axiweave/claude-code-ide.el" :rev :newest)
   :bind ("C-c C-'" . claude-code-ide-menu) ; Set your favorite keybinding
   :config
   (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools
@@ -97,7 +99,7 @@ To install using =use-package= and [[https://github.com/raxod502/straight.el][st
 
 #+begin_src emacs-lisp
 (use-package claude-code-ide
-  :straight (:type git :host github :repo "manzaltu/claude-code-ide.el")
+  :straight (:type git :host github :repo "axiweave/claude-code-ide.el")
   :bind ("C-c C-'" . claude-code-ide-menu) ; Set your favorite keybinding
   :config
   (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools
@@ -109,7 +111,7 @@ In =packages.el=:
 
 #+begin_src emacs-lisp
 (package! claude-code-ide
-  :recipe (:host github :repo "manzaltu/claude-code-ide.el"))
+  :recipe (:host github :repo "axiweave/claude-code-ide.el"))
 #+end_src
 
 In =config.el=:
