@@ -1,6 +1,6 @@
 ;;; claude-code-ide-mcp-http-server.el --- HTTP server for MCP tools  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2025
+;; Copyright (C) 2025 Yoav Orot
 
 ;; Author: Yoav Orot
 ;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>

@@ -1,6 +1,6 @@
 ;;; claude-code-ide.el --- Claude Code integration for Emacs  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2025
+;; Copyright (C) 2025 Yoav Orot
 ;; Copyright (C) 2026 Yu-Fu Fu
 
 ;; Author: Yoav Orot

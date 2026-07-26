@@ -1,6 +1,6 @@
 ;;; claude-code-ide-debug.el --- Debug logging for Claude Code IDE  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2025
+;; Copyright (C) 2025 Yoav Orot
 
 ;; Author: Yoav Orot
 ;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
