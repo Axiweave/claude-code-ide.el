@@ -3,6 +3,7 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
+;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
 ;; Keywords: ai, claude, diagnostics, flycheck
 
 ;; This file is not part of GNU Emacs.

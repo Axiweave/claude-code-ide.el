@@ -1,8 +1,10 @@
 ;;; claude-code-ide-tests.el --- Tests for Claude Code IDE  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025
+;; Copyright (C) 2026 Yu-Fu Fu
 
 ;; Author: Yoav Orot
+;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
 
 ;; This file is not part of GNU Emacs.
 

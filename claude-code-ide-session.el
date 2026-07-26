@@ -1,8 +1,10 @@
 ;;; claude-code-ide-session.el --- Session core for Claude Code IDE  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025
+;; Copyright (C) 2026 Yu-Fu Fu
 
 ;; Author: Yoav Orot
+;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
 ;; Keywords: ai, claude, sessions, terminal
 
 ;; This file is not part of GNU Emacs.

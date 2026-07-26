@@ -1,8 +1,8 @@
 ;;; claude-code-ide-manager.el --- Session manager for Claude Code IDE  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2025
+;; Copyright (C) 2026 Yu-Fu Fu
 
-;; Author: Yoav Orot
+;; Author: Yu-Fu Fu <yufu@yfu.tw>
 ;; Keywords: ai, claude, sessions, tools
 
 ;; This file is not part of GNU Emacs.

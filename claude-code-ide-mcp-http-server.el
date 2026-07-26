@@ -3,6 +3,7 @@
 ;; Copyright (C) 2025
 
 ;; Author: Yoav Orot
+;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
 ;; Keywords: ai, claude, mcp, http
 
 ;; This file is not part of GNU Emacs.

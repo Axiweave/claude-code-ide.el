@@ -1,8 +1,10 @@
 ;;; claude-code-ide.el --- Claude Code integration for Emacs  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025
+;; Copyright (C) 2026 Yu-Fu Fu
 
 ;; Author: Yoav Orot
+;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
 ;; Version: 0.2.6
 ;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2") (persist "0.6.1"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
