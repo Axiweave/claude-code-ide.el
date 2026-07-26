@@ -15,6 +15,14 @@ Claude Code IDE for Emacs provides project-aware terminal sessions for Claude Co
 
 This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manzaltu/claude-code-ide.el]] and has substantially diverged with a session sidebar/manager, persistent layouts, activity tracking, expanded transient workflows, and Ghostel support. The project name is provisional; please open an issue with naming suggestions.
 
+** What This Fork Adds
+
+- [[*CC Manager][CC Manager]] global and repo-local sidebars, quick slots, and persistent per-session layouts
+- CLI-aware start, continue, and resume workflows for Claude Code, Codex, OpenCode, and GSD; see [[*Basic Commands][Basic Commands]]
+- Output-driven idle and working indicators in the [[*CC Manager][CC Manager]]
+- [[*Terminal Backend Configuration][Ghostel and per-CLI terminal backend selection]]
+- Expanded transient navigation and file-reference workflows; see [[*Basic Commands][Basic Commands]] and [[*Session Customization][Session Customization]]
+
 ** Features
 
 - Automatic project detection and session management
