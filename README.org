@@ -11,7 +11,7 @@
 
 * Overview
 
-Claude Code IDE for Emacs provides native integration with Claude Code CLI through the Model Context Protocol (MCP). Unlike simple terminal wrappers, this package creates a bidirectional bridge between Claude and Emacs, enabling Claude to understand and leverage Emacs' powerful features—from LSP and project management to custom Elisp functions. This transforms Claude into a true Emacs-aware AI assistant that works within your existing workflow and can interact with your entire Emacs ecosystem.
+Claude Code IDE for Emacs provides project-aware terminal sessions for Claude Code, Codex, OpenCode, and GSD, with shared session management, terminal integration, and window workflows. Claude Code additionally has native integration through the Model Context Protocol (MCP), creating a bidirectional bridge between Claude and Emacs that can leverage Emacs features—from LSP and project management to custom Elisp functions.
 
 This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manzaltu/claude-code-ide.el]] and has substantially diverged with a session sidebar/manager, persistent layouts, activity tracking, expanded transient workflows, and Ghostel support. The project name is provisional; please open an issue with naming suggestions.
 
@@ -19,7 +19,8 @@ This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manz
 
 - Automatic project detection and session management
 - Terminal integration with full color support using =vterm= or =eat=
-- MCP protocol implementation for IDE integration
+- CLI-specific start, continue, and resume commands for Claude Code, Codex, OpenCode, and GSD
+- Claude Code MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
 - Extensible MCP tools server for accessing Emacs commands (xrefs, tree-sitter, project info, e.g.)
 - Diagnostic integration with Flycheck and Flymake
@@ -74,7 +75,7 @@ This deep integration means Claude Code understands your project context and can
 ** Prerequisites
 
 - Emacs 28.1 or higher
-- Claude Code CLI installed and available in PATH
+- A supported coding-agent CLI installed and available in PATH: Claude Code (=claude=, the default), Codex (=codex=), OpenCode (=opencode=), or GSD (=gsd=)
 - =vterm= or =eat= package (for terminal support)
 
 ** Installing Claude Code CLI
@@ -324,7 +325,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 
 | Variable                                      | Description                                 | Default                              |
 |-----------------------------------------------+---------------------------------------------+--------------------------------------|
-| ~claude-code-ide-cli-path~                      | Path to Claude Code CLI                     | ~"claude"~                             |
+| ~claude-code-ide-cli-path~                      | Supported CLI to run (=claude=, =codex=, =opencode=, or =gsd=) | ~"claude"~                             |
 | ~claude-code-ide-buffer-name-function~          | Function for buffer naming                  | ~claude-code-ide--default-buffer-name~ |
 | ~claude-code-ide-cli-debug~                     | Enable CLI debug mode (-d flag)             | ~nil~                                  |
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
