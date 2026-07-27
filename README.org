@@ -11,14 +11,14 @@
 
 * Overview
 
-Claude Code IDE for Emacs provides project-aware terminal sessions for Claude Code, Codex, OpenCode, and GSD, with shared session management, terminal integration, and window workflows. Claude Code additionally has native integration through the Model Context Protocol (MCP), creating a bidirectional bridge between Claude and Emacs that can leverage Emacs features—from LSP and project management to custom Elisp functions.
+Claude Code IDE for Emacs provides project-aware terminal sessions for Claude Code, Codex, OpenCode, Pi, and Oh My Pi, with shared session management, terminal integration, and window workflows. Claude Code additionally has native integration through the Model Context Protocol (MCP), creating a bidirectional bridge between Claude and Emacs that can leverage Emacs features—from LSP and project management to custom Elisp functions.
 
 This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manzaltu/claude-code-ide.el]] and has substantially diverged with a session sidebar/manager, persistent layouts, activity tracking, expanded transient workflows, and Ghostel support. The project name is provisional; please open an issue with naming suggestions.
 
 ** What This Fork Adds
 
 - [[*CC Manager][CC Manager]] global and repo-local sidebars, quick slots, and persistent per-session layouts
-- CLI-aware start, continue, and resume workflows for Claude Code, Codex, OpenCode, and GSD; see [[*Basic Commands][Basic Commands]]
+- CLI-aware start, continue, and resume workflows for Claude Code, Codex, OpenCode, Pi, and Oh My Pi; see [[*Basic Commands][Basic Commands]]
 - Output-driven idle and working indicators in the [[*CC Manager][CC Manager]]
 - [[*Terminal Backend Configuration][Ghostel and per-CLI terminal backend selection]]
 - Expanded transient navigation and file-reference workflows; see [[*Basic Commands][Basic Commands]] and [[*Session Customization][Session Customization]]
@@ -27,7 +27,7 @@ This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manz
 
 - Automatic project detection and session management
 - Terminal integration with full color support using =vterm= or =eat=
-- CLI-specific start, continue, and resume commands for Claude Code, Codex, OpenCode, and GSD
+- CLI-specific start, continue, and resume commands for Claude Code, Codex, OpenCode, Pi, and Oh My Pi
 - Claude Code MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
 - Extensible MCP tools server for accessing Emacs commands (xrefs, tree-sitter, project info, e.g.)
@@ -83,7 +83,7 @@ This deep integration means Claude Code understands your project context and can
 ** Prerequisites
 
 - Emacs 28.1 or higher
-- A supported coding-agent CLI installed and available in PATH: Claude Code (=claude=, the default), Codex (=codex=), OpenCode (=opencode=), or GSD (=gsd=)
+- A supported coding-agent CLI installed and available in PATH: Claude Code (=claude=, the default), Codex (=codex=), OpenCode (=opencode=), Pi (=pi=), or Oh My Pi (=omp=)
 - =vterm= or =eat= package (for terminal support)
 
 ** Installing Claude Code CLI
@@ -333,10 +333,11 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 
 | Variable                                      | Description                                 | Default                              |
 |-----------------------------------------------+---------------------------------------------+--------------------------------------|
-| ~claude-code-ide-cli-path~                      | Supported CLI to run (=claude=, =codex=, =opencode=, or =gsd=) | ~"claude"~                             |
+| ~claude-code-ide-cli-path~                      | Supported CLI to run (=claude=, =codex=, =opencode=, =pi=, or =omp=) | ~"claude"~                             |
 | ~claude-code-ide-buffer-name-function~          | Function for buffer naming                  | ~claude-code-ide--default-buffer-name~ |
 | ~claude-code-ide-cli-debug~                     | Enable CLI debug mode (-d flag)             | ~nil~                                  |
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
+| ~claude-code-ide-bypass-permissions-by-default~ | Lowercase transient launch actions bypass permissions | ~t~ |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
 | ~claude-code-ide-terminal-backend~              | Terminal backend (vterm, eat, or ghostel)   | ~'vterm~                               |
 | ~claude-code-ide-cli-terminal-backends~         | Per-CLI terminal backend overrides          | ~nil~                                  |
@@ -464,13 +465,14 @@ You can also override the terminal backend per CLI while keeping a global defaul
 #+begin_src emacs-lisp
 (setq claude-code-ide-terminal-backend 'vterm
       claude-code-ide-cli-terminal-backends '((claude . vterm)
-                                              (gsd . vterm)
                                               (codex . ghostel)
-                                              (opencode . vterm)))
+                                              (opencode . vterm)
+                                              (pi . vterm)
+                                              (omp . vterm)))
 #+end_src
 
 If a CLI is not listed in =claude-code-ide-cli-terminal-backends=, Claude Code IDE falls back to =claude-code-ide-terminal-backend=.
-This means =gsd= uses =vterm= by default unless you override it explicitly.
+The bypass flags are =--dangerously-skip-permissions= for Claude Code, =--dangerously-bypass-approvals-and-sandbox= for Codex, =--auto= for OpenCode, none for Pi, and =--auto-approve= for Oh My Pi.
 
 **** vterm Rendering Optimization
 

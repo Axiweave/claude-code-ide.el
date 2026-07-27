@@ -93,6 +93,7 @@
 (defvar claude-code-ide-use-side-window)
 (defvar claude-code-ide-cli-debug)
 (defvar claude-code-ide-cli-extra-flags)
+(defvar claude-code-ide-bypass-permissions-by-default)
 (defvar claude-code-ide-system-prompt)
 (defvar claude-code-ide-manager--command-scope)
 (defvar claude-code-ide-manager--open-target)
@@ -115,8 +116,16 @@
   (pcase (claude-code-ide--current-cli-type)
     ('claude "--dangerously-skip-permissions")
     ('codex "--dangerously-bypass-approvals-and-sandbox")
-    ('gsd "")
+    ('opencode "--auto")
+    ('omp "--auto-approve")
     (_ "")))
+
+(defun claude-code-ide--transient-launch-flags (&optional bypass)
+  "Return launch flags with permissions bypass when BYPASS or the default is set."
+  (if (or bypass claude-code-ide-bypass-permissions-by-default)
+      (string-trim (concat claude-code-ide-cli-extra-flags
+                           " " (claude-code-ide--dangerous-permissions-flag)))
+    claude-code-ide-cli-extra-flags))
 
 (defun claude-code-ide--has-current-directory-session-p ()
   "Check whether the current directory already has an active session."
@@ -129,7 +138,9 @@
   (if (claude-code-ide--has-project-session-p)
       (propertize "Start new Claude Code session (session already running)"
                   'face 'transient-inactive-value)
-    "Start new Claude Code session"))
+    (if claude-code-ide-bypass-permissions-by-default
+        "Start new Claude Code session (skip permissions)"
+      "Start new Claude Code session")))
 
 (defun claude-code-ide--start-if-no-session (&optional arg)
   "Start Claude Code only if no session is active for current buffer.
@@ -140,10 +151,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
     (let ((claude-code-ide-cli-extra-flags
-           (if arg
-               (string-trim (concat claude-code-ide-cli-extra-flags
-                                    " " (claude-code-ide--dangerous-permissions-flag)))
-             claude-code-ide-cli-extra-flags)))
+           (claude-code-ide--transient-launch-flags arg)))
       (claude-code-ide))))
 
 (defun claude-code-ide--continue-description ()
@@ -151,14 +159,18 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-project-session-p)
       (propertize "Continue most recent conversation (session already running)"
                   'face 'transient-inactive-value)
-    "Continue most recent conversation"))
+    (if claude-code-ide-bypass-permissions-by-default
+        "Continue most recent conversation (skip permissions)"
+      "Continue most recent conversation")))
 
 (defun claude-code-ide--current-directory-description ()
   "Dynamic description for current-directory start command."
   (if (claude-code-ide--has-current-directory-session-p)
       (propertize "Start in current dir (session already running)"
                   'face 'transient-inactive-value)
-    "Start in current dir"))
+    (if claude-code-ide-bypass-permissions-by-default
+        "Start in current dir (skip permissions)"
+      "Start in current dir")))
 
 (defun claude-code-ide--current-directory-if-no-session (&optional arg)
   "Start Claude Code in the current directory if no exact session is active.
@@ -169,10 +181,7 @@ With prefix ARG, add the agent-specific permissions bypass flag."
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
     (let ((claude-code-ide-cli-extra-flags
-           (if arg
-               (string-trim (concat claude-code-ide-cli-extra-flags
-                                    " " (claude-code-ide--dangerous-permissions-flag)))
-             claude-code-ide-cli-extra-flags)))
+           (claude-code-ide--transient-launch-flags arg)))
       (claude-code-ide-current-directory))))
 
 (defun claude-code-ide--current-directory-skip-description ()
@@ -196,10 +205,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
     (let ((claude-code-ide-cli-extra-flags
-           (if arg
-               (string-trim (concat claude-code-ide-cli-extra-flags
-                                    " " (claude-code-ide--dangerous-permissions-flag)))
-             claude-code-ide-cli-extra-flags)))
+           (claude-code-ide--transient-launch-flags arg)))
       (claude-code-ide-continue))))
 
 (defun claude-code-ide--resume-description ()
@@ -207,7 +213,9 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-project-session-p)
       (propertize "Resume session (session already running)"
                   'face 'transient-inactive-value)
-    "Resume session (from previous conversation)"))
+    (if claude-code-ide-bypass-permissions-by-default
+        "Resume session (skip permissions)"
+      "Resume session (from previous conversation)")))
 
 (defun claude-code-ide--resume-if-no-session (&optional arg)
   "Resume Claude Code only if no session is active for current buffer.
@@ -218,10 +226,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
         (claude-code-ide-log "Claude Code session already running in %s"
                              (abbreviate-file-name working-dir)))
     (let ((claude-code-ide-cli-extra-flags
-           (if arg
-               (string-trim (concat claude-code-ide-cli-extra-flags
-                                    " " (claude-code-ide--dangerous-permissions-flag)))
-             claude-code-ide-cli-extra-flags)))
+           (claude-code-ide--transient-launch-flags arg)))
       (claude-code-ide-resume))))
 
 (defun claude-code-ide--start-skip-description ()
@@ -285,10 +290,7 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
         (scope claude-code-ide-manager--open-scope)
         (claude-code-ide--suppress-initial-display t)
         (claude-code-ide-cli-extra-flags
-         (if dangerous
-             (string-trim (concat claude-code-ide-cli-extra-flags
-                                  " " (claude-code-ide--dangerous-permissions-flag)))
-           claude-code-ide-cli-extra-flags)))
+         (claude-code-ide--transient-launch-flags dangerous)))
     (unwind-protect
         (progn
           (claude-code-ide--start-session continue resume target)
