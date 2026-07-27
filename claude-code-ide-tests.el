@@ -3573,6 +3573,41 @@ have completed before cleanup.  Waits up to 5 seconds."
                                        :description))
                    "Resume /tmp/project-a/ (skip permissions)"))))
 
+(ert-deftest claude-code-ide-test-pi-transient-descriptions-omit-unavailable-bypass ()
+  "Test Pi descriptions do not claim its unavailable permissions bypass."
+  (let ((claude-code-ide-cli-path "pi")
+        (claude-code-ide-bypass-permissions-by-default t)
+        (claude-code-ide-manager--open-target "/tmp/project-a/"))
+    (cl-letf (((symbol-function 'claude-code-ide--has-project-session-p) (lambda () nil))
+              ((symbol-function 'claude-code-ide--has-current-directory-session-p) (lambda () nil)))
+      (dolist (description (list (claude-code-ide--start-description)
+                                 (claude-code-ide--continue-description)
+                                 (claude-code-ide--current-directory-description)
+                                 (claude-code-ide--resume-description)
+                                 (claude-code-ide--start-skip-description)
+                                 (claude-code-ide--continue-skip-description)
+                                 (claude-code-ide--resume-skip-description)
+                                 (claude-code-ide--current-directory-skip-description)
+                                 (claude-code-ide-manager--open-action-description "Start")
+                                 (funcall (plist-get (nth 2 (transient-get-suffix
+                                                             'claude-code-ide-manager-open-menu "S"))
+                                                    :description))))
+        (should-not (string-match-p "skip permissions" description))))))
+
+(ert-deftest claude-code-ide-test-claude-transient-descriptions-disclose-bypass ()
+  "Test an agent with a bypass flag retains permissions descriptions."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-bypass-permissions-by-default t)
+        (claude-code-ide-manager--open-target "/tmp/project-a/"))
+    (cl-letf (((symbol-function 'claude-code-ide--has-project-session-p) (lambda () nil)))
+      (should (string-match-p "skip permissions" (claude-code-ide--start-description)))
+      (should (string-match-p "skip permissions"
+                              (claude-code-ide-manager--open-action-description "Start")))
+      (should (string-match-p "skip permissions"
+                              (funcall (plist-get (nth 2 (transient-get-suffix
+                                                           'claude-code-ide-manager-open-menu "S"))
+                                                 :description)))))))
+
 (ert-deftest claude-code-ide-test-transient-bypass-default-can-be-disabled ()
   "Test a nil bypass default restores safe lowercase transient launches."
   (let ((claude-code-ide-bypass-permissions-by-default nil)

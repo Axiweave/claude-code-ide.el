@@ -120,6 +120,10 @@
     ('omp "--auto-approve")
     (_ "")))
 
+(defun claude-code-ide--permissions-bypass-available-p ()
+  "Return non-nil when the current CLI has a permissions bypass flag."
+  (not (string-empty-p (claude-code-ide--dangerous-permissions-flag))))
+
 (defun claude-code-ide--transient-launch-flags (&optional bypass)
   "Return launch flags with permissions bypass when BYPASS or the default is set."
   (if (or bypass claude-code-ide-bypass-permissions-by-default)
@@ -138,7 +142,8 @@
   (if (claude-code-ide--has-project-session-p)
       (propertize "Start new Claude Code session (session already running)"
                   'face 'transient-inactive-value)
-    (if claude-code-ide-bypass-permissions-by-default
+    (if (and claude-code-ide-bypass-permissions-by-default
+             (claude-code-ide--permissions-bypass-available-p))
         "Start new Claude Code session (skip permissions)"
       "Start new Claude Code session")))
 
@@ -159,7 +164,8 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-project-session-p)
       (propertize "Continue most recent conversation (session already running)"
                   'face 'transient-inactive-value)
-    (if claude-code-ide-bypass-permissions-by-default
+    (if (and claude-code-ide-bypass-permissions-by-default
+             (claude-code-ide--permissions-bypass-available-p))
         "Continue most recent conversation (skip permissions)"
       "Continue most recent conversation")))
 
@@ -168,7 +174,8 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-current-directory-session-p)
       (propertize "Start in current dir (session already running)"
                   'face 'transient-inactive-value)
-    (if claude-code-ide-bypass-permissions-by-default
+    (if (and claude-code-ide-bypass-permissions-by-default
+             (claude-code-ide--permissions-bypass-available-p))
         "Start in current dir (skip permissions)"
       "Start in current dir")))
 
@@ -189,7 +196,9 @@ With prefix ARG, add the agent-specific permissions bypass flag."
   (if (claude-code-ide--has-current-directory-session-p)
       (propertize "Start in current dir (skip permissions) (session already running)"
                   'face 'transient-inactive-value)
-    "Start in current dir (skip permissions)"))
+    (if (claude-code-ide--permissions-bypass-available-p)
+        "Start in current dir (skip permissions)"
+      "Start in current dir")))
 
 (defun claude-code-ide--current-directory-skip-permissions ()
   "Start Claude Code in the current directory with permissions bypass."
@@ -213,7 +222,8 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-project-session-p)
       (propertize "Resume session (session already running)"
                   'face 'transient-inactive-value)
-    (if claude-code-ide-bypass-permissions-by-default
+    (if (and claude-code-ide-bypass-permissions-by-default
+             (claude-code-ide--permissions-bypass-available-p))
         "Resume session (skip permissions)"
       "Resume session (from previous conversation)")))
 
@@ -234,7 +244,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-project-session-p)
       (propertize "Start (skip permissions) (session already running)"
                   'face 'transient-inactive-value)
-    "Start (skip permissions)"))
+    (if (claude-code-ide--permissions-bypass-available-p) "Start (skip permissions)" "Start")))
 
 (defun claude-code-ide--start-skip-permissions ()
   "Start Claude Code with --dangerously-skip-permissions."
@@ -246,7 +256,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-project-session-p)
       (propertize "Continue (skip permissions) (session already running)"
                   'face 'transient-inactive-value)
-    "Continue (skip permissions)"))
+    (if (claude-code-ide--permissions-bypass-available-p) "Continue (skip permissions)" "Continue")))
 
 (defun claude-code-ide--continue-skip-permissions ()
   "Continue Claude Code with --dangerously-skip-permissions."
@@ -258,7 +268,7 @@ With prefix ARG, add --dangerously-skip-permissions flag."
   (if (claude-code-ide--has-project-session-p)
       (propertize "Resume (skip permissions) (session already running)"
                   'face 'transient-inactive-value)
-    "Resume (skip permissions)"))
+    (if (claude-code-ide--permissions-bypass-available-p) "Resume (skip permissions)" "Resume")))
 
 (defun claude-code-ide--resume-skip-permissions ()
   "Resume Claude Code with --dangerously-skip-permissions."
@@ -271,11 +281,12 @@ With prefix ARG, add --dangerously-skip-permissions flag."
       (abbreviate-file-name claude-code-ide-manager--open-target)
     "<no target>"))
 
-(defun claude-code-ide-manager--open-action-description (action)
-  "Return manager ACTION label, disclosing the active default bypass."
+(defun claude-code-ide-manager--open-action-description (action &optional bypass)
+  "Return manager ACTION label, disclosing an available BYPASS."
   (format "%s %s%s" action
           (claude-code-ide-manager--open-target-label)
-          (if claude-code-ide-bypass-permissions-by-default
+          (if (and (or bypass claude-code-ide-bypass-permissions-by-default)
+                   (claude-code-ide--permissions-bypass-available-p))
               " (skip permissions)"
             "")))
 
@@ -343,18 +354,15 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
     ("s" claude-code-ide-manager-open-start
      :description (lambda () (claude-code-ide-manager--open-action-description "Start")))
     ("S" claude-code-ide-manager-open-start-skip-permissions
-     :description (lambda () (format "Start %s (skip permissions)"
-                                     (claude-code-ide-manager--open-target-label))))
+     :description (lambda () (claude-code-ide-manager--open-action-description "Start" t)))
     ("c" claude-code-ide-manager-open-continue
      :description (lambda () (claude-code-ide-manager--open-action-description "Continue")))
     ("C" claude-code-ide-manager-open-continue-skip-permissions
-     :description (lambda () (format "Continue %s (skip permissions)"
-                                     (claude-code-ide-manager--open-target-label))))
+     :description (lambda () (claude-code-ide-manager--open-action-description "Continue" t)))
     ("r" claude-code-ide-manager-open-resume
      :description (lambda () (claude-code-ide-manager--open-action-description "Resume")))
     ("R" claude-code-ide-manager-open-resume-skip-permissions
-     :description (lambda () (format "Resume %s (skip permissions)"
-                                     (claude-code-ide-manager--open-target-label))))]])
+     :description (lambda () (claude-code-ide-manager--open-action-description "Resume" t)))]] )
 
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."

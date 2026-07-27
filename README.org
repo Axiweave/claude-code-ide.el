@@ -337,7 +337,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-buffer-name-function~          | Function for buffer naming                  | ~claude-code-ide--default-buffer-name~ |
 | ~claude-code-ide-cli-debug~                     | Enable CLI debug mode (-d flag)             | ~nil~                                  |
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
-| ~claude-code-ide-bypass-permissions-by-default~ | Lowercase transient launch actions bypass permissions | ~t~ |
+| ~claude-code-ide-bypass-permissions-by-default~ | Lowercase transient launch actions bypass permissions when available | ~t~ |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
 | ~claude-code-ide-terminal-backend~              | Terminal backend (vterm, eat, or ghostel)   | ~'vterm~                               |
 | ~claude-code-ide-cli-terminal-backends~         | Per-CLI terminal backend overrides          | ~nil~                                  |
