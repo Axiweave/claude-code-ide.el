@@ -64,6 +64,8 @@
 (declare-function claude-code-ide--current-terminal-backend "claude-code-ide" ())
 (declare-function claude-code-ide-session-idle-record-activity
                   "claude-code-ide-session-idle" (&optional buffer))
+(declare-function claude-code-ide--touch-session-for-buffer
+                  "claude-code-ide" (&optional buffer))
 
 (defgroup claude-code-ide-session nil
   "Session support for Claude Code IDE."
@@ -237,7 +239,12 @@ return the string to insert."
   :lighter " CC-Session"
   :keymap claude-code-ide-session-mode-map
   (if claude-code-ide-session-mode
-      (claude-code-ide-session-setup-buffer)
+      (progn
+        (claude-code-ide-session-setup-buffer)
+        (add-hook 'post-command-hook
+                  #'claude-code-ide-session--touch-current-session nil t))
+    (remove-hook 'post-command-hook
+                 #'claude-code-ide-session--touch-current-session t)
     (setq claude-code-ide-session--configured-p nil)))
 
 (defun claude-code-ide--maybe-enable-session-mode ()
@@ -263,9 +270,16 @@ return the string to insert."
   (funcall claude-code-ide-session-file-reference-reader-function
            (current-buffer)))
 
+(defun claude-code-ide-session--touch-current-session ()
+  "Make the current terminal's exact live session preferred."
+  (when (claude-code-ide-session-buffer-p (current-buffer))
+    (when (fboundp 'claude-code-ide--touch-session-for-buffer)
+      (claude-code-ide--touch-session-for-buffer (current-buffer)))))
+
 (defun claude-code-ide-session--record-activity ()
   "Record shared idle activity after a package-owned input action."
   (when (claude-code-ide-session-buffer-p (current-buffer))
+    (claude-code-ide-session--touch-current-session)
     (claude-code-ide-session-idle-record-activity)))
 
 (defun claude-code-ide-session-insert-command (&optional command)

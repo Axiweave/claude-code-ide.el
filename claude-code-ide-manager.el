@@ -25,6 +25,16 @@
 (require 'vc-git)
 
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
+(declare-function claude-code-ide--get-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide--set-session-custom-name "claude-code-ide" (session name))
+(declare-function claude-code-ide--preferred-session "claude-code-ide" (directory))
+(declare-function claude-code-ide--touch-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide-session-buffer "claude-code-ide" (session))
+(declare-function claude-code-ide-session-custom-name "claude-code-ide" (session))
+(declare-function claude-code-ide-session-directory "claude-code-ide" (session))
+(declare-function claude-code-ide-session-id "claude-code-ide" (session))
+(declare-function claude-code-ide-session-order "claude-code-ide" (session))
+(declare-function claude-code-ide-session-process "claude-code-ide" (session))
 (declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
@@ -135,6 +145,9 @@ back to `project.el' otherwise."
 (cl-defstruct claude-code-ide-manager-item
   "Sidebar row state for a managed session."
   session-key
+  directory
+  custom-name
+  order
   display-name
   secondary-text
   pinned
@@ -149,6 +162,9 @@ back to `project.el' otherwise."
 
 (defvar claude-code-ide-manager--layouts (make-hash-table :test 'equal)
   "Saved layouts keyed by session key.")
+
+(defvar claude-code-ide-manager--legacy-adopted-p nil
+  "Non-nil when the current item rebuild adopted directory-keyed state.")
 
 (defconst claude-code-ide-manager--buffer-name "*claude-code-manager*"
   "Manager sidebar buffer name.")
@@ -253,15 +269,49 @@ back to `project.el' otherwise."
    (when-let ((root (ignore-errors (vc-git-root default-directory))))
      (file-name-as-directory (expand-file-name root)))))
 
-(defun claude-code-ide-manager--session-git-root (session-key)
-  "Return the Git root for SESSION-KEY when available."
-  (let ((default-directory session-key))
+(defun claude-code-ide-manager--session-record (session-or-key)
+  "Return the live session represented by SESSION-OR-KEY, or nil."
+  (if (and (recordp session-or-key)
+           (eq (type-of session-or-key) 'claude-code-ide-session))
+      session-or-key
+    (claude-code-ide--get-session session-or-key)))
+
+(defun claude-code-ide-manager--session-directory (session-or-key)
+  "Return the directory represented by SESSION-OR-KEY."
+  (or (when-let ((session
+                  (claude-code-ide-manager--session-record session-or-key)))
+        (claude-code-ide-session-directory session))
+      (when-let ((item (and (stringp session-or-key)
+                            (claude-code-ide-manager--item-by-session-key
+                             session-or-key))))
+        (claude-code-ide-manager-item-directory item))
+      session-or-key))
+
+(defun claude-code-ide-manager--session-buffer (session-key)
+  "Return SESSION-KEY's exact live buffer, or its legacy directory buffer."
+  (if-let ((session (claude-code-ide--get-session session-key)))
+      (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+               (claude-code-ide-session-buffer session))
+          (let ((process (claude-code-ide-session-process session)))
+            (cond
+             ((bufferp process) (and (buffer-live-p process) process))
+             ((processp process) (process-buffer process)))))
+    (when (and (stringp session-key)
+               (file-name-absolute-p session-key))
+      (claude-code-ide--get-session-buffer session-key))))
+
+(defun claude-code-ide-manager--session-git-root (session-or-key)
+  "Return the Git root for SESSION-OR-KEY when available."
+  (let ((default-directory
+         (claude-code-ide-manager--session-directory session-or-key)))
     (claude-code-ide-manager--current-git-root)))
 
-(defun claude-code-ide-manager--session-branch-name (session-key)
-  "Return the current branch name for SESSION-KEY when available."
+(defun claude-code-ide-manager--session-branch-name (session-or-key)
+  "Return the current branch name for SESSION-OR-KEY when available."
   (car (ignore-errors
-         (process-lines "git" "-C" session-key "branch" "--show-current"))))
+         (process-lines "git" "-C"
+                        (claude-code-ide-manager--session-directory session-or-key)
+                        "branch" "--show-current"))))
 
 (defun claude-code-ide-manager--session-help-echo (session-key path)
   "Return help text for SESSION-KEY using PATH.
@@ -308,24 +358,45 @@ Append the current branch when SESSION-KEY is on a named branch."
       session-keys))
     (_ (error "Unknown manager scope: %S" scope))))
 
-(defun claude-code-ide-manager--scope-display-name (scope session-key)
-  "Return the display name for SESSION-KEY within SCOPE."
-  (pcase (plist-get scope :type)
-    ('global
-     (file-name-nondirectory (directory-file-name session-key)))
-    ('repo
-     (pcase claude-code-ide-manager-repo-label-strategy
-       ('basename
-        (file-name-nondirectory (directory-file-name session-key)))
-       ('branch
-        (or (claude-code-ide-manager--session-branch-name session-key)
-            (file-name-nondirectory (directory-file-name session-key))))
-       ('branch-or-basename
-        (or (claude-code-ide-manager--session-branch-name session-key)
-            (file-name-nondirectory (directory-file-name session-key))))
-       (_ (error "Unknown repo label strategy: %S"
-                 claude-code-ide-manager-repo-label-strategy))))
-    (_ (error "Unknown manager scope: %S" scope))))
+(defun claude-code-ide-manager--default-session-label (session)
+  "Return SESSION's stable directory-local fallback label."
+  (format "%s · %d"
+          (file-name-nondirectory
+           (directory-file-name (claude-code-ide-session-directory session)))
+          (claude-code-ide-session-order session)))
+
+(defun claude-code-ide-manager--scope-display-name (scope session-or-key)
+  "Return the display name for SESSION-OR-KEY within SCOPE."
+  (if-let ((session (claude-code-ide-manager--session-record session-or-key)))
+      (pcase (plist-get scope :type)
+        ('global (claude-code-ide-manager--default-session-label session))
+        ('repo
+         (let* ((directory (claude-code-ide-session-directory session))
+                (basename (file-name-nondirectory
+                           (directory-file-name directory)))
+                (base
+                 (pcase claude-code-ide-manager-repo-label-strategy
+                   ('basename basename)
+                   ((or 'branch 'branch-or-basename)
+                    (or (claude-code-ide-manager--session-branch-name session)
+                        basename))
+                   (_ (error "Unknown repo label strategy: %S"
+                             claude-code-ide-manager-repo-label-strategy)))))
+           (format "%s · %d" base (claude-code-ide-session-order session))))
+        (_ (error "Unknown manager scope: %S" scope)))
+    ;; Directory-key compatibility for callers that do not yet have a live record.
+    (let ((directory (claude-code-ide-manager--session-directory session-or-key)))
+      (pcase (plist-get scope :type)
+        ('global (file-name-nondirectory (directory-file-name directory)))
+        ('repo
+         (pcase claude-code-ide-manager-repo-label-strategy
+           ('basename (file-name-nondirectory (directory-file-name directory)))
+           ((or 'branch 'branch-or-basename)
+            (or (claude-code-ide-manager--session-branch-name session-or-key)
+                (file-name-nondirectory (directory-file-name directory))))
+           (_ (error "Unknown repo label strategy: %S"
+                     claude-code-ide-manager-repo-label-strategy))))
+        (_ (error "Unknown manager scope: %S" scope))))))
 
 (defun claude-code-ide-manager--disambiguate-display-names (items)
   "Return display names for ITEMS with duplicate labels disambiguated."
@@ -346,10 +417,11 @@ Append the current branch when SESSION-KEY is on a named branch."
                 (dolist (item group)
                   (let* ((parts (split-string
                                  (directory-file-name
-                                  (claude-code-ide-manager-item-session-key item))
+                                  (or (claude-code-ide-manager-item-directory item)
+                                      (claude-code-ide-manager-item-session-key item)))
                                  "/" t))
                          (suffix-parts (last parts (min suffix-length
-                                                       (length parts))))
+                                                        (length parts))))
                          (suffix (string-join suffix-parts "/")))
                     (if (gethash suffix seen)
                         (setq collision t)
@@ -359,7 +431,8 @@ Append the current branch when SESSION-KEY is on a named branch."
                          (lambda (item)
                            (<= (length (split-string
                                         (directory-file-name
-                                         (claude-code-ide-manager-item-session-key item))
+                                         (or (claude-code-ide-manager-item-directory item)
+                                             (claude-code-ide-manager-item-session-key item)))
                                         "/" t))
                                suffix-length))
                          group))
@@ -372,9 +445,29 @@ Append the current branch when SESSION-KEY is on a named branch."
                        seen)
                       (setq resolved t))
                   (setq suffix-length (1+ suffix-length)))))))))
+    ;; Path suffixes can themselves match a literal custom name.  Extend only
+    ;; those final collisions with the immutable session ID until all labels
+    ;; are distinct.
+    (let ((resolved nil))
+      (while (not resolved)
+        (let ((final-groups (make-hash-table :test 'equal)))
+          (setq resolved t)
+          (dolist (item items)
+            (push item (gethash (gethash item labels) final-groups)))
+          (maphash
+           (lambda (label group)
+             (when (> (length group) 1)
+               (setq resolved nil)
+               (dolist (item group)
+                 (puthash
+                  item
+                  (format "%s [%s]" label
+                          (claude-code-ide-manager-item-session-key item))
+                  labels))))
+           final-groups))))
     (mapcar (lambda (item) (gethash item labels)) items)))
 
-(defvar claude-code-ide--processes)
+(defvar claude-code-ide--sessions)
 
 (defvar claude-code-ide-manager--current-session-key nil
   "Session key currently active in the manager frame.")
@@ -452,10 +545,10 @@ scope when it is visible; otherwise return the first visible scope."
   (if claude-code-ide-manager--command-scope
       claude-code-ide-manager--command-scope
     (if (claude-code-ide-manager--manager-buffer-p)
-      (claude-code-ide-manager--scope-from-buffer (current-buffer))
+        (claude-code-ide-manager--scope-from-buffer (current-buffer))
       (or (claude-code-ide-manager--visible-sidebar-scope-for-frame)
-      (claude-code-ide-manager--resolve-scope
-       (claude-code-ide-manager--default-target))))))
+          (claude-code-ide-manager--resolve-scope
+           (claude-code-ide-manager--default-target))))))
 
 (defun claude-code-ide-manager--manager-buffers ()
   "Return all live manager buffers."
@@ -492,6 +585,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
+(define-key claude-code-ide-manager-mode-map (kbd "r") #'claude-code-ide-manager-rename-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
@@ -526,6 +620,9 @@ scope when it is visible; otherwise return the first visible scope."
 (defun claude-code-ide-manager--serialize-item (item)
   "Convert manager ITEM to a persistable plist."
   (list :session-key (claude-code-ide-manager-item-session-key item)
+        :directory (claude-code-ide-manager-item-directory item)
+        :custom-name (claude-code-ide-manager-item-custom-name item)
+        :order (claude-code-ide-manager-item-order item)
         :display-name (claude-code-ide-manager-item-display-name item)
         :secondary-text (claude-code-ide-manager-item-secondary-text item)
         :pinned (claude-code-ide-manager-item-pinned item)
@@ -536,6 +633,9 @@ scope when it is visible; otherwise return the first visible scope."
   "Convert persisted DATA into a manager item."
   (make-claude-code-ide-manager-item
    :session-key (plist-get data :session-key)
+   :directory (plist-get data :directory)
+   :custom-name (plist-get data :custom-name)
+   :order (plist-get data :order)
    :display-name (plist-get data :display-name)
    :secondary-text (plist-get data :secondary-text)
    :pinned (plist-get data :pinned)
@@ -657,40 +757,159 @@ When SESSION-KEY is nil, treat SCOPE-OR-SESSION-KEY as the session key and
 default to the global scope for backward compatibility."
   (let ((scope (if session-key scope-or-session-key '(:type global)))
         (session-key (or session-key scope-or-session-key)))
-  (cl-find-if (lambda (item)
-                (equal (claude-code-ide-manager-item-session-key item)
-                       session-key))
+    (cl-find-if (lambda (item)
+                  (equal (claude-code-ide-manager-item-session-key item)
+                         session-key))
                 (claude-code-ide-manager--scope-items scope))))
 
-(defun claude-code-ide-manager--live-session-keys ()
-  "Return sorted keys for live Claude Code sessions."
-  (let (keys)
-    (maphash (lambda (session-key process)
-               (when (process-live-p process)
-                 (push session-key keys)))
-             claude-code-ide--processes)
-    (sort keys #'string<)))
+(defun claude-code-ide-manager--all-items ()
+  "Return every distinct manager item across scopes."
+  (let (items)
+    (maphash (lambda (_ state)
+               (dolist (item (plist-get state :items))
+                 (cl-pushnew item items :test #'eq)))
+             claude-code-ide-manager--scope-state)
+    (dolist (item claude-code-ide-manager--items)
+      (cl-pushnew item items :test #'eq))
+    items))
 
-(defun claude-code-ide-manager--make-item (scope session-key)
-  "Build a manager item for SESSION-KEY within SCOPE."
-  (let* ((existing (claude-code-ide-manager--item-by-session-key scope session-key))
-         (display-name (claude-code-ide-manager--scope-display-name scope session-key)))
-    (make-claude-code-ide-manager-item
-     :session-key session-key
-     :display-name display-name
-     :secondary-text (abbreviate-file-name session-key)
-     :pinned (and existing (claude-code-ide-manager-item-pinned existing))
-     :order-key (or (and existing
-                         (claude-code-ide-manager-item-order-key existing))
-                    most-positive-fixnum)
-     :live-p t)))
+(defun claude-code-ide-manager--replace-display-suffix
+    (display-name old-suffix new-suffix)
+  "Replace OLD-SUFFIX with NEW-SUFFIX in DISPLAY-NAME."
+  (let ((pattern
+         (concat "\\`\\(.*\\)"
+                 (regexp-quote (format " · %s" old-suffix))
+                 "\\(\\(?: \\[[^]]+\\]\\)*\\)\\'")))
+    (if (string-match pattern display-name)
+        (format "%s · %s%s"
+                (match-string 1 display-name)
+                new-suffix
+                (or (match-string 2 display-name) ""))
+      (format "%s · %s" display-name new-suffix))))
+
+(defun claude-code-ide-manager--live-sessions ()
+  "Return live Claude Code session records in stable fallback order."
+  (let (sessions)
+    (maphash
+     (lambda (session-id _)
+       (when-let ((session (claude-code-ide--get-session session-id)))
+         (when (process-live-p (claude-code-ide-session-process session))
+           (push session sessions))))
+     claude-code-ide--sessions)
+    (sort sessions
+          (lambda (left right)
+            (let ((left-directory (claude-code-ide-session-directory left))
+                  (right-directory (claude-code-ide-session-directory right)))
+              (if (equal left-directory right-directory)
+                  (< (claude-code-ide-session-order left)
+                     (claude-code-ide-session-order right))
+                (string< left-directory right-directory)))))))
+
+(defun claude-code-ide-manager--live-session-keys ()
+  "Return IDs for live Claude Code sessions."
+  (mapcar #'claude-code-ide-session-id
+          (claude-code-ide-manager--live-sessions)))
+
+(defun claude-code-ide-manager--scope-sessions (scope sessions)
+  "Return SESSIONS visible within SCOPE."
+  (pcase (plist-get scope :type)
+    ('global sessions)
+    ('repo
+     (cl-remove-if-not
+      (lambda (session)
+        (let ((root (claude-code-ide-manager--session-git-root session))
+              (target-root (plist-get scope :git-root)))
+          (if claude-code-ide-manager-repo-include-nested
+              (and root (string-prefix-p target-root root))
+            (equal root target-root))))
+      sessions))
+    (_ (error "Unknown manager scope: %S" scope))))
+
+(defun claude-code-ide-manager--make-item (scope session)
+  "Build a manager item for SESSION within SCOPE."
+  (let* ((session-key (claude-code-ide-session-id session))
+         (directory (claude-code-ide-session-directory session))
+         (existing (claude-code-ide-manager--item-by-session-key scope session-key))
+         (legacy
+          (and (null existing)
+               (cl-find-if
+                (lambda (item)
+                  (let ((old-key
+                         (claude-code-ide-manager-item-session-key item)))
+                    (and (null (claude-code-ide-manager-item-directory item))
+                         (stringp old-key)
+                         (file-name-absolute-p old-key)
+                         (equal (file-name-as-directory
+                                 (expand-file-name old-key))
+                                (file-name-as-directory
+                                 (expand-file-name directory))))))
+                (claude-code-ide-manager--scope-items scope))))
+         (existing (or existing legacy))
+         (persisted-name
+          (or (and existing
+                   (claude-code-ide-manager-item-custom-name existing))
+              (cl-loop for item in (claude-code-ide-manager--all-items)
+                       when (and
+                             (equal session-key
+                                    (claude-code-ide-manager-item-session-key item))
+                             (claude-code-ide-manager-item-custom-name item))
+                       return (claude-code-ide-manager-item-custom-name item))))
+         (order (claude-code-ide-session-order session))
+         (display-name (claude-code-ide-manager--scope-display-name scope session)))
+    (when (and persisted-name
+               (null (claude-code-ide-session-custom-name session)))
+      (claude-code-ide--set-session-custom-name session persisted-name))
+    (when legacy
+      (setq claude-code-ide-manager--legacy-adopted-p t)
+      (let ((old-key (claude-code-ide-manager-item-session-key legacy))
+            (missing (make-symbol "missing")))
+        (setf (claude-code-ide-manager-item-session-key legacy) session-key
+              (claude-code-ide-manager-item-directory legacy) directory
+              (claude-code-ide-manager-item-order legacy) order)
+        (let ((layout (gethash old-key claude-code-ide-manager--layouts missing)))
+          (unless (eq layout missing)
+            (puthash session-key layout claude-code-ide-manager--layouts)
+            (remhash old-key claude-code-ide-manager--layouts)))
+        (when (equal (claude-code-ide-manager--scope-selected-session-key scope)
+                     old-key)
+          (claude-code-ide-manager--set-scope-selected-session-key scope session-key))
+        (when (equal (claude-code-ide-manager--scope-active-session-key scope)
+                     old-key)
+          (claude-code-ide-manager--set-scope-active-session-key scope session-key))))
+    (let ((custom-name (claude-code-ide-session-custom-name session)))
+      (make-claude-code-ide-manager-item
+       :session-key session-key
+       :directory directory
+       :custom-name custom-name
+       :order order
+       :display-name (if custom-name
+                         (claude-code-ide-manager--replace-display-suffix
+                          display-name order custom-name)
+                       display-name)
+       :secondary-text (abbreviate-file-name
+                        directory)
+       :pinned (and existing (claude-code-ide-manager-item-pinned existing))
+       :order-key (or (and existing
+                           (claude-code-ide-manager-item-order-key existing))
+                      most-positive-fixnum)
+       :live-p t))))
 
 (defun claude-code-ide-manager--fallback-sort-key (item &optional scope)
   "Return the fallback sort key for ITEM within SCOPE."
   (if (eq (plist-get scope :type) 'repo)
       (or (claude-code-ide-manager-item-display-name item)
           (claude-code-ide-manager-item-session-key item))
-    (claude-code-ide-manager-item-session-key item)))
+    (format "%s\0%020d"
+            (or (claude-code-ide-manager-item-directory item)
+                (claude-code-ide-manager-item-session-key item))
+            (or (claude-code-ide-manager-item-order item) 0))))
+
+(defun claude-code-ide-manager--build-items (scope)
+  "Build manager items for the live sessions visible within SCOPE."
+  (mapcar (lambda (session)
+            (claude-code-ide-manager--make-item scope session))
+          (claude-code-ide-manager--scope-sessions
+           scope (claude-code-ide-manager--live-sessions))))
 
 (defun claude-code-ide-manager--sorted-items (items &optional scope)
   "Return ITEMS sorted for sidebar display within SCOPE."
@@ -738,7 +957,7 @@ default to the global scope for backward compatibility."
 
 (defun claude-code-ide-manager--session-idle-p (session-key)
   "Return non-nil when SESSION-KEY's live buffer is idle-enabled and idle."
-  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (and (claude-code-ide-manager--buffer-local-value
           'claude-code-ide-session-idle-enabled buffer)
          (claude-code-ide-manager--buffer-local-value
@@ -746,7 +965,7 @@ default to the global scope for backward compatibility."
 
 (defun claude-code-ide-manager--session-working-p (session-key)
   "Return non-nil when SESSION-KEY's live buffer has tracked activity."
-  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (and (claude-code-ide-manager--buffer-local-value
           'claude-code-ide-session-idle-enabled buffer)
          (claude-code-ide-manager--buffer-local-value
@@ -785,16 +1004,20 @@ Idle markers take precedence over working and pinned markers."
   "Return the session key whose live buffer is BUFFER."
   (let (match)
     (maphash
-     (lambda (session-key process)
+     (lambda (session-id _)
        (when (null match)
-         (let ((session-buffer (cond
-                                ((bufferp process)
-                                 (and (buffer-live-p process) process))
-                                ((processp process)
-                                 (process-buffer process)))))
+         (let* ((session (claude-code-ide--get-session session-id))
+                (process (claude-code-ide-session-process session))
+                (session-buffer
+                 (or (claude-code-ide-session-buffer session)
+                     (cond
+                      ((bufferp process)
+                       (and (buffer-live-p process) process))
+                      ((processp process)
+                       (process-buffer process))))))
            (when (eq buffer session-buffer)
-             (setq match session-key)))))
-     claude-code-ide--processes)
+             (setq match (claude-code-ide-session-id session))))))
+     claude-code-ide--sessions)
     match))
 
 (defun claude-code-ide-manager--visible-layout-session-key (&optional frame)
@@ -927,22 +1150,18 @@ Idle markers take precedence over working and pinned markers."
 (defun claude-code-ide-manager-refresh-items (&optional scope)
   "Refresh manager items for SCOPE from the live session registry."
   (let* ((scope (or scope (claude-code-ide-manager--scope-for-command)))
-         (session-keys (claude-code-ide-manager--scope-session-keys
-                        scope
-                        (claude-code-ide-manager--live-session-keys)))
+         (claude-code-ide-manager--legacy-adopted-p nil)
          (items nil))
     (claude-code-ide-manager--load-state)
-    (setq items
-          (mapcar (lambda (session-key)
-                    (claude-code-ide-manager--make-item scope session-key))
-                  session-keys))
-    (when (eq (plist-get scope :type) 'repo)
-      (cl-mapc (lambda (item display-name)
-                 (setf (claude-code-ide-manager-item-display-name item)
-                       display-name))
-               items
-               (claude-code-ide-manager--disambiguate-display-names items)))
+    (setq items (claude-code-ide-manager--build-items scope))
+    (cl-mapc (lambda (item display-name)
+               (setf (claude-code-ide-manager-item-display-name item)
+                     display-name))
+             items
+             (claude-code-ide-manager--disambiguate-display-names items))
     (claude-code-ide-manager--set-scope-items scope items)
+    (when claude-code-ide-manager--legacy-adopted-p
+      (claude-code-ide-manager--save-state))
     items))
 
 (defun claude-code-ide-manager--get-buffer (&optional scope)
@@ -1029,29 +1248,29 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                   (get-text-property (point) 'claude-code-ide-manager-session-key)))
              (inhibit-read-only t)
              (slots (claude-code-ide-manager--slot-map items scope)))
-      (erase-buffer)
-      (dolist (item (claude-code-ide-manager--sorted-items items scope))
-        (claude-code-ide-manager--insert-item
-         scope
-         item
-         (gethash (claude-code-ide-manager-item-session-key item) slots)))
-      (goto-char (point-min))
-      (when-let ((target-session-key
-                  (cond
-                   ((and selected-session-key
-                         (member selected-session-key visible-session-keys))
-                    selected-session-key)
-                   ((and active-session-key
-                         (member active-session-key visible-session-keys))
-                    active-session-key)
-                   ((and claude-code-ide-manager--current-session-key
-                         (member claude-code-ide-manager--current-session-key
-                                 visible-session-keys))
-                    claude-code-ide-manager--current-session-key))))
-        (claude-code-ide-manager--set-scope-selected-session-key
-         scope target-session-key)
-        (claude-code-ide-manager--move-point-to-session-key
-         target-session-key))))))
+        (erase-buffer)
+        (dolist (item (claude-code-ide-manager--sorted-items items scope))
+          (claude-code-ide-manager--insert-item
+           scope
+           item
+           (gethash (claude-code-ide-manager-item-session-key item) slots)))
+        (goto-char (point-min))
+        (when-let ((target-session-key
+                    (cond
+                     ((and selected-session-key
+                           (member selected-session-key visible-session-keys))
+                      selected-session-key)
+                     ((and active-session-key
+                           (member active-session-key visible-session-keys))
+                      active-session-key)
+                     ((and claude-code-ide-manager--current-session-key
+                           (member claude-code-ide-manager--current-session-key
+                                   visible-session-keys))
+                      claude-code-ide-manager--current-session-key))))
+          (claude-code-ide-manager--set-scope-selected-session-key
+           scope target-session-key)
+          (claude-code-ide-manager--move-point-to-session-key
+           target-session-key))))))
 
 (defun claude-code-ide-manager--content-window ()
   "Return a non-sidebar content window for layout operations."
@@ -1209,13 +1428,13 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 
 (defun claude-code-ide-manager--session-managed-p (session-key)
   "Return non-nil when SESSION-KEY already has manager-owned layout state."
-  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (and (buffer-live-p buffer)
          (buffer-local-value 'claude-code-ide-manager--managed-session buffer))))
 
 (defun claude-code-ide-manager--mark-session-managed (session-key)
   "Mark SESSION-KEY's live session buffer as manager-owned."
-  (when-let ((buffer (claude-code-ide--get-session-buffer session-key)))
+  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq-local claude-code-ide-manager--managed-session t)))))
@@ -1400,6 +1619,37 @@ DIRECTION should be -1 for up or 1 for down."
     (claude-code-ide-manager-refresh-items scope)
     (claude-code-ide-manager--render scope)))
 
+(defun claude-code-ide-manager-refresh-all ()
+  "Redraw all visible manager sidebars."
+  (dolist (buffer (claude-code-ide-manager--manager-buffers))
+    (let ((scope (claude-code-ide-manager--scope-from-buffer buffer)))
+      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager--render scope))))
+
+(defun claude-code-ide-manager-session-ended (session-key)
+  "Remove SESSION-KEY from manager rows, layouts, and scope references."
+  (maphash
+   (lambda (scope-key state)
+     (setq state
+           (plist-put
+            state :items
+            (cl-remove session-key (plist-get state :items)
+                       :key #'claude-code-ide-manager-item-session-key
+                       :test #'equal)))
+     (when (equal session-key (plist-get state :selected-session-key))
+       (setq state (plist-put state :selected-session-key nil)))
+     (when (equal session-key (plist-get state :active-session-key))
+       (setq state (plist-put state :active-session-key nil)))
+     (puthash scope-key state claude-code-ide-manager--scope-state)
+     (when (equal scope-key "global")
+       (setq claude-code-ide-manager--items (plist-get state :items))))
+   claude-code-ide-manager--scope-state)
+  (remhash session-key claude-code-ide-manager--layouts)
+  (when (equal session-key claude-code-ide-manager--current-session-key)
+    (setq claude-code-ide-manager--current-session-key nil))
+  (claude-code-ide-manager--save-state)
+  (claude-code-ide-manager-refresh-all))
+
 (defun claude-code-ide-manager--show-sidebar (&optional scope)
   "Show the manager sidebar for SCOPE.
 When Treemacs is visible, collocate the manager beneath it.
@@ -1411,14 +1661,14 @@ Otherwise, use the standalone left side window layout."
     (progn
       (claude-code-ide-manager--delete-stale-collocated-sidebar-windows scope)
       (let ((window
-           (display-buffer-in-side-window
-            (claude-code-ide-manager--get-buffer scope)
-            `((side . left)
-              (slot . -1)
-              (window-width . ,claude-code-ide-manager-window-width)
-              (window-parameters . ((no-delete-other-windows . t)
-                                    (no-other-window . t)
-                                    (window-size-fixed . both)))))))
+             (display-buffer-in-side-window
+              (claude-code-ide-manager--get-buffer scope)
+              `((side . left)
+                (slot . -1)
+                (window-width . ,claude-code-ide-manager-window-width)
+                (window-parameters . ((no-delete-other-windows . t)
+                                      (no-other-window . t)
+                                      (window-size-fixed . both)))))))
         (set-window-parameter window 'claude-code-ide-manager-sidebar t)
         (window-preserve-size window t t)
         window))))
@@ -1715,12 +1965,73 @@ owned sidebar windows."
   "Open a project or worktree relevant to the current manager scope."
   (interactive)
   (let* ((scope (claude-code-ide-manager--scope-for-command))
-         (target (claude-code-ide-manager--open-target-for-scope scope)))
-    (if (member target (claude-code-ide-manager--live-session-keys))
-        (claude-code-ide-manager-switch-to-session target nil scope)
+         (target (claude-code-ide-manager--open-target-for-scope scope))
+         (session (claude-code-ide--preferred-session target)))
+    (if session
+        (claude-code-ide-manager-switch-to-session
+         (claude-code-ide-session-id session) nil scope)
       (setq claude-code-ide-manager--open-target target)
       (setq claude-code-ide-manager--open-scope scope)
       (claude-code-ide-manager-open-menu))))
+
+(defun claude-code-ide-manager-rename-session (session-key name)
+  "Rename SESSION-KEY to NAME, or clear its name when NAME is empty."
+  (let* ((name (unless (string-empty-p name) name))
+         (items (claude-code-ide-manager--all-items))
+         (target (or (claude-code-ide-manager--item-by-session-key session-key)
+                     (cl-find session-key items
+                              :key #'claude-code-ide-manager-item-session-key
+                              :test #'equal))))
+    (unless target
+      (user-error "No manager session %s" session-key))
+    (when name
+      (let ((directory (file-name-as-directory
+                        (expand-file-name
+                         (claude-code-ide-manager-item-directory target)))))
+        (when (cl-find-if
+               (lambda (item)
+                 (and (not (equal session-key
+                                  (claude-code-ide-manager-item-session-key item)))
+                      (equal name
+                             (claude-code-ide-manager-item-custom-name item))
+                      (when-let ((other-directory
+                                  (claude-code-ide-manager-item-directory item)))
+                        (equal directory
+                               (file-name-as-directory
+                                (expand-file-name other-directory))))))
+               items)
+          (user-error "Session name already used in %s" directory))))
+    (when-let ((session (claude-code-ide--get-session session-key)))
+      (claude-code-ide--set-session-custom-name session name))
+    (let ((session-items
+           (cl-remove-if-not
+            (lambda (item)
+              (equal session-key
+                     (claude-code-ide-manager-item-session-key item)))
+            items)))
+      (cl-pushnew target session-items :test #'eq)
+      (dolist (item session-items)
+        (let ((old-suffix (or (claude-code-ide-manager-item-custom-name item)
+                              (claude-code-ide-manager-item-order item)))
+              (new-suffix (or name
+                              (claude-code-ide-manager-item-order item))))
+          (setf (claude-code-ide-manager-item-custom-name item) name
+                (claude-code-ide-manager-item-display-name item)
+                (claude-code-ide-manager--replace-display-suffix
+                 (claude-code-ide-manager-item-display-name item)
+                 old-suffix new-suffix)))))
+    (claude-code-ide-manager--save-state)
+    (claude-code-ide-manager-refresh-all)))
+
+(defun claude-code-ide-manager-rename-at-point ()
+  "Prompt for a custom name for the manager item at point."
+  (interactive)
+  (if-let ((item (claude-code-ide-manager--item-at-point)))
+      (claude-code-ide-manager-rename-session
+       (claude-code-ide-manager-item-session-key item)
+       (read-string "Session name (empty to clear): "
+                    (claude-code-ide-manager-item-custom-name item)))
+    (user-error "No manager session at point")))
 
 (defun claude-code-ide-manager--toggle-pin-for-session-key (scope session-key)
   "Toggle pin state for SESSION-KEY within SCOPE."
@@ -1803,7 +2114,7 @@ Return the selected window when successful."
                  (when-let ((buffer (get-buffer selected-buffer-name)))
                    (unless (claude-code-ide-manager--manager-buffer-p buffer)
                      buffer))))
-           (session-buffer (claude-code-ide--get-session-buffer session-key))
+           (session-buffer (claude-code-ide-manager--session-buffer session-key))
            (target-window (or (and selected-buffer
                                    (get-buffer-window selected-buffer))
                               (and session-buffer
@@ -1814,7 +2125,10 @@ Return the selected window when successful."
 
 (defun claude-code-ide-manager--session-active-file (session-key)
   "Return the active file for SESSION-KEY when the selected window visits one."
-  (let* ((project-root (file-name-as-directory (expand-file-name session-key)))
+  (let* ((project-root
+          (file-name-as-directory
+           (expand-file-name
+            (claude-code-ide-manager--session-directory session-key))))
          (buffer (window-buffer (selected-window)))
          (file (buffer-local-value 'buffer-file-name buffer)))
     (when (and (stringp file)
@@ -1824,7 +2138,10 @@ Return the selected window when successful."
 
 (defun claude-code-ide-manager--sync-treemacs-to-session (session-key)
   "Sync visible Treemacs state to SESSION-KEY."
-  (let ((project-root (file-name-as-directory (expand-file-name session-key)))
+  (let ((project-root
+         (file-name-as-directory
+          (expand-file-name
+           (claude-code-ide-manager--session-directory session-key))))
         (active-file (claude-code-ide-manager--session-active-file session-key)))
     (let ((default-directory project-root))
       (cond
@@ -1851,11 +2168,12 @@ Return the selected window when successful."
 (defun claude-code-ide-manager--build-default-layout (session-key &optional scope)
   "Build the default layout for SESSION-KEY in SCOPE and return the session window."
   (let* ((scope (or scope '(:type global)))
-         (session-buffer (claude-code-ide--get-session-buffer session-key)))
+         (directory (claude-code-ide-manager--session-directory session-key))
+         (session-buffer (claude-code-ide-manager--session-buffer session-key)))
     (unless (buffer-live-p session-buffer)
       (claude-code-ide-manager-refresh)
       (user-error "No live session buffer for %s" session-key))
-    (let ((status-buffer (claude-code-ide-manager--open-status-buffer session-key)))
+    (let ((status-buffer (claude-code-ide-manager--open-status-buffer directory)))
       (select-window (claude-code-ide-manager--content-window))
       (delete-other-windows)
       (let ((status-window (selected-window))
@@ -1873,14 +2191,14 @@ Return the selected window when successful."
 (defun claude-code-ide-manager--ensure-live-target (session-key &optional _scope)
   "Return non-nil when SESSION-KEY still has a live session."
   (if (or (member session-key (claude-code-ide-manager--live-session-keys))
-          (buffer-live-p (claude-code-ide--get-session-buffer session-key)))
+          (buffer-live-p (claude-code-ide-manager--session-buffer session-key)))
       t
     (claude-code-ide-manager-refresh)
     nil))
 
 (defun claude-code-ide-manager--reset-session-idle-state (session-key)
   "Clear idle monitoring state for SESSION-KEY after an explicit manager switch."
-  (when-let ((session-buffer (claude-code-ide--get-session-buffer session-key)))
+  (when-let ((session-buffer (claude-code-ide-manager--session-buffer session-key)))
     (with-current-buffer session-buffer
       (when (bound-and-true-p claude-code-ide-session-idle-enabled)
         (claude-code-ide-session-idle-clear-state)))))
@@ -1891,6 +2209,9 @@ Return the selected window when successful."
 When KEEP-MANAGER-FOCUS is non-nil, reselect the manager window after the
 session layout is updated."
   (interactive)
+  (unless (claude-code-ide-manager--ensure-live-target session-key scope)
+    (user-error "No live session buffer for %s" session-key))
+  (claude-code-ide--touch-session session-key)
   (let ((scope (or scope (claude-code-ide-manager--scope-for-command)))
         (visible-sidebar-scopes
          (claude-code-ide-manager--visible-sidebar-scopes))
@@ -1911,7 +2232,7 @@ session layout is updated."
                  (claude-code-ide-manager--build-default-layout session-key scope)))))
       (let ((preferred-window (if (window-live-p target-window)
                                   target-window
-                                  (selected-window))))
+                                (selected-window))))
         (claude-code-ide-manager--set-scope-active-session-key scope session-key)
         (claude-code-ide-manager--save-state)
         (claude-code-ide-manager--mark-session-managed session-key)
@@ -1935,6 +2256,9 @@ session layout is updated."
 When KEEP-MANAGER-FOCUS is non-nil, reselect the manager window after the
 default layout is rebuilt."
   (interactive)
+  (unless (claude-code-ide-manager--ensure-live-target session-key scope)
+    (user-error "No live session buffer for %s" session-key))
+  (claude-code-ide--touch-session session-key)
   (let* ((scope (or scope (claude-code-ide-manager--scope-for-command)))
          (visible-sidebar-scopes
           (claude-code-ide-manager--visible-sidebar-scopes))

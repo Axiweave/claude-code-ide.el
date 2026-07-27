@@ -309,12 +309,26 @@ root.  Both paths are normalized directory names."
       (ignore-errors (delete-directory temp-dir t)))))
 
 (defun claude-code-ide-tests--clear-processes ()
-  "Clear the process hash table for testing.
+  "Clear the live session hash table for testing.
 Ensures a clean state before each test that involves process management."
-  (clrhash claude-code-ide--processes)
+  (clrhash claude-code-ide--sessions)
   ;; Also clear MCP sessions
   (when (boundp 'claude-code-ide-mcp--sessions)
     (clrhash claude-code-ide-mcp--sessions)))
+
+(defvar claude-code-ide-tests--session-sequence 0)
+
+(defun claude-code-ide-tests--put-session (directory process &optional buffer)
+  "Store a test session for DIRECTORY with PROCESS and optional BUFFER."
+  (claude-code-ide--put-session
+   (claude-code-ide-session-create
+    :id (format "test-session-%d"
+                (cl-incf claude-code-ide-tests--session-sequence))
+    :directory directory
+    :process process
+    :buffer (or buffer (claude-code-ide--session-buffer-from-process process))
+    :order claude-code-ide-tests--session-sequence
+    :last-accessed-at claude-code-ide-tests--session-sequence)))
 
 (defun claude-code-ide-tests--manager-row-slot-column ()
   "Return the visual column where the current row's slot text begins."
@@ -327,7 +341,7 @@ Ensures a clean state before each test that involves process management."
 (defun claude-code-ide-tests--manager-row-text ()
   "Return the current manager row as plain text."
   (buffer-substring-no-properties (line-beginning-position)
-                                   (line-end-position)))
+                                  (line-end-position)))
 
 (defun claude-code-ide-tests--reset-manager-state ()
   "Reset cc-manager test state."
@@ -538,13 +552,13 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((claude-code-ide-manager-persist-state t))
     (puthash 'claude-code-ide-manager--persisted-state
              '(:version 1
-               :items ((:session-key "/tmp/a"
-                        :display-name "a"
-                        :secondary-text "/tmp/a"
-                        :pinned t
-                        :order-key 4
-                        :live-p t))
-               :layouts nil)
+                        :items ((:session-key "/tmp/a"
+                                              :display-name "a"
+                                              :secondary-text "/tmp/a"
+                                              :pinned t
+                                              :order-key 4
+                                              :live-p t))
+                        :layouts nil)
              persist--test-store)
     (claude-code-ide-manager--load-state)
     (should (= (length claude-code-ide-manager--items) 1))
@@ -556,6 +570,325 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (= (claude-code-ide-manager-item-order-key
                 (car claude-code-ide-manager--items))
                4))))
+
+(ert-deftest claude-code-ide-test-manager-rename-and-clear-session ()
+  "Renaming changes the row suffix, and an empty name restores its order."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "one"
+               :directory "/tmp/project/"
+               :order 1
+               :display-name "project · 1"))
+        saved
+        refreshed)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-by-session-key)
+               (lambda (&rest _) item))
+              ((symbol-function 'claude-code-ide-manager--save-state)
+               (lambda () (setq saved t)))
+              ((symbol-function 'claude-code-ide-manager-refresh-all)
+               (lambda () (setq refreshed t))))
+      (claude-code-ide-manager-rename-session "one" "work")
+      (should (equal (claude-code-ide-manager-item-custom-name item) "work"))
+      (should (equal (claude-code-ide-manager-item-display-name item)
+                     "project · work"))
+      (should saved)
+      (should refreshed)
+      (claude-code-ide-manager-rename-session "one" "")
+      (should-not (claude-code-ide-manager-item-custom-name item))
+      (should (equal (claude-code-ide-manager-item-display-name item)
+                     "project · 1")))))
+
+(ert-deftest claude-code-ide-test-manager-rejects-duplicate-name-in-directory ()
+  "Sibling sessions cannot use the same non-empty custom name."
+  (let ((items (list
+                (make-claude-code-ide-manager-item
+                 :session-key "one"
+                 :directory "/tmp/project/"
+                 :custom-name "work")
+                (make-claude-code-ide-manager-item
+                 :session-key "two"
+                 :directory "/tmp/project/sub/../"))))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--all-items)
+               (lambda () items)))
+      (should-error (claude-code-ide-manager-rename-session "two" "work")
+                    :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-manager-allows-same-name-in-other-directory ()
+  "Custom names are unique per normalized directory, not globally."
+  (let* ((target (make-claude-code-ide-manager-item
+                  :session-key "two"
+                  :directory "/tmp/other/"
+                  :order 1
+                  :display-name "other · 1"))
+         (items (list
+                 (make-claude-code-ide-manager-item
+                  :session-key "one"
+                  :directory "/tmp/project/"
+                  :custom-name "work")
+                 target)))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--all-items)
+               (lambda () items))
+              ((symbol-function 'claude-code-ide-manager--save-state) #'ignore)
+              ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore))
+      (claude-code-ide-manager-rename-session "two" "work")
+      (should (equal (claude-code-ide-manager-item-custom-name target)
+                     "work")))))
+
+(ert-deftest claude-code-ide-test-manager-repo-rename-is-canonical-in-global-scope ()
+  "A name assigned in repo scope is used when global scope is built later."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((session (claude-code-ide-session-create
+                   :id "one" :directory "/tmp/project/" :order 1))
+         (repo-scope '(:type repo :git-root "/tmp/"))
+         (repo-item (claude-code-ide-manager--make-item repo-scope session)))
+    (claude-code-ide-manager--set-scope-items repo-scope (list repo-item))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--save-state) #'ignore)
+              ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore)
+              ((symbol-function 'claude-code-ide-manager--live-sessions)
+               (lambda () (list session))))
+      (claude-code-ide-manager-rename-session "one" "work")
+      (let ((global-items
+             (claude-code-ide-manager--build-items '(:type global))))
+        (should (equal
+                 (mapcar #'claude-code-ide-manager-item-display-name global-items)
+                 '("project · work")))))))
+
+(ert-deftest claude-code-ide-test-manager-global-labels-disambiguate-final-collisions ()
+  "Global labels stay distinct after fallback and custom names are applied."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (sessions
+          (list
+           (claude-code-ide-session-create
+            :id "fallback-a" :directory "/tmp/team-a/project/" :order 1)
+           (claude-code-ide-session-create
+            :id "fallback-b" :directory "/tmp/team-b/project/" :order 1)
+           (claude-code-ide-session-create
+            :id "custom-a" :directory "/tmp/team-c/project/" :order 1)
+           (claude-code-ide-session-create
+            :id "custom-b" :directory "/tmp/team-d/project/" :order 1)
+           (claude-code-ide-session-create
+            :id "numeric" :directory "/tmp/numeric/project/" :order 1)
+           (claude-code-ide-session-create
+            :id "number-two" :directory "/tmp/numeric/project/" :order 2)))
+         (claude-code-ide-manager-persist-state nil))
+    ;; These rows model names restored from persisted manager scopes.
+    (claude-code-ide-manager--set-scope-items
+     scope
+     (list
+      (make-claude-code-ide-manager-item
+       :session-key "custom-a" :directory "/tmp/team-c/project/"
+       :custom-name "work")
+      (make-claude-code-ide-manager-item
+       :session-key "custom-b" :directory "/tmp/team-d/project/"
+       :custom-name "work")
+      (make-claude-code-ide-manager-item
+       :session-key "numeric" :directory "/tmp/numeric/project/"
+       :custom-name "2")))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--live-sessions)
+               (lambda () sessions)))
+      (let* ((items (claude-code-ide-manager-refresh-items scope))
+             (labels (mapcar #'claude-code-ide-manager-item-display-name items))
+             (numeric-labels (last labels 2)))
+        (should (equal (seq-take labels 4)
+                       '("project · 1 [team-a/project]"
+                         "project · 1 [team-b/project]"
+                         "project · work [team-c/project]"
+                         "project · work [team-d/project]")))
+        (should (= (length (delete-dups (copy-sequence numeric-labels))) 2))
+        (should (cl-every (lambda (label)
+                            (string-prefix-p "project · 2" label))
+                          numeric-labels))))))
+
+(ert-deftest claude-code-ide-test-manager-labels-survive-generated-literal-collision ()
+  "A path-qualified label cannot collide with a literal bracketed custom name."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (sessions
+          (list
+           (claude-code-ide-session-create
+            :id "a" :directory "/tmp/team-a/project/" :order 1)
+           (claude-code-ide-session-create
+            :id "b" :directory "/tmp/team-b/project/" :order 1)
+           (claude-code-ide-session-create
+            :id "literal" :directory "/tmp/team-c/project/" :order 1)))
+         (claude-code-ide-manager-persist-state nil))
+    (claude-code-ide-manager--set-scope-items
+     scope
+     (list
+      (make-claude-code-ide-manager-item
+       :session-key "a" :directory "/tmp/team-a/project/" :custom-name "work")
+      (make-claude-code-ide-manager-item
+       :session-key "b" :directory "/tmp/team-b/project/" :custom-name "work")
+      (make-claude-code-ide-manager-item
+       :session-key "literal" :directory "/tmp/team-c/project/"
+       :custom-name "work [team-a/project]")))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--live-sessions)
+               (lambda () sessions)))
+      (let ((labels
+             (mapcar #'claude-code-ide-manager-item-display-name
+                     (claude-code-ide-manager-refresh-items scope))))
+        (should (= (length labels)
+                   (length (delete-dups (copy-sequence labels)))))))))
+
+(ert-deftest claude-code-ide-test-manager-item-metadata-round-trips ()
+  "Session identity metadata survives item serialization."
+  (let* ((item (make-claude-code-ide-manager-item
+                :session-key "one"
+                :directory "/tmp/project/"
+                :custom-name "work"
+                :order 3
+                :display-name "project · work"
+                :secondary-text "/tmp/project/"
+                :pinned t
+                :order-key 7
+                :live-p t))
+         (restored (claude-code-ide-manager--deserialize-item
+                    (claude-code-ide-manager--serialize-item item))))
+    (should (equal (claude-code-ide-manager-item-directory restored)
+                   "/tmp/project/"))
+    (should (equal (claude-code-ide-manager-item-custom-name restored) "work"))
+    (should (= (claude-code-ide-manager-item-order restored) 3))))
+
+(ert-deftest claude-code-ide-test-manager-adopts-legacy-directory-state-once ()
+  "The earliest live sibling receives old directory-keyed manager state."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (directory "/tmp/project/")
+         (legacy (make-claude-code-ide-manager-item
+                  :session-key directory
+                  :display-name "project · work"
+                  :custom-name "work"
+                  :pinned t
+                  :order-key 7
+                  :live-p t))
+         (session-one (claude-code-ide-session-create
+                       :id "one" :directory directory :order 1))
+         (session-two (claude-code-ide-session-create
+                       :id "two" :directory directory :order 2)))
+    (claude-code-ide-manager--set-scope-items scope (list legacy))
+    (claude-code-ide-manager--set-scope-selected-session-key scope directory)
+    (claude-code-ide-manager--set-scope-active-session-key scope directory)
+    (puthash directory '(:window-state legacy-layout)
+             claude-code-ide-manager--layouts)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--live-sessions)
+               (lambda () (list session-one session-two))))
+      (let ((items (claude-code-ide-manager--build-items scope)))
+        (should (equal (mapcar #'claude-code-ide-manager-item-session-key items)
+                       '("one" "two")))
+        (should (claude-code-ide-manager-item-pinned (car items)))
+        (should (= (claude-code-ide-manager-item-order-key (car items)) 7))
+        (should (equal (claude-code-ide-manager-item-custom-name (car items))
+                       "work"))
+        (should (equal (claude-code-ide-manager-item-display-name (car items))
+                       "project · work"))
+        (should-not (claude-code-ide-manager-item-custom-name (cadr items)))
+        (should (equal (gethash "one" claude-code-ide-manager--layouts)
+                       '(:window-state legacy-layout)))
+        (should-not (gethash directory claude-code-ide-manager--layouts))
+        (should (equal (claude-code-ide-manager--scope-selected-session-key scope)
+                       "one"))
+        (should (equal (claude-code-ide-manager--scope-active-session-key scope)
+                       "one"))))))
+
+(ert-deftest claude-code-ide-test-manager-persists-legacy-adoption-before-next-refresh ()
+  "A vanished first sibling must not let persisted legacy state move again."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((claude-code-ide-manager-persist-state t)
+         (scope '(:type global))
+         (directory "/tmp/project/")
+         (session-one (claude-code-ide-session-create
+                       :id "one" :directory directory :order 1))
+         (session-two (claude-code-ide-session-create
+                       :id "two" :directory directory :order 2))
+         (live-sessions (list session-one session-two)))
+    (claude-code-ide-manager--set-scope-items
+     scope
+     (list (make-claude-code-ide-manager-item
+            :session-key directory
+            :display-name "project · work"
+            :custom-name "work"
+            :pinned t
+            :order-key 7
+            :live-p t)))
+    (puthash directory '(:window-state legacy-layout)
+             claude-code-ide-manager--layouts)
+    (claude-code-ide-manager--save-state)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--live-sessions)
+               (lambda () live-sessions)))
+      (claude-code-ide-manager-refresh-items scope)
+      (setq live-sessions (list session-two))
+      (let ((items (claude-code-ide-manager-refresh-items scope)))
+        (should (= (length items) 1))
+        (should (equal (claude-code-ide-manager-item-session-key (car items))
+                       "two"))
+        (should-not (claude-code-ide-manager-item-pinned (car items)))
+        (should-not (claude-code-ide-manager-item-custom-name (car items)))
+        (should (equal (gethash "one" claude-code-ide-manager--layouts)
+                       '(:window-state legacy-layout)))
+        (should-not (gethash "two" claude-code-ide-manager--layouts))))))
+
+(ert-deftest claude-code-ide-test-manager-rename-preserves-repo-disambiguation-tail ()
+  "Rename and clear keep the path tail on colliding repo labels."
+  (let* ((one (make-claude-code-ide-manager-item
+               :session-key "one"
+               :directory "/tmp/team-a/project/"
+               :order 1
+               :display-name "feature · 1"))
+         (two (make-claude-code-ide-manager-item
+               :session-key "two"
+               :directory "/tmp/team-b/project/"
+               :order 1
+               :display-name "feature · 1"))
+         (items (list one two)))
+    (cl-mapc (lambda (item display-name)
+               (setf (claude-code-ide-manager-item-display-name item)
+                     display-name))
+             items
+             (claude-code-ide-manager--disambiguate-display-names items))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--all-items)
+               (lambda () items))
+              ((symbol-function 'claude-code-ide-manager--save-state) #'ignore)
+              ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore))
+      (claude-code-ide-manager-rename-session "one" "work")
+      (should (equal (claude-code-ide-manager-item-display-name one)
+                     "feature · work [team-a/project]"))
+      (claude-code-ide-manager-rename-session "one" "")
+      (should (equal (claude-code-ide-manager-item-display-name one)
+                     "feature · 1 [team-a/project]")))))
+
+(ert-deftest claude-code-ide-test-manager-rename-bracketed-custom-name-remains-stable ()
+  "Bracket text in a custom name is not a repo disambiguation tail."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "one"
+               :directory "/tmp/project/"
+               :order 1
+               :display-name "project · 1")))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-by-session-key)
+               (lambda (&rest _) item))
+              ((symbol-function 'claude-code-ide-manager--save-state) #'ignore)
+              ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore))
+      (claude-code-ide-manager-rename-session "one" "work [urgent]")
+      (should (equal (claude-code-ide-manager-item-display-name item)
+                     "project · work [urgent]"))
+      (claude-code-ide-manager-rename-session "one" "next")
+      (should (equal (claude-code-ide-manager-item-display-name item)
+                     "project · next"))
+      (claude-code-ide-manager-rename-session "one" "work [urgent]")
+      (claude-code-ide-manager-rename-session "one" "")
+      (should (equal (claude-code-ide-manager-item-display-name item)
+                     "project · 1")))))
+
+(ert-deftest claude-code-ide-test-manager-rename-preserves-multiple-generated-tails ()
+  "Renaming preserves every suffix added by final label disambiguation."
+  (should (equal
+           (claude-code-ide-manager--replace-display-suffix
+            "project · work [team-a/project] [session-a]" "work" "review")
+           "project · review [team-a/project] [session-a]")))
+
+(ert-deftest claude-code-ide-test-manager-mode-binds-r-to-rename ()
+  "Manager mode exposes session rename on `r'."
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "r"))
+              #'claude-code-ide-manager-rename-at-point)))
 
 (ert-deftest claude-code-ide-test-manager-default-toggle-targets-global-when-configured ()
   (let ((claude-code-ide-manager-default-target 'global))
@@ -591,19 +924,25 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-repo-scope-renders-branch-labels-and-path-hover ()
   (claude-code-ide-tests--reset-manager-state)
   (let ((scope '(:type repo :git-root "/tmp/repo/"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (claude-code-ide-manager-repo-label-strategy 'branch-or-basename)
         (process-a (make-pipe-process :name "cc-manager-repo-render-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-repo-render-b" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/repo/worktree-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/other/worktree-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/repo/worktree-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/other/worktree-b" process-b)
           (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
-                     (lambda (session-key)
+                     (lambda (session-or-key)
                        (cond
-                        ((equal session-key "/tmp/repo/worktree-a") "/tmp/repo/")
-                        ((equal session-key "/tmp/other/worktree-b") "/tmp/other/"))))
+                        ((equal (claude-code-ide-manager--session-directory
+                                 session-or-key)
+                                "/tmp/repo/worktree-a")
+                         "/tmp/repo/")
+                        ((equal (claude-code-ide-manager--session-directory
+                                 session-or-key)
+                                "/tmp/other/worktree-b")
+                         "/tmp/other/"))))
                     ((symbol-function 'claude-code-ide-manager--session-branch-name)
                      (lambda (_session-key) "feature-x")))
             (claude-code-ide-manager-refresh-items scope)
@@ -622,11 +961,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-repo-scope-hover-path-omits-detached-head-branch ()
   (claude-code-ide-tests--reset-manager-state)
   (let ((scope '(:type repo :git-root "/tmp/repo/"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-detached-a" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/repo/worktree-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/repo/worktree-a" process-a)
           (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
                      (lambda (_session-key) "/tmp/repo/"))
                     ((symbol-function 'claude-code-ide-manager--session-branch-name)
@@ -753,20 +1092,133 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-collects-live-sessions ()
   "Test manager builds items from live session directories."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-b" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
-          (claude-code-ide-manager-refresh-items)
-          (should (= (length claude-code-ide-manager--items) 2))
-          (should (equal (mapcar #'claude-code-ide-manager-item-session-key
-                                 claude-code-ide-manager--items)
-                         '("/tmp/project-a" "/tmp/project-b"))))
+          (let ((session-a (claude-code-ide-tests--put-session
+                            "/tmp/project-a" process-a))
+                (session-b (claude-code-ide-tests--put-session
+                            "/tmp/project-b" process-b)))
+            (claude-code-ide-manager-refresh-items)
+            (should (= (length claude-code-ide-manager--items) 2))
+            (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                                   claude-code-ide-manager--items)
+                           (mapcar #'claude-code-ide-session-id
+                                   (list session-a session-b))))
+            (should (equal (mapcar #'claude-code-ide-manager-item-directory
+                                   claude-code-ide-manager--items)
+                           '("/tmp/project-a" "/tmp/project-b")))))
       (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b)))))
+
+(ert-deftest claude-code-ide-test-manager-lists-sibling-sessions-separately ()
+  (let ((sessions (list
+                   (claude-code-ide-session-create
+                    :id "one" :directory "/tmp/project/" :order 1)
+                   (claude-code-ide-session-create
+                    :id "two" :directory "/tmp/project/" :order 2))))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--live-sessions)
+               (lambda () sessions)))
+      (let ((items (claude-code-ide-manager--build-items '(:type global))))
+        (should (equal (mapcar #'claude-code-ide-manager-item-session-key items)
+                       '("one" "two")))
+        (should (equal (mapcar #'claude-code-ide-manager-item-display-name items)
+                       '("project · 1" "project · 2")))))))
+
+(ert-deftest claude-code-ide-test-manager-missing-exact-buffer-does-not-use-sibling ()
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((directory "/tmp/project/")
+         (sibling-buffer (generate-new-buffer "*cc-manager-exact-sibling*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "missing" :directory directory :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "sibling" :directory directory :buffer sibling-buffer
+            :last-accessed-at 2))
+          (claude-code-ide-manager--set-scope-items
+           '(:type global)
+           (list (make-claude-code-ide-manager-item
+                  :session-key "missing" :directory directory)))
+          (remhash "missing" claude-code-ide--sessions)
+          (should-not
+           (claude-code-ide-manager--session-buffer "missing")))
+      (kill-buffer sibling-buffer))))
+
+(ert-deftest claude-code-ide-test-manager-session-exit-prunes-id-scoped-state ()
+  "An exited ID leaves no rows, layouts, or scope references behind."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/project/"))
+         (directory "/tmp/project/")
+         (sibling-buffer (generate-new-buffer "*cc-manager-live-sibling*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         saved refreshed)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "one" :directory directory :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "two" :directory directory :buffer sibling-buffer
+            :last-accessed-at 2))
+          (dolist (scope (list global-scope repo-scope))
+            (claude-code-ide-manager--set-scope-items
+             scope
+             (list (make-claude-code-ide-manager-item
+                    :session-key "one" :directory directory)
+                   (make-claude-code-ide-manager-item
+                    :session-key "two" :directory directory)))
+            (claude-code-ide-manager--set-scope-selected-session-key scope "one")
+            (claude-code-ide-manager--set-scope-active-session-key scope "one"))
+          (setq claude-code-ide-manager--current-session-key "one")
+          (puthash "one" '(:window-state stale)
+                   claude-code-ide-manager--layouts)
+          ;; Core removes the live record before notifying manager state.
+          (remhash "one" claude-code-ide--sessions)
+          (cl-letf (((symbol-function 'claude-code-ide-manager--save-state)
+                     (lambda () (setq saved t)))
+                    ((symbol-function 'claude-code-ide-manager-refresh-all)
+                     (lambda () (setq refreshed t))))
+            (claude-code-ide-manager-session-ended "one"))
+          (dolist (scope (list global-scope repo-scope))
+            (should (equal
+                     (mapcar #'claude-code-ide-manager-item-session-key
+                             (claude-code-ide-manager--scope-items scope))
+                     '("two")))
+            (should-not
+             (claude-code-ide-manager--scope-selected-session-key scope))
+            (should-not
+             (claude-code-ide-manager--scope-active-session-key scope)))
+          (should-not claude-code-ide-manager--current-session-key)
+          (should-not (gethash "one" claude-code-ide-manager--layouts))
+          (should-not (claude-code-ide-manager--session-buffer "one"))
+          (should (eq (claude-code-ide-manager--session-buffer "two")
+                      sibling-buffer))
+          (should saved)
+          (should refreshed))
+      (kill-buffer sibling-buffer))))
+
+(ert-deftest claude-code-ide-test-session-order-is-not-reused-after-cleanup ()
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
+        (directory "/tmp/project/"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "one" :directory directory
+      :order (claude-code-ide--next-session-order directory)))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "two" :directory directory
+      :order (claude-code-ide--next-session-order directory)))
+    (remhash "two" claude-code-ide--sessions)
+    (should (= (claude-code-ide--next-session-order directory) 3))))
 
 (ert-deftest claude-code-ide-test-manager-sorts-pinned-before-unpinned ()
   "Test pinned items sort before unpinned items."
@@ -787,33 +1239,38 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test repo scope falls back to visible label ordering."
   (claude-code-ide-tests--reset-manager-state)
   (let ((scope '(:type repo :git-root "/tmp/repo/"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-repo-sort-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-repo-sort-b" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/repo/zeta" process-a claude-code-ide--processes)
-          (puthash "/tmp/repo/alpha" process-b claude-code-ide--processes)
-          (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
-                     (lambda (_session-key) "/tmp/repo/"))
-                    ((symbol-function 'claude-code-ide-manager--session-branch-name)
-                     (lambda (session-key)
-                       (if (equal session-key "/tmp/repo/zeta")
-                           "alpha"
-                         "beta"))))
-            (claude-code-ide-manager-refresh-items scope)
-            (should (equal (claude-code-ide-manager--visible-session-keys scope)
-                           '("/tmp/repo/zeta" "/tmp/repo/alpha")))
-            (claude-code-ide-manager--render scope)
-            (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-              (goto-char (point-min))
-              (should (string-match-p "alpha" (buffer-substring-no-properties
-                                               (line-beginning-position)
-                                               (line-end-position))))
-              (forward-line 1)
-              (should (string-match-p "beta" (buffer-substring-no-properties
-                                              (line-beginning-position)
-                                              (line-end-position)))))))
+          (let ((session-a (claude-code-ide-tests--put-session
+                            "/tmp/repo/zeta" process-a))
+                (session-b (claude-code-ide-tests--put-session
+                            "/tmp/repo/alpha" process-b)))
+            (cl-letf (((symbol-function 'claude-code-ide-manager--session-git-root)
+                       (lambda (_session-or-key) "/tmp/repo/"))
+                      ((symbol-function 'claude-code-ide-manager--session-branch-name)
+                       (lambda (session-or-key)
+                         (if (equal (claude-code-ide-manager--session-directory
+                                     session-or-key)
+                                    "/tmp/repo/zeta")
+                             "alpha"
+                           "beta"))))
+              (claude-code-ide-manager-refresh-items scope)
+              (should (equal (claude-code-ide-manager--visible-session-keys scope)
+                             (mapcar #'claude-code-ide-session-id
+                                     (list session-a session-b))))
+              (claude-code-ide-manager--render scope)
+              (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+                (goto-char (point-min))
+                (should (string-match-p "alpha" (buffer-substring-no-properties
+                                                 (line-beginning-position)
+                                                 (line-end-position))))
+                (forward-line 1)
+                (should (string-match-p "beta" (buffer-substring-no-properties
+                                                (line-beginning-position)
+                                                (line-end-position))))))))
       (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b))
       (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer scope)))))
@@ -1375,7 +1832,7 @@ have completed before cleanup.  Waits up to 5 seconds."
          (idle-buffer (generate-new-buffer "*claude-code[project]<team-a>*"))
          (active-buffer (generate-new-buffer "*claude-code[project]*"))
          (process-a (make-pipe-process :name "cc-collision-idle" :buffer idle-buffer))
-         (claude-code-ide--processes (make-hash-table :test 'equal)))
+         (claude-code-ide--sessions (make-hash-table :test 'equal)))
     (unwind-protect
         (progn
           (with-current-buffer idle-buffer
@@ -1385,7 +1842,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-tracking-started-p nil))
-          (puthash directory-a process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session directory-a process-a)
           (setq claude-code-ide-manager--items
                 (list (make-claude-code-ide-manager-item
                        :session-key directory-a
@@ -1419,7 +1876,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-buffer (get-buffer-create "*cc-idle-transition*"))
         (manager-buffer (claude-code-ide-manager--get-buffer))
         (content-buffer (get-buffer-create "*cc-content*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-idle-transition" :buffer nil))
         (timer-called nil))
     (unwind-protect
@@ -1436,7 +1893,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                        :pinned nil
                        :order-key 1
                        :live-p t)))
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (set-window-buffer (split-window-right) manager-buffer)
@@ -1580,7 +2037,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-buffer (get-buffer-create "*cc-idle-clear-state*"))
         (manager-buffer (claude-code-ide-manager--get-buffer))
         (content-buffer (get-buffer-create "*cc-content-clear-state*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-idle-clear-state" :buffer nil)))
     (unwind-protect
         (save-window-excursion
@@ -1597,7 +2054,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                        :pinned nil
                        :order-key 1
                        :live-p t)))
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (set-window-buffer (split-window-right) manager-buffer)
@@ -1748,7 +2205,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-refreshes-sidebar-highlight ()
   "Test switching sessions rerenders the manager highlight."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-highlight-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-highlight-b" :buffer nil))
         (content-buffer (get-buffer-create "*cc-manager-highlight-content*")))
@@ -1770,8 +2227,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                        :order-key 2
                        :live-p t)))
           (setq claude-code-ide-manager--current-session-key "/tmp/project-a")
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/project-b" process-b)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (set-window-buffer (split-window-right)
@@ -1807,7 +2264,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test switch saves the new active session before sidebar restore reloads state."
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide-manager-persist-state t)
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-persist-highlight-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-persist-highlight-b" :buffer nil))
         (content-buffer (get-buffer-create "*cc-manager-persist-highlight-content*")))
@@ -1832,8 +2289,8 @@ have completed before cleanup.  Waits up to 5 seconds."
           (claude-code-ide-manager--set-scope-active-session-key
            '(:type global) "/tmp/project-a")
           (claude-code-ide-manager--save-state)
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/project-b" process-b)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (set-window-buffer (split-window-right)
@@ -1986,13 +2443,16 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-render-preserves-visible-window-point ()
   "Test render preserves the visible sidebar row even when buffer point differs."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-render-window-point-a" :buffer nil))
-        (process-b (make-pipe-process :name "cc-manager-render-window-point-b" :buffer nil)))
+        (process-b (make-pipe-process :name "cc-manager-render-window-point-b" :buffer nil))
+        session-key-b)
     (unwind-protect
         (progn
-          (puthash "/tmp/a" process-a claude-code-ide--processes)
-          (puthash "/tmp/b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/a" process-a)
+          (setq session-key-b
+                (claude-code-ide-session-id
+                 (claude-code-ide-tests--put-session "/tmp/b" process-b)))
           (setq claude-code-ide-manager--items
                 (list (make-claude-code-ide-manager-item
                        :session-key "/tmp/a"
@@ -2021,7 +2481,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (with-current-buffer (window-buffer sidebar-window)
               (goto-char (window-point sidebar-window))
               (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                             "/tmp/b")))))
+                             session-key-b)))))
       (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b))
       (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
@@ -2064,12 +2524,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-collocated-sidebar-propagates-side-metadata ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-collocated-side-metadata" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((treemacs-window (display-buffer-in-side-window
@@ -2093,11 +2553,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-show-sidebar-keeps-standalone-path-without-treemacs ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-standalone" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (cl-letf (((symbol-function 'claude-code-ide-manager--treemacs-window)
                      (lambda () nil)))
             (let ((window (claude-code-ide-manager--show-sidebar '(:type global))))
@@ -2108,12 +2568,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-show-sidebar-collocates-below-treemacs ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-collocated" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window (display-buffer-in-side-window
@@ -2142,12 +2602,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-show-sidebar-collocates-below-treemacs-adaptive-policy ()
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide-manager-treemacs-split-policy 'adaptive)
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-collocated-adaptive" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window (display-buffer-in-side-window
@@ -2177,12 +2637,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-content-window-skips-collocated-manager-pane ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-content-window" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((content-window (selected-window))
@@ -2206,12 +2666,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-closes-collocated-manager-pane ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-toggle-close" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window (display-buffer-in-side-window
@@ -2238,12 +2698,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-hide-sidebar-closes-collocated-manager-pane ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-hide-close" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window
@@ -2274,12 +2734,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-force-open-reuses-collocated-pane ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-force-open" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window (display-buffer-in-side-window
@@ -2310,12 +2770,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-force-open-rebuilds-after-treemacs-reopens ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-force-open-reopen" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window (display-buffer-in-side-window
@@ -2351,12 +2811,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-collocated-sidebar-restores-treemacs-parameters-on-close ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-treemacs-restore" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window
@@ -2396,12 +2856,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-collocated-sidebar-restores-treemacs-parameters-without-snapshot ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-treemacs-restore-fallback" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window
@@ -2415,20 +2875,20 @@ have completed before cleanup.  Waits up to 5 seconds."
                     (expected-no-delete (window-parameter treemacs-window 'no-delete-other-windows))
                     (expected-no-other (window-parameter treemacs-window 'no-other-window))
                     (expected-size-fixed (window-parameter treemacs-window 'window-size-fixed)))
-              (set-window-parameter manager-window
-                                    'claude-code-ide-manager-collocated-treemacs-params
-                                    nil)
-              (should (progn
-                        (claude-code-ide-manager--hide-sidebar '(:type global))
-                        t))
-              (should (window-live-p treemacs-window))
-              (should (eq (window-parameter treemacs-window 'window-side) expected-side))
-              (should (equal (window-parameter treemacs-window 'no-delete-other-windows)
-                             expected-no-delete))
-              (should (equal (window-parameter treemacs-window 'no-other-window)
-                             expected-no-other))
-              (should (equal (window-parameter treemacs-window 'window-size-fixed)
-                             expected-size-fixed))))))
+                (set-window-parameter manager-window
+                                      'claude-code-ide-manager-collocated-treemacs-params
+                                      nil)
+                (should (progn
+                          (claude-code-ide-manager--hide-sidebar '(:type global))
+                          t))
+                (should (window-live-p treemacs-window))
+                (should (eq (window-parameter treemacs-window 'window-side) expected-side))
+                (should (equal (window-parameter treemacs-window 'no-delete-other-windows)
+                               expected-no-delete))
+                (should (equal (window-parameter treemacs-window 'no-other-window)
+                               expected-no-other))
+                (should (equal (window-parameter treemacs-window 'window-size-fixed)
+                               expected-size-fixed))))))
       (ignore-errors (delete-process process-a))
       (when (buffer-live-p treemacs-buffer)
         (kill-buffer treemacs-buffer))
@@ -2437,12 +2897,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-closes-stale-collocated-pane-after-treemacs-is-closed ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-toggle-stale-close" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((content-window (selected-window))
@@ -2472,12 +2932,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-hide-sidebar-closes-stale-collocated-pane-after-treemacs-is-closed ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-hide-stale-close" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((content-window (selected-window))
@@ -2509,12 +2969,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-show-sidebar-cleans-stale-collocated-pane-on-standalone-reopen ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-cleanup" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((treemacs-window (display-buffer-in-side-window
@@ -2544,12 +3004,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-show-sidebar-normalizes-content-window-manager-copy ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-content-preserve" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((manager-buffer (claude-code-ide-manager--get-buffer '(:type global)))
@@ -2579,12 +3039,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-hides-normalized-manager-sidebar ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-toggle-owned-sidebar" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((manager-buffer (claude-code-ide-manager--get-buffer '(:type global)))
@@ -2616,14 +3076,14 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-refresh-sidebar-state-syncs-owned-sidebar-window ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-refresh-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-refresh-b" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/project-b" process-b)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((scope '(:type global))
@@ -2658,11 +3118,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-window-config-hook-reasserts-sidebar-state ()
   "Test window-config changes restore standalone sidebar parameters."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-window-config-a" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let ((sidebar-window (claude-code-ide-manager-toggle-sidebar 1)))
@@ -2684,20 +3144,20 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (eq (window-parameter sidebar-window 'no-other-window) t))
             (should (eq (window-parameter sidebar-window 'window-size-fixed)
                         'both)))))
-      (ignore-errors (delete-process process-a))
-      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
-        (delete-window window))
-      (when-let ((buffer (get-buffer "*content*")))
-        (kill-buffer buffer))))
+    (ignore-errors (delete-process process-a))
+    (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+      (delete-window window))
+    (when-let ((buffer (get-buffer "*content*")))
+      (kill-buffer buffer))))
 
 (ert-deftest claude-code-ide-test-manager-window-config-hook-recreates-sidebar-from-restored-ordinary-window ()
   "Test window-config changes rebuild a real sidebar from an ordinary restored window."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-window-config-restored-a" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((scope '(:type global))
@@ -2727,11 +3187,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-window-config-hook-restores-focus-to-recreated-sidebar ()
   "Test window-config changes keep focus on the recreated sidebar."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-window-config-focus-a" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((scope '(:type global))
@@ -2838,15 +3298,21 @@ have completed before cleanup.  Waits up to 5 seconds."
          (global-buffer (claude-code-ide-manager--get-buffer global-scope))
          (session-a (get-buffer-create "*cc-persp-session-a*"))
          (session-b (get-buffer-create "*cc-persp-session-b*"))
-         (claude-code-ide--processes (make-hash-table :test 'equal))
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
          (process-a (make-pipe-process :name "cc-manager-window-config-session-a"
                                        :buffer session-a))
          (process-b (make-pipe-process :name "cc-manager-window-config-session-b"
-                                       :buffer session-b)))
+                                       :buffer session-b))
+         session-key-a session-key-b)
     (unwind-protect
         (progn
-          (puthash "/tmp/claude-code-ide.el" process-a claude-code-ide--processes)
-          (puthash "/tmp/CRSBench" process-b claude-code-ide--processes)
+          (setq session-key-a
+                (claude-code-ide-session-id
+                 (claude-code-ide-tests--put-session
+                  "/tmp/claude-code-ide.el" process-a)))
+          (setq session-key-b
+                (claude-code-ide-session-id
+                 (claude-code-ide-tests--put-session "/tmp/CRSBench" process-b)))
           (claude-code-ide-manager--set-scope-items
            global-scope
            (list (make-claude-code-ide-manager-item
@@ -2861,9 +3327,9 @@ have completed before cleanup.  Waits up to 5 seconds."
                   :secondary-text "CRSBench"
                   :order-key 2
                   :live-p t)))
-          (setq claude-code-ide-manager--current-session-key "/tmp/CRSBench")
+          (setq claude-code-ide-manager--current-session-key session-key-b)
           (claude-code-ide-manager--set-scope-active-session-key
-           global-scope "/tmp/CRSBench")
+           global-scope session-key-b)
           (delete-other-windows)
           (switch-to-buffer session-a)
           (let ((restored-window (split-window-right)))
@@ -2875,15 +3341,15 @@ have completed before cleanup.  Waits up to 5 seconds."
             (select-window restored-window)
             (claude-code-ide-manager--refresh-on-window-configuration-change)
             (should (equal claude-code-ide-manager--current-session-key
-                           "/tmp/claude-code-ide.el"))
+                           session-key-a))
             (should (equal (claude-code-ide-manager--scope-active-session-key global-scope)
-                           "/tmp/claude-code-ide.el"))
+                           session-key-a))
             (let ((sidebar-window (claude-code-ide-manager--sidebar-window global-scope)))
               (should (window-live-p sidebar-window))
               (with-current-buffer global-buffer
                 (goto-char (window-point sidebar-window))
                 (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                               "/tmp/claude-code-ide.el"))
+                               session-key-a))
                 (should (eq (get-text-property (point) 'face)
                             'claude-code-ide-manager-current-session-face))))))
       (ignore-errors (delete-process process-a))
@@ -2971,12 +3437,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-switch-keep-focus-prefers-owned-sidebar-window ()
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-switch-focus" :buffer nil))
         (treemacs-buffer (get-buffer-create "*Treemacs*")))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer (get-buffer-create "*content*"))
           (let* ((scope '(:type global))
@@ -3034,6 +3500,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let (calls)
     (cl-letf (((symbol-function 'claude-code-ide-manager--treemacs-window)
                (lambda () t))
+              ((symbol-function 'claude-code-ide-manager--ensure-live-target)
+               (lambda (&rest _) t))
               ((symbol-function 'claude-code-ide-manager--session-managed-p)
                (lambda (_session-key) t))
               ((symbol-function 'claude-code-ide-manager--session-active-file)
@@ -3050,6 +3518,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let (called)
     (cl-letf (((symbol-function 'claude-code-ide-manager--treemacs-window)
                (lambda () nil))
+              ((symbol-function 'claude-code-ide-manager--ensure-live-target)
+               (lambda (&rest _) t))
               ((symbol-function 'claude-code-ide-manager--session-managed-p)
                (lambda (_session-key) t))
               ((symbol-function 'claude-code-ide-manager--sync-treemacs-to-session)
@@ -3080,6 +3550,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                          (set-window-buffer content-window session-buffer)
                          (select-window content-window)
                          content-window))
+                      ((symbol-function 'claude-code-ide-manager--ensure-live-target)
+                       (lambda (&rest _) t))
                       ((symbol-function 'claude-code-ide-manager--session-managed-p)
                        (lambda (_session-key) t))
                       ((symbol-function 'claude-code-ide-manager--sync-treemacs-to-session)
@@ -3115,11 +3587,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-1-creates-left-side-window ()
   "Test forcing the manager open creates a left side window."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-show" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (let ((window (claude-code-ide-manager-toggle-sidebar 1)))
             (should (window-live-p window))
             (should (eq (window-parameter window 'window-side) 'left))
@@ -3177,11 +3649,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-toggles-window ()
   "Test toggling the manager hides an existing sidebar and shows it again."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-toggle" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (let ((window (claude-code-ide-manager-toggle-sidebar)))
             (should (window-live-p window))
             (should (eq (selected-window) window))
@@ -3201,11 +3673,11 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-toggle-sidebar-arg-controls-visibility ()
   "Test toggle arguments force open or hide without the toggle heuristic."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-toggle-arg" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (let ((window (claude-code-ide-manager-toggle-sidebar 1)))
             (should (window-live-p window))
             (should (eq (selected-window) window)))
@@ -3299,15 +3771,17 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'completing-read)
                (lambda (_prompt collection &rest _)
                  (car (funcall collection "/tmp/project-b/" nil t))))
-              ((symbol-function 'claude-code-ide-manager--live-session-keys)
-               (lambda () '("/tmp/project-b/")))
+              ((symbol-function 'claude-code-ide--preferred-session)
+               (lambda (_directory)
+                 (claude-code-ide-session-create
+                  :id "project-b-session" :directory "/tmp/project-b/")))
               ((symbol-function 'claude-code-ide-manager-switch-to-session)
                (lambda (session-key &optional keep-manager-focus scope)
                  (setq switch-call (list session-key keep-manager-focus scope)))))
       (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
         (claude-code-ide-manager-open))
       (should (equal switch-call
-                     '("/tmp/project-b/" nil (:type global)))))))
+                     '("project-b-session" nil (:type global)))))))
 
 (ert-deftest claude-code-ide-test-manager-known-project-roots-auto-prefers-projectile ()
   "Test auto source prefers Projectile when Projectile is available."
@@ -3345,7 +3819,7 @@ have completed before cleanup.  Waits up to 5 seconds."
     (cl-letf (((symbol-function 'claude-code-ide-manager--projectile-known-project-roots)
                (lambda () '("/tmp/shared/" "/tmp/projectile-a/")))
               ((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
-                (lambda () '("/tmp/shared/" "/tmp/project-el/"))))
+               (lambda () '("/tmp/shared/" "/tmp/project-el/"))))
       (should (equal (claude-code-ide-manager--known-project-roots)
                      '("/tmp/projectile-a/" "/tmp/shared/" "/tmp/project-el/"))))))
 
@@ -3375,8 +3849,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda () '("/tmp/project-a/")))
               ((symbol-function 'completing-read)
                (lambda (&rest _) "/tmp/project-a/"))
-              ((symbol-function 'claude-code-ide-manager--live-session-keys)
-               (lambda () nil))
+              ((symbol-function 'claude-code-ide--preferred-session)
+               (lambda (_directory) nil))
               ((symbol-function 'claude-code-ide-manager-open-menu)
                (lambda ()
                  (setq transient-target claude-code-ide-manager--open-target))))
@@ -3396,8 +3870,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda (_prompt collection &rest _)
                  (setq captured-candidates collection)
                  "/tmp/repo-wt/"))
-              ((symbol-function 'claude-code-ide-manager--live-session-keys)
-               (lambda () nil))
+              ((symbol-function 'claude-code-ide--preferred-session)
+               (lambda (_directory) nil))
               ((symbol-function 'claude-code-ide-manager-open-menu)
                (lambda () nil)))
       (with-current-buffer (claude-code-ide-manager--get-buffer '(:type repo :git-root "/tmp/repo/"))
@@ -3413,8 +3887,10 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda () '("/tmp/project-a/")))
               ((symbol-function 'completing-read)
                (lambda (&rest _) "/tmp/project-a/"))
-              ((symbol-function 'claude-code-ide-manager--live-session-keys)
-               (lambda () '("/tmp/project-a/")))
+              ((symbol-function 'claude-code-ide--preferred-session)
+               (lambda (_directory)
+                 (claude-code-ide-session-create
+                  :id "project-a-session" :directory "/tmp/project-a/")))
               ((symbol-function 'claude-code-ide-manager-switch-to-session)
                (lambda (&rest args)
                  (setq switch-call args)))
@@ -3424,6 +3900,7 @@ have completed before cleanup.  Waits up to 5 seconds."
       (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
         (claude-code-ide-manager-open))
       (should switch-call)
+      (should (equal (car switch-call) "project-a-session"))
       (should-not transient-called))))
 
 (ert-deftest claude-code-ide-test-manager-open-start-action-starts-selected-target ()
@@ -3434,7 +3911,9 @@ have completed before cleanup.  Waits up to 5 seconds."
     (cl-letf (((symbol-function 'claude-code-ide--start-session)
                (lambda (&optional continue resume directory)
                  (setq call (list continue resume directory
-                                  claude-code-ide--suppress-initial-display))))
+                                  claude-code-ide--suppress-initial-display))
+                 (claude-code-ide-session-create
+                  :id "new-session" :directory directory)))
               ((symbol-function 'claude-code-ide-manager-switch-to-session)
                (lambda (&rest _) nil)))
       (claude-code-ide-manager-open-start)
@@ -3444,15 +3923,17 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test manager open start action enters the manager default view after launch."
   (let ((claude-code-ide-manager--open-target "/tmp/project-a/")
         (claude-code-ide-manager--open-scope '(:type repo :git-root "/tmp/repo/"))
+        (created (claude-code-ide-session-create
+                  :id "new-session" :directory "/tmp/project-a/"))
         call)
     (cl-letf (((symbol-function 'claude-code-ide--start-session)
-               (lambda (&optional _continue _resume _directory) nil))
+               (lambda (&optional _continue _resume _directory) created))
               ((symbol-function 'claude-code-ide-manager-switch-to-session)
                (lambda (session-key &optional keep-manager-focus scope)
                  (setq call (list session-key keep-manager-focus scope)))))
       (claude-code-ide-manager-open-start)
       (should (equal call
-                     '("/tmp/project-a/" nil (:type repo :git-root "/tmp/repo/")))))))
+                     '("new-session" nil (:type repo :git-root "/tmp/repo/")))))))
 
 (ert-deftest claude-code-ide-test-manager-open-start-skip-action-adds-dangerous-flag ()
   "Test manager open start-skip action adds the dangerous permissions flag."
@@ -3561,15 +4042,15 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((claude-code-ide-bypass-permissions-by-default t)
         (claude-code-ide-manager--open-target "/tmp/project-a/"))
     (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
-                                                'claude-code-ide-manager-open-menu "s"))
+                                               'claude-code-ide-manager-open-menu "s"))
                                        :description))
                    "Start /tmp/project-a/ (skip permissions)"))
     (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
-                                                'claude-code-ide-manager-open-menu "c"))
+                                               'claude-code-ide-manager-open-menu "c"))
                                        :description))
                    "Continue /tmp/project-a/ (skip permissions)"))
     (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
-                                                'claude-code-ide-manager-open-menu "r"))
+                                               'claude-code-ide-manager-open-menu "r"))
                                        :description))
                    "Resume /tmp/project-a/ (skip permissions)"))))
 
@@ -3591,7 +4072,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                                  (claude-code-ide-manager--open-action-description "Start")
                                  (funcall (plist-get (nth 2 (transient-get-suffix
                                                              'claude-code-ide-manager-open-menu "S"))
-                                                    :description))))
+                                                     :description))))
         (should-not (string-match-p "skip permissions" description))))))
 
 (ert-deftest claude-code-ide-test-pi-active-session-skip-descriptions-omit-unavailable-bypass ()
@@ -3616,8 +4097,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                               (claude-code-ide-manager--open-action-description "Start")))
       (should (string-match-p "skip permissions"
                               (funcall (plist-get (nth 2 (transient-get-suffix
-                                                           'claude-code-ide-manager-open-menu "S"))
-                                                 :description)))))))
+                                                          'claude-code-ide-manager-open-menu "S"))
+                                                  :description)))))))
 
 (ert-deftest claude-code-ide-test-claude-active-session-skip-description-discloses-bypass ()
   "Test a nonempty bypass flag remains disclosed for an active session."
@@ -3674,17 +4155,23 @@ have completed before cleanup.  Waits up to 5 seconds."
     (cl-letf (((symbol-function 'claude-code-ide--get-current-directory)
                (lambda () "/tmp/project-a/"))
               ((symbol-function 'claude-code-ide--start-session)
-               (lambda (&optional continue resume directory)
-                 (push (list continue resume directory claude-code-ide-cli-extra-flags) calls))))
+               (lambda (&optional continue resume directory force-new)
+                 (push (list continue resume directory force-new
+                             claude-code-ide-cli-extra-flags)
+                       calls))))
       (claude-code-ide)
+      (claude-code-ide t)
+      (claude-code-ide-new-session)
       (claude-code-ide-current-directory)
       (claude-code-ide-continue)
       (claude-code-ide-resume)
       (should (equal (nreverse calls)
-                     '((nil nil nil "")
-                       (nil nil "/tmp/project-a/" "")
-                       (t nil nil "")
-                       (nil t nil "")))))))
+                     '((nil nil nil nil "")
+                       (nil nil nil t "")
+                       (nil nil nil t "")
+                       (nil nil "/tmp/project-a/" nil "")
+                       (t nil nil nil "")
+                       (nil t nil nil "")))))))
 
 (ert-deftest claude-code-ide-test-manager-open-continue-uses-default-layout-even-with-saved-layout ()
   "Test manager open continue bypasses stale saved layouts and rebuilds the default view."
@@ -3697,7 +4184,12 @@ have completed before cleanup.  Waits up to 5 seconds."
              '(:window-state saved)
              claude-code-ide-manager--layouts)
     (cl-letf (((symbol-function 'claude-code-ide--start-session)
-               (lambda (&optional _continue _resume _directory) nil))
+               (lambda (&optional _continue _resume directory)
+                 (claude-code-ide-session-create
+                  :id "new-session"
+                  :directory directory)))
+              ((symbol-function 'claude-code-ide-manager--ensure-live-target)
+               (lambda (&rest _) t))
               ((symbol-function 'claude-code-ide-manager--restore-layout)
                (lambda (_session-key)
                  (setq restored t)
@@ -3844,7 +4336,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                :order-key 2
                :live-p t)))
   (setq claude-code-ide-manager--current-session-key "/tmp/a")
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-next-outside-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-next-outside-b" :buffer nil))
         switched)
@@ -3853,8 +4345,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                    (lambda (session-key &optional _keep-manager-focus _scope)
                      (setq switched session-key)
                      session-key)))
-          (puthash "/tmp/a" process-a claude-code-ide--processes)
-          (puthash "/tmp/b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/b" process-b)
           (switch-to-buffer (get-buffer-create "*cc-outside*"))
           (claude-code-ide-manager-next-line)
           (should (equal switched "/tmp/b")))
@@ -3874,9 +4366,10 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-a (get-buffer-create "*cc-nav-a*"))
         (session-b (get-buffer-create "*cc-nav-b*"))
         (content-buffer (get-buffer-create "*cc-nav-content*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-nav-a" :buffer nil))
-        (process-b (make-pipe-process :name "cc-manager-nav-b" :buffer nil)))
+        (process-b (make-pipe-process :name "cc-manager-nav-b" :buffer nil))
+        session-key-a session-key-b)
     (unwind-protect
         (let ((manager-window nil))
           (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
@@ -3902,8 +4395,12 @@ have completed before cleanup.  Waits up to 5 seconds."
                          :pinned nil
                          :order-key 2
                          :live-p t)))
-            (puthash "/tmp/a" process-a claude-code-ide--processes)
-            (puthash "/tmp/b" process-b claude-code-ide--processes)
+            (setq session-key-a
+                  (claude-code-ide-session-id
+                   (claude-code-ide-tests--put-session "/tmp/a" process-a)))
+            (setq session-key-b
+                  (claude-code-ide-session-id
+                   (claude-code-ide-tests--put-session "/tmp/b" process-b)))
             (delete-other-windows)
             (switch-to-buffer content-buffer)
             (claude-code-ide-manager-toggle-sidebar 1)
@@ -3913,13 +4410,13 @@ have completed before cleanup.  Waits up to 5 seconds."
               (call-interactively (key-binding (kbd "n")))
               (should (eq (selected-window) manager-window))
               (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                             "/tmp/b"))
-              (should (equal claude-code-ide-manager--current-session-key "/tmp/b"))
+                             session-key-b))
+              (should (equal claude-code-ide-manager--current-session-key session-key-b))
               (call-interactively (key-binding (kbd "p")))
               (should (eq (selected-window) manager-window))
               (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                             "/tmp/a"))
-              (should (equal claude-code-ide-manager--current-session-key "/tmp/a")))))
+                             session-key-a))
+              (should (equal claude-code-ide-manager--current-session-key session-key-a)))))
       (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b))
       (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
@@ -3937,9 +4434,10 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-a (get-buffer-create "*cc-nav-col-a*"))
         (session-b (get-buffer-create "*cc-nav-col-b*"))
         (content-buffer (get-buffer-create "*cc-nav-col-content*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-nav-col-a" :buffer nil))
-        (process-b (make-pipe-process :name "cc-manager-nav-col-b" :buffer nil)))
+        (process-b (make-pipe-process :name "cc-manager-nav-col-b" :buffer nil))
+        session-key-a session-key-b)
     (unwind-protect
         (let ((manager-window nil))
           (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
@@ -3965,8 +4463,12 @@ have completed before cleanup.  Waits up to 5 seconds."
                          :pinned nil
                          :order-key 2
                          :live-p t)))
-            (puthash "/tmp/a" process-a claude-code-ide--processes)
-            (puthash "/tmp/b" process-b claude-code-ide--processes)
+            (setq session-key-a
+                  (claude-code-ide-session-id
+                   (claude-code-ide-tests--put-session "/tmp/a" process-a)))
+            (setq session-key-b
+                  (claude-code-ide-session-id
+                   (claude-code-ide-tests--put-session "/tmp/b" process-b)))
             (delete-other-windows)
             (switch-to-buffer content-buffer)
             (claude-code-ide-manager-toggle-sidebar 1)
@@ -3978,13 +4480,13 @@ have completed before cleanup.  Waits up to 5 seconds."
               (should (eq (selected-window) manager-window))
               (should (= (current-column) 0))
               (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                             "/tmp/b"))
+                             session-key-b))
               (forward-char 3)
               (call-interactively (key-binding (kbd "p")))
               (should (eq (selected-window) manager-window))
               (should (= (current-column) 0))
               (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                             "/tmp/a")))))
+                             session-key-a)))))
       (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b))
       (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
@@ -4063,12 +4565,20 @@ have completed before cleanup.  Waits up to 5 seconds."
   (claude-code-ide-tests--reset-manager-state)
   (let ((session-buffer (get-buffer-create "*cc-session*"))
         (content-buffer (get-buffer-create "*cc-content*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
-        (process-a (make-pipe-process :name "cc-manager-slot-switch" :buffer nil)))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-slot-switch" :buffer nil))
+        session-key)
     (unwind-protect
         (let ((content-window nil))
           (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
-                     (lambda (_directory) session-buffer)))
+                     (lambda (_directory) session-buffer))
+                    ((symbol-function 'claude-code-ide-manager--session-managed-p)
+                     (lambda (_session-key) t))
+                    ((symbol-function 'claude-code-ide-manager--restore-layout)
+                     (lambda (restored-session-key)
+                       (setq claude-code-ide-manager--current-session-key
+                             restored-session-key)
+                       (get-buffer-window session-buffer))))
             (with-current-buffer session-buffer
               (setq-local claude-code-ide-manager--managed-session t))
             (setq claude-code-ide-manager--items
@@ -4079,15 +4589,18 @@ have completed before cleanup.  Waits up to 5 seconds."
                          :pinned nil
                          :order-key 1
                          :live-p t)))
-            (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+            (setq session-key
+                  (claude-code-ide-session-id
+                   (claude-code-ide-tests--put-session
+                    "/tmp/project-a" process-a)))
             (delete-other-windows)
             (switch-to-buffer content-buffer)
             (setq content-window (selected-window))
             (let ((session-window (split-window content-window nil 'right)))
               (set-window-buffer session-window session-buffer))
             (claude-code-ide-manager-toggle-sidebar 1)
-            (puthash "/tmp/project-a"
-                     (claude-code-ide-manager--capture-layout "/tmp/project-a")
+            (puthash session-key
+                     (claude-code-ide-manager--capture-layout session-key)
                      claude-code-ide-manager--layouts)
             (select-window content-window)
             (claude-code-ide-manager-switch-by-slot 1)
@@ -4254,15 +4767,15 @@ have completed before cleanup.  Waits up to 5 seconds."
          (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
          (session-a (get-buffer-create "*cc-slot-highlight-a*"))
          (session-b (get-buffer-create "*cc-slot-highlight-b*"))
-         (claude-code-ide--processes (make-hash-table :test 'equal))
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
          (process-a (make-pipe-process :name "cc-manager-slot-highlight-a"
                                        :buffer session-a))
          (process-b (make-pipe-process :name "cc-manager-slot-highlight-b"
                                        :buffer session-b)))
     (unwind-protect
         (save-window-excursion
-          (puthash "/tmp/repo/worktree-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/repo/worktree-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/repo/worktree-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/repo/worktree-b" process-b)
           (claude-code-ide-manager--set-scope-items
            repo-scope
            (list (make-claude-code-ide-manager-item
@@ -4321,8 +4834,9 @@ have completed before cleanup.  Waits up to 5 seconds."
   (claude-code-ide-tests--reset-manager-state)
   (let ((session-buffer (get-buffer-create "*cc-space-session*"))
         (content-buffer (get-buffer-create "*cc-space-content*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
-        (process-a (make-pipe-process :name "cc-manager-space-switch" :buffer nil)))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-space-switch" :buffer nil))
+        session-key)
     (unwind-protect
         (let ((manager-window nil))
           (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
@@ -4338,7 +4852,10 @@ have completed before cleanup.  Waits up to 5 seconds."
                          :pinned nil
                          :order-key 1
                          :live-p t)))
-            (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+            (setq session-key
+                  (claude-code-ide-session-id
+                   (claude-code-ide-tests--put-session
+                    "/tmp/project-a" process-a)))
             (delete-other-windows)
             (switch-to-buffer content-buffer)
             (claude-code-ide-manager-toggle-sidebar 1)
@@ -4348,7 +4865,7 @@ have completed before cleanup.  Waits up to 5 seconds."
               (call-interactively (key-binding (kbd "SPC")))
               (should (eq (selected-window) manager-window))
               (should (equal claude-code-ide-manager--current-session-key
-                             "/tmp/project-a")))))
+                             session-key)))))
       (ignore-errors (delete-process process-a))
       (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
         (delete-window window))
@@ -4444,11 +4961,11 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((content-buffer (get-buffer-create "*cc-content*"))
         (focus-buffer (get-buffer-create "*cc-focus*"))
         (manager-buffer (claude-code-ide-manager--get-buffer '(:type global)))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-capture-layout" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (split-window-right)
@@ -4475,15 +4992,15 @@ have completed before cleanup.  Waits up to 5 seconds."
                  (claude-code-ide-manager--sidebar-window '(:type global)))
                 (should (get-buffer-window content-buffer))
                 (should (get-buffer-window focus-buffer)))))))
-      (ignore-errors (delete-process process-a))
-      (when-let ((window (get-buffer-window manager-buffer)))
-        (delete-window window))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list content-buffer
-                  focus-buffer
-                  manager-buffer))))
+    (ignore-errors (delete-process process-a))
+    (when-let ((window (get-buffer-window manager-buffer)))
+      (delete-window window))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list content-buffer
+                focus-buffer
+                manager-buffer))))
 
 (ert-deftest claude-code-ide-test-manager-builds-default-layout-with-magit ()
   "Test first-open layout uses magit when available."
@@ -4510,14 +5027,14 @@ have completed before cleanup.  Waits up to 5 seconds."
   (claude-code-ide-tests--reset-manager-state)
   (let ((session-buffer (get-buffer-create "*cc-session*"))
         (status-buffer (get-buffer-create "*cc-status*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-sidebar-switch" :buffer nil)))
     (unwind-protect
         (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
                    (lambda (_directory) session-buffer))
                   ((symbol-function 'magit-status-setup-buffer)
                    (lambda (_directory) status-buffer)))
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
           (claude-code-ide-manager-focus)
           (let ((window (claude-code-ide-manager-switch-to-session "/tmp/project-a")))
             (should (window-live-p window))
@@ -4633,6 +5150,49 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (kill-buffer buffer)))
             (list session-buffer status-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-reset-layout-rejects-stale-session-id ()
+  "Reset never treats a generated stale ID as a project directory."
+  (claude-code-ide-tests--reset-manager-state)
+  (let (built)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--ensure-live-target)
+               (lambda (&rest _) nil))
+              ((symbol-function 'claude-code-ide-manager--build-default-layout)
+               (lambda (&rest _) (setq built t))))
+      (should-error (claude-code-ide-manager-reset-layout "stale-id")
+                    :type 'user-error)
+      (should-not built))))
+
+(ert-deftest claude-code-ide-test-manager-reset-layout-promotes-target-session ()
+  "Resetting a layout makes that exact sibling the preferred session."
+  (let* ((directory "/tmp/project/")
+         (session-a (claude-code-ide-session-create
+                     :id "a" :directory directory :last-accessed-at 1))
+         (session-b (claude-code-ide-session-create
+                     :id "b" :directory directory :last-accessed-at 2))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (claude-code-ide--put-session session-a)
+    (claude-code-ide--put-session session-b)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--ensure-live-target)
+               (lambda (&rest _) t))
+              ((symbol-function 'claude-code-ide-manager--visible-sidebar-scopes)
+               #'ignore)
+              ((symbol-function 'claude-code-ide-manager--build-default-layout)
+               (lambda (&rest _) (selected-window)))
+              ((symbol-function 'claude-code-ide-manager--set-scope-active-session-key)
+               #'ignore)
+              ((symbol-function 'claude-code-ide-manager--save-state) #'ignore)
+              ((symbol-function 'claude-code-ide-manager--mark-session-managed) #'ignore)
+              ((symbol-function 'claude-code-ide-manager--reset-session-idle-state)
+               #'ignore)
+              ((symbol-function 'claude-code-ide-manager--adopt-visible-sidebars) #'ignore)
+              ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state) #'ignore)
+              ((symbol-function 'claude-code-ide-manager--treemacs-window) #'ignore))
+      (claude-code-ide-manager-reset-layout "a"))
+    (should (equal
+             (claude-code-ide-session-id
+              (claude-code-ide--preferred-session directory))
+             "a"))))
+
 (ert-deftest claude-code-ide-test-manager-falls-back-to-dired-when-magit-unavailable ()
   "Test status buffer falls back to dired when magit fails."
   (let ((dired-buffer (get-buffer-create "*cc-dired*")))
@@ -4718,13 +5278,13 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-buffer (get-buffer-create "*cc-session*"))
         (content-buffer (get-buffer-create "*cc-content*"))
         (focus-buffer (get-buffer-create "*cc-focus*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-switch-restore-sidebar-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-switch-restore-sidebar-b" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/project-b" process-b)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (split-window-right)
@@ -4752,18 +5312,18 @@ have completed before cleanup.  Waits up to 5 seconds."
                                 (window-list nil 'no-minibuf)))))
             (should-not (eq (window-buffer (selected-window))
                             (claude-code-ide-manager--get-buffer '(:type global)))))))
-      (ignore-errors (delete-process process-a))
-      (ignore-errors (delete-process process-b))
-      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
-        (delete-window window))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer
-                  content-buffer
-                  focus-buffer
-                  (get-buffer "*cc-status*")
-                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))))
+    (ignore-errors (delete-process process-a))
+    (ignore-errors (delete-process process-b))
+    (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+      (delete-window window))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer
+                content-buffer
+                focus-buffer
+                (get-buffer "*cc-status*")
+                (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))))
 
 (ert-deftest claude-code-ide-test-manager-switch-keeps-sidebar-visible-when-target-layout-lacks-it ()
   "Test switching keeps a currently visible sidebar even if target layout lacks one."
@@ -4771,13 +5331,13 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-buffer (get-buffer-create "*cc-session*"))
         (content-buffer (get-buffer-create "*cc-content*"))
         (focus-buffer (get-buffer-create "*cc-focus*"))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-switch-keep-sidebar-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-switch-keep-sidebar-b" :buffer nil)))
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/project-b" process-b)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (split-window-right)
@@ -4811,18 +5371,18 @@ have completed before cleanup.  Waits up to 5 seconds."
                                 (window-list nil 'no-minibuf)))))
             (should-not (eq (window-buffer (selected-window))
                             (claude-code-ide-manager--get-buffer '(:type global)))))))
-      (ignore-errors (delete-process process-a))
-      (ignore-errors (delete-process process-b))
-      (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
-        (delete-window window))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer
-                  content-buffer
-                  focus-buffer
-                  (get-buffer "*cc-status*")
-                  (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))))
+    (ignore-errors (delete-process process-a))
+    (ignore-errors (delete-process process-b))
+    (when-let ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+      (delete-window window))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer
+                content-buffer
+                focus-buffer
+                (get-buffer "*cc-status*")
+                (get-buffer (buffer-name (claude-code-ide-manager--get-buffer)))))))
 
 (ert-deftest claude-code-ide-test-manager-switch-adopts-restored-sidebar-without-showing-new-one ()
   "Test switching reuses a restored visible sidebar window instead of recreating it."
@@ -4830,14 +5390,14 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((session-buffer (get-buffer-create "*cc-session*"))
         (content-buffer (get-buffer-create "*cc-content*"))
         (manager-buffer (claude-code-ide-manager--get-buffer '(:type global)))
-        (claude-code-ide--processes (make-hash-table :test 'equal))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-switch-adopt-sidebar-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-switch-adopt-sidebar-b" :buffer nil))
         show-sidebar-called)
     (unwind-protect
         (progn
-          (puthash "/tmp/project-a" process-a claude-code-ide--processes)
-          (puthash "/tmp/project-b" process-b claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project-a" process-a)
+          (claude-code-ide-tests--put-session "/tmp/project-b" process-b)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (should (window-live-p (claude-code-ide-manager-toggle-sidebar 1)))
@@ -4864,16 +5424,16 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should-not show-sidebar-called)
             (should (window-live-p
                      (claude-code-ide-manager--sidebar-window '(:type global)))))))
-      (ignore-errors (delete-process process-a))
-      (ignore-errors (delete-process process-b))
-      (when-let ((window (get-buffer-window manager-buffer)))
-        (delete-window window))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer
-                  content-buffer
-                  manager-buffer))))
+    (ignore-errors (delete-process process-a))
+    (ignore-errors (delete-process process-b))
+    (when-let ((window (get-buffer-window manager-buffer)))
+      (delete-window window))
+    (mapc (lambda (buffer)
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          (list session-buffer
+                content-buffer
+                manager-buffer))))
 
 (ert-deftest claude-code-ide-test-manager-switch-falls-back-to-session-buffer ()
   "Test restore falls back to session buffer when focused buffer is gone."
@@ -4914,7 +5474,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                :pinned nil
                :order-key 1
                :live-p t)))
-  (let ((claude-code-ide--processes (make-hash-table :test 'equal))
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         refreshed)
     (cl-letf (((symbol-function 'claude-code-ide-manager-refresh)
                (lambda (&optional _scope)
@@ -4953,6 +5513,111 @@ have completed before cleanup.  Waits up to 5 seconds."
                  (lambda (_project) root-dir)))
         (should (eq (claude-code-ide-mcp--get-current-session) session-sub))))))
 
+(ert-deftest claude-code-ide-test-get-current-session-prefers-recent-sibling ()
+  "A file buffer resolves equal-directory MCP siblings by core recency."
+  (let* ((directory "/tmp/project/")
+         (core-one (claude-code-ide-session-create
+                    :id "one" :directory directory :last-accessed-at 1))
+         (core-two (claude-code-ide-session-create
+                    :id "two" :directory directory :last-accessed-at 2))
+         (mcp-one (make-claude-code-ide-mcp-session
+                   :id "one" :project-dir directory))
+         (mcp-two (make-claude-code-ide-mcp-session
+                   :id "two" :project-dir directory))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal)))
+    (claude-code-ide--put-session core-one)
+    (claude-code-ide--put-session core-two)
+    (puthash "one" mcp-one claude-code-ide-mcp--sessions)
+    (puthash "two" mcp-two claude-code-ide-mcp--sessions)
+    (with-temp-buffer
+      (setq default-directory directory
+            buffer-file-name "/tmp/project/main.el")
+      (cl-letf (((symbol-function 'claude-code-ide-mcp--active-sessions)
+                 (lambda () (list mcp-one mcp-two))))
+        (should (eq (claude-code-ide-mcp--get-current-session) mcp-two))))))
+
+(ert-deftest claude-code-ide-test-get-current-session-does-not-fall-through-exact-owner ()
+  "An exact terminal owner with no MCP state never aliases a sibling."
+  (let* ((directory "/tmp/project/")
+         (terminal-one (generate-new-buffer "*cc-mcp-owner-one*"))
+         (terminal-two (generate-new-buffer "*cc-mcp-owner-two*"))
+         (mcp-two (make-claude-code-ide-mcp-session
+                   :id "two" :project-dir directory))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "one" :directory directory :buffer terminal-one))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "two" :directory directory :buffer terminal-two))
+          (puthash "two" mcp-two claude-code-ide-mcp--sessions)
+          (with-current-buffer terminal-one
+            (setq default-directory directory)
+            (should-not (claude-code-ide-mcp--get-current-session))))
+      (kill-buffer terminal-one)
+      (kill-buffer terminal-two))))
+
+(ert-deftest claude-code-ide-test-mcp-stop-does-not-stop-sibling-for-exact-owner ()
+  "Stopping an exact terminal with no MCP state leaves its sibling untouched."
+  (let* ((directory "/tmp/project/")
+         (terminal-a (generate-new-buffer "*cc-mcp-stop-a*"))
+         (terminal-b (generate-new-buffer "*cc-mcp-stop-b*"))
+         (mcp-b (make-claude-code-ide-mcp-session
+                 :id "b" :project-dir directory))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal))
+         stopped)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "a" :directory directory :buffer terminal-a))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "b" :directory directory :buffer terminal-b))
+          (puthash "b" mcp-b claude-code-ide-mcp--sessions)
+          (with-current-buffer terminal-a
+            (cl-letf (((symbol-function 'claude-code-ide-mcp-stop-session)
+                       (lambda (id) (push id stopped))))
+              (claude-code-ide-mcp-stop)))
+          (should-not stopped)
+          (should (eq (gethash "b" claude-code-ide-mcp--sessions) mcp-b)))
+      (kill-buffer terminal-a)
+      (kill-buffer terminal-b))))
+
+(ert-deftest claude-code-ide-test-mcp-notification-ignores-stale-sibling-cache ()
+  "Manual notifications follow core recency instead of stale file-buffer cache."
+  (let* ((directory "/tmp/project/")
+         (mcp-one (make-claude-code-ide-mcp-session
+                   :id "one" :project-dir directory :client :client-one))
+         (mcp-two (make-claude-code-ide-mcp-session
+                   :id "two" :project-dir directory :client :client-two))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal))
+         notified)
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "one" :directory directory :last-accessed-at 1))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "two" :directory directory :last-accessed-at 2))
+    (puthash "one" mcp-one claude-code-ide-mcp--sessions)
+    (puthash "two" mcp-two claude-code-ide-mcp--sessions)
+    (with-temp-buffer
+      (setq default-directory directory
+            buffer-file-name "/tmp/project/main.el"
+            claude-code-ide-mcp--buffer-cache-valid t
+            claude-code-ide-mcp--buffer-session-cache mcp-one)
+      (cl-letf (((symbol-function 'claude-code-ide-mcp--send-notification-to-session)
+                 (lambda (session _method _params)
+                   (push (claude-code-ide-mcp-session-id session) notified))))
+        (claude-code-ide-mcp--send-notification "test" nil))
+      (should (equal notified '("two"))))))
+
 (ert-deftest claude-code-ide-test-get-buffer-name ()
   "Test buffer name generation using custom function."
   ;; Test with custom function
@@ -4971,20 +5636,83 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (equal (funcall claude-code-ide-buffer-name-function nil)
                    "*custom[none]*"))))
 
+(ert-deftest claude-code-ide-test-same-directory-sessions-remain-distinct ()
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (directory "/tmp/project/"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "one" :directory directory
+                                     :order 1 :last-accessed-at 1))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "two" :directory directory
+                                     :order 2 :last-accessed-at 2))
+    (should (equal (mapcar #'claude-code-ide-session-id
+                           (claude-code-ide--sessions-for-directory directory))
+                   '("two" "one")))
+    (should (equal (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session directory))
+                   "two"))))
+
+(ert-deftest claude-code-ide-test-touch-session-changes-directory-preference ()
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "one" :directory "/tmp/project/"
+                                     :order 1 :last-accessed-at 1))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "two" :directory "/tmp/project/"
+                                     :order 2 :last-accessed-at 2))
+    (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 3)))
+      (claude-code-ide--touch-session "one"))
+    (should (equal (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session "/tmp/project/"))
+                   "one"))))
+
 (ert-deftest claude-code-ide-test-get-session-buffer-prefers-process-buffer ()
   "Test session buffer lookup prefers the live process buffer over the default name."
   (let* ((directory "/tmp/team-a/project/")
          (session-buffer (generate-new-buffer "*claude-code[project]<team-a>*"))
          (process (make-pipe-process :name "cc-buffer-lookup" :buffer session-buffer))
-         (claude-code-ide--processes (make-hash-table :test 'equal)))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
     (unwind-protect
         (progn
-          (puthash directory process claude-code-ide--processes)
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "lookup" :directory directory
+                                           :process process
+                                           :buffer session-buffer))
           (should (eq (claude-code-ide--get-session-buffer directory)
                       session-buffer)))
       (ignore-errors (delete-process process))
       (when (buffer-live-p session-buffer)
         (kill-buffer session-buffer)))))
+
+(ert-deftest claude-code-ide-test-current-session-buffer-routes-and-touches-exact-sibling ()
+  "Input from a nonpreferred terminal stays on that sibling and promotes it."
+  (let* ((directory "/tmp/project/")
+         (buffer-one (generate-new-buffer "*claude-code[project]*"))
+         (buffer-two (generate-new-buffer "*claude-code[project]*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "one" :directory directory :buffer buffer-one
+            :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "two" :directory directory :buffer buffer-two
+            :last-accessed-at 2))
+          (with-current-buffer buffer-one
+            (should (eq (claude-code-ide--get-session-buffer) buffer-one))
+            (cl-letf (((symbol-function 'float-time)
+                       (lambda (&optional _) 3))
+                      ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                       #'ignore))
+              (claude-code-ide-session--record-activity)))
+          (should (equal
+                   (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session directory))
+                   "one")))
+      (kill-buffer buffer-one)
+      (kill-buffer buffer-two))))
 
 (ert-deftest claude-code-ide-test-get-session-buffer-does-not-alias-colliding-basenames ()
   "Test colliding directory basenames do not alias session buffers."
@@ -4993,10 +5721,14 @@ have completed before cleanup.  Waits up to 5 seconds."
          (session-buffer-a (generate-new-buffer "*claude-code[project]<team-a>*"))
          (session-buffer-b (generate-new-buffer "*claude-code[project]*"))
          (process-a (make-pipe-process :name "cc-collision-a" :buffer session-buffer-a))
-         (claude-code-ide--processes (make-hash-table :test 'equal)))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
     (unwind-protect
         (progn
-          (puthash directory-a process-a claude-code-ide--processes)
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "collision-a"
+                                           :directory directory-a
+                                           :process process-a
+                                           :buffer session-buffer-a))
           (should (eq (claude-code-ide--get-session-buffer directory-a)
                       session-buffer-a))
           (should (eq (claude-code-ide--get-session-buffer directory-b)
@@ -5016,17 +5748,22 @@ have completed before cleanup.  Waits up to 5 seconds."
          (let ((dir (claude-code-ide--get-working-directory))
                (mock-process 'mock-process))
            ;; Initially no process
-           (should (null (claude-code-ide--get-process dir)))
+           (should (null (claude-code-ide--preferred-session dir)))
 
            ;; Set a process
-           (claude-code-ide--set-process mock-process dir)
-           (should (eq (claude-code-ide--get-process dir) mock-process))
+           (claude-code-ide-tests--put-session dir mock-process)
+           (should (eq (claude-code-ide-session-process
+                        (claude-code-ide--preferred-session dir))
+                       mock-process))
 
            ;; Get process without specifying directory
-           (should (eq (claude-code-ide--get-process) mock-process)))))
+           (should (eq (claude-code-ide-session-process
+                        (claude-code-ide--preferred-session
+                         (claude-code-ide--get-working-directory)))
+                       mock-process)))))
     (claude-code-ide-tests--clear-processes)))
 
-(ert-deftest claude-code-ide-test-set-process-installs-working-resize-observer-for-first-session ()
+(ert-deftest claude-code-ide-test-register-session-installs-working-resize-observer-for-first-session ()
   "Test first session setup installs resize-based working detection independently."
   (claude-code-ide-tests--clear-processes)
   (let ((claude-code-ide-prevent-reflow-glitch nil)
@@ -5040,7 +5777,9 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'advice-add)
                (lambda (symbol where function &rest _props)
                  (push (list symbol where function) added-advices))))
-      (claude-code-ide--set-process 'mock-process "/tmp/test")
+      (claude-code-ide--register-session
+       (claude-code-ide-session-create :id "test" :directory "/tmp/test"
+                                       :process 'mock-process))
       (should (member '(eat--adjust-process-window-size
                         :around
                         claude-code-ide--terminal-working-resize-observer)
@@ -5059,30 +5798,79 @@ have completed before cleanup.  Waits up to 5 seconds."
                                          :buffer nil))
              (dead-process-name "test-dead"))
         ;; Create a mock dead process
-        (puthash "/dir1" live-process claude-code-ide--processes)
-        (puthash "/dir2" dead-process-name claude-code-ide--processes)
+        (claude-code-ide-tests--put-session "/dir1" live-process)
+        (claude-code-ide-tests--put-session "/dir2" dead-process-name)
 
         ;; Before cleanup
-        (should (= (hash-table-count claude-code-ide--processes) 2))
+        (should (= (hash-table-count claude-code-ide--sessions) 2))
 
         ;; Run cleanup
         (claude-code-ide--cleanup-dead-processes)
 
         ;; After cleanup - only live process remains
-        (should (= (hash-table-count claude-code-ide--processes) 1))
-        (should (gethash "/dir1" claude-code-ide--processes))
-        (should (null (gethash "/dir2" claude-code-ide--processes)))
+        (should (= (hash-table-count claude-code-ide--sessions) 1))
+        (should (claude-code-ide--preferred-session "/dir1"))
+        (should (null (claude-code-ide--preferred-session "/dir2")))
 
         ;; Clean up the live process
         (delete-process live-process))
     (claude-code-ide-tests--clear-processes)))
 
+(ert-deftest claude-code-ide-test-cleanup-dead-processes-unregisters-each-session ()
+  (let* ((directory "/tmp/project/")
+         (live-process (make-pipe-process :name "cleanup-live-sibling" :buffer nil))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         ended-session-ids
+         stopped-session-ids)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "dead" :directory directory
+                                           :process "dead-process"))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "live" :directory directory
+                                           :process live-process))
+          (cl-letf (((symbol-function 'claude-code-ide-mcp-server-session-ended)
+                     (lambda (session-id) (push session-id ended-session-ids)))
+                    ((symbol-function 'claude-code-ide-mcp-stop-session)
+                     (lambda (stopped-session-id)
+                       (push stopped-session-id stopped-session-ids))))
+            (claude-code-ide--cleanup-dead-processes))
+          (should (equal ended-session-ids '("dead")))
+          (should (equal stopped-session-ids '("dead")))
+          (should (claude-code-ide--get-session "live")))
+      (delete-process live-process))))
+
+(ert-deftest claude-code-ide-test-cleanup-removes-only-target-session ()
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "one" :directory "/tmp/project/"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "two" :directory "/tmp/project/"))
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-session-resources) #'ignore))
+      (claude-code-ide--cleanup-on-exit "one"))
+    (should-not (claude-code-ide--get-session "one"))
+    (should (claude-code-ide--get-session "two"))))
+
+(ert-deftest claude-code-ide-test-cleanup-does-not-suppress-sibling-exit ()
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "one" :directory "/tmp/project/"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "two" :directory "/tmp/project/"))
+    (cl-letf (((symbol-function 'claude-code-ide--cleanup-session-resources)
+               (lambda (session)
+                 (when (equal (claude-code-ide-session-id session) "one")
+                   (claude-code-ide--cleanup-on-exit "two")))))
+      (claude-code-ide--cleanup-on-exit "one"))
+    (should-not (claude-code-ide--get-session "one"))
+    (should-not (claude-code-ide--get-session "two"))))
+
 (ert-deftest claude-code-ide-test-cleanup-removes-working-resize-observer-for-last-session ()
   "Test last-session cleanup removes resize-based working detection advice."
   (let ((removed-advices nil)
         (claude-code-ide-vterm-anti-flicker nil)
-        (claude-code-ide--processes (make-hash-table :test 'equal))
-        (claude-code-ide--cleanup-in-progress nil))
+        (claude-code-ide--sessions (make-hash-table :test 'equal)))
     (cl-letf (((symbol-function 'claude-code-ide--terminal-resize-handler)
                (lambda (&optional _backend)
                  'eat--adjust-process-window-size))
@@ -5098,13 +5886,46 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'claude-code-ide--get-buffer-name)
                (lambda (_directory)
                  "*test-buffer*")))
-      (puthash "/tmp/test" (current-buffer) claude-code-ide--processes)
-      (claude-code-ide--cleanup-on-exit "/tmp/test")
+      (let ((session (claude-code-ide-tests--put-session
+                      "/tmp/test" (current-buffer))))
+        (claude-code-ide--cleanup-on-exit
+         (claude-code-ide-session-id session)))
       (should (member '(eat--adjust-process-window-size
                         claude-code-ide--terminal-working-resize-observer)
                       removed-advices)))))
 
-(ert-deftest claude-code-ide-test-set-process-uses-session-backend-for-reflow-guard ()
+(ert-deftest claude-code-ide-test-cleanup-shared-directory-stops-each-mcp-session ()
+  "Test sibling cleanup stops only the MCP state owned by each session."
+  (let* ((directory "/tmp/shared/")
+         (buffer-one (generate-new-buffer "*cleanup-shared-one*"))
+         (buffer-two (generate-new-buffer "*cleanup-shared-two*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         stopped)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-mcp-stop-session)
+                   (lambda (stopped-session-id)
+                     (push stopped-session-id stopped)))
+                  ((symbol-function 'claude-code-ide-mcp-server-session-ended)
+                   (lambda (_session-id) nil))
+                  ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
+                   (lambda (&optional _backend) nil)))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "one" :directory directory
+                                           :process buffer-one :buffer buffer-one))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "two" :directory directory
+                                           :process buffer-two :buffer buffer-two))
+          (claude-code-ide--cleanup-on-exit "one")
+          (should (claude-code-ide--get-session "two"))
+          (should (equal stopped '("one")))
+          (claude-code-ide--cleanup-on-exit "two")
+          (should (equal stopped '("two" "one"))))
+      (when (buffer-live-p buffer-one)
+        (kill-buffer buffer-one))
+      (when (buffer-live-p buffer-two)
+        (kill-buffer buffer-two)))))
+
+(ert-deftest claude-code-ide-test-register-session-uses-session-backend-for-reflow-guard ()
   "Test reflow guard follows the launched session backend, not the global default."
   (claude-code-ide-tests--clear-processes)
   (let ((claude-code-ide-terminal-backend 'vterm)
@@ -5120,7 +5941,10 @@ have completed before cleanup.  Waits up to 5 seconds."
       (unwind-protect
           (with-current-buffer session-buffer
             (setq-local claude-code-ide--terminal-backend 'ghostel)
-            (claude-code-ide--set-process session-buffer "/tmp/test")
+            (claude-code-ide--register-session
+             (claude-code-ide-session-create :id "test" :directory "/tmp/test"
+                                             :process session-buffer
+                                             :buffer session-buffer))
             (should (member '(ghostel--window-adjust-process-window-size
                               :around
                               claude-code-ide--terminal-working-resize-observer)
@@ -5491,6 +6315,25 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (transient-get-suffix 'claude-code-ide-menu "l"))
   (should (transient-get-suffix 'claude-code-ide-menu "L")))
 
+(ert-deftest claude-code-ide-test-new-session-command-forces-creation ()
+  (let (args)
+    (cl-letf (((symbol-function 'claude-code-ide--start-session)
+               (lambda (&rest values) (setq args values))))
+      (claude-code-ide-new-session)
+      (should (equal args '(nil nil nil t))))))
+
+(ert-deftest claude-code-ide-test-transient-exposes-new-session-command ()
+  "Main transient exposes the command that creates a sibling session."
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "N"))
+                            :command)
+                 'claude-code-ide-new-session)))
+
+(ert-deftest claude-code-ide-test-transient-exposes-manager-rename-command ()
+  "Main transient exposes the command that renames the manager item at point."
+  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "v"))
+                            :command)
+                 'claude-code-ide-manager-rename-at-point)))
+
 (ert-deftest claude-code-ide-test-transient-exposes-manager-commands ()
   "Test the main transient exposes cc-manager bindings."
   (should (transient-get-suffix 'claude-code-ide-menu "t"))
@@ -5770,8 +6613,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((advice-removed nil)
         (claude-code-ide-terminal-backend 'eat)
         (claude-code-ide-vterm-anti-flicker t)
-        (claude-code-ide--processes (make-hash-table :test 'equal))
-        (claude-code-ide--cleanup-in-progress nil))
+        (claude-code-ide--sessions (make-hash-table :test 'equal)))
     (cl-letf (((symbol-function 'advice-remove)
                (lambda (symbol function)
                  (when (and (eq symbol 'eat--filter)
@@ -5783,8 +6625,10 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda (_) nil))
               ((symbol-function 'claude-code-ide--get-buffer-name)
                (lambda (_) "*test-buffer*")))
-      (puthash "/tmp/test" (current-buffer) claude-code-ide--processes)
-      (claude-code-ide--cleanup-on-exit "/tmp/test")
+      (let ((session (claude-code-ide-tests--put-session
+                      "/tmp/test" (current-buffer))))
+        (claude-code-ide--cleanup-on-exit
+         (claude-code-ide-session-id session)))
       (should advice-removed))))
 
 (ert-deftest claude-code-ide-test-configure-eat-buffer ()
@@ -5916,7 +6760,8 @@ have completed before cleanup.  Waits up to 5 seconds."
              (should (get-buffer buffer-name))
 
              ;; Check that process was registered
-             (should (claude-code-ide--get-process))
+             (should (claude-code-ide--preferred-session
+                      (claude-code-ide--get-working-directory)))
 
              ;; Wait for process to finish and clean up
              (claude-code-ide-tests--wait-for-process (get-buffer buffer-name))
@@ -6014,7 +6859,8 @@ have completed before cleanup.  Waits up to 5 seconds."
            (let ((buffer-name (claude-code-ide--get-buffer-name)))
              ;; Verify session exists
              (should (get-buffer buffer-name))
-             (should (claude-code-ide--get-process))
+             (should (claude-code-ide--preferred-session
+                      (claude-code-ide--get-working-directory)))
 
              ;; Wait for process to finish before stopping
              (claude-code-ide-tests--wait-for-process (get-buffer buffer-name))
@@ -6024,7 +6870,8 @@ have completed before cleanup.  Waits up to 5 seconds."
 
              ;; Verify session is stopped
              (should (null (get-buffer buffer-name)))
-             (should (null (claude-code-ide--get-process)))))))
+             (should (null (claude-code-ide--preferred-session
+                            (claude-code-ide--get-working-directory))))))))
     (claude-code-ide-tests--clear-processes)))
 
 (ert-deftest claude-code-ide-test-switch-to-buffer-no-session ()
@@ -6081,15 +6928,46 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-list-sessions)
 
         ;; Manually add mock entries to the process table
-        (puthash "/tmp/project1" (current-buffer) claude-code-ide--processes)
-        (puthash "/tmp/project2" (current-buffer) claude-code-ide--processes)
+        (claude-code-ide-tests--put-session "/tmp/project1" (current-buffer))
+        (claude-code-ide-tests--put-session "/tmp/project2" (current-buffer))
 
         ;; Verify we have 2 entries
-        (should (= (hash-table-count claude-code-ide--processes) 2))
+        (should (= (hash-table-count claude-code-ide--sessions) 2))
 
         ;; List sessions should work without error
         (claude-code-ide-list-sessions))
     (claude-code-ide-tests--clear-processes)))
+
+(ert-deftest claude-code-ide-test-list-sessions-selects-exact-sibling ()
+  (let* ((directory "/tmp/project/")
+         (buffer-one (generate-new-buffer "*claude-code[project]*"))
+         (buffer-two (generate-new-buffer "*claude-code[project]*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         selected-buffer)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "one" :directory directory
+                                           :buffer buffer-one
+                                           :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "two" :directory directory
+                                           :buffer buffer-two
+                                           :last-accessed-at 2))
+          (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes) #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _)
+                       (car (rassoc "one" collection))))
+                    ((symbol-function 'claude-code-ide--show-session-buffer)
+                     (lambda (buffer) (setq selected-buffer buffer)))
+                    ((symbol-function 'float-time) (lambda (&optional _) 3)))
+            (claude-code-ide-list-sessions))
+          (should (eq selected-buffer buffer-one))
+          (should (equal (claude-code-ide-session-id
+                          (claude-code-ide--preferred-session directory))
+                         "one")))
+      (kill-buffer buffer-one)
+      (kill-buffer buffer-two))))
 
 (ert-deftest claude-code-ide-test-list-related-sessions-filters-by-buffer-path ()
   "Test related sessions are limited to the current buffer's directory tree."
@@ -6098,9 +6976,9 @@ have completed before cleanup.  Waits up to 5 seconds."
         (selected nil))
     (unwind-protect
         (progn
-          (puthash "/tmp/project/" (current-buffer) claude-code-ide--processes)
-          (puthash "/tmp/project/sub/" (current-buffer) claude-code-ide--processes)
-          (puthash "/tmp/other/" (current-buffer) claude-code-ide--processes)
+          (claude-code-ide-tests--put-session "/tmp/project/" (current-buffer))
+          (claude-code-ide-tests--put-session "/tmp/project/sub/" (current-buffer))
+          (claude-code-ide-tests--put-session "/tmp/other/" (current-buffer))
           (with-temp-buffer
             (setq default-directory "/tmp/project/sub/nested/")
             (cl-letf (((symbol-function 'completing-read)
@@ -6118,6 +6996,43 @@ have completed before cleanup.  Waits up to 5 seconds."
               (should (equal (mapcar #'car captured-choices)
                              '("/tmp/project/sub/" "/tmp/project/"))))))
       (claude-code-ide-tests--clear-processes))))
+
+(ert-deftest claude-code-ide-test-list-related-sessions-selects-exact-sibling ()
+  "Related-session choices retain separate IDs for same-directory siblings."
+  (let* ((directory "/tmp/project/")
+         (buffer-a (generate-new-buffer "*claude-code[project]*"))
+         (buffer-b (generate-new-buffer "*claude-code[project]*"))
+         (session-a (claude-code-ide-session-create
+                     :id "a" :directory directory :buffer buffer-a
+                     :last-accessed-at 2))
+         (session-b (claude-code-ide-session-create
+                     :id "b" :directory directory :buffer buffer-b
+                     :last-accessed-at 1))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         choices shown)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session session-a)
+          (claude-code-ide--put-session session-b)
+          (with-temp-buffer
+            (setq default-directory "/tmp/project/src/")
+            (cl-letf (((symbol-function 'claude-code-ide--cleanup-dead-processes)
+                       #'ignore)
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _)
+                         (setq choices collection)
+                         (car (rassoc "b" collection))))
+                      ((symbol-function 'claude-code-ide--show-session-buffer)
+                       (lambda (buffer) (setq shown buffer))))
+              (claude-code-ide-list-related-sessions)))
+          (should (= (length choices) 2))
+          (should (eq shown buffer-b))
+          (should (equal
+                   (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session directory))
+                   "b")))
+      (kill-buffer buffer-a)
+      (kill-buffer buffer-b))))
 
 (ert-deftest claude-code-ide-test-show-session-buffer-reuses-visible-session-window ()
   "Test switching sessions reuses an existing visible Claude window."
@@ -6204,6 +7119,33 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer test-buffer2))
     (claude-code-ide-tests--clear-processes)))
 
+(ert-deftest claude-code-ide-test-toggle-recent-promotes-reopened-sibling ()
+  "Reopening the remembered terminal makes that exact sibling preferred."
+  (let* ((directory "/tmp/project/")
+         (terminal-a (generate-new-buffer "*cc-recent-a*"))
+         (terminal-b (generate-new-buffer "*cc-recent-b*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide--last-accessed-buffer terminal-a))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "a" :directory directory :buffer terminal-a
+            :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "b" :directory directory :buffer terminal-b
+            :last-accessed-at 2))
+          (cl-letf (((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                     #'ignore))
+            (claude-code-ide-toggle-recent))
+          (should (equal
+                   (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session directory))
+                   "a")))
+      (kill-buffer terminal-a)
+      (kill-buffer terminal-b))))
+
 ;;; Edge Case Tests
 
 (ert-deftest claude-code-ide-test-concurrent-sessions ()
@@ -6218,12 +7160,12 @@ have completed before cleanup.  Waits up to 5 seconds."
         ;; Start sessions in different directories
         (let ((default-directory dir1))
           (claude-code-ide)
-          (should (claude-code-ide--get-process dir1)))
+          (should (claude-code-ide--preferred-session dir1)))
         (let ((default-directory dir2))
           (claude-code-ide)
-          (should (claude-code-ide--get-process dir2)))
+          (should (claude-code-ide--preferred-session dir2)))
         ;; Verify both sessions exist
-        (should (= (hash-table-count claude-code-ide--processes) 2))
+        (should (= (hash-table-count claude-code-ide--sessions) 2))
         ;; Clean up
         (let ((buffers (mapcar (lambda (dir)
                                  (funcall claude-code-ide-buffer-name-function dir))
@@ -6558,6 +7500,51 @@ have completed before cleanup.  Waits up to 5 seconds."
       (dolist (file test-files)
         (delete-file file)))))
 
+(ert-deftest claude-code-ide-test-mcp-editor-context-uses-message-session ()
+  "Workspace folders and active editors come from the requesting session."
+  (let* ((buffer-a (generate-new-buffer "*cc-editor-a*"))
+         (buffer-b (generate-new-buffer "*cc-editor-b*"))
+         (session-a (make-claude-code-ide-mcp-session
+                     :id "a" :project-dir "/tmp/project-a/"
+                     :last-buffer buffer-a))
+         (claude-code-ide-mcp--current-message-session session-a))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer-a
+            (setq buffer-file-name "/tmp/project-a/a.el"
+                  default-directory "/tmp/project-a/"))
+          (with-current-buffer buffer-b
+            (setq buffer-file-name "/tmp/project-b/b.el"
+                  default-directory "/tmp/project-b/")
+            (cl-letf (((symbol-function 'buffer-list)
+                       (lambda (&optional _) (list buffer-a buffer-b)))
+                      ((symbol-function 'claude-code-ide-mcp--get-buffer-project)
+                       (lambda () "/tmp/project-b/")))
+              (let* ((editors
+                      (append
+                       (alist-get
+                        'editors
+                        (claude-code-ide-mcp-handle-get-open-editors nil))
+                       nil))
+                     (folders
+                      (append
+                       (alist-get
+                        'folders
+                        (claude-code-ide-mcp-handle-get-workspace-folders nil))
+                       nil))
+                     (selection
+                      (claude-code-ide-mcp-handle-get-current-selection nil)))
+                (should (equal (mapcar (lambda (editor)
+                                         (alist-get 'path editor))
+                                       editors)
+                               '("/tmp/project-a/a.el")))
+                (should (eq (alist-get 'active (car editors)) t))
+                (should (equal folders '("/tmp/project-a/")))
+                (should (equal (alist-get 'filePath selection)
+                               "/tmp/project-a/a.el"))))))
+      (kill-buffer buffer-a)
+      (kill-buffer buffer-b))))
+
 (ert-deftest claude-code-ide-test-mcp-save-document ()
   "Test the saveDocument tool implementation."
   (claude-code-ide-mcp-tests--with-temp-file test-file "Initial content"
@@ -6595,6 +7582,27 @@ have completed before cleanup.  Waits up to 5 seconds."
   ;; Test non-existent buffer - should throw an error
   (should-error (claude-code-ide-mcp-handle-close-tab '((path . "/nonexistent/file")))
                 :type 'mcp-error))
+
+(ert-deftest claude-code-ide-test-mcp-close-tab-uses-message-session ()
+  "A duplicate diff tab name is closed only in the requesting sibling."
+  (let* ((diff-a (make-hash-table :test #'equal))
+         (diff-b (make-hash-table :test #'equal))
+         (session-a (make-claude-code-ide-mcp-session
+                     :id "a" :active-diffs diff-a))
+         (session-b (make-claude-code-ide-mcp-session
+                     :id "b" :active-diffs diff-b))
+         (claude-code-ide-mcp--current-message-session session-a)
+         cleaned)
+    (puthash "same-tab" '((owner . a)) diff-a)
+    (puthash "same-tab" '((owner . b)) diff-b)
+    (cl-letf (((symbol-function 'maphash)
+               (lambda (function _table)
+                 (funcall function "b" session-b)
+                 (funcall function "a" session-a)))
+              ((symbol-function 'claude-code-ide-mcp--cleanup-diff)
+               (lambda (_tab-name session) (setq cleaned session))))
+      (claude-code-ide-mcp-handle-close-tab '((tab_name . "same-tab"))))
+    (should (eq cleaned session-a))))
 
 (ert-deftest claude-code-ide-test-mcp-tool-registry ()
   "Test that all tools are properly registered."
@@ -7331,15 +8339,17 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test that find-session-for-file picks the most specific match for nested projects."
   (let ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
         (parent-session (make-claude-code-ide-mcp-session
+                         :id "parent"
                          :project-dir "/tmp/parent-project/"
                          :deferred (make-hash-table :test 'equal)
                          :active-diffs (make-hash-table :test 'equal)))
         (child-session (make-claude-code-ide-mcp-session
+                        :id "child"
                         :project-dir "/tmp/parent-project/child/"
                         :deferred (make-hash-table :test 'equal)
                         :active-diffs (make-hash-table :test 'equal))))
-    (puthash "/tmp/parent-project/" parent-session claude-code-ide-mcp--sessions)
-    (puthash "/tmp/parent-project/child/" child-session claude-code-ide-mcp--sessions)
+    (puthash "parent" parent-session claude-code-ide-mcp--sessions)
+    (puthash "child" child-session claude-code-ide-mcp--sessions)
 
     ;; File in child project should match child session, not parent
     (should (eq (claude-code-ide-mcp--find-session-for-file "/tmp/parent-project/child/src/foo.el")
@@ -7351,6 +8361,287 @@ have completed before cleanup.  Waits up to 5 seconds."
 
     ;; File outside both projects should return nil
     (should (null (claude-code-ide-mcp--find-session-for-file "/tmp/other/baz.el")))))
+
+(ert-deftest claude-code-ide-test-find-session-for-file-keeps-message-owner ()
+  "An explicit request owns its diff even when the file is under a sibling."
+  (let* ((session-a (make-claude-code-ide-mcp-session
+                     :id "a" :project-dir "/tmp/project-a/"))
+         (session-b (make-claude-code-ide-mcp-session
+                     :id "b" :project-dir "/tmp/project-b/"))
+         (claude-code-ide-mcp--current-message-session session-a)
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal)))
+    (puthash "a" session-a claude-code-ide-mcp--sessions)
+    (puthash "b" session-b claude-code-ide-mcp--sessions)
+    (should (eq (claude-code-ide-mcp--find-session-for-file
+                 "/tmp/project-b/file.el")
+                session-a))))
+
+(ert-deftest claude-code-ide-test-mcp-ediff-startup-shows-exact-sibling ()
+  "Ediff restores the terminal owned by the requesting MCP session ID."
+  (let* ((directory "/tmp/project/")
+         (terminal-a (generate-new-buffer "*claude-code[project]*"))
+         (terminal-b (generate-new-buffer "*claude-code[project]*"))
+         (control-buffer (generate-new-buffer "*cc-ediff-control*"))
+         (active-diffs (make-hash-table :test #'equal))
+         (mcp-b (make-claude-code-ide-mcp-session
+                 :id "b" :project-dir directory :active-diffs active-diffs))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-show-claude-window-in-ediff t)
+         (claude-code-ide-focus-claude-after-ediff nil)
+         (ediff-control-buffer control-buffer)
+         displayed)
+    (unwind-protect
+        (progn
+          (puthash "tab" nil active-diffs)
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "a" :directory directory :buffer terminal-a))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "b" :directory directory :buffer terminal-b))
+          (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                     (lambda (&optional _) (buffer-name terminal-a)))
+                    ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                     (lambda (buffer) (setq displayed buffer) nil))
+                    ((symbol-function 'ediff-next-difference) #'ignore))
+            (claude-code-ide-mcp--handle-ediff-startup
+             "tab" mcp-b nil #'ignore))
+          (should (eq displayed terminal-b)))
+      (dolist (buffer (list terminal-a terminal-b control-buffer))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-mcp-same-directory-clients-are-session-scoped ()
+  "Same-directory clients keep independent ports, messages, and close state."
+  (let ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+        (ports '(41001 41002))
+        (frame-one (make-websocket-frame
+                    :opcode 'text
+                    :payload "{\"jsonrpc\":\"2.0\",\"method\":\"one\"}"))
+        (frame-two (make-websocket-frame
+                    :opcode 'text
+                    :payload "{\"jsonrpc\":\"2.0\",\"method\":\"two\"}"))
+        handled closed removed-lockfiles)
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--find-free-port)
+               (lambda (&optional _session-id)
+                 (cons (intern (format "server-%s" (car ports)))
+                       (pop ports))))
+              ((symbol-function 'claude-code-ide-mcp--create-lockfile) #'ignore)
+              ((symbol-function 'claude-code-ide-mcp--remove-lockfile)
+               (lambda (port) (push port removed-lockfiles)))
+              ((symbol-function 'websocket-ready-state) (lambda (_) 'open))
+              ((symbol-function 'websocket-url) (lambda (_) "ws://localhost"))
+              ((symbol-function 'websocket-frame-text)
+               (lambda (frame)
+                 (if (eq frame frame-one)
+                     "{\"jsonrpc\":\"2.0\",\"method\":\"one\"}"
+                   "{\"jsonrpc\":\"2.0\",\"method\":\"two\"}")))
+              ((symbol-function 'claude-code-ide-mcp--handle-message)
+               (lambda (message session)
+                 (push (cons (alist-get 'method message) session) handled)))
+              ((symbol-function 'websocket-server-close)
+               (lambda (server) (push server closed))))
+      (should (= (claude-code-ide-mcp-start "/tmp/project/" "one") 41001))
+      (should (= (claude-code-ide-mcp-start "/tmp/project/" "two") 41002))
+      (let ((session-one (gethash "one" claude-code-ide-mcp--sessions))
+            (session-two (gethash "two" claude-code-ide-mcp--sessions)))
+        (should session-one)
+        (should session-two)
+        (claude-code-ide-mcp--on-open :client-one "one")
+        (claude-code-ide-mcp--on-open :client-two "two")
+        (claude-code-ide-mcp--on-message :client-one frame-one "one")
+        (claude-code-ide-mcp--on-message :client-two frame-two "two")
+        (should (equal (mapcar #'car handled) '("two" "one")))
+        (should (eq (alist-get "one" handled nil nil #'string=) session-one))
+        (should (eq (alist-get "two" handled nil nil #'string=) session-two))
+        (claude-code-ide-mcp--on-close :client-one "one")
+        (should-not (claude-code-ide-mcp-session-client session-one))
+        (should (eq (claude-code-ide-mcp-session-client session-two)
+                    :client-two))
+        (claude-code-ide-mcp-stop-session "one")
+        (should-not (gethash "one" claude-code-ide-mcp--sessions))
+        (should (eq (gethash "two" claude-code-ide-mcp--sessions)
+                    session-two))
+        (should (equal closed '(server-41001)))
+        (should (equal removed-lockfiles '(41001)))))))
+
+(ert-deftest claude-code-ide-test-mcp-initialize-notification-stays-with-session ()
+  "Delayed initialize notifications return to the requesting sibling."
+  (let* ((session-one (make-claude-code-ide-mcp-session
+                       :id "one" :project-dir "/tmp/project/"
+                       :client :client-one))
+         (session-two (make-claude-code-ide-mcp-session
+                       :id "two" :project-dir "/tmp/project/"
+                       :client :client-two))
+         (claude-code-ide-mcp--buffer-cache-valid t)
+         (claude-code-ide-mcp--buffer-session-cache session-two)
+         callbacks sent)
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (_delay _repeat function &rest args)
+                 (push (cons function args) callbacks)
+                 :timer))
+              ((symbol-function 'websocket-send-text)
+               (lambda (client text)
+                 (push (cons client text) sent))))
+      (claude-code-ide-mcp--handle-message
+       '((jsonrpc . "2.0") (id . 1) (method . "initialize") (params))
+       session-one)
+      (setq sent nil)
+      (apply (caar callbacks) (cdar callbacks))
+      (should (equal (mapcar #'car sent) '(:client-one))))))
+
+(ert-deftest claude-code-ide-test-mcp-handle-message-binds-session-context ()
+  "Direct message dispatch binds the same exact owner as WebSocket dispatch."
+  (let ((session (make-claude-code-ide-mcp-session :id "one"))
+        observed)
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--handle-tools-call)
+               (lambda (&rest _)
+                 (setq observed claude-code-ide-mcp--current-message-session)
+                 nil)))
+      (claude-code-ide-mcp--handle-message
+       '((jsonrpc . "2.0") (method . "tools/call") (params))
+       session))
+    (should (eq observed session))))
+
+(ert-deftest claude-code-ide-test-mcp-stale-close-keeps-reconnected-client ()
+  "A late close callback cannot clear a sibling session's replacement socket."
+  (let* ((session (make-claude-code-ide-mcp-session
+                   :id "one" :project-dir "/tmp/project/"
+                   :client :new-client))
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal)))
+    (puthash "one" session claude-code-ide-mcp--sessions)
+    (cl-letf (((symbol-function 'websocket-ready-state) (lambda (_) 'closed)))
+      (claude-code-ide-mcp--on-close :old-client "one"))
+    (should (eq (claude-code-ide-mcp-session-client session) :new-client))))
+
+(ert-deftest claude-code-ide-test-mcp-stale-client-message-is-ignored ()
+  "A replaced socket cannot route messages through its session ID."
+  (let* ((session (make-claude-code-ide-mcp-session
+                   :id "one" :project-dir "/tmp/project/"
+                   :client :new-client))
+         (frame (make-websocket-frame
+                 :opcode 'text :payload "{\"method\":\"test\"}"))
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal))
+         handled)
+    (puthash "one" session claude-code-ide-mcp--sessions)
+    (cl-letf (((symbol-function 'websocket-frame-opcode) (lambda (_) 'text))
+              ((symbol-function 'websocket-frame-text)
+               (lambda (_) "{\"method\":\"test\"}"))
+              ((symbol-function 'claude-code-ide-mcp--handle-message)
+               (lambda (&rest _) (setq handled t))))
+      (claude-code-ide-mcp--on-message :old-client frame "one"))
+    (should-not handled)))
+
+(ert-deftest claude-code-ide-test-mcp-selection-reaches-all-siblings ()
+  "Selection notifications and state reach every same-directory sibling."
+  (let* ((directory "/tmp/project/")
+         (session-one (make-claude-code-ide-mcp-session
+                       :id "one" :project-dir directory :client :client-one))
+         (session-two (make-claude-code-ide-mcp-session
+                       :id "two" :project-dir directory :client :client-two))
+         (claude-code-ide-mcp--buffer-cache-valid t)
+         (claude-code-ide-mcp--buffer-session-cache session-one)
+         notified)
+    (with-temp-buffer
+      (setq buffer-file-name "/tmp/project/main.el")
+      (insert "text")
+      (cl-letf (((symbol-function 'claude-code-ide-mcp--sessions-for-project)
+                 (lambda (_project-dir) (list session-one session-two)))
+                ((symbol-function 'claude-code-ide-mcp--send-notification-to-session)
+                 (lambda (session _method _params)
+                   (push (claude-code-ide-mcp-session-id session) notified))))
+        (claude-code-ide-mcp--send-selection-for-project directory))
+      (should (equal (sort notified #'string<) '("one" "two")))
+      (should (claude-code-ide-mcp-session-last-selection session-one))
+      (should (claude-code-ide-mcp-session-last-selection session-two)))))
+
+(ert-deftest claude-code-ide-test-mcp-start-rolls-back-bound-server-on-setup-error ()
+  "A failure after binding does not leave an MCP server or registry entry."
+  (let ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+        closed)
+    (cl-letf (((symbol-function 'claude-code-ide-mcp--find-free-port)
+               (lambda (&optional _session-id) (cons :server 41003)))
+              ((symbol-function 'claude-code-ide-mcp--create-lockfile)
+               (lambda (&rest _) (error "lockfile failed")))
+              ((symbol-function 'claude-code-ide-mcp--remove-lockfile) #'ignore)
+              ((symbol-function 'websocket-server-close)
+               (lambda (server) (push server closed))))
+      (should-error
+       (claude-code-ide-mcp-start "/tmp/project/" "one")
+       :type 'error)
+      (should-not (gethash "one" claude-code-ide-mcp--sessions))
+      (should (equal closed '(:server))))))
+
+(ert-deftest claude-code-ide-test-mcp-start-captures-launch-file-buffer ()
+  "A new MCP session remembers its explicit launch editor context."
+  (let ((claude-code-ide-mcp--sessions (make-hash-table :test #'equal)))
+    (with-temp-buffer
+      (setq buffer-file-name "/tmp/project/main.el"
+            default-directory "/tmp/project/")
+      (cl-letf (((symbol-function 'claude-code-ide-mcp--find-free-port)
+                 (lambda (&optional _) (cons :server 41004)))
+                ((symbol-function 'claude-code-ide-mcp--create-lockfile) #'ignore)
+                ((symbol-function 'claude-code-ide-mcp--remove-lockfile) #'ignore)
+                ((symbol-function 'websocket-server-close) #'ignore))
+        (claude-code-ide-mcp-start "/tmp/project/" "one")
+        (should (eq
+                 (claude-code-ide-mcp-session-last-buffer
+                  (gethash "one" claude-code-ide-mcp--sessions))
+                 (current-buffer)))
+        (claude-code-ide-mcp-stop-session "one")))))
+
+(ert-deftest claude-code-ide-test-mcp-active-buffer-context-reaches-all-siblings ()
+  "The active file becomes tool context for every same-directory sibling."
+  (let* ((directory "/tmp/project/")
+         (file-buffer (generate-new-buffer "*cc-mcp-active-file*"))
+         (terminal-one (generate-new-buffer "*claude-code[project]*"))
+         (terminal-two (generate-new-buffer "*claude-code[project]*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (claude-code-ide-mcp-server--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "one" :directory directory :buffer terminal-one
+            :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "two" :directory directory :buffer terminal-two
+            :last-accessed-at 2))
+          (puthash "one"
+                   (make-claude-code-ide-mcp-session
+                    :id "one" :project-dir directory :client :client-one)
+                   claude-code-ide-mcp--sessions)
+          (puthash "two"
+                   (make-claude-code-ide-mcp-session
+                    :id "two" :project-dir directory :client :client-two)
+                   claude-code-ide-mcp--sessions)
+          (claude-code-ide-mcp-server-register-session
+           "one" directory terminal-one)
+          (claude-code-ide-mcp-server-register-session
+           "two" directory terminal-two)
+          (with-current-buffer file-buffer
+            (setq buffer-file-name "/tmp/project/src/main.el")
+            (setq default-directory directory)
+            (cl-letf (((symbol-function 'claude-code-ide-mcp--send-notification)
+                       #'ignore)
+                      ((symbol-function 'claude-code-ide-mcp--send-notification-to-session)
+                       #'ignore))
+              (claude-code-ide-mcp--track-active-buffer)))
+          (should (eq
+                   (plist-get
+                    (claude-code-ide-mcp-server-get-session-context "one")
+                    :last-active-buffer)
+                   file-buffer))
+          (should (eq
+                   (plist-get
+                    (claude-code-ide-mcp-server-get-session-context "two")
+                    :last-active-buffer)
+                   file-buffer)))
+      (dolist (buffer (list file-buffer terminal-one terminal-two))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest test-claude-code-ide-mcp-multi-session-deferred ()
   "Test that deferred responses work correctly with multiple sessions."
@@ -8609,7 +9900,7 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'claude-code-ide-mcp--get-session-for-project)
                (lambda (_) (make-claude-code-ide-mcp-session :client t)))
               ((symbol-function 'claude-code-ide-mcp-send-at-mentioned)
-               (lambda () nil))
+               (lambda (&rest _) nil))
               ((symbol-function 'claude-code-ide--get-buffer-name)
                (lambda () "*test-claude-buffer*"))
               ((symbol-function 'claude-code-ide--maybe-switch-to-window)
@@ -8619,6 +9910,109 @@ have completed before cleanup.  Waits up to 5 seconds."
         (let ((terminal-buf (current-buffer)))
           (claude-code-ide-insert-at-mentioned)
           (should (eq switched-to terminal-buf)))))))
+
+(ert-deftest claude-code-ide-test-insert-at-mentioned-keeps-exact-terminal-owner ()
+  "At-mention from a nonpreferred terminal sends and touches that exact sibling."
+  (let* ((directory "/tmp/project/")
+         (terminal-a (generate-new-buffer "*cc-at-owner-a*"))
+         (terminal-b (generate-new-buffer "*cc-at-owner-b*"))
+         (file-buffer (generate-new-buffer "*cc-at-context*"))
+         (mcp-a (make-claude-code-ide-mcp-session
+                 :id "a" :project-dir directory :client :client-a))
+         (mcp-b (make-claude-code-ide-mcp-session
+                 :id "b" :project-dir directory :client :client-b))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-mcp--sessions (make-hash-table :test #'equal))
+         notified)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "a" :directory directory :buffer terminal-a
+            :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "b" :directory directory :buffer terminal-b
+            :last-accessed-at 2))
+          (puthash "a" mcp-a claude-code-ide-mcp--sessions)
+          (puthash "b" mcp-b claude-code-ide-mcp--sessions)
+          (with-current-buffer file-buffer
+            (setq buffer-file-name "/tmp/project/main.el"
+                  default-directory directory))
+          (with-current-buffer terminal-a
+            (setq default-directory directory)
+            (cl-letf (((symbol-function 'claude-code-ide--get-context-buffer)
+                       (lambda () file-buffer))
+                      ((symbol-function 'claude-code-ide-mcp--send-notification-to-session)
+                       (lambda (session _method _params)
+                         (push (claude-code-ide-mcp-session-id session) notified)))
+                      ((symbol-function 'claude-code-ide--maybe-switch-to-window) #'ignore))
+              (claude-code-ide-insert-at-mentioned)))
+          (should (equal notified '("a")))
+          (should (equal
+                   (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session directory))
+                   "a")))
+      (dolist (buffer (list terminal-a terminal-b file-buffer))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-contextual-sends-keep-exact-terminal-owner ()
+  "File references and TODO prompts return to their invoking terminal sibling."
+  (let* ((directory "/tmp/project/")
+         (terminal-a (generate-new-buffer "*cc-context-owner-a*"))
+         (terminal-b (generate-new-buffer "*cc-context-owner-b*"))
+         (file-buffer (generate-new-buffer "*cc-context-file*"))
+         (core-a (claude-code-ide-session-create
+                  :id "a" :directory directory :buffer terminal-a
+                  :last-accessed-at 1))
+         (core-b (claude-code-ide-session-create
+                  :id "b" :directory directory :buffer terminal-b
+                  :last-accessed-at 2))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         sent-buffer)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session core-a)
+          (claude-code-ide--put-session core-b)
+          (with-current-buffer file-buffer
+            (setq buffer-file-name "/tmp/project/main.el"
+                  default-directory directory)
+            (insert ";; TODO: implement this\n"))
+          (cl-letf (((symbol-function 'claude-code-ide--get-file-reference-context)
+                     (lambda () (cons "/tmp/project/main.el" file-buffer)))
+                    ((symbol-function 'claude-code-ide--get-context-buffer)
+                     (lambda () file-buffer))
+                    ((symbol-function 'project-current)
+                     (lambda (&rest _) '(vc . "/tmp/project/")))
+                    ((symbol-function 'project-root) (lambda (_) directory))
+                    ((symbol-function 'claude-code-ide--find-prompt-buffer) #'ignore)
+                    ((symbol-function 'claude-code-ide--maybe-switch-to-window) #'ignore)
+                    ((symbol-function 'claude-code-ide--terminal-send-string)
+                     (lambda (&rest _) (setq sent-buffer (current-buffer))))
+                    ((symbol-function 'claude-code-ide--terminal-send-return) #'ignore)
+                    ((symbol-function 'sit-for) #'ignore)
+                    ((symbol-function 'claude-code-ide--implement-todo--handle-done-line)
+                     #'ignore)
+                    ((symbol-function 'claude-code-ide--implement-todo--handle-blank-line)
+                     #'ignore)
+                    ((symbol-function 'claude-code-ide--implement-todo--build-prompt)
+                     (lambda (_) "implement")))
+            (dolist (command '(claude-code-ide-send-current-file
+                               claude-code-ide-send-current-file-line-reference
+                               claude-code-ide-implement-todo))
+              (setf (claude-code-ide-session-last-accessed-at core-a) 1
+                    (claude-code-ide-session-last-accessed-at core-b) 2)
+              (setq sent-buffer nil)
+              (with-current-buffer terminal-a
+                (setq default-directory directory)
+                (if (eq command 'claude-code-ide-implement-todo)
+                    (funcall command nil)
+                  (funcall command)))
+              (should (eq sent-buffer terminal-a)))))
+      (dolist (buffer (list terminal-a terminal-b file-buffer))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest claude-code-ide-test-get-context-buffer-file-buffer ()
   "Test helper returns current buffer when it has a file."
@@ -9123,18 +10517,14 @@ have completed before cleanup.  Waits up to 5 seconds."
                   ((symbol-function 'claude-code-ide--get-buffer-name)
                    (lambda (&optional _directory)
                      (buffer-name buffer)))
-                  ((symbol-function 'claude-code-ide--get-process)
-                   (lambda (&optional _directory) nil))
                   ((symbol-function 'claude-code-ide--terminal-ensure-backend)
                    (lambda () nil))
                   ((symbol-function 'claude-code-ide-mcp-start)
-                   (lambda (_directory) 12345))
+                   (lambda (&rest _) 12345))
                   ((symbol-function 'claude-code-ide--create-terminal-session)
                    (lambda (&rest _args)
                      (cons buffer process)))
                   ((symbol-function 'claude-code-ide-mcp-server-session-started)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'claude-code-ide--set-process)
                    (lambda (&rest _args) nil))
                   ((symbol-function 'set-process-sentinel)
                    (lambda (&rest _args) nil))
@@ -9154,6 +10544,90 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (process-live-p process)
         (delete-process process)))))
 
+(ert-deftest claude-code-ide-test-start-session-force-new-does-not-toggle-sibling ()
+  (let ((created 0) (toggled 0))
+    (cl-letf (((symbol-function 'claude-code-ide--ensure-cli) (lambda () t))
+              ((symbol-function 'claude-code-ide--cleanup-dead-processes) #'ignore)
+              ((symbol-function 'claude-code-ide--preferred-session) (lambda (_) 'existing))
+              ((symbol-function 'claude-code-ide--toggle-session) (lambda (_) (cl-incf toggled)))
+              ((symbol-function 'claude-code-ide--create-session) (lambda (&rest _) (cl-incf created))))
+      (claude-code-ide--start-session nil nil "/tmp/project/" t)
+      (should (= created 1))
+      (should (= toggled 0)))))
+
+(ert-deftest claude-code-ide-test-create-session-generates-unique-sibling-identities ()
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (buffers nil)
+        (buffer-names nil)
+        (session-ids nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+                  ((symbol-function 'claude-code-ide-mcp-start) (lambda (&rest _) 12345))
+                  ((symbol-function 'format-time-string) (lambda (&rest _) "20260727-063500"))
+                  ((symbol-function 'claude-code-ide--create-terminal-session)
+                   (lambda (buffer-name _directory _port _continue _resume session-id)
+                     (let ((buffer (generate-new-buffer buffer-name)))
+                       (push buffer buffers)
+                       (push buffer-name buffer-names)
+                       (push session-id session-ids)
+                       (cons buffer buffer))))
+                  ((symbol-function 'claude-code-ide-mcp-server-session-started) #'ignore)
+                  ((symbol-function 'claude-code-ide--register-session) #'ignore)
+                  ((symbol-function 'set-process-sentinel) #'ignore)
+                  ((symbol-function 'claude-code-ide--current-terminal-backend) (lambda () 'eat))
+                  ((symbol-function 'sleep-for) #'ignore)
+                  ((symbol-function 'claude-code-ide--display-buffer-in-side-window) #'ignore)
+                  ((symbol-function 'claude-code-ide-log) #'ignore))
+          (claude-code-ide--create-session "/tmp/project/" nil nil)
+          (claude-code-ide--create-session "/tmp/project/" nil nil)
+          (should (= (length (delete-dups session-ids)) 2))
+          (should (= (length (delete-dups buffer-names)) 2)))
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-create-session-rolls-back-after-core-registration ()
+  "A post-registration startup error tears down every ID-scoped resource."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (buffer (generate-new-buffer "*claude-code[rollback]*"))
+         (process (make-pipe-process :name "cc-create-rollback" :buffer buffer))
+         session-id stopped ended)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                     #'ignore)
+                    ((symbol-function 'claude-code-ide-mcp-start)
+                     (lambda (&rest _) 12345))
+                    ((symbol-function 'claude-code-ide--create-terminal-session)
+                     (lambda (_buffer-name _directory _port _continue _resume id)
+                       (setq session-id id)
+                       (cons buffer process)))
+                    ((symbol-function 'claude-code-ide-mcp-server-session-started)
+                     #'ignore)
+                    ((symbol-function 'set-process-sentinel)
+                     (lambda (&rest _) (error "sentinel setup failed")))
+                    ((symbol-function 'claude-code-ide-mcp-stop-session)
+                     (lambda (id) (push id stopped)))
+                    ((symbol-function 'claude-code-ide-mcp-server-session-ended)
+                     (lambda (id) (push id ended)))
+                    ((symbol-function 'claude-code-ide-manager-session-ended)
+                     #'ignore)
+                    ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
+                     #'ignore))
+            (should-error
+             (claude-code-ide--create-session "/tmp/rollback/" nil nil)
+             :type 'error))
+          (should session-id)
+          (should-not (claude-code-ide--get-session session-id))
+          (should-not (buffer-live-p buffer))
+          (should-not (process-live-p process))
+          (should (equal stopped (list session-id)))
+          (should (equal ended (list session-id))))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-start-session-suppresses-intermediate-display-when-requested ()
   "Test that start-session skips the initial side-window display when suppressed."
   (let ((claude-code-ide-terminal-backend 'vterm)
@@ -9172,18 +10646,14 @@ have completed before cleanup.  Waits up to 5 seconds."
                   ((symbol-function 'claude-code-ide--get-buffer-name)
                    (lambda (&optional _directory)
                      (buffer-name buffer)))
-                  ((symbol-function 'claude-code-ide--get-process)
-                   (lambda (&optional _directory) nil))
                   ((symbol-function 'claude-code-ide--terminal-ensure-backend)
                    (lambda () nil))
                   ((symbol-function 'claude-code-ide-mcp-start)
-                   (lambda (_directory) 12345))
+                   (lambda (&rest _) 12345))
                   ((symbol-function 'claude-code-ide--create-terminal-session)
                    (lambda (&rest _args)
                      (cons buffer process)))
                   ((symbol-function 'claude-code-ide-mcp-server-session-started)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'claude-code-ide--set-process)
                    (lambda (&rest _args) nil))
                   ((symbol-function 'set-process-sentinel)
                    (lambda (&rest _args) nil))
@@ -9212,6 +10682,36 @@ have completed before cleanup.  Waits up to 5 seconds."
     (rename-buffer "*claude-code[test-session]*" t)
     (claude-code-ide--maybe-enable-session-mode)
     (should claude-code-ide-session-mode)))
+
+(ert-deftest claude-code-ide-test-session-mode-command-promotes-exact-sibling ()
+  "Ordinary commands in a terminal make its exact live record preferred."
+  (let* ((directory "/tmp/project/")
+         (terminal-a (generate-new-buffer "*claude-code[activity-a]*"))
+         (terminal-b (generate-new-buffer "*claude-code[activity-b]*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "a" :directory directory :buffer terminal-a
+            :last-accessed-at 1))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "b" :directory directory :buffer terminal-b
+            :last-accessed-at 2))
+          (with-current-buffer terminal-a
+            (cl-letf (((symbol-function 'claude-code-ide-session-setup-buffer)
+                       #'ignore))
+              (claude-code-ide-session-mode 1))
+            (should (memq #'claude-code-ide-session--touch-current-session
+                          post-command-hook))
+            (run-hooks 'post-command-hook))
+          (should (equal
+                   (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session directory))
+                   "a")))
+      (kill-buffer terminal-a)
+      (kill-buffer terminal-b))))
 
 (ert-deftest claude-code-ide-test-session-send-interrupt-dispatches-to-backend ()
   "Test that session interrupt dispatches to the current terminal backend."

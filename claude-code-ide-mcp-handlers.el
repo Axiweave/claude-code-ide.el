@@ -41,16 +41,21 @@
 (declare-function claude-code-ide-mcp--get-session-for-project "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide-mcp--get-buffer-project "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-active-diffs "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-id "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-last-buffer "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-original-tab "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--setup-buffer-cache-hooks "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide" (&optional directory))
+(declare-function claude-code-ide--get-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide-session-buffer "claude-code-ide" (session))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
 (defvar ediff-control-buffer)
 (defvar ediff-window-setup-function)
 (defvar ediff-split-window-function)
 (defvar ediff-control-buffer-suffix)
 (defvar claude-code-ide-mcp--sessions)
+(defvar claude-code-ide-mcp--current-message-session)
 (defvar claude-code-ide-show-claude-window-in-ediff)
 (defvar claude-code-ide-focus-claude-after-ediff)
 (defvar claude-code-ide-switch-tab-on-ediff)
@@ -79,17 +84,27 @@
 When multiple sessions match (nested projects), returns the most
 specific match (longest project directory).
 Returns the session if found, nil otherwise."
-  (let ((expanded-file (expand-file-name file-path))
-        (best-session nil)
-        (best-length 0))
-    (maphash (lambda (project-dir session)
-               (let ((expanded-dir (expand-file-name project-dir)))
-                 (when (and (string-prefix-p expanded-dir expanded-file)
-                            (> (length expanded-dir) best-length))
-                   (setq best-session session
-                         best-length (length expanded-dir)))))
-             claude-code-ide-mcp--sessions)
-    best-session))
+  (let* ((expanded-file (expand-file-name file-path))
+         (message-session claude-code-ide-mcp--current-message-session))
+    (if message-session
+        message-session
+      (let (best-session best-directory
+                         (best-length 0))
+        (maphash
+         (lambda (_session-id session)
+           (let ((expanded-dir
+                  (file-name-as-directory
+                   (expand-file-name
+                    (claude-code-ide-mcp-session-project-dir session)))))
+             (when (and (string-prefix-p expanded-dir expanded-file)
+                        (> (length expanded-dir) best-length))
+               (setq best-session session
+                     best-directory expanded-dir
+                     best-length (length expanded-dir)))))
+         claude-code-ide-mcp--sessions)
+        (or (and best-directory
+                 (claude-code-ide-mcp--get-session-for-project best-directory))
+            best-session)))))
 
 (defun claude-code-ide-mcp--find-claude-side-window ()
   "Find the Claude Code side window in the current frame.
@@ -209,12 +224,23 @@ STARTUP-HOOK-FN is the hook function to remove after use."
           (claude-window nil))
       ;; Restore Claude side window only if user wants it shown during ediff
       (when claude-code-ide-show-claude-window-in-ediff
-        (when-let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
-                    (claude-buffer-name (claude-code-ide--get-buffer-name project-dir))
-                    (claude-buffer (get-buffer claude-buffer-name)))
-          (when (buffer-live-p claude-buffer)
-            ;; Display Claude buffer in side window and save the window
-            (setq claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer)))))
+        (when-let ((project-dir
+                    (claude-code-ide-mcp-session-project-dir session)))
+          (let* ((core-session
+                  (claude-code-ide--get-session
+                   (claude-code-ide-mcp-session-id session)))
+                 (claude-buffer
+                  (or (and core-session
+                           (buffer-live-p
+                            (claude-code-ide-session-buffer core-session))
+                           (claude-code-ide-session-buffer core-session))
+                      (get-buffer
+                       (claude-code-ide--get-buffer-name project-dir)))))
+            (when (buffer-live-p claude-buffer)
+              ;; Display Claude buffer in side window and save the window.
+              (setq claude-window
+                    (claude-code-ide--display-buffer-in-side-window
+                     claude-buffer))))))
 
       ;; Handle focus based on user preference
       (cond
@@ -295,8 +321,8 @@ ARGUMENTS should contain:
        (signal 'mcp-error (list (format "Failed to open file: %s"
                                         (error-message-string err))))))))
 
-(defun claude-code-ide-mcp-handle-get-current-selection (_arguments)
-  "Get the currently selected text and its context."
+(defun claude-code-ide-mcp--get-current-selection-in-buffer (_arguments)
+  "Get the selected text and its context from the current buffer."
   (let ((file-path (or (buffer-file-name) ""))
         (file-url (when (buffer-file-name)
                     (concat "file://" (buffer-file-name)))))
@@ -359,10 +385,29 @@ ARGUMENTS should contain:
                                 (character . ,cursor-col)))
                         (isEmpty . t)))))))))
 
+(defun claude-code-ide-mcp-handle-get-current-selection (arguments)
+  "Get the current selection for the session handling ARGUMENTS."
+  (let ((owner-buffer
+         (and claude-code-ide-mcp--current-message-session
+              (claude-code-ide-mcp-session-last-buffer
+               claude-code-ide-mcp--current-message-session))))
+    (if (buffer-live-p owner-buffer)
+        (with-current-buffer owner-buffer
+          (claude-code-ide-mcp--get-current-selection-in-buffer arguments))
+      (claude-code-ide-mcp--get-current-selection-in-buffer arguments))))
+
 (defun claude-code-ide-mcp-handle-get-open-editors (_arguments)
   "Get list of all open editors/buffers with file paths."
-  (let ((editors '())
-        (project-dir (claude-code-ide-mcp--get-buffer-project)))
+  (let* ((owner claude-code-ide-mcp--current-message-session)
+         (editors '())
+         (project-dir
+          (or (and owner
+                   (claude-code-ide-mcp-session-project-dir owner))
+              (claude-code-ide-mcp--get-buffer-project)))
+         (active-buffer
+          (or (and owner
+                   (claude-code-ide-mcp-session-last-buffer owner))
+              (current-buffer))))
     (dolist (buffer (buffer-list))
       (when-let ((file (buffer-file-name buffer)))
         ;; Only include files within the project directory
@@ -371,7 +416,7 @@ ARGUMENTS should contain:
                                    (expand-file-name file)))
           (push `((path . ,file)
                   (name . ,(buffer-name buffer))
-                  (active . ,(eq buffer (current-buffer)))
+                  (active . ,(eq buffer active-buffer))
                   (isDirty . ,(if (buffer-modified-p buffer) t :json-false))
                   (fileUrl . ,(concat "file://" file)))
                 editors))))
@@ -380,7 +425,10 @@ ARGUMENTS should contain:
 (defun claude-code-ide-mcp-handle-get-workspace-folders (_arguments)
   "Get the current workspace folders (project roots)."
   ;; Return the specific project directory for this MCP instance
-  (let ((project-dir (or (claude-code-ide-mcp--get-buffer-project)
+  (let ((project-dir (or (and claude-code-ide-mcp--current-message-session
+                              (claude-code-ide-mcp-session-project-dir
+                               claude-code-ide-mcp--current-message-session))
+                         (claude-code-ide-mcp--get-buffer-project)
                          default-directory)))
     `((folders . ,(vconcat (list (expand-file-name project-dir)))))))
 
@@ -426,19 +474,25 @@ ARGUMENTS should contain `path' or `tab_name' of the file to close."
           ;; Error case
           (signal 'mcp-error (list (format "No buffer visiting %s" path))))))
      (tab-name
-      ;; Check if it's a diff tab first - need to check all sessions
       (let* ((found-session nil)
              (found-diff-info nil))
-        ;; Search all sessions for this diff tab
-        (catch 'found
-          (maphash (lambda (_proj-dir session)
-                     (let* ((session-diffs (claude-code-ide-mcp-session-active-diffs session))
-                            (diff-info (gethash tab-name session-diffs)))
-                       (when diff-info
-                         (setq found-session session
-                               found-diff-info diff-info)
-                         (throw 'found t))))
-                   claude-code-ide-mcp--sessions))
+        (if claude-code-ide-mcp--current-message-session
+            (setq found-session claude-code-ide-mcp--current-message-session
+                  found-diff-info
+                  (gethash
+                   tab-name
+                   (claude-code-ide-mcp-session-active-diffs found-session)))
+          ;; Legacy direct calls have no request owner, so search all sessions.
+          (catch 'found
+            (maphash (lambda (_session-id session)
+                       (let* ((session-diffs
+                               (claude-code-ide-mcp-session-active-diffs session))
+                              (diff-info (gethash tab-name session-diffs)))
+                         (when diff-info
+                           (setq found-session session
+                                 found-diff-info diff-info)
+                           (throw 'found t))))
+                     claude-code-ide-mcp--sessions)))
         (if found-diff-info
             (progn
               ;; Check if ediff is still active and quit it using stored control buffer

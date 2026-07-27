@@ -110,6 +110,8 @@
 
 ;; External function declarations from MCP
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp--get-session "claude-code-ide-mcp" (session-id))
+(declare-function claude-code-ide-mcp-session-id "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 
 ;; External function declarations from Magit
@@ -372,11 +374,15 @@ the target window is already visible."
 (defvar claude-code-ide--cli-available nil
   "Whether Claude Code CLI is available and detected.")
 
-(defvar claude-code-ide--processes (make-hash-table :test 'equal)
-  "Hash table mapping project/directory roots to their Claude Code processes.")
+(cl-defstruct (claude-code-ide-session
+               (:constructor claude-code-ide-session-create))
+  id directory process buffer cli-session-id order last-accessed-at custom-name)
 
-(defvar claude-code-ide--session-ids (make-hash-table :test 'equal)
-  "Hash table mapping project/directory roots to their session IDs.")
+(defvar claude-code-ide--sessions (make-hash-table :test #'equal)
+  "Live sessions keyed by generated session ID.")
+
+(defvar claude-code-ide--session-order-counters (make-hash-table :test #'equal)
+  "Last assigned session order keyed by normalized directory.")
 
 (defvar claude-code-ide--last-accessed-buffer nil
   "The most recently accessed Claude Code buffer.")
@@ -737,6 +743,80 @@ Signal a `user-error' when the current buffer is not in a project."
   (when directory
     (file-name-as-directory (expand-file-name directory))))
 
+(defun claude-code-ide--put-session (session)
+  "Store SESSION by its generated ID and return it."
+  (puthash (claude-code-ide-session-id session) session
+           claude-code-ide--sessions)
+  session)
+
+(defun claude-code-ide--get-session (session-id)
+  "Return the live session identified by SESSION-ID, or nil."
+  (gethash session-id claude-code-ide--sessions))
+
+(defun claude-code-ide--set-session-custom-name (session name)
+  "Store canonical custom NAME on SESSION and return SESSION."
+  (setf (claude-code-ide-session-custom-name session) name)
+  session)
+
+(defun claude-code-ide--session-for-buffer (&optional buffer)
+  "Return the live session that owns BUFFER, or nil."
+  (let ((buffer (or buffer (current-buffer)))
+        found)
+    (maphash
+     (lambda (_session-id session)
+       (when (eq buffer
+                 (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+                          (claude-code-ide-session-buffer session))
+                     (claude-code-ide--session-buffer-from-process
+                      (claude-code-ide-session-process session))))
+         (setq found session)))
+     claude-code-ide--sessions)
+    found))
+
+(defun claude-code-ide--touch-session-for-buffer (&optional buffer)
+  "Mark BUFFER's exact live session as recently accessed."
+  (when-let ((session (claude-code-ide--session-for-buffer buffer)))
+    (claude-code-ide--touch-session (claude-code-ide-session-id session))))
+
+(defun claude-code-ide--next-session-order (directory)
+  "Return the next never-reused positive session order for DIRECTORY."
+  (let* ((directory (claude-code-ide--normalize-directory directory))
+         (last-order (gethash directory claude-code-ide--session-order-counters 0))
+         (live-order
+          (cl-loop for session being the hash-values of claude-code-ide--sessions
+                   when (equal directory
+                               (claude-code-ide--normalize-directory
+                                (claude-code-ide-session-directory session)))
+                   maximize (or (claude-code-ide-session-order session) 0) into maximum
+                   finally return (or maximum 0)))
+         (next-order (1+ (max last-order live-order))))
+    (puthash directory next-order claude-code-ide--session-order-counters)
+    next-order))
+
+(defun claude-code-ide--sessions-for-directory (directory)
+  "Return live sessions for DIRECTORY, most recently accessed first."
+  (let ((directory (claude-code-ide--normalize-directory directory)) sessions)
+    (maphash (lambda (session-id _)
+               (let ((session (claude-code-ide--get-session session-id)))
+                 (when (equal directory
+                              (claude-code-ide--normalize-directory
+                               (claude-code-ide-session-directory session)))
+                   (push session sessions))))
+             claude-code-ide--sessions)
+    (sort sessions (lambda (a b)
+                     (> (or (claude-code-ide-session-last-accessed-at a) 0)
+                        (or (claude-code-ide-session-last-accessed-at b) 0))))))
+
+(defun claude-code-ide--preferred-session (directory)
+  "Return the preferred live session for DIRECTORY, or nil."
+  (car (claude-code-ide--sessions-for-directory directory)))
+
+(defun claude-code-ide--touch-session (session-id)
+  "Mark SESSION-ID as most recently accessed and return its session."
+  (when-let ((session (claude-code-ide--get-session session-id)))
+    (setf (claude-code-ide-session-last-accessed-at session) (float-time))
+    session))
+
 (defun claude-code-ide--directory-contains-p (parent child)
   "Return non-nil when PARENT contains CHILD."
   (let ((parent (claude-code-ide--normalize-directory parent))
@@ -762,11 +842,42 @@ Signal a `user-error' when the current buffer is not in a project."
                     (or directory (claude-code-ide--get-current-directory))))
         (matches '()))
     (when directory
-      (maphash (lambda (session-directory _process)
-                 (when (claude-code-ide--directory-related-p directory session-directory)
-                   (push session-directory matches)))
-               claude-code-ide--processes)
-      (claude-code-ide--sort-directories-by-specificity matches))))
+      (maphash (lambda (session-id _)
+                 (let* ((session (claude-code-ide--get-session session-id))
+                        (session-directory
+                         (claude-code-ide-session-directory session)))
+                   (when (claude-code-ide--directory-related-p
+                          directory session-directory)
+                     (push session-directory matches))))
+               claude-code-ide--sessions)
+      (claude-code-ide--sort-directories-by-specificity
+       (delete-dups matches)))))
+
+(defun claude-code-ide--get-related-sessions (&optional directory)
+  "Return live sessions related to DIRECTORY or the current directory."
+  (let ((directory (claude-code-ide--normalize-directory
+                    (or directory (claude-code-ide--get-current-directory))))
+        matches)
+    (when directory
+      (maphash
+       (lambda (_session-id session)
+         (when (and (buffer-live-p (claude-code-ide-session-buffer session))
+                    (claude-code-ide--directory-related-p
+                     directory (claude-code-ide-session-directory session)))
+           (push session matches)))
+       claude-code-ide--sessions)
+      (sort matches
+            (lambda (left right)
+              (let ((left-directory
+                     (claude-code-ide--normalize-directory
+                      (claude-code-ide-session-directory left)))
+                    (right-directory
+                     (claude-code-ide--normalize-directory
+                      (claude-code-ide-session-directory right))))
+                (if (equal left-directory right-directory)
+                    (> (or (claude-code-ide-session-last-accessed-at left) 0)
+                       (or (claude-code-ide-session-last-accessed-at right) 0))
+                  (> (length left-directory) (length right-directory)))))))))
 
 (defun claude-code-ide--get-attached-working-directory (&optional fallback-directory)
   "Return the active session directory attached to the current buffer.
@@ -790,11 +901,25 @@ If DIRECTORY is not provided, use the current working directory."
                                   (claude-code-ide-mcp-session-project-dir session))))
         (fallback-directory (or directory
                                 (claude-code-ide--get-working-directory))))
-    (or (when attached-directory
-          (claude-code-ide--session-buffer-from-process
-           (claude-code-ide--get-process attached-directory)))
-        (claude-code-ide--session-buffer-from-process
-         (claude-code-ide--get-process fallback-directory))
+    (or (when-let ((session (and (null directory)
+                                 (claude-code-ide--session-for-buffer))))
+          (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+                   (claude-code-ide-session-buffer session))
+              (claude-code-ide--session-buffer-from-process
+               (claude-code-ide-session-process session))))
+        (when-let ((session (and attached-directory
+                                 (claude-code-ide--preferred-session
+                                  attached-directory))))
+          (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+                   (claude-code-ide-session-buffer session))
+              (claude-code-ide--session-buffer-from-process
+               (claude-code-ide-session-process session))))
+        (when-let ((session (claude-code-ide--preferred-session
+                             fallback-directory)))
+          (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+                   (claude-code-ide-session-buffer session))
+              (claude-code-ide--session-buffer-from-process
+               (claude-code-ide-session-process session))))
         (get-buffer (if attached-directory
                         (claude-code-ide--get-buffer-name attached-directory)
                       (claude-code-ide--get-buffer-name))))))
@@ -858,11 +983,6 @@ range should be attached."
         (when buffer-file-name
           (cons buffer-file-name ctx-buf)))))))
 
-(defun claude-code-ide--get-process (&optional directory)
-  "Get the Claude Code process for DIRECTORY or current working directory."
-  (gethash (or directory (claude-code-ide--get-working-directory))
-           claude-code-ide--processes))
-
 (defun claude-code-ide--session-buffer-from-process (process)
   "Return the live session buffer attached to PROCESS, if any."
   (cond
@@ -872,35 +992,33 @@ range should be attached."
     (when-let ((buffer (process-buffer process)))
       (and (buffer-live-p buffer) buffer)))))
 
-(defun claude-code-ide--set-process (process &optional directory)
-  "Set the Claude Code PROCESS for DIRECTORY or current working directory."
-  (let ((backend (claude-code-ide--backend-for-process process)))
-    ;; Check if this is the first session starting
-    (when (= (hash-table-count claude-code-ide--processes) 0)
+(defun claude-code-ide--register-session (session)
+  "Register SESSION and install global advice for the first live session."
+  (let* ((process (claude-code-ide-session-process session))
+         (backend (claude-code-ide--backend-for-process process)))
+    (when (= (hash-table-count claude-code-ide--sessions) 0)
       (claude-code-ide--install-terminal-resize-observer backend)
       (when (and (eq (claude-code-ide--current-cli-type) 'claude)
                  claude-code-ide-prevent-reflow-glitch
                  (claude-code-ide--terminal-supports-reflow-guard-p backend))
         ;; Apply advice globally for the first Claude session when enabled.
         (advice-add (claude-code-ide--terminal-resize-handler backend)
-                    :around #'claude-code-ide--terminal-reflow-filter))))
-  (puthash (or directory (claude-code-ide--get-working-directory))
-           process
-           claude-code-ide--processes))
+                    :around #'claude-code-ide--terminal-reflow-filter)))
+    (claude-code-ide--put-session session)))
 
 (defun claude-code-ide--cleanup-dead-processes ()
-  "Remove entries for dead processes from the process table."
-  (maphash (lambda (directory process)
-             (unless (process-live-p process)
-               (remhash directory claude-code-ide--processes)))
-           claude-code-ide--processes))
+  "Clean up live-session entries whose processes have exited."
+  (dolist (session-id (hash-table-keys claude-code-ide--sessions))
+    (when-let ((session (claude-code-ide--get-session session-id)))
+      (unless (process-live-p (claude-code-ide-session-process session))
+        (claude-code-ide--cleanup-on-exit session-id)))))
 
 (defun claude-code-ide--cleanup-all-sessions ()
   "Clean up all active Claude Code sessions."
-  (maphash (lambda (directory process)
-             (when (process-live-p process)
-               (claude-code-ide--cleanup-on-exit directory)))
-           claude-code-ide--processes))
+  (dolist (session-id (hash-table-keys claude-code-ide--sessions))
+    (when-let ((session (claude-code-ide--get-session session-id)))
+      (when (process-live-p (claude-code-ide-session-process session))
+        (claude-code-ide--cleanup-on-exit session-id)))))
 
 ;; Ensure cleanup on Emacs exit
 (add-hook 'kill-emacs-hook #'claude-code-ide--cleanup-all-sessions)
@@ -966,50 +1084,40 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
         window)
       (claude-code-ide--display-buffer-in-side-window buffer)))
 
-(defvar claude-code-ide--cleanup-in-progress nil
-  "Flag to prevent recursive cleanup calls.")
+(defun claude-code-ide--cleanup-session-resources (session)
+  "Clean up resources owned by SESSION after it leaves the live-session table."
+  (let* ((session-id (claude-code-ide-session-id session))
+         (directory (claude-code-ide-session-directory session))
+         (process (claude-code-ide-session-process session))
+         (buffer (claude-code-ide-session-buffer session))
+         (backend (claude-code-ide--backend-for-process process)))
+    (when (= (hash-table-count claude-code-ide--sessions) 0)
+      (claude-code-ide--remove-terminal-resize-observer backend)
+      (when (and claude-code-ide-prevent-reflow-glitch
+                 (claude-code-ide--terminal-supports-reflow-guard-p backend))
+        (advice-remove (claude-code-ide--terminal-resize-handler backend)
+                       #'claude-code-ide--terminal-reflow-filter)))
+    (when (and claude-code-ide-vterm-anti-flicker
+               (= (hash-table-count claude-code-ide--sessions) 0))
+      (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer)
+      (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))
+    (claude-code-ide-mcp-stop-session session-id)
+    (claude-code-ide-mcp-server-session-ended session-id)
+    (claude-code-ide-manager-session-ended session-id)
+    (when (buffer-live-p buffer)
+      (let ((kill-buffer-hook nil)
+            (kill-buffer-query-functions nil))
+        (kill-buffer buffer)))
+    (claude-code-ide-debug "Cleaned up Claude Code session for %s"
+                           (file-name-nondirectory
+                            (directory-file-name directory)))))
 
-(defun claude-code-ide--cleanup-on-exit (directory)
-  "Clean up MCP server and process tracking when Claude exits for DIRECTORY."
-  (unless claude-code-ide--cleanup-in-progress
-    (setq claude-code-ide--cleanup-in-progress t)
-    (unwind-protect
-        (progn
-          (let* ((process (gethash directory claude-code-ide--processes))
-                 (backend (claude-code-ide--backend-for-process process)))
-          ;; Remove from process table
-          (remhash directory claude-code-ide--processes)
-          ;; Check if this was the last session
-          (when (= (hash-table-count claude-code-ide--processes) 0)
-            (claude-code-ide--remove-terminal-resize-observer backend)
-            (when (and claude-code-ide-prevent-reflow-glitch
-                       (claude-code-ide--terminal-supports-reflow-guard-p backend))
-              ;; Remove advice globally when no sessions remain
-              (advice-remove (claude-code-ide--terminal-resize-handler backend)
-                             #'claude-code-ide--terminal-reflow-filter)))
-          ;; Remove vterm rendering optimization if no sessions remain
-          (when (and claude-code-ide-vterm-anti-flicker
-                     (= (hash-table-count claude-code-ide--processes) 0))
-            (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer)
-            (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))
-          ;; Stop MCP server for this project directory
-          (claude-code-ide-mcp-stop-session directory)
-          ;; Notify MCP tools server about session end with session ID
-          (let ((session-id (gethash directory claude-code-ide--session-ids)))
-            (claude-code-ide-mcp-server-session-ended session-id)
-            ;; Clean up session ID mapping
-            (when session-id
-              (remhash directory claude-code-ide--session-ids)))
-          ;; Kill the vterm buffer if it exists
-          (let ((buffer-name (claude-code-ide--get-buffer-name directory)))
-            (when-let ((buffer (get-buffer buffer-name)))
-              (when (buffer-live-p buffer)
-                (let ((kill-buffer-hook nil) ; Disable hooks to prevent recursion
-                      (kill-buffer-query-functions nil)) ; Don't ask for confirmation
-                  (kill-buffer buffer)))))
-          (claude-code-ide-debug "Cleaned up Claude Code session for %s"
-                                 (file-name-nondirectory (directory-file-name directory)))))
-      (setq claude-code-ide--cleanup-in-progress nil))))
+(defun claude-code-ide--cleanup-on-exit (session-id)
+  "Remove SESSION-ID and clean up only the resources it owns."
+  (when-let ((session (claude-code-ide--get-session session-id)))
+    ;; Removing first is the ID-scoped recursion guard for sentinel/hook races.
+    (remhash session-id claude-code-ide--sessions)
+    (claude-code-ide--cleanup-session-resources session)))
 
 ;;; CLI Detection
 
@@ -1056,7 +1164,9 @@ If the window is not visible, it will be shown in a side window."
       (progn
         (claude-code-ide--display-buffer-in-side-window existing-buffer)
         ;; Update the original tab when showing the window
-        (when-let ((session (claude-code-ide-mcp--get-session-for-project working-dir)))
+        (when-let* ((live-session (claude-code-ide--session-for-buffer existing-buffer))
+                    (session (claude-code-ide-mcp--get-session
+                              (claude-code-ide-session-id live-session))))
           (when (fboundp 'tab-bar--current-tab)
             (setf (claude-code-ide-mcp-session-original-tab session) (tab-bar--current-tab))))
         (claude-code-ide-debug "Claude Code window shown")))))
@@ -1461,123 +1571,132 @@ Returns a cons cell of (buffer . process) on success."
     ('opencode (claude-code-ide--create-opencode-terminal-session
                 buffer-name working-dir port continue resume session-id))
     ((or 'pi 'omp) (claude-code-ide--create-pi-terminal-session
-           buffer-name working-dir port continue resume session-id))
+                    buffer-name working-dir port continue resume session-id))
     ('codex (claude-code-ide--create-codex-terminal-session
              buffer-name working-dir port continue resume session-id))
     (_ (claude-code-ide--create-claude-terminal-session
         buffer-name working-dir port continue resume session-id))))
 
-(defun claude-code-ide--start-session (&optional continue resume directory)
-  "Start a Claude Code session for the current project.
-If CONTINUE is non-nil, start Claude with the -c (continue) flag.
-If RESUME is non-nil, start Claude with the -r (resume) flag.
-If DIRECTORY is non-nil, start in that directory instead of resolving
-the project-aware working directory.
+(defun claude-code-ide--toggle-session (session)
+  "Toggle SESSION and mark it as the preferred sibling."
+  (prog1 (claude-code-ide--touch-session (claude-code-ide-session-id session))
+    (claude-code-ide--toggle-existing-window
+     (claude-code-ide-session-buffer session)
+     (claude-code-ide-session-directory session))))
 
-This function handles:
-- CLI availability checking
-- Dead process cleanup
-- Existing session detection and window toggling
-- New session creation with MCP server setup
-- Process and buffer lifecycle management"
+(defun claude-code-ide--create-session (working-dir continue resume)
+  "Create a terminal session in WORKING-DIR.
+CONTINUE and RESUME select the CLI conversation mode."
+  (claude-code-ide--terminal-ensure-backend)
+  (let* ((session-id
+          (make-temp-name
+           (format "claude-%s-%s-"
+                   (file-name-nondirectory (directory-file-name working-dir))
+                   (format-time-string "%Y%m%d-%H%M%S"))))
+         (buffer-name
+          (generate-new-buffer-name
+           (claude-code-ide--get-buffer-name working-dir)))
+         port buffer process session
+         mcp-started-p mcp-tools-started-p)
+    (condition-case err
+        (progn
+          (setq port (claude-code-ide-mcp-start working-dir session-id)
+                mcp-started-p t)
+          (let ((buffer-and-process
+                 (claude-code-ide--create-terminal-session
+                  buffer-name working-dir port continue resume session-id)))
+            (setq buffer (car buffer-and-process)
+                  process (cdr buffer-and-process))
+            (setq mcp-tools-started-p t)
+            (claude-code-ide-mcp-server-session-started
+             session-id working-dir buffer)
+            (setq session
+                  (claude-code-ide-session-create
+                   :id session-id
+                   :directory working-dir
+                   :process process
+                   :buffer buffer
+                   :order (claude-code-ide--next-session-order working-dir)
+                   :last-accessed-at (float-time)))
+            (claude-code-ide--register-session session)
+            (set-process-sentinel
+             process
+             (lambda (_proc event)
+               (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
+                 (let ((exit-code (match-string 1 event)))
+                   (claude-code-ide-debug
+                    "Claude process exited with code %s, event: %s"
+                    exit-code event)
+                   (message "Claude exited with error code %s" exit-code)))
+               (when (string-match-p "finished\\|exited\\|killed\\|terminated" event)
+                 (claude-code-ide--cleanup-on-exit session-id))))
+            (with-current-buffer buffer
+              (add-hook 'kill-buffer-hook
+                        (lambda ()
+                          (claude-code-ide--cleanup-on-exit session-id))
+                        nil t)
+              (pcase (claude-code-ide--current-terminal-backend)
+                ('vterm
+                 (add-hook 'vterm-exit-functions
+                           (lambda (&rest _)
+                             (when (buffer-live-p buffer)
+                               (kill-buffer buffer)))
+                           nil t))
+                ('eat
+                 (setq-local eat-kill-buffer-on-exit t))))
+            (sleep-for claude-code-ide-terminal-initialization-delay)
+            (unless claude-code-ide--suppress-initial-display
+              (claude-code-ide--display-buffer-in-side-window buffer))
+            (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
+                                 (cond (continue "continued and ")
+                                       (resume "resumed and ")
+                                       (t ""))
+                                 (file-name-nondirectory
+                                  (directory-file-name working-dir))
+                                 port
+                                 (if claude-code-ide-cli-debug
+                                     " (debug mode enabled)"
+                                   ""))
+            session))
+      (error
+       (if (claude-code-ide--get-session session-id)
+           (claude-code-ide--cleanup-on-exit session-id)
+         (when mcp-tools-started-p
+           (claude-code-ide-mcp-server-session-ended session-id))
+         (when (process-live-p process)
+           (delete-process process))
+         (when (buffer-live-p buffer)
+           (let ((kill-buffer-hook nil)
+                 (kill-buffer-query-functions nil))
+             (kill-buffer buffer)))
+         (when mcp-started-p
+           (claude-code-ide-mcp-stop-session session-id)))
+       (signal (car err) (cdr err))))))
+
+(defun claude-code-ide--start-session (&optional continue resume directory force-new)
+  "Start or toggle a session in DIRECTORY.
+CONTINUE and RESUME select the CLI conversation mode.  FORCE-NEW creates a
+sibling even when a session already exists for the directory."
   (unless (claude-code-ide--ensure-cli)
     (user-error "Claude Code CLI not available.  Please install it and ensure it's in PATH"))
-
-  ;; Clean up any dead processes first
   (claude-code-ide--cleanup-dead-processes)
-
   (let* ((working-dir (or directory (claude-code-ide--get-working-directory)))
-         (buffer-name (claude-code-ide--get-buffer-name working-dir))
-         (existing-buffer (get-buffer buffer-name))
-         (existing-process (claude-code-ide--get-process working-dir)))
-
-    ;; If buffer exists and process is alive, toggle the window
-    (if (and existing-buffer
-             (buffer-live-p existing-buffer)
-             existing-process)
-        (claude-code-ide--toggle-existing-window existing-buffer working-dir)
-      ;; Ensure the selected terminal backend is available before starting MCP
-      (claude-code-ide--terminal-ensure-backend)
-      ;; Start MCP server with project directory
-      (let ((port nil)
-            (session-id (format "claude-%s-%s"
-                                (file-name-nondirectory (directory-file-name working-dir))
-                                (format-time-string "%Y%m%d-%H%M%S"))))
-        (condition-case err
-            (progn
-              ;; Start MCP server
-              (setq port (claude-code-ide-mcp-start working-dir))
-              ;; Create new terminal session
-              (let* ((buffer-and-process (claude-code-ide--create-terminal-session
-                                          buffer-name working-dir port continue resume session-id))
-                     (buffer (car buffer-and-process))
-                     (process (cdr buffer-and-process)))
-                ;; Notify MCP tools server about new session with session info
-                (claude-code-ide-mcp-server-session-started session-id working-dir buffer)
-                (claude-code-ide--set-process process working-dir)
-                ;; Store session ID for cleanup
-                (puthash working-dir session-id claude-code-ide--session-ids)
-                ;; Set up process sentinel to clean up when Claude exits
-                (set-process-sentinel process
-                                      (lambda (_proc event)
-                                        ;; Check for abnormal exit with error code
-                                        (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
-                                          (let ((exit-code (match-string 1 event)))
-                                            (claude-code-ide-debug "Claude process exited with code %s, event: %s"
-                                                                   exit-code event)
-                                            (message "Claude exited with error code %s" exit-code)))
-                                        (when (or (string-match "finished" event)
-                                                  (string-match "exited" event)
-                                                  (string-match "killed" event)
-                                                  (string-match "terminated" event))
-                                          (claude-code-ide--cleanup-on-exit working-dir))))
-                ;; Also add buffer kill hook as a backup
-                (with-current-buffer buffer
-                  (add-hook 'kill-buffer-hook
-                            (lambda ()
-                              (claude-code-ide--cleanup-on-exit working-dir))
-                            nil t)
-                  ;; Set up terminal keybindings
-                  ;; (when (eq (claude-code-ide--current-cli-type) 'claude)
-                  ;;   (claude-code-ide--setup-terminal-keybindings))
-                  ;; Add terminal-specific exit hooks
-                  (pcase (claude-code-ide--current-terminal-backend)
-                    ('vterm
-                     ;; Add vterm exit hook to ensure buffer is killed when process exits
-                     ;; vterm runs Claude directly, no shell involved
-                     (add-hook 'vterm-exit-functions
-                               (lambda (&rest _)
-                                 (when (buffer-live-p buffer)
-                                   (kill-buffer buffer)))
-                               nil t))
-                    ('eat
-                     ;; eat uses kill-buffer-on-exit variable
-                     (setq-local eat-kill-buffer-on-exit t))))
-                ;; Stabilization period for terminal layout initialization
-                (sleep-for claude-code-ide-terminal-initialization-delay)
-                ;; Manager-driven opens restore or build the target layout next,
-                ;; so skip the intermediate display in the current session.
-                (unless claude-code-ide--suppress-initial-display
-                  (claude-code-ide--display-buffer-in-side-window buffer))
-                (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
-                                     (cond (continue "continued and ")
-                                           (resume "resumed and ")
-                                           (t ""))
-                                     (file-name-nondirectory (directory-file-name working-dir))
-                                     port
-                                     (if claude-code-ide-cli-debug " (debug mode enabled)" ""))))
-          (error
-           ;; Terminal session creation failed - clean up MCP server
-           (when port
-             (claude-code-ide-mcp-stop-session working-dir))
-           ;; Re-signal the error with improved message
-           (signal (car err) (cdr err))))))))
+         (existing (claude-code-ide--preferred-session working-dir)))
+    (if (and existing (not force-new))
+        (claude-code-ide--toggle-session existing)
+      (claude-code-ide--create-session working-dir continue resume))))
 
 ;;;###autoload
-(defun claude-code-ide ()
+(defun claude-code-ide (&optional new-session)
   "Run Claude Code in a terminal for the current project or directory."
+  (interactive "P")
+  (claude-code-ide--start-session nil nil nil new-session))
+
+;;;###autoload
+(defun claude-code-ide-new-session ()
+  "Start a sibling session for the current project or directory."
   (interactive)
-  (claude-code-ide--start-session))
+  (claude-code-ide--start-session nil nil nil t))
 
 ;;;###autoload
 (defun claude-code-ide-current-directory ()
@@ -1619,7 +1738,7 @@ conversation in the current directory."
   "Stop the Claude Code session for the current project or directory."
   (interactive)
   (let* ((working-dir (claude-code-ide--get-attached-working-directory))
-         (buffer (claude-code-ide--get-session-buffer working-dir)))
+         (buffer (claude-code-ide--get-session-buffer)))
     (if buffer
         (progn
           ;; Kill the buffer (cleanup will be handled by hooks)
@@ -1649,17 +1768,38 @@ If the buffer is already visible, switch focus to it."
   "List active sessions related to the current buffer and switch to one."
   (interactive)
   (claude-code-ide--cleanup-dead-processes)
-  (let ((sessions (mapcar (lambda (directory)
-                            (cons (abbreviate-file-name directory) directory))
-                          (claude-code-ide--get-related-session-directories))))
-    (if sessions
+  (let* ((related-sessions (claude-code-ide--get-related-sessions))
+         (directory-counts (make-hash-table :test #'equal))
+         choices)
+    (dolist (session related-sessions)
+      (let ((directory (claude-code-ide--normalize-directory
+                        (claude-code-ide-session-directory session))))
+        (puthash directory (1+ (gethash directory directory-counts 0))
+                 directory-counts)))
+    (setq choices
+          (mapcar
+           (lambda (session)
+             (let* ((directory (claude-code-ide--normalize-directory
+                                (claude-code-ide-session-directory session)))
+                    (buffer (claude-code-ide-session-buffer session))
+                    (label (if (> (gethash directory directory-counts) 1)
+                               (format "%s  %s"
+                                       (abbreviate-file-name directory)
+                                       (buffer-name buffer))
+                             (abbreviate-file-name directory))))
+               (cons label (claude-code-ide-session-id session))))
+           related-sessions))
+    (if choices
         (let ((choice (completing-read "Switch to related Claude Code session: "
-                                       sessions nil t)))
+                                       choices nil t)))
           (when choice
-            (let* ((directory (alist-get choice sessions nil nil #'string=))
-                   (buffer (claude-code-ide--get-session-buffer directory)))
-              (if buffer
-                  (claude-code-ide--show-session-buffer buffer)
+            (let* ((session-id (alist-get choice choices nil nil #'string=))
+                   (session (claude-code-ide--get-session session-id))
+                   (buffer (and session (claude-code-ide-session-buffer session))))
+              (if (buffer-live-p buffer)
+                  (progn
+                    (claude-code-ide--touch-session session-id)
+                    (claude-code-ide--show-session-buffer buffer))
                 (user-error "Buffer for session %s no longer exists" choice)))))
       (claude-code-ide-log "No related Claude Code sessions"))))
 
@@ -1669,19 +1809,29 @@ If the buffer is already visible, switch focus to it."
   (interactive)
   (claude-code-ide--cleanup-dead-processes)
   (let ((sessions '()))
-    (maphash (lambda (directory _)
-               (push (cons (abbreviate-file-name directory)
-                           directory)
-                     sessions))
-             claude-code-ide--processes)
+    (maphash (lambda (session-id _)
+               (let* ((session (claude-code-ide--get-session session-id))
+                      (directory (claude-code-ide-session-directory session))
+                      (buffer (claude-code-ide-session-buffer session)))
+                 (when (buffer-live-p buffer)
+                   (push (cons (format "%s  %s"
+                                       (abbreviate-file-name directory)
+                                       (buffer-name buffer))
+                               session-id)
+                         sessions))))
+             claude-code-ide--sessions)
     (if sessions
         (let ((choice (completing-read "Switch to Claude Code session: "
                                        sessions nil t)))
           (when choice
-            (let* ((directory (alist-get choice sessions nil nil #'string=))
-                   (buffer-name (funcall claude-code-ide-buffer-name-function directory)))
-              (if-let ((buffer (get-buffer buffer-name)))
-                  (claude-code-ide--show-session-buffer buffer)
+            (let* ((session-id (alist-get choice sessions nil nil #'string=))
+                   (session (claude-code-ide--get-session session-id))
+                   (buffer (and session
+                                (claude-code-ide-session-buffer session))))
+              (if (buffer-live-p buffer)
+                  (progn
+                    (claude-code-ide--touch-session session-id)
+                    (claude-code-ide--show-session-buffer buffer))
                 (user-error "Buffer for session %s no longer exists" choice)))))
       (claude-code-ide-log "No active Claude Code sessions"))))
 
@@ -1691,18 +1841,25 @@ If the buffer is already visible, switch focus to it."
 When called from a Claude Code session buffer, uses the most
 recent visible file-visiting buffer on the current frame."
   (interactive)
-  (if-let* ((session (or (claude-code-ide-mcp--get-current-session)
-                         (when-let ((project-dir (claude-code-ide-mcp--get-buffer-project)))
-                           (claude-code-ide-mcp--get-session-for-project project-dir))))
-            (client (claude-code-ide-mcp-session-client session)))
-      (let ((ctx-buf (or (claude-code-ide--get-context-buffer) (current-buffer))))
-        (with-current-buffer ctx-buf
-          (claude-code-ide-mcp-send-at-mentioned))
-        (claude-code-ide-debug "Sent selection to Claude Code")
-        (when-let ((buffer (claude-code-ide--get-session-buffer
-                            (claude-code-ide-mcp-session-project-dir session))))
-          (claude-code-ide--maybe-switch-to-window buffer)))
-    (user-error "Claude Code is not connected.  Please start Claude Code first")))
+  (let* ((owner (claude-code-ide--session-for-buffer))
+         (session
+          (or (claude-code-ide-mcp--get-current-session)
+              (and (null owner)
+                   (when-let ((project-dir
+                               (claude-code-ide-mcp--get-buffer-project)))
+                     (claude-code-ide-mcp--get-session-for-project project-dir))))))
+    (if (and session (claude-code-ide-mcp-session-client session))
+        (progn
+          (claude-code-ide--touch-session
+           (claude-code-ide-mcp-session-id session))
+          (let ((ctx-buf (or (claude-code-ide--get-context-buffer)
+                             (current-buffer))))
+            (with-current-buffer ctx-buf
+              (claude-code-ide-mcp-send-at-mentioned session))
+            (claude-code-ide-debug "Sent selection to Claude Code")
+            (when-let ((buffer (claude-code-ide--get-session-buffer)))
+              (claude-code-ide--maybe-switch-to-window buffer))))
+      (user-error "Claude Code is not connected.  Please start Claude Code first"))))
 
 ;;;###autoload
 (defun claude-code-ide-send-escape ()
@@ -2009,17 +2166,22 @@ CLIPBOARD-CONTEXT indicates whether clipboard text will be appended."
   "Build and send a TODO implementation prompt for the current context.
 With prefix ARG, append clipboard text as extra context."
   (interactive "P")
-  (let ((ctx-buf (claude-code-ide--get-context-buffer)))
+  (let ((ctx-buf (claude-code-ide--get-context-buffer))
+        (target-buffer (claude-code-ide--get-session-buffer)))
     (unless ctx-buf
       (user-error "Current buffer is not visiting a file"))
-    (with-current-buffer ctx-buf
-      (cl-block finalize
-        (when (claude-code-ide--implement-todo--handle-done-line)
-          (cl-return-from finalize nil))
-        (when (claude-code-ide--implement-todo--handle-blank-line)
-          (cl-return-from finalize nil))
-        (claude-code-ide-send-prompt
-         (claude-code-ide--implement-todo--build-prompt arg))))))
+    (when-let ((prompt
+                (with-current-buffer ctx-buf
+                  (cl-block finalize
+                    (when (claude-code-ide--implement-todo--handle-done-line)
+                      (cl-return-from finalize nil))
+                    (when (claude-code-ide--implement-todo--handle-blank-line)
+                      (cl-return-from finalize nil))
+                    (claude-code-ide--implement-todo--build-prompt arg)))))
+      (if target-buffer
+          (with-current-buffer target-buffer
+            (claude-code-ide-send-prompt prompt))
+        (claude-code-ide-send-prompt prompt)))))
 
 (defun claude-code-ide--get-selection-line-range ()
   "Return (START-LINE . END-LINE) for the active selection, or nil.
@@ -2073,17 +2235,23 @@ recent visible file-visiting buffer on the current frame."
   (interactive)
   (let* ((context (claude-code-ide--get-file-reference-context))
          (file (car context))
-         (ctx-buf (cdr context)))
+         (ctx-buf (cdr context))
+         (target-buffer (claude-code-ide--get-session-buffer)))
     (unless file
       (user-error "Current buffer is not visiting a file"))
-    (with-current-buffer (or ctx-buf (current-buffer))
-      (let* ((project (project-current t))
-             (root (project-root project))
-             (relative (file-relative-name file root))
-             (range (when ctx-buf
-                      (claude-code-ide--get-selection-line-range)))
-             (suffix (claude-code-ide--format-selection-line-suffix range "#L"))
-             (reference-body (concat "@" relative suffix)))
+    (let ((reference-body
+           (with-current-buffer (or ctx-buf (current-buffer))
+             (let* ((project (project-current t))
+                    (root (project-root project))
+                    (relative (file-relative-name file root))
+                    (range (when ctx-buf
+                             (claude-code-ide--get-selection-line-range)))
+                    (suffix (claude-code-ide--format-selection-line-suffix
+                             range "#L")))
+               (concat "@" relative suffix)))))
+      (if target-buffer
+          (with-current-buffer target-buffer
+            (claude-code-ide--send-reference-body reference-body))
         (claude-code-ide--send-reference-body reference-body)))))
 
 ;;;###autoload
@@ -2097,7 +2265,7 @@ With prefix ARG, use `read-file-name' from project root instead of
          (file (if arg
                    (file-relative-name (read-file-name "File: " root) root)
                  (file-relative-name
-                 (completing-read "File: " (project-files project))
+                  (completing-read "File: " (project-files project))
                   root)))
          (reference-body (concat "@" file)))
     (claude-code-ide--send-reference-body reference-body)))
@@ -2119,15 +2287,21 @@ context so selection state comes from the target file."
   (interactive)
   (let* ((context (claude-code-ide--get-file-reference-context))
          (file (car context))
-         (ctx-buf (cdr context)))
+         (ctx-buf (cdr context))
+         (target-buffer (claude-code-ide--get-session-buffer)))
     (unless file
       (user-error "Current buffer is not visiting a file"))
     (unless ctx-buf
       (user-error "Current context does not provide a file line number"))
-    (with-current-buffer ctx-buf
-      (let* ((range (claude-code-ide--get-selection-line-range))
-             (suffix (claude-code-ide--format-selection-line-suffix range ":"))
-             (reference-body (concat file suffix)))
+    (let ((reference-body
+           (with-current-buffer ctx-buf
+             (let* ((range (claude-code-ide--get-selection-line-range))
+                    (suffix (claude-code-ide--format-selection-line-suffix
+                             range ":")))
+               (concat file suffix)))))
+      (if target-buffer
+          (with-current-buffer target-buffer
+            (claude-code-ide--send-reference-body reference-body))
         (claude-code-ide--send-reference-body reference-body)))))
 
 ;;;###autoload
@@ -2135,7 +2309,7 @@ context so selection state comes from the target file."
   "Toggle visibility of Claude Code window for the current project."
   (interactive)
   (let* ((working-dir (claude-code-ide--get-attached-working-directory))
-         (buffer (claude-code-ide--get-session-buffer working-dir)))
+         (buffer (claude-code-ide--get-session-buffer)))
     (if buffer
         (claude-code-ide--toggle-existing-window buffer working-dir)
       (user-error "No Claude Code session for this project"))))
@@ -2148,16 +2322,17 @@ If no Claude windows are visible, show the most recently accessed one."
   (interactive)
   (let ((found-visible nil))
     ;; Check all sessions and close any visible windows
-    (maphash (lambda (directory _process)
-               (let* ((buffer-name (funcall claude-code-ide-buffer-name-function directory))
-                      (buffer (get-buffer buffer-name)))
+    (maphash (lambda (session-id _)
+               (let* ((session (claude-code-ide--get-session session-id))
+                      (directory (claude-code-ide-session-directory session))
+                      (buffer (claude-code-ide-session-buffer session)))
                  (when (and buffer
                             (buffer-live-p buffer)
                             (get-buffer-window buffer))
                    ;; Window is visible, use the toggle function to close it
                    (claude-code-ide--toggle-existing-window buffer directory)
                    (setq found-visible t))))
-             claude-code-ide--processes)
+             claude-code-ide--sessions)
 
     (cond
      ;; We found and closed visible windows
@@ -2167,6 +2342,8 @@ If no Claude windows are visible, show the most recently accessed one."
      ;; No windows were visible, show the most recent one
      ((and claude-code-ide--last-accessed-buffer
            (buffer-live-p claude-code-ide--last-accessed-buffer))
+      (claude-code-ide--touch-session-for-buffer
+       claude-code-ide--last-accessed-buffer)
       (claude-code-ide--display-buffer-in-side-window claude-code-ide--last-accessed-buffer)
       (message "Opened most recent Claude Code session"))
 

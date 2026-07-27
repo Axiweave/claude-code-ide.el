@@ -35,6 +35,7 @@
 
 ;; Declare functions from other files to avoid circular dependencies
 (declare-function claude-code-ide "claude-code-ide" ())
+(declare-function claude-code-ide-new-session "claude-code-ide" ())
 (declare-function claude-code-ide-current-directory "claude-code-ide" ())
 (declare-function claude-code-ide-resume "claude-code-ide" ())
 (declare-function claude-code-ide-continue "claude-code-ide" ())
@@ -48,13 +49,15 @@
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
 (declare-function claude-code-ide--get-project-root "claude-code-ide" ())
-(declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory))
+(declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory force-new))
+(declare-function claude-code-ide-session-id "claude-code-ide" (session))
 (declare-function claude-code-ide-manager-switch-to-session "claude-code-ide-manager" (session-key &optional keep-manager-focus scope))
 (declare-function claude-code-ide-manager--visible-sidebar-scope-for-frame "claude-code-ide-manager" (&optional frame))
 (declare-function claude-code-ide-manager-toggle-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-global-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-repo-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-open "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-rename-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-next-line "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-previous-line "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-by-slot "claude-code-ide-manager" (slot))
@@ -319,10 +322,10 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
         (claude-code-ide-cli-extra-flags
          (claude-code-ide--transient-launch-flags dangerous)))
     (unwind-protect
-        (progn
-          (claude-code-ide--start-session continue resume target)
-          (when scope
-            (claude-code-ide-manager-switch-to-session target nil scope)))
+        (let ((session (claude-code-ide--start-session continue resume target)))
+          (when (and scope session)
+            (claude-code-ide-manager-switch-to-session
+             (claude-code-ide-session-id session) nil scope)))
       (setq claude-code-ide-manager--open-target nil)
       (setq claude-code-ide-manager--open-scope nil))))
 
@@ -628,9 +631,10 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("C" claude-code-ide--continue-skip-permissions :description claude-code-ide--continue-skip-description)
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("R" claude-code-ide--resume-skip-permissions :description claude-code-ide--resume-skip-description)
+    ("N" "New session" claude-code-ide-new-session)
     ("q" "Stop current session" claude-code-ide-stop)
-   ("l" "List related sessions" claude-code-ide-list-related-sessions)
-   ("L" "List all sessions" claude-code-ide-list-sessions)]
+    ("l" "List related sessions" claude-code-ide-list-related-sessions)
+    ("L" "List all sessions" claude-code-ide-list-sessions)]
    ["Manager"
     ("t" "Toggle default manager" claude-code-ide-manager-toggle-sidebar)
     ("T" "Toggle global manager" claude-code-ide-manager-toggle-global-sidebar)
@@ -638,6 +642,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("w" "Toggle repo manager" claude-code-ide-manager-toggle-repo-sidebar)
     ("n" "Next manager session" claude-code-ide-manager-next-line)
     ("p" "Previous manager session" claude-code-ide-manager-previous-line)
+    ("v" "Rename manager session" claude-code-ide-manager-rename-at-point)
     ("P" "Pin current manager session" claude-code-ide-manager-toggle-current-session-pin)
     ("1" "Manager slot 1" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 1)))
     ("2" "Manager slot 2" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 2)))
