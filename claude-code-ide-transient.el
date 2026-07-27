@@ -194,7 +194,9 @@ With prefix ARG, add the agent-specific permissions bypass flag."
 (defun claude-code-ide--current-directory-skip-description ()
   "Dynamic description for current-directory start with permissions bypass."
   (if (claude-code-ide--has-current-directory-session-p)
-      (propertize "Start in current dir (skip permissions) (session already running)"
+      (propertize (if (claude-code-ide--permissions-bypass-available-p)
+                      "Start in current dir (skip permissions) (session already running)"
+                    "Start in current dir (session already running)")
                   'face 'transient-inactive-value)
     (if (claude-code-ide--permissions-bypass-available-p)
         "Start in current dir (skip permissions)"
@@ -242,7 +244,9 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 (defun claude-code-ide--start-skip-description ()
   "Dynamic description for start with --dangerously-skip-permissions."
   (if (claude-code-ide--has-project-session-p)
-      (propertize "Start (skip permissions) (session already running)"
+      (propertize (if (claude-code-ide--permissions-bypass-available-p)
+                      "Start (skip permissions) (session already running)"
+                    "Start (session already running)")
                   'face 'transient-inactive-value)
     (if (claude-code-ide--permissions-bypass-available-p) "Start (skip permissions)" "Start")))
 
@@ -254,7 +258,9 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 (defun claude-code-ide--continue-skip-description ()
   "Dynamic description for continue with --dangerously-skip-permissions."
   (if (claude-code-ide--has-project-session-p)
-      (propertize "Continue (skip permissions) (session already running)"
+      (propertize (if (claude-code-ide--permissions-bypass-available-p)
+                      "Continue (skip permissions) (session already running)"
+                    "Continue (session already running)")
                   'face 'transient-inactive-value)
     (if (claude-code-ide--permissions-bypass-available-p) "Continue (skip permissions)" "Continue")))
 
@@ -266,7 +272,9 @@ With prefix ARG, add --dangerously-skip-permissions flag."
 (defun claude-code-ide--resume-skip-description ()
   "Dynamic description for resume with --dangerously-skip-permissions."
   (if (claude-code-ide--has-project-session-p)
-      (propertize "Resume (skip permissions) (session already running)"
+      (propertize (if (claude-code-ide--permissions-bypass-available-p)
+                      "Resume (skip permissions) (session already running)"
+                    "Resume (session already running)")
                   'face 'transient-inactive-value)
     (if (claude-code-ide--permissions-bypass-available-p) "Resume (skip permissions)" "Resume")))
 

@@ -3594,6 +3594,17 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                     :description))))
         (should-not (string-match-p "skip permissions" description))))))
 
+(ert-deftest claude-code-ide-test-pi-active-session-skip-descriptions-omit-unavailable-bypass ()
+  "Test Pi active-session skip labels do not claim an unavailable bypass."
+  (let ((claude-code-ide-cli-path "pi"))
+    (cl-letf (((symbol-function 'claude-code-ide--has-project-session-p) (lambda () t))
+              ((symbol-function 'claude-code-ide--has-current-directory-session-p) (lambda () t)))
+      (dolist (description (list (claude-code-ide--start-skip-description)
+                                 (claude-code-ide--continue-skip-description)
+                                 (claude-code-ide--resume-skip-description)
+                                 (claude-code-ide--current-directory-skip-description)))
+        (should-not (string-match-p "skip permissions" description))))))
+
 (ert-deftest claude-code-ide-test-claude-transient-descriptions-disclose-bypass ()
   "Test an agent with a bypass flag retains permissions descriptions."
   (let ((claude-code-ide-cli-path "claude")
@@ -3607,6 +3618,12 @@ have completed before cleanup.  Waits up to 5 seconds."
                               (funcall (plist-get (nth 2 (transient-get-suffix
                                                            'claude-code-ide-manager-open-menu "S"))
                                                  :description)))))))
+
+(ert-deftest claude-code-ide-test-claude-active-session-skip-description-discloses-bypass ()
+  "Test a nonempty bypass flag remains disclosed for an active session."
+  (let ((claude-code-ide-cli-path "claude"))
+    (cl-letf (((symbol-function 'claude-code-ide--has-project-session-p) (lambda () t)))
+      (should (string-match-p "skip permissions" (claude-code-ide--start-skip-description))))))
 
 (ert-deftest claude-code-ide-test-transient-bypass-default-can-be-disabled ()
   "Test a nil bypass default restores safe lowercase transient launches."
