@@ -271,6 +271,14 @@ With prefix ARG, add --dangerously-skip-permissions flag."
       (abbreviate-file-name claude-code-ide-manager--open-target)
     "<no target>"))
 
+(defun claude-code-ide-manager--open-action-description (action)
+  "Return manager ACTION label, disclosing the active default bypass."
+  (format "%s %s%s" action
+          (claude-code-ide-manager--open-target-label)
+          (if claude-code-ide-bypass-permissions-by-default
+              " (skip permissions)"
+            "")))
+
 (defun claude-code-ide-transient-manager-open ()
   "Open against the currently visible manager sidebar scope.
 This transient entry does not require point to be in a manager buffer."
@@ -333,20 +341,17 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
   "Transient for starting or resuming a manager-selected target."
   [["Manager Open"
     ("s" claude-code-ide-manager-open-start
-     :description (lambda () (format "Start %s"
-                                     (claude-code-ide-manager--open-target-label))))
+     :description (lambda () (claude-code-ide-manager--open-action-description "Start")))
     ("S" claude-code-ide-manager-open-start-skip-permissions
      :description (lambda () (format "Start %s (skip permissions)"
                                      (claude-code-ide-manager--open-target-label))))
     ("c" claude-code-ide-manager-open-continue
-     :description (lambda () (format "Continue %s"
-                                     (claude-code-ide-manager--open-target-label))))
+     :description (lambda () (claude-code-ide-manager--open-action-description "Continue")))
     ("C" claude-code-ide-manager-open-continue-skip-permissions
      :description (lambda () (format "Continue %s (skip permissions)"
                                      (claude-code-ide-manager--open-target-label))))
     ("r" claude-code-ide-manager-open-resume
-     :description (lambda () (format "Resume %s"
-                                     (claude-code-ide-manager--open-target-label))))
+     :description (lambda () (claude-code-ide-manager--open-action-description "Resume")))
     ("R" claude-code-ide-manager-open-resume-skip-permissions
      :description (lambda () (format "Resume %s (skip permissions)"
                                      (claude-code-ide-manager--open-target-label))))]])

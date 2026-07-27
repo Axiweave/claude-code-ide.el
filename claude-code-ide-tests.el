@@ -3556,6 +3556,23 @@ have completed before cleanup.  Waits up to 5 seconds."
                        (t nil "/tmp/project-a/" "--dangerously-skip-permissions")
                        (nil t "/tmp/project-a/" "--dangerously-skip-permissions")))))))
 
+(ert-deftest claude-code-ide-test-manager-open-descriptions-disclose-default-bypass ()
+  "Test lowercase manager launch labels disclose the active default bypass."
+  (let ((claude-code-ide-bypass-permissions-by-default t)
+        (claude-code-ide-manager--open-target "/tmp/project-a/"))
+    (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
+                                                'claude-code-ide-manager-open-menu "s"))
+                                       :description))
+                   "Start /tmp/project-a/ (skip permissions)"))
+    (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
+                                                'claude-code-ide-manager-open-menu "c"))
+                                       :description))
+                   "Continue /tmp/project-a/ (skip permissions)"))
+    (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
+                                                'claude-code-ide-manager-open-menu "r"))
+                                       :description))
+                   "Resume /tmp/project-a/ (skip permissions)"))))
+
 (ert-deftest claude-code-ide-test-transient-bypass-default-can-be-disabled ()
   "Test a nil bypass default restores safe lowercase transient launches."
   (let ((claude-code-ide-bypass-permissions-by-default nil)
@@ -3581,6 +3598,21 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda () (push claude-code-ide-cli-extra-flags calls))))
       (claude-code-ide--start-skip-permissions)
       (should (equal calls '("--dangerously-skip-permissions"))))))
+
+(ert-deftest claude-code-ide-test-manager-uppercase-action-always-bypasses-permissions ()
+  "Test uppercase manager action explicitly bypasses permissions when disabled."
+  (let ((claude-code-ide-bypass-permissions-by-default nil)
+        (claude-code-ide-manager--open-target "/tmp/project-a/")
+        (claude-code-ide-manager--open-scope nil)
+        (claude-code-ide-cli-extra-flags "")
+        call)
+    (cl-letf (((symbol-function 'claude-code-ide--dangerous-permissions-flag)
+               (lambda () "--dangerously-skip-permissions"))
+              ((symbol-function 'claude-code-ide--start-session)
+               (lambda (&optional continue resume directory)
+                 (setq call (list continue resume directory claude-code-ide-cli-extra-flags)))))
+      (claude-code-ide-manager-open-start-skip-permissions)
+      (should (equal call '(nil nil "/tmp/project-a/" "--dangerously-skip-permissions"))))))
 
 (ert-deftest claude-code-ide-test-direct-launch-apis-ignore-transient-bypass-default ()
   "Test direct launch APIs do not add transient permissions bypass flags."
