@@ -890,6 +890,62 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "r"))
               #'claude-code-ide-manager-rename-at-point)))
 
+(ert-deftest claude-code-ide-test-manager-mode-binds-s-to-new-sibling-session ()
+  "Manager mode exposes sibling session launch on `s' and `S'."
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "s"))
+              #'claude-code-ide-manager-start-session-at-point))
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "S"))
+              #'claude-code-ide-manager-start-session-at-point-skip-permissions)))
+
+(ert-deftest claude-code-ide-test-manager-start-session-at-point-starts-and-switches-sibling ()
+  "Starting at point force-creates and switches to a sibling in the row directory."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "old" :directory "/tmp/project/"))
+        (scope '(:type repo :git-root "/tmp/repo/"))
+        start-call switch-call)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+               (lambda () item))
+              ((symbol-function 'claude-code-ide-manager--scope-for-command)
+               (lambda () scope))
+              ((symbol-function 'claude-code-ide--start-session)
+               (lambda (&optional continue resume directory force-new)
+                 (setq start-call
+                       (list continue resume directory force-new
+                             claude-code-ide--suppress-initial-display))
+                 (claude-code-ide-session-create
+                  :id "new" :directory directory)))
+              ((symbol-function 'claude-code-ide-manager-switch-to-session)
+               (lambda (&rest args) (setq switch-call args))))
+      (claude-code-ide-manager-start-session-at-point)
+      (should (equal start-call '(nil nil "/tmp/project/" t t)))
+      (should (equal switch-call
+                     '("new" nil (:type repo :git-root "/tmp/repo/")))))))
+
+(ert-deftest claude-code-ide-test-manager-start-session-at-point-skip-forces-bypass ()
+  "Uppercase sibling launch forces the CLI-specific permissions bypass."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "old" :directory "/tmp/project/"))
+        (claude-code-ide-bypass-permissions-by-default nil)
+        (claude-code-ide-cli-extra-flags "")
+        captured-flags)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+               (lambda () item))
+              ((symbol-function 'claude-code-ide--dangerous-permissions-flag)
+               (lambda () "--dangerous"))
+              ((symbol-function 'claude-code-ide--start-session)
+               (lambda (&rest _)
+                 (setq captured-flags claude-code-ide-cli-extra-flags)
+                 nil)))
+      (claude-code-ide-manager-start-session-at-point-skip-permissions)
+      (should (equal captured-flags "--dangerous")))))
+
+(ert-deftest claude-code-ide-test-manager-start-session-at-point-requires-row ()
+  "Sibling launch reports when point is not on a manager row."
+  (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+             (lambda () nil)))
+    (should-error (claude-code-ide-manager-start-session-at-point)
+                  :type 'user-error)))
+
 (ert-deftest claude-code-ide-test-manager-default-toggle-targets-global-when-configured ()
   (let ((claude-code-ide-manager-default-target 'global))
     (should (equal (claude-code-ide-manager--default-target) 'global))))

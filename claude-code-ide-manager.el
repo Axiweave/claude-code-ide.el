@@ -26,6 +26,7 @@
 
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--get-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory force-new))
 (declare-function claude-code-ide--set-session-custom-name "claude-code-ide" (session name))
 (declare-function claude-code-ide--preferred-session "claude-code-ide" (directory))
 (declare-function claude-code-ide--touch-session "claude-code-ide" (session-id))
@@ -39,9 +40,12 @@
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
+(declare-function claude-code-ide--transient-launch-flags "claude-code-ide-transient" (&optional bypass))
 
 (defvar claude-code-ide-session-idle-hook nil)
 (defvar claude-code-ide-session-working-hook nil)
+(defvar claude-code-ide--suppress-initial-display nil)
+(defvar claude-code-ide-cli-extra-flags "")
 
 (defgroup claude-code-ide-manager nil
   "Session manager for Claude Code IDE."
@@ -584,6 +588,8 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "n") #'claude-code-ide-manager-next-line)
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
+(define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
+(define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
 (define-key claude-code-ide-manager-mode-map (kbd "r") #'claude-code-ide-manager-rename-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
@@ -2305,6 +2311,30 @@ default layout is rebuilt."
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item)
      t)))
+
+(defun claude-code-ide-manager-start-session-at-point (&optional dangerous)
+  "Start and switch to a sibling session for the row at point.
+When DANGEROUS is non-nil, force the current CLI's permissions bypass."
+  (interactive)
+  (let ((item (claude-code-ide-manager--item-at-point)))
+    (unless item
+      (user-error "No manager session at point"))
+    (let* ((scope (claude-code-ide-manager--scope-for-command))
+           (directory (file-name-as-directory
+                       (expand-file-name
+                        (claude-code-ide-manager-item-directory item))))
+           (claude-code-ide--suppress-initial-display t)
+           (claude-code-ide-cli-extra-flags
+            (claude-code-ide--transient-launch-flags dangerous)))
+      (when-let ((session (claude-code-ide--start-session
+                           nil nil directory t)))
+        (claude-code-ide-manager-switch-to-session
+         (claude-code-ide-session-id session) nil scope)))))
+
+(defun claude-code-ide-manager-start-session-at-point-skip-permissions ()
+  "Start a sibling at point with the current CLI's permissions bypass."
+  (interactive)
+  (claude-code-ide-manager-start-session-at-point t))
 
 (defun claude-code-ide-manager-reset-layout-at-point ()
   "Reset the selected session to the default manager layout."
