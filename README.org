@@ -365,6 +365,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 
 With =claude-code-ide-use-with-editor= enabled, editor commands such as =C-g= in Claude Code and Codex open their prompt buffer in the current Emacs instance.
+The package routes files matching =claude-code-ide-prompt-buffer-patterns= to the current window. The unbound command =claude-code-ide-session-send-control-g= sends C-g through any supported terminal backend for users who want a dedicated keybinding.
 
 *** Session Customization
 

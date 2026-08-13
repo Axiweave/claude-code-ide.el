@@ -1693,8 +1693,13 @@ sibling even when a session already exists for the directory."
     (if (and existing (not force-new))
         (claude-code-ide--toggle-session existing)
       (if claude-code-ide-use-with-editor
-          (with-editor
-            (claude-code-ide--create-session working-dir continue resume))
+          (progn
+            (dolist (pattern claude-code-ide-prompt-buffer-patterns)
+              (setf (alist-get pattern with-editor-server-window-alist
+                               nil nil #'equal)
+                    #'switch-to-buffer))
+            (with-editor
+              (claude-code-ide--create-session working-dir continue resume)))
         (claude-code-ide--create-session working-dir continue resume)))))
 
 ;;;###autoload

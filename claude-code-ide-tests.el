@@ -10641,6 +10641,23 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should (eq (claude-code-ide--start-session) 'created))
       (should (equal setup-env "EDITOR")))))
 
+(ert-deftest claude-code-ide-test-start-session-routes-editor-prompts-to-current-window ()
+  "Test that session prompt patterns open in the current Emacs window."
+  (let ((claude-code-ide-use-with-editor t)
+        (claude-code-ide-prompt-buffer-patterns '("prompt-a" "prompt-b"))
+        (with-editor-server-window-alist nil))
+    (cl-letf (((symbol-function 'claude-code-ide--ensure-cli) (lambda () t))
+              ((symbol-function 'claude-code-ide--cleanup-dead-processes) #'ignore)
+              ((symbol-function 'claude-code-ide--get-working-directory)
+               (lambda () "/tmp/project/"))
+              ((symbol-function 'claude-code-ide--preferred-session) #'ignore)
+              ((symbol-function 'with-editor--setup) #'ignore)
+              ((symbol-function 'claude-code-ide--create-session) #'ignore))
+      (claude-code-ide--start-session)
+      (should (equal with-editor-server-window-alist
+                     '(("prompt-b" . switch-to-buffer)
+                       ("prompt-a" . switch-to-buffer)))))))
+
 (ert-deftest claude-code-ide-test-create-session-generates-unique-sibling-identities ()
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
         (buffers nil)
@@ -10818,6 +10835,28 @@ have completed before cleanup.  Waits up to 5 seconds."
           (claude-code-ide-session-send-interrupt))
         (should vterm-key-called)
         (should-not eat-string-called)))))
+
+(ert-deftest claude-code-ide-test-session-send-control-g-dispatches-to-backend ()
+  "Test that C-g dispatches to each terminal backend."
+  (should (require 'claude-code-ide-session nil t))
+  (dolist (backend '(vterm eat ghostel))
+    (let (sent)
+      (cl-letf (((symbol-function 'vterm-send-key)
+                 (lambda (&rest args) (setq sent args)))
+                ((symbol-function 'eat-term-send-string)
+                 (lambda (&rest args) (setq sent args)))
+                ((symbol-function 'ghostel-send-C-g)
+                 (lambda () (setq sent 'ghostel))))
+        (with-temp-buffer
+          (rename-buffer (format "*claude-code[test-control-g-%s]*" backend) t)
+          (setq-local claude-code-ide--terminal-backend backend
+                      eat-terminal 'terminal)
+          (claude-code-ide-session-send-control-g)
+          (should (equal sent
+                         (pcase backend
+                           ('vterm '("g" nil nil t))
+                           ('eat '(terminal "\007"))
+                           ('ghostel 'ghostel)))))))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-sends-control-v-for-image-capable-clis ()
   "Test that image clipboard targets send raw control-V for Claude and Codex."

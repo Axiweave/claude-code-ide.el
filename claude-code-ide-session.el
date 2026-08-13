@@ -62,6 +62,7 @@
 (declare-function ghostel--send-string "ghostel" (string))
 (declare-function ghostel-paste-string "ghostel" (string))
 (declare-function ghostel-send-C-c "ghostel" ())
+(declare-function ghostel-send-C-g "ghostel" ())
 (declare-function ghostel-yank "ghostel" ())
 
 (declare-function claude-code-ide--current-terminal-backend "claude-code-ide" ())
@@ -425,6 +426,24 @@ When REFERENCE is nil, use
            (eat-term-send-string eat-terminal "\003")))
         ('ghostel
          (ghostel-send-C-c))
+        (_
+         (error "Unknown terminal backend: %s"
+                (claude-code-ide-session--current-terminal-backend))))
+    (claude-code-ide-session--record-activity)))
+
+(defun claude-code-ide-session-send-control-g ()
+  "Send C-g to the terminal in the current session buffer."
+  (interactive)
+  (claude-code-ide-session--ensure-session-buffer)
+  (prog1
+      (pcase (claude-code-ide-session--current-terminal-backend)
+        ('vterm
+         (vterm-send-key "g" nil nil t))
+        ('eat
+         (when eat-terminal
+           (eat-term-send-string eat-terminal "\007")))
+        ('ghostel
+         (ghostel-send-C-g))
         (_
          (error "Unknown terminal backend: %s"
                 (claude-code-ide-session--current-terminal-backend))))
