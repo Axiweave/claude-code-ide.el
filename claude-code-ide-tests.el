@@ -1475,6 +1475,27 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (eq (get-text-property (point) 'face)
                 'claude-code-ide-manager-current-session-face))))
 
+(ert-deftest claude-code-ide-test-manager-sidebar-marks-current-session ()
+  "Test sidebar render gives the active session a distinct left marker."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((scope '(:type global)))
+    (claude-code-ide-manager--set-scope-items
+     scope
+     (list (make-claude-code-ide-manager-item
+            :session-key "a" :display-name "a" :live-p t)
+           (make-claude-code-ide-manager-item
+            :session-key "b" :display-name "b" :live-p t)))
+    (claude-code-ide-manager--set-scope-active-session-key scope "b")
+    (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+      (claude-code-ide-manager--render scope)
+      (goto-char (point-min))
+      (should (equal (buffer-substring-no-properties (point) (1+ (point))) " "))
+      (forward-line 1)
+      (should (equal (buffer-substring-no-properties (point) (1+ (point))) "▌"))
+      (should (eq (get-text-property
+                   0 'face (get-text-property (point) 'display))
+                  'claude-code-ide-manager-current-marker-face)))))
+
 (ert-deftest claude-code-ide-test-manager-render-idle-indicator-aligns-slot-column ()
   "Test idle and non-idle rows keep the slot column aligned."
   (claude-code-ide-tests--reset-manager-state)

@@ -117,8 +117,13 @@ back to `project.el' otherwise."
   :group 'claude-code-ide-manager)
 
 (defface claude-code-ide-manager-current-session-face
-  '((t :inherit highlight))
+  '((t :inherit highlight :foreground "white" :weight bold :extend t))
   "Face used to highlight the active session in the manager sidebar."
+  :group 'claude-code-ide-manager)
+
+(defface claude-code-ide-manager-current-marker-face
+  '((t :foreground "#8fcf72" :weight bold))
+  "Face used for the active session's left-edge marker."
   :group 'claude-code-ide-manager)
 
 (defface claude-code-ide-manager-idle-session-face
@@ -1213,7 +1218,18 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 
 (defun claude-code-ide-manager--insert-item (scope item slot)
   "Insert ITEM into the current buffer using SLOT for SCOPE."
-  (let ((start (point)))
+  (let* ((start (point))
+         (session-key (claude-code-ide-manager-item-session-key item))
+         (current-p
+          (equal session-key
+                 (or (claude-code-ide-manager--scope-active-session-key scope)
+                     claude-code-ide-manager--current-session-key))))
+    (insert (if current-p
+                (propertize
+                 "▌" 'display
+                 (propertize "▌" 'face
+                             'claude-code-ide-manager-current-marker-face))
+              " "))
     (insert (claude-code-ide-manager--marker-gutter item))
     (insert " ")
     (insert (if (numberp slot) (format "%d." slot) " -"))
@@ -1224,13 +1240,12 @@ This mirrors mouse hover text for keyboard navigation in the manager."
      start (point)
      (append
       (list 'claude-code-ide-manager-session-key
-            (claude-code-ide-manager-item-session-key item)
+            session-key
             'help-echo (claude-code-ide-manager--session-help-echo
-                        (claude-code-ide-manager-item-session-key item)
+                        session-key
                         (claude-code-ide-manager-item-secondary-text item)))
       (when-let ((face (claude-code-ide-manager--row-face
-                        scope
-                        (claude-code-ide-manager-item-session-key item))))
+                        scope session-key)))
         (list 'face face))))))
 
 (defun claude-code-ide-manager--render (&optional scope)
