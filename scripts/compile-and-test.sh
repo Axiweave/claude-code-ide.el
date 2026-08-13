@@ -76,6 +76,14 @@ if PERSIST_DIR=$(find_emacs_package "persist"); then
     LOAD_PATH="$LOAD_PATH -L $PERSIST_DIR"
 fi
 
+if COMPAT_DIR=$(find_emacs_package "compat"); then
+    LOAD_PATH="$LOAD_PATH -L $COMPAT_DIR"
+fi
+
+if WITH_EDITOR_DIR=$(find_emacs_package "with-editor"); then
+    LOAD_PATH="$LOAD_PATH -L $WITH_EDITOR_DIR"
+fi
+
 if VTERM_DIR=$(find_emacs_package "emacs-libvterm"); then
     LOAD_PATH="$LOAD_PATH -L $VTERM_DIR"
 fi
@@ -137,7 +145,7 @@ TEST_FAILED=0
 if [ $COMPILE_EXIT_CODE -eq 0 ] && [ $NATIVE_COMPILE_EXIT_CODE -eq 0 ]; then
     echo "" >&2
     echo "=== Running tests ===" >&2
-    emacs -batch -L . -l ert -l claude-code-ide-tests.el -f ert-run-tests-batch-and-exit >&2
+    emacs -batch $LOAD_PATH -l ert -l claude-code-ide-tests.el -f ert-run-tests-batch-and-exit >&2
     TEST_EXIT_CODE=$?
 
     if [ $TEST_EXIT_CODE -eq 0 ]; then

@@ -6,7 +6,7 @@
 ;; Author: Yoav Orot
 ;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
 ;; Version: 0.2.6
-;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2") (persist "0.6.1"))
+;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2") (persist "0.6.1") (with-editor "3.4.2"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/axiweave/claude-code-ide.el
 
@@ -63,6 +63,7 @@
 (require 'cl-lib)
 (require 'project)
 (require 'subr-x)
+(require 'with-editor)
 (require 'which-func)
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-manager)
@@ -165,6 +166,13 @@ This should be a string of space-separated flags, e.g. \"--model opus\"."
 
 (defcustom claude-code-ide-bypass-permissions-by-default t
   "Whether lowercase transient launch actions bypass permissions by default."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-use-with-editor t
+  "Whether new sessions use the current Emacs instance as their editor.
+This makes editor commands such as C-g in Claude Code and Codex open
+their prompt buffer in Emacs."
   :type 'boolean
   :group 'claude-code-ide)
 
@@ -1684,7 +1692,10 @@ sibling even when a session already exists for the directory."
          (existing (claude-code-ide--preferred-session working-dir)))
     (if (and existing (not force-new))
         (claude-code-ide--toggle-session existing)
-      (claude-code-ide--create-session working-dir continue resume))))
+      (if claude-code-ide-use-with-editor
+          (with-editor
+            (claude-code-ide--create-session working-dir continue resume))
+        (claude-code-ide--create-session working-dir continue resume)))))
 
 ;;;###autoload
 (defun claude-code-ide (&optional new-session)

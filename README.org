@@ -339,6 +339,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-cli-debug~                     | Enable CLI debug mode (-d flag)             | ~nil~                                  |
 | ~claude-code-ide-cli-extra-flags~               | Additional CLI flags (e.g. "--model")       | ~""~                                   |
 | ~claude-code-ide-bypass-permissions-by-default~ | Lowercase transient launch actions bypass permissions when available | ~t~ |
+| ~claude-code-ide-use-with-editor~                | Use the current Emacs instance as =$EDITOR= for new sessions | ~t~ |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
 | ~claude-code-ide-terminal-backend~              | Terminal backend (vterm, eat, or ghostel)   | ~'vterm~                               |
 | ~claude-code-ide-cli-terminal-backends~         | Per-CLI terminal backend overrides          | ~nil~                                  |
@@ -362,6 +363,8 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
+
+With =claude-code-ide-use-with-editor= enabled, editor commands such as =C-g= in Claude Code and Codex open their prompt buffer in the current Emacs instance.
 
 *** Session Customization
 
