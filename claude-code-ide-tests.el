@@ -10801,6 +10801,145 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should vterm-key-called)
         (should-not eat-string-called)))))
 
+(ert-deftest claude-code-ide-test-session-paste-clipboard-sends-control-v-for-image-capable-clis ()
+  "Test that image clipboard targets send raw control-V for Claude and Codex."
+  (should (require 'claude-code-ide-session nil t))
+  (dolist (cli-type '(claude codex))
+    (let ((sent nil)
+          (yanked nil))
+      (cl-letf (((symbol-function 'gui-get-selection)
+                 (lambda (&rest _args) [image/png]))
+                ((symbol-function 'claude-code-ide-session-send-string)
+                 (lambda (string &optional paste)
+                   (setq sent (cons string paste))))
+                ((symbol-function 'vterm-yank)
+                 (lambda () (setq yanked t))))
+        (with-temp-buffer
+          (setq-local claude-code-ide--terminal-backend 'vterm
+                      claude-code-ide--session-cli-type cli-type)
+          (claude-code-ide-session-paste-clipboard)
+          (should (equal sent '("\026")))
+          (should-not yanked))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-recognizes-image-target-vectors ()
+  "Test that common GUI image target vectors send raw control-V."
+  (should (require 'claude-code-ide-session nil t))
+  (dolist (targets '([image/png] [public.png] [BITMAP] [DIB] [DIBV5]))
+    (let ((sent nil)
+          (yanked nil))
+      (cl-letf (((symbol-function 'gui-get-selection)
+                 (lambda (&rest _args) targets))
+                ((symbol-function 'claude-code-ide-session-send-string)
+                 (lambda (string &optional paste)
+                   (setq sent (cons string paste))))
+                ((symbol-function 'vterm-yank)
+                 (lambda () (setq yanked t))))
+        (with-temp-buffer
+          (setq-local claude-code-ide--terminal-backend 'vterm
+                      claude-code-ide--session-cli-type 'claude)
+          (claude-code-ide-session-paste-clipboard)
+          (should (equal sent '("\026")))
+          (should-not yanked))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-preserves-text-yank-by-backend ()
+  "Test that non-image clipboard targets use each backend's normal paste."
+  (should (require 'claude-code-ide-session nil t))
+  (dolist (backend '(vterm eat ghostel))
+    (let ((yanked nil))
+      (cl-letf (((symbol-function 'gui-get-selection)
+                 (lambda (&rest _args) [UTF8_STRING]))
+                ((symbol-function 'vterm-yank)
+                 (lambda () (setq yanked 'vterm)))
+                ((symbol-function 'eat-yank)
+                 (lambda () (setq yanked 'eat)))
+                ((symbol-function 'ghostel-yank)
+                 (lambda () (setq yanked 'ghostel))))
+        (with-temp-buffer
+          (setq-local claude-code-ide--terminal-backend backend
+                      claude-code-ide--session-cli-type 'claude)
+          (claude-code-ide-session-paste-clipboard)
+          (should (eq yanked backend)))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-falls-back-for-unsupported-or-unavailable-targets ()
+  "Test that unsupported and unavailable target queries retain normal paste."
+  (should (require 'claude-code-ide-session nil t))
+  (dolist (targets '([application/pdf] nil error))
+    (let ((yanked nil))
+      (cl-letf (((symbol-function 'gui-get-selection)
+                 (lambda (&rest _args)
+                   (if (eq targets 'error)
+                       (error "Clipboard unavailable")
+                     targets)))
+                ((symbol-function 'vterm-yank)
+                 (lambda () (setq yanked t))))
+        (with-temp-buffer
+          (setq-local claude-code-ide--terminal-backend 'vterm
+                      claude-code-ide--session-cli-type 'claude)
+          (claude-code-ide-session-paste-clipboard)
+          (should yanked))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-gates-images-to-claude-and-codex ()
+  "Test that image clipboard targets fall back for non-image-capable CLIs."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent nil)
+        (yanked nil))
+    (cl-letf (((symbol-function 'gui-get-selection)
+               (lambda (&rest _args) [public.png]))
+              ((symbol-function 'claude-code-ide-session-send-string)
+               (lambda (&rest _args) (setq sent t)))
+              ((symbol-function 'vterm-yank)
+               (lambda () (setq yanked t))))
+      (with-temp-buffer
+        (setq-local claude-code-ide--terminal-backend 'vterm
+                    claude-code-ide--session-cli-type 'pi)
+        (claude-code-ide-session-paste-clipboard)
+        (should-not sent)
+        (should yanked)))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-installs-super-v-for-each-backend ()
+  "Test that every session backend installs the clipboard paste keybinding."
+  (should (require 'claude-code-ide-session nil t))
+  (dolist (backend '(vterm eat ghostel))
+    (with-temp-buffer
+      (rename-buffer (format "*claude-code[test-%s-paste]*" backend) t)
+      (setq-local claude-code-ide--terminal-backend backend)
+      (claude-code-ide-session-mode 1)
+      (should (eq (key-binding (kbd "s-v"))
+                  #'claude-code-ide-session-paste-clipboard))
+      (should (eq (key-binding (kbd "H-v"))
+                  #'claude-code-ide-session-paste-clipboard)))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-is-session-scoped-and-wins-ghostel-map-switches ()
+  "Test that session paste does not mutate Ghostel maps and survives switches."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((ghostel-semi-char-map (make-sparse-keymap))
+        (ghostel-line-map (make-sparse-keymap))
+        (non-session-buffer (generate-new-buffer " *non-session-ghostel*"))
+        (session-buffer (generate-new-buffer "*claude-code[test-ghostel-paste]*")))
+    (define-key ghostel-semi-char-map (kbd "s-v") #'ghostel-yank)
+    (define-key ghostel-line-map (kbd "s-v") #'ignore)
+    (unwind-protect
+        (progn
+          (with-current-buffer non-session-buffer
+            (use-local-map ghostel-semi-char-map)
+            (should (eq (key-binding (kbd "s-v")) #'ghostel-yank)))
+          (with-current-buffer session-buffer
+            (use-local-map ghostel-semi-char-map)
+            (setq-local claude-code-ide--terminal-backend 'ghostel)
+            (claude-code-ide-session-mode 1)
+            (should (eq (lookup-key ghostel-semi-char-map (kbd "s-v"))
+                        #'ghostel-yank))
+            (should (eq (key-binding (kbd "s-v"))
+                        #'claude-code-ide-session-paste-clipboard))
+            (use-local-map ghostel-line-map)
+            (should (eq (lookup-key ghostel-line-map (kbd "s-v")) #'ignore))
+            (should (eq (key-binding (kbd "s-v"))
+                        #'claude-code-ide-session-paste-clipboard)))
+          (with-current-buffer non-session-buffer
+            (should (eq (key-binding (kbd "s-v")) #'ghostel-yank))))
+      (kill-buffer non-session-buffer)
+      (kill-buffer session-buffer))))
+
 (ert-deftest claude-code-ide-test-session-send-string-resets-idle-state ()
   "Test that sending a string records shared activity."
   (should (require 'claude-code-ide-session nil t))

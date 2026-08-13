@@ -27,6 +27,7 @@ This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manz
 
 - Automatic project detection and session management
 - Terminal integration with full color support using =vterm= or =eat=
+- Image-aware =s-v= / =H-v= paste for Claude Code and Codex across =vterm=, =eat=, and =ghostel=
 - CLI-specific start, continue, and resume commands for Claude Code, Codex, OpenCode, Pi, and Oh My Pi
 - Claude Code MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
@@ -511,6 +512,7 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 | =S-<return>= | =claude-code-ide-insert-newline= | Insert a newline in the prompt       |
 | =C-c C-c=   | =claude-code-ide-session-send-interrupt= | Send interrupt to the session |
 | =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
+| =s-v= / =H-v= | =claude-code-ide-session-paste-clipboard= | Paste text normally, or forward clipboard images to Claude Code and Codex |
 
 These keybindings are automatically set up for =vterm=, =eat=, and =ghostel= backends and only apply within Claude Code terminal buffers.
 

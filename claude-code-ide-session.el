@@ -46,6 +46,7 @@
 (declare-function vterm-send-key "vterm" (key &optional shift meta ctrl))
 (declare-function vterm-send-escape "vterm" ())
 (declare-function vterm-send-return "vterm" ())
+(declare-function vterm-yank "vterm" ())
 (declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
 
 (declare-function eat-mode "eat" ())
@@ -53,6 +54,7 @@
 (declare-function eat-term-send-string "eat" (terminal string))
 (declare-function eat-term-send-string-as-yank "eat" (terminal string))
 (declare-function eat-term-display-cursor "eat" (terminal))
+(declare-function eat-yank "eat" ())
 (declare-function eat--adjust-process-window-size "eat" (process windows))
 (declare-function eat--filter "eat" (process input))
 
@@ -60,8 +62,10 @@
 (declare-function ghostel--send-string "ghostel" (string))
 (declare-function ghostel-paste-string "ghostel" (string))
 (declare-function ghostel-send-C-c "ghostel" ())
+(declare-function ghostel-yank "ghostel" ())
 
 (declare-function claude-code-ide--current-terminal-backend "claude-code-ide" ())
+(declare-function claude-code-ide--current-cli-type "claude-code-ide" ())
 (declare-function claude-code-ide-session-idle-record-activity
                   "claude-code-ide-session-idle" (&optional buffer))
 (declare-function claude-code-ide--touch-session-for-buffer
@@ -113,8 +117,14 @@ return the string to insert."
 (defvar claude-code-ide-session-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") #'claude-code-ide-session-send-interrupt)
+    (define-key map (kbd "s-v") #'claude-code-ide-session-paste-clipboard)
+    (define-key map (kbd "H-v") #'claude-code-ide-session-paste-clipboard)
     map)
   "Keymap for `claude-code-ide-session-mode'.")
+
+(defvar claude-code-ide-session--emulation-mode-map-alist
+  `((claude-code-ide-session-mode . ,claude-code-ide-session-mode-map))
+  "Emulation map that gives session keys precedence over terminal maps.")
 
 (defvar-local claude-code-ide-session--configured-p nil
   "Non-nil when the current session buffer has been configured.")
@@ -240,11 +250,19 @@ return the string to insert."
   :keymap claude-code-ide-session-mode-map
   (if claude-code-ide-session-mode
       (progn
+        (unless (memq 'claude-code-ide-session--emulation-mode-map-alist
+                      emulation-mode-map-alists)
+          (setq-local emulation-mode-map-alists
+                      (cons 'claude-code-ide-session--emulation-mode-map-alist
+                            emulation-mode-map-alists)))
         (claude-code-ide-session-setup-buffer)
         (add-hook 'post-command-hook
                   #'claude-code-ide-session--touch-current-session nil t))
     (remove-hook 'post-command-hook
                  #'claude-code-ide-session--touch-current-session t)
+    (setq-local emulation-mode-map-alists
+                (delq 'claude-code-ide-session--emulation-mode-map-alist
+                      emulation-mode-map-alists))
     (setq claude-code-ide-session--configured-p nil)))
 
 (defun claude-code-ide--maybe-enable-session-mode ()
@@ -324,6 +342,41 @@ When REFERENCE is nil, use
                 (claude-code-ide-session--current-terminal-backend))))
     (claude-code-ide-session--record-activity)))
 
+(defun claude-code-ide-session--clipboard-image-p ()
+  "Return non-nil when the GUI clipboard advertises an image target."
+  (condition-case nil
+      (let ((targets (gui-get-selection 'CLIPBOARD 'TARGETS)))
+        (and (or (listp targets) (vectorp targets))
+             (cl-some
+              (lambda (target)
+                (when (symbolp target)
+                  (setq target (symbol-name target)))
+                (and (stringp target)
+                     (let ((name (downcase target)))
+                       (or (string-prefix-p "image/" name)
+                           (member name '("png" "jpeg" "jpg" "gif" "tiff"
+                                          "webp" "bmp" "public.png"
+                                          "public.jpeg" "public.jpg"
+                                          "public.gif" "public.tiff"
+                                          "public.webp" "public.bmp"
+                                          "bitmap" "dib" "dibv5"))))))
+              targets)))
+    (error nil)))
+
+(defun claude-code-ide-session-paste-clipboard ()
+  "Paste from the clipboard, forwarding images to Claude and Codex."
+  (interactive)
+  (if (and (claude-code-ide-session--clipboard-image-p)
+           (memq (claude-code-ide--current-cli-type) '(claude codex)))
+      (claude-code-ide-session-send-string "\026")
+    (pcase (claude-code-ide-session--current-terminal-backend)
+      ('vterm (vterm-yank))
+      ('eat (eat-yank))
+      ('ghostel (ghostel-yank))
+      (_
+       (error "Unknown terminal backend: %s"
+              (claude-code-ide-session--current-terminal-backend))))))
+
 (defun claude-code-ide-session-send-escape ()
   "Send escape key to the terminal in the current session buffer."
   (prog1
@@ -377,13 +430,7 @@ When REFERENCE is nil, use
 (defun claude-code-ide-session-setup-terminal-keybindings ()
   "Set up package-owned keybindings for the current session buffer."
   (pcase (claude-code-ide-session--current-terminal-backend)
-    ('vterm
-     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
-    ('eat
-     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
-    ('ghostel
+    ((or 'vterm 'eat 'ghostel)
      (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
      (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
     (_
