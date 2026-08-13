@@ -10909,6 +10909,28 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should (eq (key-binding (kbd "H-v"))
                   #'claude-code-ide-session-paste-clipboard)))))
 
+(ert-deftest claude-code-ide-test-session-paste-clipboard-does-not-override-evil-keys ()
+  "Test that clipboard precedence does not promote unrelated session keys."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((evil-map (make-sparse-keymap))
+        (original-binding (lookup-key claude-code-ide-session-mode-map
+                                      (kbd "C-z"))))
+    (unwind-protect
+        (progn
+          (define-key evil-map (kbd "C-z") #'previous-line)
+          (define-key claude-code-ide-session-mode-map (kbd "C-z") #'ignore)
+          (with-temp-buffer
+            (rename-buffer "*claude-code[test-evil-precedence]*" t)
+            (setq-local claude-code-ide--terminal-backend 'ghostel
+                        emulation-mode-map-alists
+                        (list (list (cons t evil-map))))
+            (claude-code-ide-session-mode 1)
+            (should (eq (key-binding (kbd "C-z")) #'previous-line))
+            (should (eq (key-binding (kbd "s-v"))
+                        #'claude-code-ide-session-paste-clipboard))))
+      (define-key claude-code-ide-session-mode-map (kbd "C-z")
+                  original-binding))))
+
 (ert-deftest claude-code-ide-test-session-paste-clipboard-is-session-scoped-and-wins-ghostel-map-switches ()
   "Test that session paste does not mutate Ghostel maps and survives switches."
   (should (require 'claude-code-ide-session nil t))

@@ -123,8 +123,11 @@ return the string to insert."
   "Keymap for `claude-code-ide-session-mode'.")
 
 (defvar claude-code-ide-session--emulation-mode-map-alist
-  `((claude-code-ide-session-mode . ,claude-code-ide-session-mode-map))
-  "Emulation map that gives session keys precedence over terminal maps.")
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "s-v") #'claude-code-ide-session-paste-clipboard)
+    (define-key map (kbd "H-v") #'claude-code-ide-session-paste-clipboard)
+    `((claude-code-ide-session-mode . ,map)))
+  "Emulation map that gives session paste keys precedence over terminal maps.")
 
 (defvar-local claude-code-ide-session--configured-p nil
   "Non-nil when the current session buffer has been configured.")
