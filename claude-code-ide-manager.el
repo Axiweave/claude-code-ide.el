@@ -92,6 +92,11 @@
                  (const :tag "Branch or basename" branch-or-basename))
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-show-session-order nil
+  "Whether generated session order suffixes appear in manager rows."
+  :type 'boolean
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-default-target 'global
   "Default target for generic manager commands."
   :type '(choice (const :tag "Global" global)
@@ -790,13 +795,16 @@ default to the global scope for backward compatibility."
   (let ((pattern
          (concat "\\`\\(.*\\)"
                  (regexp-quote (format " · %s" old-suffix))
-                 "\\(\\(?: \\[[^]]+\\]\\)*\\)\\'")))
+                 "\\(\\(?: \\[.*\\]\\)*\\)\\'")))
     (if (string-match pattern display-name)
-        (format "%s · %s%s"
-                (match-string 1 display-name)
-                new-suffix
-                (or (match-string 2 display-name) ""))
-      (format "%s · %s" display-name new-suffix))))
+        (let ((prefix (match-string 1 display-name))
+              (tail (or (match-string 2 display-name) "")))
+          (if new-suffix
+              (format "%s · %s%s" prefix new-suffix tail)
+            (format "%s%s" prefix tail)))
+      (if new-suffix
+          (format "%s · %s" display-name new-suffix)
+        display-name))))
 
 (defun claude-code-ide-manager--live-sessions ()
   "Return live Claude Code session records in stable fallback order."
@@ -1240,7 +1248,14 @@ This mirrors mouse hover text for keyboard navigation in the manager."
     (insert " ")
     (insert (if (numberp slot) (format "%d." slot) " -"))
     (insert " ")
-    (insert (claude-code-ide-manager-item-display-name item))
+    (insert
+     (if (or claude-code-ide-manager-show-session-order
+             (claude-code-ide-manager-item-custom-name item))
+         (claude-code-ide-manager-item-display-name item)
+       (claude-code-ide-manager--replace-display-suffix
+        (claude-code-ide-manager-item-display-name item)
+        (format "%s" (claude-code-ide-manager-item-order item))
+        nil)))
     (insert "\n")
     (add-text-properties
      start (point)

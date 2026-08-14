@@ -885,6 +885,73 @@ have completed before cleanup.  Waits up to 5 seconds."
             "project · work [team-a/project] [session-a]" "work" "review")
            "project · review [team-a/project] [session-a]")))
 
+(ert-deftest claude-code-ide-test-manager-render-hides-generated-order-by-default ()
+  "Generated order suffixes are hidden from repeated unnamed rows."
+  (let ((claude-code-ide-manager-show-session-order nil)
+        (scope '(:type global)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-manager--marker-gutter)
+                 (lambda (_) "  "))
+                ((symbol-function 'claude-code-ide-manager--row-face)
+                 (lambda (&rest _) nil)))
+        (claude-code-ide-manager--insert-item
+         scope
+         (make-claude-code-ide-manager-item
+          :session-key "one" :order 1 :display-name "main · 1") 1)
+        (claude-code-ide-manager--insert-item
+         scope
+         (make-claude-code-ide-manager-item
+          :session-key "two" :order 2 :display-name "main · 2") 2)
+        (goto-char (point-min))
+        (should (equal (list (claude-code-ide-tests--manager-row-text)
+                             (progn (forward-line 1)
+                                    (claude-code-ide-tests--manager-row-text)))
+                       '("    1. main" "    2. main")))))))
+
+(ert-deftest claude-code-ide-test-manager-render-shows-order-when-enabled ()
+  "Generated order suffixes remain visible when explicitly enabled."
+  (let ((claude-code-ide-manager-show-session-order t)
+        (scope '(:type global)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-manager--marker-gutter)
+                 (lambda (_) "  "))
+                ((symbol-function 'claude-code-ide-manager--row-face)
+                 (lambda (&rest _) nil)))
+        (claude-code-ide-manager--insert-item
+         scope
+         (make-claude-code-ide-manager-item
+          :session-key "one" :display-name "main · 1") 1)
+        (should (equal (buffer-string) "    1. main · 1\n"))))))
+
+(ert-deftest claude-code-ide-test-manager-render-keeps-custom-name-when-order-hidden ()
+  "Custom names remain visible when generated order display is hidden."
+  (let ((claude-code-ide-manager-show-session-order nil)
+        (scope '(:type global)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-manager--marker-gutter)
+                 (lambda (_) "  "))
+                ((symbol-function 'claude-code-ide-manager--row-face)
+                 (lambda (&rest _) nil)))
+        (claude-code-ide-manager--insert-item
+         scope
+         (make-claude-code-ide-manager-item
+          :session-key "one" :custom-name "work" :display-name "main · work") 1)
+        (should (equal (buffer-string) "    1. main · work\n"))))))
+
+(ert-deftest claude-code-ide-test-manager-replace-display-suffix-removes-order ()
+  "Removing an order suffix preserves a trailing path disambiguation tail."
+  (should (equal
+           (claude-code-ide-manager--replace-display-suffix
+            "main · 1 [path]" "1" nil)
+           "main [path]")))
+
+(ert-deftest claude-code-ide-test-manager-replace-display-suffix-removes-order-with-bracketed-path-tail ()
+  "Removing an order suffix accepts literal closing brackets in path tails."
+  (should (equal
+           (claude-code-ide-manager--replace-display-suffix
+            "main · 1 [repo]x/main]" "1" nil)
+           "main [repo]x/main]")))
+
 (ert-deftest claude-code-ide-test-manager-mode-binds-r-to-rename ()
   "Manager mode exposes session rename on `r'."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "r"))
