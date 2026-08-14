@@ -132,12 +132,12 @@ back to `project.el' otherwise."
   :group 'claude-code-ide-manager)
 
 (defface claude-code-ide-manager-idle-session-face
-  '((t :background "red"))
+  '((t :background "red" :extend t))
   "Face used to highlight idle sessions in the manager sidebar."
   :group 'claude-code-ide-manager)
 
 (defface claude-code-ide-manager-working-session-face
-  '((t :background "#3f6b4f" :foreground "white"))
+  '((t :background "#3f6b4f" :foreground "white" :extend t))
   "Face used to highlight working sessions in the manager sidebar."
   :group 'claude-code-ide-manager)
 
