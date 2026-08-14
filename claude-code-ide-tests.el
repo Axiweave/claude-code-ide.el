@@ -1332,6 +1332,37 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let ((buffer (get-buffer (buffer-name (claude-code-ide-manager--get-buffer scope)))))
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-repo-sorts-display-names-naturally ()
+  "Test repo scope sorts numeric display-name components naturally."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        (items (list (make-claude-code-ide-manager-item
+                      :session-key "session-11" :display-name "main · 11"
+                      :pinned nil :live-p t)
+                     (make-claude-code-ide-manager-item
+                      :session-key "session-2" :display-name "main · 2"
+                      :pinned nil :live-p t)
+                     (make-claude-code-ide-manager-item
+                      :session-key "session-1" :display-name "main · 1"
+                      :pinned nil :live-p t))))
+    (claude-code-ide-manager--set-scope-items scope items)
+    (should (equal (claude-code-ide-manager--visible-session-keys scope)
+                   '("session-1" "session-2" "session-11")))))
+
+(ert-deftest claude-code-ide-test-manager-repo-sort-ties-version-equivalent-labels ()
+  "Test version-equivalent repo labels use session keys as a tie-breaker."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        (items (list (make-claude-code-ide-manager-item
+                      :session-key "session-b" :display-name "main · 01"
+                      :pinned nil :live-p t)
+                     (make-claude-code-ide-manager-item
+                      :session-key "session-a" :display-name "main · 1"
+                      :pinned nil :live-p t))))
+    (claude-code-ide-manager--set-scope-items scope items)
+    (should (equal (claude-code-ide-manager--visible-session-keys scope)
+                   '("session-a" "session-b")))))
+
 (ert-deftest claude-code-ide-test-manager-repo-sort-keeps-order-key-precedence ()
   "Test repo scope still honors explicit order keys before label sorting."
   (let* ((scope '(:type repo :git-root "/tmp/repo/"))

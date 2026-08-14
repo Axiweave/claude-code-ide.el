@@ -947,7 +947,13 @@ default to the global scope for backward compatibility."
               (string< (claude-code-ide-manager-item-session-key left)
                        (claude-code-ide-manager-item-session-key right)))
              (t
-              (string< left-key right-key)))))))
+              (if (eq (plist-get scope :type) 'repo)
+                  (cond
+                   ((string-version-lessp left-key right-key) t)
+                   ((string-version-lessp right-key left-key) nil)
+                   (t (string< (claude-code-ide-manager-item-session-key left)
+                               (claude-code-ide-manager-item-session-key right))))
+                (string< left-key right-key))))))))
 
 (defun claude-code-ide-manager--slot-map (items &optional scope)
   "Return a hash table mapping visible ITEMS to quick slots within SCOPE."
