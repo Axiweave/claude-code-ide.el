@@ -1172,12 +1172,14 @@ Idle markers take precedence over working and pinned markers."
 
 (claude-code-ide-manager--install-window-config-refresh-hook)
 
-(defun claude-code-ide-manager-refresh-items (&optional scope)
-  "Refresh manager items for SCOPE from the live session registry."
+(defun claude-code-ide-manager-refresh-items (&optional scope state-loaded-p)
+  "Refresh manager items for SCOPE from the live session registry.
+When STATE-LOADED-P is non-nil, do not reload persisted state."
   (let* ((scope (or scope (claude-code-ide-manager--scope-for-command)))
          (claude-code-ide-manager--legacy-adopted-p nil)
          (items nil))
-    (claude-code-ide-manager--load-state)
+    (unless state-loaded-p
+      (claude-code-ide-manager--load-state))
     (setq items (claude-code-ide-manager--build-items scope))
     (cl-mapc (lambda (item display-name)
                (setf (claude-code-ide-manager-item-display-name item)
@@ -1663,9 +1665,10 @@ DIRECTION should be -1 for up or 1 for down."
 
 (defun claude-code-ide-manager-refresh-all ()
   "Redraw all visible manager sidebars."
+  (claude-code-ide-manager--load-state)
   (dolist (buffer (claude-code-ide-manager--manager-buffers))
     (let ((scope (claude-code-ide-manager--scope-from-buffer buffer)))
-      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager-refresh-items scope t)
       (claude-code-ide-manager--render scope))))
 
 (defun claude-code-ide-manager-session-ended (session-key)

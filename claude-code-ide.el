@@ -1012,7 +1012,8 @@ range should be attached."
         ;; Apply advice globally for the first Claude session when enabled.
         (advice-add (claude-code-ide--terminal-resize-handler backend)
                     :around #'claude-code-ide--terminal-reflow-filter)))
-    (claude-code-ide--put-session session)))
+    (prog1 (claude-code-ide--put-session session)
+      (claude-code-ide-manager-refresh-all))))
 
 (defun claude-code-ide--cleanup-dead-processes ()
   "Clean up live-session entries whose processes have exited."

@@ -5986,6 +5986,65 @@ have completed before cleanup.  Waits up to 5 seconds."
                             claude-code-ide--terminal-reflow-filter)
                           added-advices)))))
 
+(ert-deftest claude-code-ide-test-register-session-refreshes-open-manager ()
+  "Registering outside the manager adds the session to an open sidebar."
+  (claude-code-ide-tests--clear-processes)
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (claude-code-ide-manager-persist-state nil)
+         (manager-buffer (claude-code-ide-manager--get-buffer scope))
+         (session-buffer (generate-new-buffer "*claude-code[test-register-refresh]*"))
+         (process (make-pipe-process :name "test-register-refresh"
+                                     :buffer session-buffer))
+         (session (claude-code-ide-session-create
+                   :id "new" :directory "/tmp/test/"
+                   :process process :buffer session-buffer :order 1)))
+    (unwind-protect
+        (progn
+          (claude-code-ide-manager-refresh scope)
+          (cl-letf (((symbol-function 'claude-code-ide--install-terminal-resize-observer)
+                     #'ignore))
+            (claude-code-ide--register-session session))
+          (should (equal
+                   (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--scope-items scope))
+                   '("new"))))
+      (kill-buffer manager-buffer)
+      (when (process-live-p process)
+        (delete-process process))
+      (kill-buffer session-buffer)
+      (claude-code-ide-tests--clear-processes)
+      (claude-code-ide-tests--reset-manager-state))))
+
+(ert-deftest claude-code-ide-test-manager-refresh-all-preserves-every-scope ()
+  "Refreshing multiple sidebars does not reload away an earlier scope."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((global-scope '(:type global))
+         (repo-scope '(:type repo :git-root "/tmp/repo/"))
+         (global-buffer (claude-code-ide-manager--get-buffer global-scope))
+         (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
+         (session (claude-code-ide-session-create
+                   :id "new" :directory "/tmp/repo/" :order 1)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager--load-state)
+                   (lambda ()
+                     (setq claude-code-ide-manager--scope-state
+                           (make-hash-table :test 'equal))))
+                  ((symbol-function 'claude-code-ide-manager--live-sessions)
+                   (lambda () (list session)))
+                  ((symbol-function 'claude-code-ide-manager--session-git-root)
+                   (lambda (_session) "/tmp/repo/"))
+                  ((symbol-function 'claude-code-ide-manager--render) #'ignore))
+          (claude-code-ide-manager-refresh-all)
+          (dolist (scope (list global-scope repo-scope))
+            (should (equal
+                     (mapcar #'claude-code-ide-manager-item-session-key
+                             (claude-code-ide-manager--scope-items scope))
+                     '("new")))))
+      (kill-buffer global-buffer)
+      (kill-buffer repo-buffer)
+      (claude-code-ide-tests--reset-manager-state))))
+
 (ert-deftest claude-code-ide-test-cleanup-dead-processes ()
   "Test cleanup of dead processes."
   (claude-code-ide-tests--clear-processes)
