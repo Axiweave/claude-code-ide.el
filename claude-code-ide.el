@@ -674,11 +674,11 @@ from the window where it was initially created."
     (_ nil)))
 
 (defun claude-code-ide--terminal-working-resize-observer (original-fn &rest args)
-  "Run ORIGINAL-FN and suppress working detection for the resized session."
-  (prog1 (apply original-fn args)
-    (when (claude-code-ide--session-buffer-p (current-buffer))
-      (claude-code-ide-session-working-suppress-after-resize
-       (current-buffer)))))
+  "Suppress working detection while ORIGINAL-FN resizes the session."
+  (when (claude-code-ide--session-buffer-p (current-buffer))
+    (claude-code-ide-session-working-suppress-after-resize
+     (current-buffer)))
+  (apply original-fn args))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
   "Filter terminal reflows to prevent height-only resize triggers.

@@ -478,6 +478,21 @@ fresh output from the session backend."
           (claude-code-ide-session-idle-record-activity)
           (claude-code-ide-session-working-record-output))))))
 
+(defun claude-code-ide-session-working--ghostel-focus-advice (orig-fn &rest args)
+  "Suppress working detection while Ghostel reports a focus change."
+  (when (claude-code-ide-session-buffer-p (current-buffer))
+    (claude-code-ide-session-working-suppress-after-resize))
+  (apply orig-fn args))
+
+(defun claude-code-ide-session-working--install-ghostel-focus-observer ()
+  "Install working-state suppression around Ghostel focus reports."
+  (when (and (fboundp 'ghostel--focus-event)
+             (not (advice-member-p
+                   #'claude-code-ide-session-working--ghostel-focus-advice
+                   'ghostel--focus-event)))
+    (advice-add 'ghostel--focus-event :around
+                #'claude-code-ide-session-working--ghostel-focus-advice)))
+
 (defun claude-code-ide-session-idle--install-output-observer (symbol)
   "Install the output observer for SYMBOL when available."
   (unless (advice-member-p #'claude-code-ide-session-idle--filter-advice symbol)
@@ -490,13 +505,15 @@ fresh output from the session backend."
   (with-eval-after-load 'eat
     (claude-code-ide-session-idle--install-output-observer 'eat--filter))
   (with-eval-after-load 'ghostel
-    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter))
+    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)
+    (claude-code-ide-session-working--install-ghostel-focus-observer))
   (when (featurep 'vterm)
     (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
   (when (featurep 'eat)
     (claude-code-ide-session-idle--install-output-observer 'eat--filter))
   (when (featurep 'ghostel)
-    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)))
+    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)
+    (claude-code-ide-session-working--install-ghostel-focus-observer)))
 
 (defun claude-code-ide-session-idle--fire-timer (buffer &optional generation)
   "Run the idle hook for BUFFER if monitoring is still active."
@@ -572,6 +589,9 @@ fresh output from the session backend."
                #'claude-code-ide-session-idle--handle-visibility-change)
   (remove-function after-focus-change-function
                    #'claude-code-ide-session-idle--handle-visibility-change)
+  (when (fboundp 'ghostel--focus-event)
+    (advice-remove 'ghostel--focus-event
+                   #'claude-code-ide-session-working--ghostel-focus-advice))
   nil)
 
 (claude-code-ide-session-idle--install-output-observers)

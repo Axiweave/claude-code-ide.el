@@ -11545,6 +11545,24 @@ have completed before cleanup.  Waits up to 5 seconds."
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
+(ert-deftest claude-code-ide-test-ghostel-focus-observer-suppresses-working-during-focus-report ()
+  "Test Ghostel focus replies cannot mark their session as working."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((suppressed-buffer nil))
+    (with-temp-buffer
+      (rename-buffer "*claude-code[test-working-ghostel-focus]*" t)
+      (let ((session-buffer (current-buffer)))
+        (cl-letf (((symbol-function 'claude-code-ide-session-buffer-p)
+                   (lambda (&optional _buffer) t))
+                  ((symbol-function 'claude-code-ide-session-working-suppress-after-resize)
+                   (lambda (&optional buffer)
+                     (setq suppressed-buffer (or buffer (current-buffer))))))
+          (should (eq :focus-result
+                      (claude-code-ide-session-working--ghostel-focus-advice
+                       (lambda (&rest _args)
+                         (should (eq suppressed-buffer session-buffer))
+                         :focus-result)))))))))
+
 (ert-deftest claude-code-ide-test-session-idle-record-activity-does-not-arm-visible-session ()
   "Visible focused sessions clear idle state without arming a timer."
   (should (require 'claude-code-ide-session-idle nil t))
@@ -12374,8 +12392,8 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should (equal scheduled-delay claude-code-ide-session-working-delay))
         (should (eq claude-code-ide-session-working-timer 'mock-working-timer))))))
 
-(ert-deftest claude-code-ide-test-terminal-working-resize-observer-suppresses-working-after-resize ()
-  "Test terminal resize observer marks the session to suppress working output briefly."
+(ert-deftest claude-code-ide-test-terminal-working-resize-observer-suppresses-working-during-resize ()
+  "Test terminal resize observer suppresses working output before resizing."
   (should (require 'claude-code-ide nil t))
   (let ((suppressed-buffer nil))
     (save-window-excursion
@@ -12392,6 +12410,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (eq :base-result
                         (claude-code-ide--terminal-working-resize-observer
                          (lambda (&rest _args)
+                           (should (eq suppressed-buffer session-buffer))
                            :base-result))))
             (should (eq suppressed-buffer session-buffer))))))))
 
