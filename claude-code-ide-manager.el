@@ -2352,16 +2352,17 @@ default layout is rebuilt."
      t)))
 
 (defun claude-code-ide-manager-start-session-at-point (&optional dangerous)
-  "Start and switch to a sibling session for the row at point.
+  "Start and switch to a session for the row or repo scope at point.
 When DANGEROUS is non-nil, force the current CLI's permissions bypass."
   (interactive)
-  (let ((item (claude-code-ide-manager--item-at-point)))
-    (unless item
-      (user-error "No manager session at point"))
-    (let* ((scope (claude-code-ide-manager--scope-for-command))
-           (directory (file-name-as-directory
-                       (expand-file-name
-                        (claude-code-ide-manager-item-directory item))))
+  (let* ((item (claude-code-ide-manager--item-at-point))
+         (scope (claude-code-ide-manager--scope-for-command))
+         (directory (or (and item
+                             (claude-code-ide-manager-item-directory item))
+                        (and (eq (plist-get scope :type) 'repo)
+                             (plist-get scope :git-root))
+                        (user-error "No manager session at point"))))
+    (let* ((directory (file-name-as-directory (expand-file-name directory)))
            (claude-code-ide--suppress-initial-display t)
            (claude-code-ide-cli-extra-flags
             (claude-code-ide--transient-launch-flags dangerous)))

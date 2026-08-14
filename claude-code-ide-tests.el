@@ -1020,6 +1020,21 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should-error (claude-code-ide-manager-start-session-at-point)
                   :type 'user-error)))
 
+(ert-deftest claude-code-ide-test-manager-start-session-in-empty-repo-sidebar ()
+  "Starting without a row uses the repo sidebar root."
+  (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        start-directory)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide-manager--scope-for-command)
+               (lambda () scope))
+              ((symbol-function 'claude-code-ide--start-session)
+               (lambda (_continue _resume directory _force-new)
+                 (setq start-directory directory)
+                 nil)))
+      (claude-code-ide-manager-start-session-at-point)
+      (should (equal start-directory "/tmp/repo/")))))
+
 (ert-deftest claude-code-ide-test-manager-default-toggle-targets-global-when-configured ()
   (let ((claude-code-ide-manager-default-target 'global))
     (should (equal (claude-code-ide-manager--default-target) 'global))))
