@@ -40,7 +40,11 @@
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
+(declare-function claude-code-ide--transient-cli-path "claude-code-ide-transient" (arg))
 (declare-function claude-code-ide--transient-launch-flags "claude-code-ide-transient" (&optional bypass))
+
+(defvar claude-code-ide--session-cli-type)
+(defvar claude-code-ide-cli-path)
 
 (defvar claude-code-ide-session-idle-hook nil)
 (defvar claude-code-ide-session-working-hook nil)
@@ -2351,10 +2355,11 @@ default layout is rebuilt."
      (claude-code-ide-manager-item-session-key item)
      t)))
 
-(defun claude-code-ide-manager-start-session-at-point (&optional dangerous)
+(defun claude-code-ide-manager-start-session-at-point (&optional dangerous arg)
   "Start and switch to a session for the row or repo scope at point.
-When DANGEROUS is non-nil, force the current CLI's permissions bypass."
-  (interactive)
+With prefix ARG, select the CLI for this launch.
+When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
+  (interactive (list nil current-prefix-arg))
   (let* ((item (claude-code-ide-manager--item-at-point))
          (scope (claude-code-ide-manager--scope-for-command))
          (directory (or (and item
@@ -2364,6 +2369,10 @@ When DANGEROUS is non-nil, force the current CLI's permissions bypass."
                         (user-error "No manager session at point"))))
     (let* ((directory (file-name-as-directory (expand-file-name directory)))
            (claude-code-ide--suppress-initial-display t)
+           (claude-code-ide--session-cli-type
+            (unless arg claude-code-ide--session-cli-type))
+           (claude-code-ide-cli-path
+            (claude-code-ide--transient-cli-path arg))
            (claude-code-ide-cli-extra-flags
             (claude-code-ide--transient-launch-flags dangerous)))
       (when-let ((session (claude-code-ide--start-session
@@ -2371,10 +2380,10 @@ When DANGEROUS is non-nil, force the current CLI's permissions bypass."
         (claude-code-ide-manager-switch-to-session
          (claude-code-ide-session-id session) nil scope)))))
 
-(defun claude-code-ide-manager-start-session-at-point-skip-permissions ()
-  "Start a sibling at point with the current CLI's permissions bypass."
-  (interactive)
-  (claude-code-ide-manager-start-session-at-point t))
+(defun claude-code-ide-manager-start-session-at-point-skip-permissions (&optional arg)
+  "Start a sibling with the selected launch CLI's permissions bypass."
+  (interactive "P")
+  (claude-code-ide-manager-start-session-at-point t arg))
 
 (defun claude-code-ide-manager-reset-layout-at-point ()
   "Reset the selected session to the default manager layout."

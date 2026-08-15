@@ -82,6 +82,7 @@
 
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
+(defvar claude-code-ide--session-cli-type)
 (defvar claude-code-ide-supported-agents)
 (defvar claude-code-ide-debug)
 (defvar claude-code-ide-window-side)
@@ -134,6 +135,12 @@
                            " " (claude-code-ide--dangerous-permissions-flag)))
     claude-code-ide-cli-extra-flags))
 
+(defun claude-code-ide--transient-cli-path (arg)
+  "Return the one-shot CLI selected by prefix ARG, or the configured CLI."
+  (if arg
+      (completing-read "Agent: " claude-code-ide-supported-agents nil t)
+    claude-code-ide-cli-path))
+
 (defun claude-code-ide--has-current-directory-session-p ()
   "Check whether the current directory already has an active session."
   (when (claude-code-ide-mcp--get-session-for-project
@@ -147,12 +154,17 @@
       "Start new Claude Code session (skip permissions)"
     "Start new Claude Code session"))
 
-(defun claude-code-ide--start-if-no-session (&optional arg)
+(defun claude-code-ide--start-if-no-session (&optional bypass arg)
   "Start another Claude Code session for the current project.
-With prefix ARG, add --dangerously-skip-permissions flag."
-  (interactive "P")
-  (let ((claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags arg)))
+When BYPASS is non-nil, bypass permissions.
+With prefix ARG, select the CLI for this launch."
+  (interactive (list nil current-prefix-arg))
+  (let* ((claude-code-ide--session-cli-type
+         (unless arg claude-code-ide--session-cli-type))
+        (claude-code-ide-cli-path
+         (claude-code-ide--transient-cli-path arg))
+        (claude-code-ide-cli-extra-flags
+         (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session nil nil nil t)))
 
 (defun claude-code-ide--continue-description ()
@@ -169,12 +181,17 @@ With prefix ARG, add --dangerously-skip-permissions flag."
       "Start in current dir (skip permissions)"
     "Start in current dir"))
 
-(defun claude-code-ide--current-directory-if-no-session (&optional arg)
+(defun claude-code-ide--current-directory-if-no-session (&optional bypass arg)
   "Start another Claude Code session in the current directory.
-With prefix ARG, add the agent-specific permissions bypass flag."
-  (interactive "P")
-  (let ((claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags arg)))
+When BYPASS is non-nil, bypass permissions.
+With prefix ARG, select the CLI for this launch."
+  (interactive (list nil current-prefix-arg))
+  (let* ((claude-code-ide--session-cli-type
+         (unless arg claude-code-ide--session-cli-type))
+        (claude-code-ide-cli-path
+         (claude-code-ide--transient-cli-path arg))
+        (claude-code-ide-cli-extra-flags
+         (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session
      nil nil (claude-code-ide--get-current-directory) t)))
 
@@ -184,17 +201,22 @@ With prefix ARG, add the agent-specific permissions bypass flag."
       "Start in current dir (skip permissions)"
     "Start in current dir"))
 
-(defun claude-code-ide--current-directory-skip-permissions ()
+(defun claude-code-ide--current-directory-skip-permissions (&optional arg)
   "Start Claude Code in the current directory with permissions bypass."
-  (interactive)
-  (claude-code-ide--current-directory-if-no-session t))
-
-(defun claude-code-ide--continue-if-no-session (&optional arg)
-  "Continue Claude Code in another session.
-With prefix ARG, add --dangerously-skip-permissions flag."
   (interactive "P")
-  (let ((claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags arg)))
+  (claude-code-ide--current-directory-if-no-session t arg))
+
+(defun claude-code-ide--continue-if-no-session (&optional bypass arg)
+  "Continue Claude Code in another session.
+When BYPASS is non-nil, bypass permissions.
+With prefix ARG, select the CLI for this launch."
+  (interactive (list nil current-prefix-arg))
+  (let* ((claude-code-ide--session-cli-type
+         (unless arg claude-code-ide--session-cli-type))
+        (claude-code-ide-cli-path
+         (claude-code-ide--transient-cli-path arg))
+        (claude-code-ide-cli-extra-flags
+         (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session t nil nil t)))
 
 (defun claude-code-ide--resume-description ()
@@ -204,40 +226,45 @@ With prefix ARG, add --dangerously-skip-permissions flag."
       "Resume session (skip permissions)"
     "Resume session (from previous conversation)"))
 
-(defun claude-code-ide--resume-if-no-session (&optional arg)
+(defun claude-code-ide--resume-if-no-session (&optional bypass arg)
   "Resume Claude Code in another session.
-With prefix ARG, add --dangerously-skip-permissions flag."
-  (interactive "P")
-  (let ((claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags arg)))
+When BYPASS is non-nil, bypass permissions.
+With prefix ARG, select the CLI for this launch."
+  (interactive (list nil current-prefix-arg))
+  (let* ((claude-code-ide--session-cli-type
+         (unless arg claude-code-ide--session-cli-type))
+        (claude-code-ide-cli-path
+         (claude-code-ide--transient-cli-path arg))
+        (claude-code-ide-cli-extra-flags
+         (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session nil t nil t)))
 
 (defun claude-code-ide--start-skip-description ()
   "Dynamic description for start with --dangerously-skip-permissions."
   (if (claude-code-ide--permissions-bypass-available-p) "Start (skip permissions)" "Start"))
 
-(defun claude-code-ide--start-skip-permissions ()
+(defun claude-code-ide--start-skip-permissions (&optional arg)
   "Start Claude Code with --dangerously-skip-permissions."
-  (interactive)
-  (claude-code-ide--start-if-no-session t))
+  (interactive "P")
+  (claude-code-ide--start-if-no-session t arg))
 
 (defun claude-code-ide--continue-skip-description ()
   "Dynamic description for continue with --dangerously-skip-permissions."
   (if (claude-code-ide--permissions-bypass-available-p) "Continue (skip permissions)" "Continue"))
 
-(defun claude-code-ide--continue-skip-permissions ()
+(defun claude-code-ide--continue-skip-permissions (&optional arg)
   "Continue Claude Code with --dangerously-skip-permissions."
-  (interactive)
-  (claude-code-ide--continue-if-no-session t))
+  (interactive "P")
+  (claude-code-ide--continue-if-no-session t arg))
 
 (defun claude-code-ide--resume-skip-description ()
   "Dynamic description for resume with --dangerously-skip-permissions."
   (if (claude-code-ide--permissions-bypass-available-p) "Resume (skip permissions)" "Resume"))
 
-(defun claude-code-ide--resume-skip-permissions ()
+(defun claude-code-ide--resume-skip-permissions (&optional arg)
   "Resume Claude Code with --dangerously-skip-permissions."
-  (interactive)
-  (claude-code-ide--resume-if-no-session t))
+  (interactive "P")
+  (claude-code-ide--resume-if-no-session t arg))
 
 (defun claude-code-ide-manager--open-target-label ()
   "Return a readable label for the selected manager-open target."

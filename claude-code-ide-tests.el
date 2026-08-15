@@ -996,22 +996,110 @@ have completed before cleanup.  Waits up to 5 seconds."
                      '("new" nil (:type repo :git-root "/tmp/repo/")))))))
 
 (ert-deftest claude-code-ide-test-manager-start-session-at-point-skip-forces-bypass ()
-  "Uppercase sibling launch forces the CLI-specific permissions bypass."
+  "The old DANGEROUS argument still bypasses without selecting a CLI."
   (let ((item (make-claude-code-ide-manager-item
                :session-key "old" :directory "/tmp/project/"))
         (claude-code-ide-bypass-permissions-by-default nil)
         (claude-code-ide-cli-extra-flags "")
-        captured-flags)
+        captured-flags prompted)
     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
                (lambda () item))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _)
+                 (setq prompted t)
+                 "codex"))
               ((symbol-function 'claude-code-ide--dangerous-permissions-flag)
                (lambda () "--dangerous"))
               ((symbol-function 'claude-code-ide--start-session)
                (lambda (&rest _)
                  (setq captured-flags claude-code-ide-cli-extra-flags)
                  nil)))
-      (claude-code-ide-manager-start-session-at-point-skip-permissions)
+      (claude-code-ide-manager-start-session-at-point t)
+      (should-not prompted)
       (should (equal captured-flags "--dangerous")))))
+
+(ert-deftest claude-code-ide-test-manager-prefix-selects-cli-for-one-launch ()
+  "A prefix selects an agent and ignores the old session CLI for one sibling."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "old" :directory "/tmp/project/"))
+        (claude-code-ide-cli-path "claude")
+        (claude-code-ide-cli-extra-flags "")
+        (claude-code-ide--session-cli-type 'claude)
+        completion-choices captured)
+    (with-temp-buffer
+      (setq-local claude-code-ide--session-cli-type 'claude)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest args)
+                   (setq completion-choices (nth 1 args))
+                   "codex"))
+                ((symbol-function 'claude-code-ide-manager--item-at-point)
+                 (lambda () item))
+                ((symbol-function 'claude-code-ide--start-session)
+                 (lambda (&rest _)
+                   (setq captured
+                         (list claude-code-ide-cli-path
+                               claude-code-ide--session-cli-type))
+                   nil)))
+        (let ((current-prefix-arg t))
+          (call-interactively #'claude-code-ide-manager-start-session-at-point))
+        (should (equal completion-choices claude-code-ide-supported-agents))
+        (should (equal captured '("codex" nil)))
+        (should (equal claude-code-ide-cli-path "claude"))
+        (should (eq claude-code-ide--session-cli-type 'claude))))))
+
+(ert-deftest claude-code-ide-test-manager-prefix-skip-selects-cli-and-bypasses ()
+  "A prefixed uppercase sibling launch selects an agent and bypasses permissions."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "old" :directory "/tmp/project/"))
+        (claude-code-ide-bypass-permissions-by-default nil)
+        (claude-code-ide-cli-path "claude")
+        (claude-code-ide-cli-extra-flags "")
+        (claude-code-ide--session-cli-type 'claude)
+        completion-choices captured)
+    (with-temp-buffer
+      (setq-local claude-code-ide--session-cli-type 'claude)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest args)
+                   (setq completion-choices (nth 1 args))
+                   "codex"))
+                ((symbol-function 'claude-code-ide-manager--item-at-point)
+                 (lambda () item))
+                ((symbol-function 'claude-code-ide--start-session)
+                 (lambda (&rest _)
+                   (setq captured
+                         (list claude-code-ide-cli-path
+                               claude-code-ide--session-cli-type
+                               claude-code-ide-cli-extra-flags))
+                   nil)))
+        (let ((current-prefix-arg t))
+          (call-interactively
+           #'claude-code-ide-manager-start-session-at-point-skip-permissions))
+        (should (equal completion-choices claude-code-ide-supported-agents))
+        (should (equal captured
+                       '("codex" nil
+                         "--dangerously-bypass-approvals-and-sandbox")))
+        (should (equal claude-code-ide-cli-path "claude"))
+        (should (eq claude-code-ide--session-cli-type 'claude))))))
+
+(ert-deftest claude-code-ide-test-manager-unprefixed-sibling-preserves-session-cli ()
+  "Unprefixed lowercase and uppercase sibling launches preserve the old CLI."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "old" :directory "/tmp/project/"))
+        (claude-code-ide-cli-path "claude")
+        (claude-code-ide-cli-extra-flags "")
+        (claude-code-ide--session-cli-type 'codex)
+        captured)
+    (with-temp-buffer
+      (setq-local claude-code-ide--session-cli-type 'codex)
+      (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                 (lambda () item))
+                ((symbol-function 'claude-code-ide--start-session)
+                 (lambda (&rest _)
+                   (push claude-code-ide--session-cli-type captured)
+                   nil)))
+        (claude-code-ide-manager-start-session-at-point)
+        (claude-code-ide-manager-start-session-at-point-skip-permissions)
+        (should (equal captured '(codex codex)))))))
 
 (ert-deftest claude-code-ide-test-manager-start-session-at-point-requires-row ()
   "Sibling launch reports when point is not on a manager row."
@@ -4201,6 +4289,70 @@ have completed before cleanup.  Waits up to 5 seconds."
                        "--dangerously-skip-permissions"
                        "--dangerously-skip-permissions"
                        "--dangerously-skip-permissions"))))))
+
+(ert-deftest claude-code-ide-test-transient-prefix-selects-cli-for-one-launch ()
+  "A prefix selects an agent for lowercase and uppercase launch actions only."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-bypass-permissions-by-default t)
+        (claude-code-ide-cli-extra-flags "")
+        (claude-code-ide--session-cli-type 'claude)
+        completion-choices
+        calls)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest args)
+                 (setq completion-choices (nth 1 args))
+                 "codex"))
+              ((symbol-function 'claude-code-ide--start-session)
+               (lambda (&rest _)
+                 (push (list claude-code-ide-cli-path
+                             claude-code-ide-cli-extra-flags)
+                       calls))))
+      (let ((current-prefix-arg t))
+        (call-interactively #'claude-code-ide--start-if-no-session)
+        (call-interactively #'claude-code-ide--current-directory-if-no-session)
+        (call-interactively #'claude-code-ide--continue-if-no-session)
+        (call-interactively #'claude-code-ide--resume-if-no-session))
+      (setq claude-code-ide-bypass-permissions-by-default nil)
+      (let ((current-prefix-arg t))
+        (call-interactively #'claude-code-ide--start-skip-permissions)
+        (call-interactively #'claude-code-ide--current-directory-skip-permissions)
+        (call-interactively #'claude-code-ide--resume-skip-permissions)
+        (call-interactively #'claude-code-ide--continue-skip-permissions))
+      (should (equal (nreverse calls)
+                     '(("codex" "--dangerously-bypass-approvals-and-sandbox")
+                       ("codex" "--dangerously-bypass-approvals-and-sandbox")
+                       ("codex" "--dangerously-bypass-approvals-and-sandbox")
+                       ("codex" "--dangerously-bypass-approvals-and-sandbox")
+                       ("codex" "--dangerously-bypass-approvals-and-sandbox")
+                       ("codex" "--dangerously-bypass-approvals-and-sandbox")
+                       ("codex" "--dangerously-bypass-approvals-and-sandbox")
+                       ("codex" "--dangerously-bypass-approvals-and-sandbox"))))
+      (should (equal completion-choices claude-code-ide-supported-agents))
+      (should (equal claude-code-ide-cli-path "claude"))
+      (should (eq claude-code-ide--session-cli-type 'claude)))))
+
+(ert-deftest claude-code-ide-test-transient-direct-bypass-arguments-do-not-select-cli ()
+  "The old BYPASS argument remains the first optional launch argument."
+  (let ((claude-code-ide-bypass-permissions-by-default nil)
+        (claude-code-ide-cli-extra-flags "")
+        calls prompted)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _)
+                 (setq prompted t)
+                 "codex"))
+              ((symbol-function 'claude-code-ide--dangerous-permissions-flag)
+               (lambda () "--dangerous"))
+              ((symbol-function 'claude-code-ide--start-session)
+               (lambda (&rest _)
+                 (push claude-code-ide-cli-extra-flags calls))))
+      (dolist (helper '(claude-code-ide--start-if-no-session
+                        claude-code-ide--current-directory-if-no-session
+                        claude-code-ide--continue-if-no-session
+                        claude-code-ide--resume-if-no-session))
+        (funcall helper t))
+      (should-not prompted)
+      (should (equal (nreverse calls)
+                     '("--dangerous" "--dangerous" "--dangerous" "--dangerous"))))))
 
 (ert-deftest claude-code-ide-test-transient-launch-actions-allow-active-session ()
   "Transient launch actions create siblings when a session is already active."

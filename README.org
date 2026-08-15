@@ -140,6 +140,8 @@ After saving the above, run: =doom sync= in the terminal.
 
 The easiest way to interact with Claude Code IDE is through the transient menu interface, which provides visual access to all available commands. Simply run =M-x claude-code-ide-menu= to open the interactive menu.
 
+With a =C-u= prefix, launch suffixes =s/S=, =d/D=, =c/C=, and =r/R= prompt for =claude=, =codex=, =opencode=, =pi=, or =omp= for that new session only. Uppercase suffixes still explicitly bypass permissions.
+
 | Command                                 | Description                                       |
 |-----------------------------------------+---------------------------------------------------|
 | =M-x claude-code-ide-menu=                | Open transient menu with all Claude Code commands |
@@ -259,6 +261,8 @@ When point is in the manager buffer:
 - =RET= switches to the session at point
 - =SPC= switches to the session at point
 - =P= toggles pin state for the selected row
+- =s= starts a sibling session with the current CLI; =S= starts one with explicit permissions bypass
+- =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
 - =g= refreshes the sidebar from the current live session table
