@@ -138,7 +138,7 @@
 (defun claude-code-ide--transient-cli-path (arg)
   "Return the one-shot CLI selected by prefix ARG, or the configured CLI."
   (if arg
-      (completing-read "Agent: " claude-code-ide-supported-agents nil t)
+      (claude-code-ide--read-agent "Agent: " claude-code-ide-cli-path)
     claude-code-ide-cli-path))
 
 (defun claude-code-ide--has-current-directory-session-p ()
@@ -494,12 +494,11 @@ Otherwise, if multiple sessions exist, prompt for selection."
   "Set a project-local agent in .dir-locals.el."
   :description "Set project agent"
   (interactive
-   (list (completing-read "Project agent: "
-                          claude-code-ide-supported-agents
-                          nil t nil nil
-                          (and (member claude-code-ide-cli-path
-                                       claude-code-ide-supported-agents)
-                               claude-code-ide-cli-path))))
+   (list (claude-code-ide--read-agent
+          "Project agent: "
+          (and (member claude-code-ide-cli-path
+                       claude-code-ide-supported-agents)
+               claude-code-ide-cli-path))))
   (let ((project-root (claude-code-ide--get-project-root)))
     (claude-code-ide--save-project-dir-local-cli-path 'set agent project-root)
     (setq-local claude-code-ide-cli-path agent)

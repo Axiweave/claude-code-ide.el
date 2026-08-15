@@ -1031,7 +1031,7 @@ have completed before cleanup.  Waits up to 5 seconds."
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (&rest args)
                    (setq completion-choices (nth 1 args))
-                   "codex"))
+                   "Codex (codex)"))
                 ((symbol-function 'claude-code-ide-manager--item-at-point)
                  (lambda () item))
                 ((symbol-function 'claude-code-ide--start-session)
@@ -1042,7 +1042,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                    nil)))
         (let ((current-prefix-arg t))
           (call-interactively #'claude-code-ide-manager-start-session-at-point))
-        (should (equal completion-choices claude-code-ide-supported-agents))
+        (should (equal completion-choices
+                       (claude-code-ide--agent-completion-candidates)))
         (should (equal captured '("codex" nil)))
         (should (equal claude-code-ide-cli-path "claude"))
         (should (eq claude-code-ide--session-cli-type 'claude))))))
@@ -1061,7 +1062,7 @@ have completed before cleanup.  Waits up to 5 seconds."
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (&rest args)
                    (setq completion-choices (nth 1 args))
-                   "codex"))
+                   "Codex (codex)"))
                 ((symbol-function 'claude-code-ide-manager--item-at-point)
                  (lambda () item))
                 ((symbol-function 'claude-code-ide--start-session)
@@ -1074,7 +1075,8 @@ have completed before cleanup.  Waits up to 5 seconds."
         (let ((current-prefix-arg t))
           (call-interactively
            #'claude-code-ide-manager-start-session-at-point-skip-permissions))
-        (should (equal completion-choices claude-code-ide-supported-agents))
+        (should (equal completion-choices
+                       (claude-code-ide--agent-completion-candidates)))
         (should (equal captured
                        '("codex" nil
                          "--dangerously-bypass-approvals-and-sandbox")))
@@ -4299,9 +4301,9 @@ have completed before cleanup.  Waits up to 5 seconds."
         completion-choices
         calls)
     (cl-letf (((symbol-function 'completing-read)
-               (lambda (&rest args)
+              (lambda (&rest args)
                  (setq completion-choices (nth 1 args))
-                 "codex"))
+                 "Codex (codex)"))
               ((symbol-function 'claude-code-ide--start-session)
                (lambda (&rest _)
                  (push (list claude-code-ide-cli-path
@@ -4327,7 +4329,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                        ("codex" "--dangerously-bypass-approvals-and-sandbox")
                        ("codex" "--dangerously-bypass-approvals-and-sandbox")
                        ("codex" "--dangerously-bypass-approvals-and-sandbox"))))
-      (should (equal completion-choices claude-code-ide-supported-agents))
+      (should (equal completion-choices
+                     (claude-code-ide--agent-completion-candidates)))
       (should (equal claude-code-ide-cli-path "claude"))
       (should (eq claude-code-ide--session-cli-type 'claude)))))
 
@@ -10641,6 +10644,26 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should (funcall predicate value)))
     (dolist (value '("/usr/local/bin/codex" "claude-code" "echo" "" nil))
       (should-not (funcall predicate value)))))
+
+(ert-deftest claude-code-ide-test-agent-selector-labels-and-values ()
+  "Agent selection shows official names while returning command names."
+  (let (choices initial)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest args)
+                 (setq choices (nth 1 args)
+                       initial (nth 6 args))
+                 "Oh My Pi (omp)")))
+      (should (equal (claude-code-ide--read-agent "Agent: " "codex") "omp"))
+      (should
+       (equal choices
+              '(("Claude Code (claude)" . "claude")
+                ("Codex (codex)" . "codex")
+                ("OpenCode (opencode)" . "opencode")
+                ("Pi (pi)" . "pi")
+                ("Oh My Pi (omp)" . "omp"))))
+      (should (equal initial "Codex (codex)"))
+      (should (equal claude-code-ide-supported-agents
+                     (mapcar #'cdr claude-code-ide-agent-definitions))))))
 
 (ert-deftest claude-code-ide-test-build-pi-command ()
   "Test building Pi and Oh My Pi commands."

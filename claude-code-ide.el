@@ -125,8 +125,33 @@
   :group 'tools
   :prefix "claude-code-ide-")
 
-(defconst claude-code-ide-supported-agents '("claude" "codex" "opencode" "pi" "omp")
-  "Supported agent names for project-local CLI selection.")
+(defconst claude-code-ide-agent-definitions
+  '(("Claude Code" . "claude")
+    ("Codex" . "codex")
+    ("OpenCode" . "opencode")
+    ("Pi" . "pi")
+    ("Oh My Pi" . "omp"))
+  "Official agent names mapped to their CLI command names.")
+
+(defconst claude-code-ide-supported-agents
+  (mapcar #'cdr claude-code-ide-agent-definitions)
+  "Supported CLI command names for project-local agent selection.")
+
+(defun claude-code-ide--agent-completion-candidates ()
+  "Return display labels mapped to agent CLI command names."
+  (mapcar (lambda (agent)
+            (let ((name (car agent))
+                  (command (cdr agent)))
+              (cons (format "%s (%s)" name command) command)))
+          claude-code-ide-agent-definitions))
+
+(defun claude-code-ide--read-agent (&optional prompt initial-agent)
+  "Read an agent command using PROMPT and INITIAL-AGENT as the default."
+  (let* ((choices (claude-code-ide--agent-completion-candidates))
+         (selection
+          (completing-read (or prompt "Agent: ") choices nil t nil nil
+                           (car (rassoc initial-agent choices)))))
+    (cdr (assoc selection choices))))
 
 (defvar claude-code-ide--suppress-initial-display nil
   "When non-nil, do not display a newly created session buffer immediately.
