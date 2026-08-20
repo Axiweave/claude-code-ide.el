@@ -38,7 +38,6 @@
 (defvar claude-code-ide-cli-terminal-backends)
 (defvar claude-code-ide-vterm-anti-flicker)
 (defvar claude-code-ide-vterm-render-delay)
-(defvar ghostel-set-title-function)
 (defvar ghostel-enable-url-detection)
 
 (declare-function vterm "vterm" (&optional arg))
@@ -230,7 +229,6 @@ return the string to insert."
   (setq-local cursor-in-non-selected-windows nil)
   (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)
-  (setq-local ghostel-set-title-function nil)
   (setq-local ghostel-enable-url-detection nil)
   (when (featurep 'hl-line)
     (hl-line-mode -1))

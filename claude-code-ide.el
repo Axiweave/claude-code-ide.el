@@ -81,10 +81,11 @@
 (defvar vterm-environment)
 (defvar eat-term-name)
 (defvar vterm--process)
-(defvar ghostel-set-title-function)
 (defvar ghostel-enable-url-detection)
 (defvar ghostel--term)
 (defvar ghostel--term-rows)
+(defvar ghostel--cursor-pos)
+(defvar ghostel--input-mode)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -105,9 +106,7 @@
 (declare-function ghostel-mode "ghostel" ())
 (declare-function ghostel--filter "ghostel" (process output))
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
-(declare-function ghostel--window-adjust-process-window-size
-                  "ghostel" (process windows))
-(declare-function ghostel--cursor-position "ghostel" (term))
+(declare-function ghostel--adjust-size "ghostel" (window &optional force))
 
 ;; External function declarations from MCP
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
@@ -673,7 +672,7 @@ from the window where it was initially created."
   (pcase (or backend (claude-code-ide--current-terminal-backend))
     ('vterm #'vterm--window-adjust-process-window-size)
     ('eat #'eat--adjust-process-window-size)
-    ('ghostel #'ghostel--window-adjust-process-window-size)
+    ('ghostel #'ghostel--adjust-size)
     (_ (error "Unsupported terminal backend: %s"
               (or backend (claude-code-ide--current-terminal-backend))))))
 
@@ -692,6 +691,7 @@ from the window where it was initially created."
   (pcase (claude-code-ide--current-terminal-backend)
     ('vterm (bound-and-true-p vterm-copy-mode))
     ('eat (not (bound-and-true-p eat--semi-char-mode)))
+    ('ghostel (eq ghostel--input-mode 'copy))
     (_ nil)))
 
 (defun claude-code-ide--terminal-working-resize-observer (original-fn &rest args)
@@ -1345,9 +1345,8 @@ when navigating between terminal and other buffers."
        (point-max)))
     ('ghostel
      (if (and (bound-and-true-p ghostel--term)
-              (bound-and-true-p ghostel--term-rows)
-              (fboundp 'ghostel--cursor-position))
-         (if-let ((pos (ghostel--cursor-position ghostel--term)))
+              (bound-and-true-p ghostel--term-rows))
+         (if-let ((pos ghostel--cursor-pos))
              (save-excursion
                (let ((scrollback (max 0 (- (line-number-at-pos (point-max))
                                            ghostel--term-rows))))
@@ -1509,9 +1508,8 @@ Signals an error if terminal fails to initialize."
                process)
           (with-current-buffer buffer
             ;; Ghostel may emit an OSC title very early in startup.
-            ;; Disable title tracking before the process exists so the
-            ;; session buffer keeps its deterministic package-managed name.
-            (setq-local ghostel-set-title-function nil)
+            ;; v0.50.0's default `ghostel-buffer-name-function' nil already
+            ;; keeps buffer names stable; no title hook is set here.
             (setq-local ghostel-enable-url-detection nil))
           (setq process (ghostel-exec buffer program args))
           (unless process

@@ -152,24 +152,22 @@
 (provide (quote eat))
 
 ;; === Mock ghostel module ===
-(defvar ghostel-set-title-function #'ignore
-  "Mock Ghostel title callback.")
 (defvar ghostel-enable-url-detection t
   "Mock Ghostel URL detection setting.")
 (defvar ghostel--term nil
   "Mock Ghostel terminal object.")
 (defvar ghostel--term-rows nil
   "Mock Ghostel terminal row count.")
+(defvar ghostel--cursor-pos nil
+  "Mock Ghostel viewport cursor (COL . ROW).")
+(defvar ghostel--input-mode nil
+  "Mock Ghostel input mode.")
 
 (defun ghostel--filter (_process _string)
   "Mock ghostel filter function for testing."
   nil)
 
-(defun ghostel--cursor-position (_term)
-  "Mock Ghostel cursor position."
-  nil)
-
-(defun ghostel--window-adjust-process-window-size (_process _windows)
+(defun ghostel--adjust-size (_window &optional _force)
   "Mock Ghostel resize handler for testing."
   nil)
 
@@ -6371,11 +6369,11 @@ have completed before cleanup.  Waits up to 5 seconds."
              (claude-code-ide-session-create :id "test" :directory "/tmp/test"
                                              :process session-buffer
                                              :buffer session-buffer))
-            (should (member '(ghostel--window-adjust-process-window-size
+            (should (member '(ghostel--adjust-size
                               :around
                               claude-code-ide--terminal-working-resize-observer)
                             added-advices))
-            (should (member '(ghostel--window-adjust-process-window-size
+            (should (member '(ghostel--adjust-size
                               :around
                               claude-code-ide--terminal-reflow-filter)
                             added-advices)))
@@ -6387,7 +6385,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (with-temp-buffer
     (setq-local claude-code-ide--terminal-backend 'ghostel)
     (should (eq (claude-code-ide--terminal-resize-handler)
-                #'ghostel--window-adjust-process-window-size))
+                #'ghostel--adjust-size))
     (should (claude-code-ide--terminal-supports-reflow-guard-p 'ghostel))))
 
 ;;; Tests for CLI Detection
@@ -8287,15 +8285,14 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide--session-cli-type 'codex
                         claude-code-ide--terminal-backend 'ghostel
                         ghostel--term 'mock-term
-                        ghostel--term-rows 3)
+                        ghostel--term-rows 3
+                        ghostel--cursor-pos '(2 . 1))
             (let ((target-point (point))
                   (session-window (selected-window)))
               (set-window-point session-window (point-min))
               (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
                          (lambda (candidate)
                            (eq candidate buffer)))
-                        ((symbol-function 'ghostel--cursor-position)
-                         (lambda (_term) (cons 2 1)))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t)))
                 (claude-code-ide--sync-visible-codex-terminal-windows))
@@ -8321,15 +8318,14 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide--session-cli-type 'codex
                         claude-code-ide--terminal-backend 'ghostel
                         ghostel--term 'mock-term
-                        ghostel--term-rows 3)
+                        ghostel--term-rows 3
+                        ghostel--cursor-pos '(2 . 1))
             (let ((target-point (point))
                   (session-window (selected-window)))
               (set-window-point session-window (point-min))
               (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
                          (lambda (candidate)
                            (eq candidate buffer)))
-                        ((symbol-function 'ghostel--cursor-position)
-                         (lambda (_term) (cons 2 1)))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t))
                         ((symbol-function 'recenter)
@@ -8359,7 +8355,8 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide--session-cli-type 'codex
                         claude-code-ide--terminal-backend 'ghostel
                         ghostel--term 'mock-term
-                        ghostel--term-rows 3)
+                        ghostel--term-rows 3
+                        ghostel--cursor-pos '(2 . 1))
             (let ((target-point (point))
                   (session-window (selected-window))
                   (other-window (split-window-right)))
@@ -8370,8 +8367,6 @@ have completed before cleanup.  Waits up to 5 seconds."
               (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
                          (lambda (candidate)
                            (eq candidate buffer)))
-                        ((symbol-function 'ghostel--cursor-position)
-                         (lambda (_term) (cons 2 1)))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t)))
                 (claude-code-ide--sync-visible-codex-terminal-windows))
@@ -10819,7 +10814,6 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags "")
         (mock-ghostel-buffer nil)
-        (title-disabled-before-exec nil)
         (url-detection-disabled-before-exec nil)
         (mock-process (start-process "mock-codex-ghostel" nil "true")))
     (unwind-protect
@@ -10829,9 +10823,6 @@ have completed before cleanup.  Waits up to 5 seconds."
                    (lambda () nil))
                   ((symbol-function 'ghostel-exec)
                    (lambda (buffer _program &optional _args)
-                     (setq title-disabled-before-exec
-                           (null (buffer-local-value 'ghostel-set-title-function
-                                                     buffer)))
                      (setq url-detection-disabled-before-exec
                            (null (buffer-local-value 'ghostel-enable-url-detection
                                                      buffer)))
@@ -10845,7 +10836,6 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (consp result))
             (should (eq buffer mock-ghostel-buffer))
             (should (eq (cdr result) mock-process))
-            (should title-disabled-before-exec)
             (should url-detection-disabled-before-exec)
             (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
                         'ghostel))))
