@@ -469,6 +469,8 @@ Claude Code IDE supports =vterm=, =eat=, and =ghostel= as terminal backends. By 
 
 The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. The =ghostel= backend currently supports session creation, core input dispatch, idle/working-state tracking, backend selection, and the resize/reflow guard. The =eat=-specific scroll position keeper and terminal filter batching remain backend-specific.
 
+The =ghostel= backend is tested against Ghostel v0.50.0 (its removed pre-0.50.0 APIs are no longer referenced). To check the installed version, run =M-x ghostel-debug= and read the =Module version:= line, or evaluate ~(ghostel--module-version)~ in a Ghostel buffer. Ghostel checks the Elisp/native-module pairing against =ghostel--minimum-module-version= at load time and warns on mismatch.
+
 You can also override the terminal backend per CLI while keeping a global default for everything else:
 
 #+begin_src emacs-lisp
