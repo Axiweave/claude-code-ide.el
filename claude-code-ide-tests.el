@@ -10661,9 +10661,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                 ("OpenCode (opencode)" . "opencode")
                 ("Pi (pi)" . "pi")
                 ("Oh My Pi (omp)" . "omp"))))
-      (should (equal initial "Codex (codex)"))
-      (should (equal claude-code-ide-supported-agents
-                     (mapcar #'cdr claude-code-ide-agent-definitions))))))
+      (should (equal initial "Codex (codex)")))))
 
 (ert-deftest claude-code-ide-test-build-pi-command ()
   "Test building Pi and Oh My Pi commands."

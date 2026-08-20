@@ -133,10 +133,6 @@
     ("Oh My Pi" . "omp"))
   "Official agent names mapped to their CLI command names.")
 
-(defconst claude-code-ide-supported-agents
-  (mapcar #'cdr claude-code-ide-agent-definitions)
-  "Supported CLI command names for project-local agent selection.")
-
 (defun claude-code-ide--agent-completion-candidates ()
   "Return display labels mapped to agent CLI command names."
   (mapcar (lambda (agent)
@@ -163,7 +159,7 @@ layout first.")
 (defun claude-code-ide--supported-agent-p (value)
   "Return non-nil when VALUE is a supported project-local agent."
   (and (stringp value)
-       (member value claude-code-ide-supported-agents)))
+       (member value (mapcar #'cdr claude-code-ide-agent-definitions))))
 
 (defcustom claude-code-ide-cli-path "claude"
   "Path to the Claude Code CLI executable."

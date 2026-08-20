@@ -83,7 +83,6 @@
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
 (defvar claude-code-ide--session-cli-type)
-(defvar claude-code-ide-supported-agents)
 (defvar claude-code-ide-debug)
 (defvar claude-code-ide-window-side)
 (defvar claude-code-ide-window-width)
@@ -497,7 +496,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
    (list (claude-code-ide--read-agent
           "Project agent: "
           (and (member claude-code-ide-cli-path
-                       claude-code-ide-supported-agents)
+                       (mapcar #'cdr claude-code-ide-agent-definitions))
                claude-code-ide-cli-path))))
   (let ((project-root (claude-code-ide--get-project-root)))
     (claude-code-ide--save-project-dir-local-cli-path 'set agent project-root)
