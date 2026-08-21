@@ -85,6 +85,7 @@
 (defvar ghostel--term)
 (defvar ghostel--term-rows)
 (defvar ghostel--cursor-pos)
+(defvar ghostel--cursor-char-pos)
 (defvar ghostel--input-mode)
 
 ;; External function declarations for vterm
@@ -1310,6 +1311,16 @@ Arguments CONTINUE, RESUME, SESSION-ID are passed to the CLI-specific builder."
     ('codex (claude-code-ide--build-codex-command continue resume session-id))
     (_ (claude-code-ide--build-claude-command continue resume session-id))))
 
+(defun claude-code-ide--live-prompt-bottom-margin ()
+  "Return the bottom margin, in lines, for the current CLI's live prompt.
+Codex renders a multi-line prompt block (input line plus hints) whose
+cursor sits above the last terminal row, so the pinned view needs room
+below the cursor.  Oh My Pi and the other CLIs keep the cursor on the
+bottom line and need no extra room."
+  (if (eq (claude-code-ide--current-cli-type) 'codex)
+      4
+    1))
+
 (defun claude-code-ide--terminal-position-keeper (window-list)
   "Maintain stable terminal view position across window switches.
 WINDOW-LIST contains windows requiring position synchronization.
@@ -1321,9 +1332,7 @@ when navigating between terminal and other buffers."
                         (append (delq 'buffer (copy-sequence window-list))
                                 visible-windows)
                         :test #'eq))
-         (recenter-line (if (memq (claude-code-ide--current-cli-type) '(codex opencode))
-                            -4
-                          -1)))
+         (recenter-line (- (claude-code-ide--live-prompt-bottom-margin))))
     (when (memq 'buffer window-list)
       (goto-char terminal-point))
     (unless buffer-read-only         ; Skip when terminal is in navigation mode
@@ -1351,23 +1360,32 @@ restores."
          (eat-term-display-cursor eat-terminal)
        (point-max)))
     ('ghostel
-     (if (and (bound-and-true-p ghostel--term)
-              (bound-and-true-p ghostel--term-rows))
-         (if-let ((pos ghostel--cursor-pos))
-             (save-excursion
-               (let ((scrollback (max 0 (- (line-number-at-pos (point-max))
-                                           ghostel--term-rows))))
-                 (goto-char (point-min))
-                 (forward-line (+ scrollback (cdr pos)))
-                 (move-to-column (car pos))
-                 (point)))
-           (point-max))
-       (point-max)))
+     (cond
+      ;; The native renderer publishes the exact cursor buffer position;
+      ;; prefer it over the viewport-coordinate approximation below.
+      ((and (bound-and-true-p ghostel--term)
+            (bound-and-true-p ghostel--cursor-char-pos)
+            (<= (point-min) ghostel--cursor-char-pos)
+            (<= ghostel--cursor-char-pos (point-max)))
+       ghostel--cursor-char-pos)
+      ((and (bound-and-true-p ghostel--term)
+            (bound-and-true-p ghostel--term-rows)
+            ghostel--cursor-pos)
+       (save-excursion
+         (let ((scrollback (max 0 (- (line-number-at-pos (point-max))
+                                     ghostel--term-rows))))
+           (goto-char (point-min))
+           (forward-line (+ scrollback (cdr ghostel--cursor-pos)))
+           (move-to-column (car ghostel--cursor-pos))
+           (point))))
+      (t (point-max))))
     (_ (point-max))))
 
 (defun claude-code-ide--window-start-for-point-near-bottom (win point &optional bottom-margin)
   "Return a `window-start' that shows POINT near the bottom of WIN.
-BOTTOM-MARGIN defaults to 4 lines, matching the live-prompt terminal layout."
+BOTTOM-MARGIN defaults to 4 lines, matching the Codex live-prompt
+layout.  Callers pass the per-CLI margin from
+`claude-code-ide--live-prompt-bottom-margin'."
   (save-excursion
     (goto-char point)
     (forward-line (- (max 0 (- (window-body-height win) (or bottom-margin 4) 1))))
@@ -1390,7 +1408,8 @@ windows after window configuration changes."
                          (evil-emacs-state-p)))
             (let ((target-point
                    (claude-code-ide--live-prompt-terminal-window-target-point))
-                  (backend (claude-code-ide--current-terminal-backend)))
+                  (backend (claude-code-ide--current-terminal-backend))
+                  (bottom-margin (claude-code-ide--live-prompt-bottom-margin)))
               (with-selected-window win
                 (set-window-point win target-point)
                 (goto-char target-point)
@@ -1400,10 +1419,10 @@ windows after window configuration changes."
                     (set-window-start
                      win
                      (claude-code-ide--window-start-for-point-near-bottom
-                      win target-point)
+                      win target-point bottom-margin)
                      t)))
                  (t
-                  (recenter -4)))))))))))
+                  (recenter (- bottom-margin))))))))))))
 
 (defun claude-code-ide--run-live-prompt-terminal-window-sync ()
   "Run the deferred live-prompt terminal window sync pass."

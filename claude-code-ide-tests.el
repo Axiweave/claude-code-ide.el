@@ -160,6 +160,8 @@
   "Mock Ghostel terminal row count.")
 (defvar ghostel--cursor-pos nil
   "Mock Ghostel viewport cursor (COL . ROW).")
+(defvar ghostel--cursor-char-pos nil
+  "Mock Ghostel cursor buffer position.")
 (defvar ghostel--input-mode nil
   "Mock Ghostel input mode.")
 
@@ -8289,8 +8291,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide--session-cli-type 'codex
                         claude-code-ide--terminal-backend 'ghostel
                         ghostel--term 'mock-term
-                        ghostel--term-rows 3
-                        ghostel--cursor-pos '(2 . 1))
+                        ghostel--cursor-char-pos (point))
             (let ((target-point (point))
                   (session-window (selected-window)))
               (set-window-point session-window (point-min))
@@ -8321,8 +8322,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide--session-cli-type 'omp
                         claude-code-ide--terminal-backend 'ghostel
                         ghostel--term 'mock-term
-                        ghostel--term-rows 3
-                        ghostel--cursor-pos '(2 . 1))
+                        ghostel--cursor-char-pos (point))
             (let ((target-point (point))
                   (session-window (selected-window)))
               (set-window-point session-window (point-min))
@@ -8333,6 +8333,75 @@ have completed before cleanup.  Waits up to 5 seconds."
                          (lambda () t)))
                 (claude-code-ide--sync-visible-live-prompt-terminal-windows))
               (should (= (window-point session-window) target-point)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-live-prompt-bottom-margin-per-cli ()
+  "Live-prompt bottom margin is per CLI: 4 lines for Codex, 1 otherwise."
+  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
+             (lambda () 'codex)))
+    (should (= (claude-code-ide--live-prompt-bottom-margin) 4)))
+  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
+             (lambda () 'omp)))
+    (should (= (claude-code-ide--live-prompt-bottom-margin) 1)))
+  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
+             (lambda () 'claude)))
+    (should (= (claude-code-ide--live-prompt-bottom-margin) 1)))
+  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
+             (lambda () 'pi)))
+    (should (= (claude-code-ide--live-prompt-bottom-margin) 1))))
+
+(ert-deftest claude-code-ide-test-live-prompt-ghostel-target-prefers-cursor-char-pos ()
+  "Ghostel live-prompt target uses the native cursor buffer position.
+The viewport-coordinate fallback is one line off when the renderer pads
+the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
+  (with-temp-buffer
+    (insert (mapconcat (lambda (n) (format "line %d" n))
+                       (number-sequence 1 80)
+                       "\n"))
+    (setq-local claude-code-ide--session-cli-type 'omp
+                claude-code-ide--terminal-backend 'ghostel
+                ghostel--term 'mock-term
+                ghostel--term-rows 3
+                ghostel--cursor-pos '(2 . 1))
+    (goto-char (point-min))
+    (forward-line 77)
+    (move-to-column 2)
+    (let ((char-pos (point)))
+      (setq-local ghostel--cursor-char-pos char-pos)
+      (should (= (claude-code-ide--live-prompt-terminal-window-target-point)
+                 char-pos)))))
+
+(ert-deftest claude-code-ide-test-visible-live-prompt-omp-vterm-sync-pins-cursor-at-bottom ()
+  "Oh My Pi vterm windows pin the cursor to the bottom line, not 4 lines up."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-omp-vterm-position*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 80)
+                               "\n"))
+            (goto-char (point-max))
+            (setq-local claude-code-ide--session-cli-type 'omp
+                        claude-code-ide--terminal-backend 'vterm)
+            (let ((target-point (point))
+                  (session-window (selected-window)))
+              (set-window-point session-window (point-min))
+              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                         (lambda (candidate)
+                           (eq candidate buffer)))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () t)))
+                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
+              (should (= (window-point session-window) target-point))
+              ;; Margin 1 pins the cursor to the bottom visible line
+              ;; (window-start = point-line - height + 1); the old hardcoded
+              ;; -4 recenter left empty lines below the cursor.
+              (should (= (line-number-at-pos (window-start session-window))
+                         (- (line-number-at-pos target-point)
+                            (1- (window-body-height session-window))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -8354,8 +8423,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide--session-cli-type 'codex
                         claude-code-ide--terminal-backend 'ghostel
                         ghostel--term 'mock-term
-                        ghostel--term-rows 3
-                        ghostel--cursor-pos '(2 . 1))
+                        ghostel--cursor-char-pos (point))
             (let ((target-point (point))
                   (session-window (selected-window)))
               (set-window-point session-window (point-min))
@@ -8391,8 +8459,7 @@ have completed before cleanup.  Waits up to 5 seconds."
             (setq-local claude-code-ide--session-cli-type 'codex
                         claude-code-ide--terminal-backend 'ghostel
                         ghostel--term 'mock-term
-                        ghostel--term-rows 3
-                        ghostel--cursor-pos '(2 . 1))
+                        ghostel--cursor-char-pos (point))
             (let ((target-point (point))
                   (session-window (selected-window))
                   (other-window (split-window-right)))
