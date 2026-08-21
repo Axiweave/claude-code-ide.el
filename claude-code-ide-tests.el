@@ -167,6 +167,10 @@
   "Mock ghostel filter function for testing."
   nil)
 
+(defun ghostel--events-filter (_pipe _output)
+  "Mock ghostel native-PTY events filter function for testing."
+  nil)
+
 (defun ghostel--adjust-size (_window &optional _force)
   "Mock Ghostel resize handler for testing."
   nil)
@@ -8241,8 +8245,8 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-visible-codex-terminal-syncs-after-window-restore ()
-  "Test Codex terminal windows are pushed back to the prompt after layout restore."
+(ert-deftest claude-code-ide-test-visible-live-prompt-terminal-syncs-after-window-restore ()
+  "Test live-prompt terminal windows are pushed back to the prompt after layout restore."
   (let ((buffer (generate-new-buffer " *claude-code-ide-codex-position*")))
     (unwind-protect
         (save-window-excursion
@@ -8263,13 +8267,13 @@ have completed before cleanup.  Waits up to 5 seconds."
                            (eq candidate buffer)))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t)))
-                (claude-code-ide--sync-visible-codex-terminal-windows))
+                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
               (should (= (window-point session-window) target-point)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-visible-codex-ghostel-terminal-syncs-after-window-restore ()
-  "Test Codex ghostel terminal windows sync to Ghostel's cursor after restore."
+(ert-deftest claude-code-ide-test-visible-live-prompt-ghostel-terminal-syncs-after-window-restore ()
+  "Test live-prompt ghostel terminal windows sync to Ghostel's cursor after restore."
   (let ((buffer (generate-new-buffer " *claude-code-ide-codex-ghostel-position*")))
     (unwind-protect
         (save-window-excursion
@@ -8295,13 +8299,45 @@ have completed before cleanup.  Waits up to 5 seconds."
                            (eq candidate buffer)))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t)))
-                (claude-code-ide--sync-visible-codex-terminal-windows))
+                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
               (should (= (window-point session-window) target-point)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-visible-codex-ghostel-terminal-sync-skips-recenter ()
-  "Ghostel Codex sync should not force recenter on layout changes."
+(ert-deftest claude-code-ide-test-visible-live-prompt-omp-ghostel-terminal-syncs-after-window-restore ()
+  "Oh My Pi ghostel terminal windows sync to Ghostel's cursor after restore."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-omp-ghostel-position*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 80)
+                               "\n"))
+            (goto-char (point-min))
+            (forward-line 78)
+            (move-to-column 2)
+            (setq-local claude-code-ide--session-cli-type 'omp
+                        claude-code-ide--terminal-backend 'ghostel
+                        ghostel--term 'mock-term
+                        ghostel--term-rows 3
+                        ghostel--cursor-pos '(2 . 1))
+            (let ((target-point (point))
+                  (session-window (selected-window)))
+              (set-window-point session-window (point-min))
+              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                         (lambda (candidate)
+                           (eq candidate buffer)))
+                        ((symbol-function 'evil-emacs-state-p)
+                         (lambda () t)))
+                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
+              (should (= (window-point session-window) target-point)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-visible-live-prompt-ghostel-terminal-sync-skips-recenter ()
+  "Ghostel live-prompt sync should not force recenter on layout changes."
   (let ((buffer (generate-new-buffer " *claude-code-ide-codex-ghostel-no-recenter*"))
         (recenter-calls 0))
     (unwind-protect
@@ -8331,14 +8367,14 @@ have completed before cleanup.  Waits up to 5 seconds."
                         ((symbol-function 'recenter)
                          (lambda (&optional _arg)
                            (setq recenter-calls (1+ recenter-calls)))))
-                (claude-code-ide--sync-visible-codex-terminal-windows))
+                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
               (should (= (window-point session-window) target-point))
               (should (= recenter-calls 0)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-visible-codex-ghostel-terminal-sync-restores-unfocused-window-viewport ()
-  "Ghostel Codex sync should restore viewport for unfocused session windows."
+(ert-deftest claude-code-ide-test-visible-live-prompt-ghostel-terminal-sync-restores-unfocused-window-viewport ()
+  "Ghostel live-prompt sync should restore viewport for unfocused session windows."
   (let ((buffer (generate-new-buffer " *claude-code-ide-codex-ghostel-unfocused*"))
         (other-buffer (generate-new-buffer " *claude-code-ide-other*")))
     (unwind-protect
@@ -8369,7 +8405,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                            (eq candidate buffer)))
                         ((symbol-function 'evil-emacs-state-p)
                          (lambda () t)))
-                (claude-code-ide--sync-visible-codex-terminal-windows))
+                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
               (should (= (window-point session-window) target-point))
               (should (> (window-start session-window) (point-min)))
               (should
@@ -8386,12 +8422,12 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p other-buffer)
         (kill-buffer other-buffer)))))
 
-(ert-deftest claude-code-ide-test-schedule-codex-terminal-window-sync-runs-now-and-later ()
+(ert-deftest claude-code-ide-test-schedule-live-prompt-terminal-window-sync-runs-now-and-later ()
   "Window sync scheduling should run immediately and queue a deferred pass."
   (let ((sync-calls 0)
         (scheduled-callback nil)
         (scheduled-timer nil))
-    (cl-letf (((symbol-function 'claude-code-ide--sync-visible-codex-terminal-windows)
+    (cl-letf (((symbol-function 'claude-code-ide--sync-visible-live-prompt-terminal-windows)
                (lambda ()
                  (setq sync-calls (1+ sync-calls))))
               ((symbol-function 'run-at-time)
@@ -8399,21 +8435,21 @@ have completed before cleanup.  Waits up to 5 seconds."
                  (setq scheduled-callback (list function args)
                        scheduled-timer 'mock-sync-timer)
                  scheduled-timer)))
-      (setq claude-code-ide--codex-terminal-window-sync-timer nil)
-      (claude-code-ide--schedule-codex-terminal-window-sync)
+      (setq claude-code-ide--live-prompt-terminal-window-sync-timer nil)
+      (claude-code-ide--schedule-live-prompt-terminal-window-sync)
       (should (= sync-calls 1))
-      (should (equal claude-code-ide--codex-terminal-window-sync-timer
+      (should (equal claude-code-ide--live-prompt-terminal-window-sync-timer
                      scheduled-timer))
       (apply (car scheduled-callback) (cadr scheduled-callback))
       (should (= sync-calls 2))
-      (should-not claude-code-ide--codex-terminal-window-sync-timer))))
+      (should-not claude-code-ide--live-prompt-terminal-window-sync-timer))))
 
-(ert-deftest claude-code-ide-test-schedule-codex-terminal-window-sync-debounces-timer ()
-  "Rescheduling Codex terminal sync should replace the pending timer."
+(ert-deftest claude-code-ide-test-schedule-live-prompt-terminal-window-sync-debounces-timer ()
+  "Rescheduling live-prompt terminal sync should replace the pending timer."
   (let ((cancelled nil)
         (scheduled-callback nil)
         (timers '(old-timer new-timer)))
-    (cl-letf (((symbol-function 'claude-code-ide--sync-visible-codex-terminal-windows)
+    (cl-letf (((symbol-function 'claude-code-ide--sync-visible-live-prompt-terminal-windows)
                #'ignore)
               ((symbol-function 'cancel-timer)
                (lambda (timer)
@@ -8422,15 +8458,15 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda (_delay _repeat function &rest args)
                  (setq scheduled-callback (list function args))
                  (pop timers))))
-      (setq claude-code-ide--codex-terminal-window-sync-timer 'existing-timer)
-      (claude-code-ide--schedule-codex-terminal-window-sync)
+      (setq claude-code-ide--live-prompt-terminal-window-sync-timer 'existing-timer)
+      (claude-code-ide--schedule-live-prompt-terminal-window-sync)
       (should (equal '(existing-timer) cancelled))
-      (should (eq claude-code-ide--codex-terminal-window-sync-timer 'old-timer))
-      (claude-code-ide--schedule-codex-terminal-window-sync)
+      (should (eq claude-code-ide--live-prompt-terminal-window-sync-timer 'old-timer))
+      (claude-code-ide--schedule-live-prompt-terminal-window-sync)
       (should (equal '(old-timer existing-timer) cancelled))
-      (should (eq claude-code-ide--codex-terminal-window-sync-timer 'new-timer))
+      (should (eq claude-code-ide--live-prompt-terminal-window-sync-timer 'new-timer))
       (apply (car scheduled-callback) (cadr scheduled-callback))
-      (should-not claude-code-ide--codex-terminal-window-sync-timer))))
+      (should-not claude-code-ide--live-prompt-terminal-window-sync-timer))))
 
 ;;; Tests for Diagnostics
 
@@ -10774,7 +10810,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer mock-vterm-buffer)))))
 
 (ert-deftest claude-code-ide-test-create-codex-terminal-session-uses-cli-backend-override ()
-  "Test Codex terminal session creation respects per-CLI backend overrides."
+  "Test live-prompt terminal session creation respects per-CLI backend overrides."
   (let ((claude-code-ide-cli-path "codex")
         (claude-code-ide-terminal-backend 'vterm)
         (claude-code-ide-cli-terminal-backends '((codex . eat)))
@@ -10807,7 +10843,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer mock-eat-buffer)))))
 
 (ert-deftest claude-code-ide-test-create-codex-terminal-session-uses-ghostel-backend-override ()
-  "Test Codex terminal session creation respects `ghostel' backend overrides."
+  "Test live-prompt terminal session creation respects `ghostel' backend overrides."
   (let ((claude-code-ide-cli-path "codex")
         (claude-code-ide-terminal-backend 'vterm)
         (claude-code-ide-cli-terminal-backends '((codex . ghostel)))
@@ -11719,6 +11755,27 @@ have completed before cleanup.  Waits up to 5 seconds."
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
+(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer-ghostel-events ()
+  "Test that ghostel native-PTY events reset idle for the process buffer."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (should (advice-member-p #'claude-code-ide-session-idle--filter-advice
+                           'ghostel--events-filter))
+  (let ((activity-buffer nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer-ghostel-events]*"))
+        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process)
+                     session-buffer))
+                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                   (lambda (&optional buffer)
+                     (setq activity-buffer (or buffer (current-buffer))))))
+          (with-current-buffer other-buffer
+            (ghostel--events-filter 'mock-pipe "()"))
+          (should (eq activity-buffer session-buffer)))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
+
 (ert-deftest claude-code-ide-test-session-idle-filter-does-not-log-terminal-output ()
   "Test that terminal output observers do not log raw backend payloads."
   (should (require 'claude-code-ide-session-idle nil t))
@@ -11778,6 +11835,25 @@ have completed before cleanup.  Waits up to 5 seconds."
                      (setq working-buffer (or buffer (current-buffer))))))
           (with-current-buffer other-buffer
             (ghostel--filter 'mock-process "output"))
+          (should (eq working-buffer session-buffer)))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer-ghostel-events ()
+  "Test that ghostel native-PTY events mark the process buffer as working."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((working-buffer nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-working-process-buffer-ghostel-events]*"))
+        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process)
+                     session-buffer))
+                  ((symbol-function 'claude-code-ide-session-working-record-output)
+                   (lambda (&optional buffer)
+                     (setq working-buffer (or buffer (current-buffer))))))
+          (with-current-buffer other-buffer
+            (ghostel--events-filter 'mock-pipe "()"))
           (should (eq working-buffer session-buffer)))
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))

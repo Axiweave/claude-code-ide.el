@@ -506,6 +506,10 @@ fresh output from the session backend."
     (claude-code-ide-session-idle--install-output-observer 'eat--filter))
   (with-eval-after-load 'ghostel
     (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)
+    ;; Native-PTY sessions deliver output as Lisp events through
+    ;; `ghostel--events-filter' instead of `ghostel--filter', so the
+    ;; observer must cover both paths for idle/working detection.
+    (claude-code-ide-session-idle--install-output-observer 'ghostel--events-filter)
     (claude-code-ide-session-working--install-ghostel-focus-observer))
   (when (featurep 'vterm)
     (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
@@ -513,6 +517,8 @@ fresh output from the session backend."
     (claude-code-ide-session-idle--install-output-observer 'eat--filter))
   (when (featurep 'ghostel)
     (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)
+    ;; See note above: native-PTY ghostel sessions need the events filter.
+    (claude-code-ide-session-idle--install-output-observer 'ghostel--events-filter)
     (claude-code-ide-session-working--install-ghostel-focus-observer)))
 
 (defun claude-code-ide-session-idle--fire-timer (buffer &optional generation)

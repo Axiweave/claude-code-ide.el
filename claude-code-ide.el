@@ -415,8 +415,8 @@ the target window is already visible."
 (defvar claude-code-ide--last-accessed-buffer nil
   "The most recently accessed Claude Code buffer.")
 
-(defvar claude-code-ide--codex-terminal-window-sync-timer nil
-  "Timer used to coalesce deferred Codex terminal window sync passes.")
+(defvar claude-code-ide--live-prompt-terminal-window-sync-timer nil
+  "Timer used to coalesce deferred live-prompt terminal window sync passes.")
 
 ;;; Vterm Rendering Optimization
 
@@ -1335,8 +1335,15 @@ when navigating between terminal and other buffers."
               (goto-char terminal-point)
               (recenter recenter-line))))))))
 
-(defun claude-code-ide--codex-terminal-window-target-point ()
-  "Return the live prompt position for the current Codex terminal buffer."
+(defun claude-code-ide--live-prompt-cli-p ()
+  "Return non-nil when the current CLI keeps a live prompt at the terminal bottom.
+Codex and Oh My Pi render a persistent bottom input prompt whose live
+cursor position must be tracked to keep the window pinned after layout
+restores."
+  (memq (claude-code-ide--current-cli-type) '(codex omp)))
+
+(defun claude-code-ide--live-prompt-terminal-window-target-point ()
+  "Return the live prompt position for the current live-prompt terminal buffer."
   (pcase (claude-code-ide--current-terminal-backend)
     ('eat
      (if (and (bound-and-true-p eat-terminal)
@@ -1360,29 +1367,29 @@ when navigating between terminal and other buffers."
 
 (defun claude-code-ide--window-start-for-point-near-bottom (win point &optional bottom-margin)
   "Return a `window-start' that shows POINT near the bottom of WIN.
-BOTTOM-MARGIN defaults to 4 lines, matching the Codex terminal layout."
+BOTTOM-MARGIN defaults to 4 lines, matching the live-prompt terminal layout."
   (save-excursion
     (goto-char point)
     (forward-line (- (max 0 (- (window-body-height win) (or bottom-margin 4) 1))))
     (line-beginning-position)))
 
-(defun claude-code-ide--sync-visible-codex-terminal-windows ()
-  "Keep visible Codex terminal windows pinned to the live prompt.
+(defun claude-code-ide--sync-visible-live-prompt-terminal-windows ()
+  "Keep visible live-prompt terminal windows pinned to the live prompt.
 Perspective/window-state restores can resurrect stale `window-point' values
-without any terminal output event, so synchronize visible Codex terminal
+without any terminal output event, so synchronize visible live-prompt terminal
 windows after window configuration changes."
   (dolist (win (window-list nil 'no-minibuf))
     (when-let ((buffer (window-buffer win)))
       (when (and (window-live-p win)
                  (claude-code-ide--session-buffer-p buffer))
         (with-current-buffer buffer
-          (when (and (eq (claude-code-ide--current-cli-type) 'codex)
+          (when (and (claude-code-ide--live-prompt-cli-p)
                      (memq (claude-code-ide--current-terminal-backend)
                            '(vterm eat ghostel))
                      (or (not (fboundp 'evil-emacs-state-p))
                          (evil-emacs-state-p)))
             (let ((target-point
-                   (claude-code-ide--codex-terminal-window-target-point))
+                   (claude-code-ide--live-prompt-terminal-window-target-point))
                   (backend (claude-code-ide--current-terminal-backend)))
               (with-selected-window win
                 (set-window-point win target-point)
@@ -1398,30 +1405,30 @@ windows after window configuration changes."
                  (t
                   (recenter -4)))))))))))
 
-(defun claude-code-ide--run-codex-terminal-window-sync ()
-  "Run the deferred Codex terminal window sync pass."
-  (setq claude-code-ide--codex-terminal-window-sync-timer nil)
-  (claude-code-ide--sync-visible-codex-terminal-windows))
+(defun claude-code-ide--run-live-prompt-terminal-window-sync ()
+  "Run the deferred live-prompt terminal window sync pass."
+  (setq claude-code-ide--live-prompt-terminal-window-sync-timer nil)
+  (claude-code-ide--sync-visible-live-prompt-terminal-windows))
 
-(defun claude-code-ide--schedule-codex-terminal-window-sync ()
-  "Sync Codex terminal windows now and queue one deferred follow-up pass.
+(defun claude-code-ide--schedule-live-prompt-terminal-window-sync ()
+  "Sync live-prompt terminal windows now and queue one deferred follow-up pass.
 Some popup and minibuffer flows restore stale window state after
 `window-configuration-change-hook' has already run.  The deferred
 pass corrects those late restores without waiting for terminal output."
-  (claude-code-ide--sync-visible-codex-terminal-windows)
-  (when claude-code-ide--codex-terminal-window-sync-timer
-    (cancel-timer claude-code-ide--codex-terminal-window-sync-timer))
-  (setq claude-code-ide--codex-terminal-window-sync-timer
-        (run-at-time 0 nil #'claude-code-ide--run-codex-terminal-window-sync)))
+  (claude-code-ide--sync-visible-live-prompt-terminal-windows)
+  (when claude-code-ide--live-prompt-terminal-window-sync-timer
+    (cancel-timer claude-code-ide--live-prompt-terminal-window-sync-timer))
+  (setq claude-code-ide--live-prompt-terminal-window-sync-timer
+        (run-at-time 0 nil #'claude-code-ide--run-live-prompt-terminal-window-sync)))
 
-(defun claude-code-ide--install-codex-terminal-window-sync ()
-  "Install hooks that keep Codex terminal windows at the live prompt."
-  (unless (memq #'claude-code-ide--schedule-codex-terminal-window-sync
+(defun claude-code-ide--install-live-prompt-terminal-window-sync ()
+  "Install hooks that keep live-prompt terminal windows at the live prompt."
+  (unless (memq #'claude-code-ide--schedule-live-prompt-terminal-window-sync
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
-              #'claude-code-ide--schedule-codex-terminal-window-sync)))
+              #'claude-code-ide--schedule-live-prompt-terminal-window-sync)))
 
-(claude-code-ide--install-codex-terminal-window-sync)
+(claude-code-ide--install-live-prompt-terminal-window-sync)
 
 (defun claude-code-ide--parse-command-string (command-string)
   "Parse a command string into (program . args) for eat-exec.
