@@ -11325,9 +11325,9 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
                            ('ghostel 'ghostel)))))))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-sends-control-v-for-image-capable-clis ()
-  "Test that image clipboard targets send raw control-V for Claude and Codex."
+  "Test that image clipboard targets send raw control-V for Claude, Codex, and Oh My Pi."
   (should (require 'claude-code-ide-session nil t))
-  (dolist (cli-type '(claude codex))
+  (dolist (cli-type '(claude codex omp))
     (let ((sent nil)
           (yanked nil))
       (cl-letf (((symbol-function 'gui-get-selection)

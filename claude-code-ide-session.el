@@ -366,10 +366,10 @@ When REFERENCE is nil, use
     (error nil)))
 
 (defun claude-code-ide-session-paste-clipboard ()
-  "Paste from the clipboard, forwarding images to Claude and Codex."
+  "Paste from the clipboard, forwarding images to Claude, Codex, and Oh My Pi."
   (interactive)
   (if (and (claude-code-ide-session--clipboard-image-p)
-           (memq (claude-code-ide--current-cli-type) '(claude codex)))
+           (memq (claude-code-ide--current-cli-type) '(claude codex omp)))
       (claude-code-ide-session-send-string "\026")
     (pcase (claude-code-ide-session--current-terminal-backend)
       ('vterm (vterm-yank))
