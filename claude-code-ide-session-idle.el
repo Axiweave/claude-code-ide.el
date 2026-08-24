@@ -465,18 +465,36 @@ fresh output from the session backend."
       (alert (format "Session idle: %s" (buffer-name buffer))
              :title "Claude Code"))))
 
+(defun claude-code-ide-session-idle--real-activity-p (output)
+  "Return non-nil when OUTPUT carries real terminal bytes.
+Ghostel's native PTY reaper redraws blinking cursors and progress
+spinners via periodic `()' no-op event batches with no new terminal
+content (observed live as `(ghostel--events-filter PROC \"()\")');
+treating those as activity flapped hidden idle sessions between idle
+and working every few seconds even though nothing happened."
+  (and (stringp output)
+       (not (string-match-p "\\`\\(?:()\\|[[:space:]]\\)*\\'" output))))
+
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
-  "Run ORIG-FN, then forward session-buffer activity to the idle helper."
+  "Forward real session-buffer activity to the idle helper, then run ORIG-FN.
+Recording activity before ORIG-FN runs lets any idle marking ORIG-FN
+triggers synchronously while processing this same output (e.g. a
+completion notification via `leo/ghostel--notify-claude-idle') stand
+as the final word, instead of being immediately clobbered by this
+generic \"output arrived\" bookkeeping.  Content-free invocations are
+ignored entirely; see `claude-code-ide-session-idle--real-activity-p'."
   (let* ((process (car args))
+         (output (nth 1 args))
          (process-buffer (ignore-errors
                            (process-buffer process)))
          (target-buffer (or process-buffer (current-buffer))))
-    (prog1 (apply orig-fn args)
-      (when (and (buffer-live-p target-buffer)
-                 (claude-code-ide-session-buffer-p target-buffer))
-        (with-current-buffer target-buffer
-          (claude-code-ide-session-idle-record-activity)
-          (claude-code-ide-session-working-record-output))))))
+    (when (and (claude-code-ide-session-idle--real-activity-p output)
+               (buffer-live-p target-buffer)
+               (claude-code-ide-session-buffer-p target-buffer))
+      (with-current-buffer target-buffer
+        (claude-code-ide-session-idle-record-activity)
+        (claude-code-ide-session-working-record-output)))
+    (apply orig-fn args)))
 
 (defun claude-code-ide-session-working--ghostel-focus-advice (orig-fn &rest args)
   "Suppress working detection while Ghostel reports a focus change."

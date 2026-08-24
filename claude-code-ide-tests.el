@@ -11962,10 +11962,43 @@ connected sessions would silently break first-connect replay."
                    (lambda (&optional buffer)
                      (setq activity-buffer (or buffer (current-buffer))))))
           (with-current-buffer other-buffer
-            (ghostel--events-filter 'mock-pipe "()"))
+            (ghostel--events-filter 'mock-pipe "(ignore)"))
           (should (eq activity-buffer session-buffer)))
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-session-idle-real-activity-p ()
+  "Test that content-free ghostel heartbeats are not real activity."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (should-not (claude-code-ide-session-idle--real-activity-p "()"))
+  (should-not (claude-code-ide-session-idle--real-activity-p ""))
+  (should-not (claude-code-ide-session-idle--real-activity-p " () () "))
+  (should-not (claude-code-ide-session-idle--real-activity-p nil))
+  (should (claude-code-ide-session-idle--real-activity-p "hello"))
+  (should (claude-code-ide-session-idle--real-activity-p
+           "(ghostel--handle-notification \"T\" \"B\")")))
+
+(ert-deftest claude-code-ide-test-session-idle-filter-ignores-ghostel-heartbeat ()
+  "Test that a content-free `()' ghostel-events batch is not activity.
+Ghostel's native PTY reaper redraws cursors/spinners via periodic
+empty event batches; treating those as activity flapped hidden idle
+sessions back to working every few seconds with no real output."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((activity-called nil)
+        (session-buffer (generate-new-buffer "*claude-code[test-idle-heartbeat]*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-buffer)
+                   (lambda (_process) session-buffer))
+                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                   (lambda (&optional _buffer) (setq activity-called t)))
+                  ((symbol-function 'claude-code-ide-session-working-record-output)
+                   #'ignore))
+          (claude-code-ide-session-idle--filter-advice
+           (lambda (&rest _args) nil)
+           'mock-pipe "()")
+          (should-not activity-called))
+      (kill-buffer session-buffer))))
+
 
 (ert-deftest claude-code-ide-test-session-idle-filter-does-not-log-terminal-output ()
   "Test that terminal output observers do not log raw backend payloads."
@@ -12044,7 +12077,7 @@ connected sessions would silently break first-connect replay."
                    (lambda (&optional buffer)
                      (setq working-buffer (or buffer (current-buffer))))))
           (with-current-buffer other-buffer
-            (ghostel--events-filter 'mock-pipe "()"))
+            (ghostel--events-filter 'mock-pipe "(ignore)"))
           (should (eq working-buffer session-buffer)))
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
