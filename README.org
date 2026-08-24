@@ -9,6 +9,8 @@
 [[https://www.gnu.org/software/emacs/][file:https://img.shields.io/badge/GNU%20Emacs-28--30-blueviolet.svg]]
 [[https://www.gnu.org/licenses/gpl-3.0][file:https://img.shields.io/badge/License-GPL%20v3-blue.svg]]
 
+#+html: <p><b>Note:</b> <a href="https://yfu.tw/blog/en/open-model-harness/">https://yfu.tw/blog/en/open-model-harness/</a> — I now use =omp= (Oh My Pi), and it is the only CLI actively checked against.</p>
+
 * Overview
 
 Claude Code IDE for Emacs provides project-aware terminal sessions for Claude Code, Codex, OpenCode, Pi, and Oh My Pi, with shared session management, terminal integration, and window workflows. Claude Code additionally has native integration through the Model Context Protocol (MCP), creating a bidirectional bridge between Claude and Emacs that can leverage Emacs features—from LSP and project management to custom Elisp functions.
