@@ -9,7 +9,7 @@
 [[https://www.gnu.org/software/emacs/][file:https://img.shields.io/badge/GNU%20Emacs-28--30-blueviolet.svg]]
 [[https://www.gnu.org/licenses/gpl-3.0][file:https://img.shields.io/badge/License-GPL%20v3-blue.svg]]
 
-#+html: <p><b>Note:</b> <a href="https://yfu.tw/blog/en/open-model-harness/">https://yfu.tw/blog/en/open-model-harness/</a> — I now use =omp= (Oh My Pi), and it is the only CLI actively checked against.</p>
+*Note:* [[https://yfu.tw/blog/en/open-model-harness/]] — I now use =omp= (Oh My Pi), and it is the only CLI actively checked against.
 
 * Overview
 
