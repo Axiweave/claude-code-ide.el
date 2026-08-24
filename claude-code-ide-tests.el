@@ -9534,6 +9534,130 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
              (url (alist-get 'url emacs-tools)))
         (should (equal url "http://localhost:12345/mcp/my-session-123"))))))
 
+;;; SSE Selection-Sync Server Tests (omp)
+
+(ert-deftest claude-code-ide-mcp-sse-test-frame-endpoint ()
+  "Test framing a named SSE event."
+  (should (equal (claude-code-ide-mcp-sse--frame "endpoint" "/messages/7")
+                 "event: endpoint\ndata: /messages/7\n\n")))
+
+(ert-deftest claude-code-ide-mcp-sse-test-frame-message ()
+  "Test framing an anonymous SSE data event."
+  (should (equal (claude-code-ide-mcp-sse--frame nil "{\"a\":1}")
+                 "data: {\"a\":1}\n\n")))
+
+(ert-deftest claude-code-ide-mcp-sse-test-lockfile-content ()
+  "Test the lockfile content alist advertises the sse transport and url."
+  (let ((content (claude-code-ide-mcp-sse--lockfile-content 4242)))
+    (should (equal (alist-get 'transport content) "sse"))
+    (should (equal (alist-get 'url content) "http://127.0.0.1:4242/sse"))
+    (should (equal (alist-get 'pid content) (emacs-pid)))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-initialize-result ()
+  "Test the initialize result declares no capabilities."
+  (let ((result (claude-code-ide-mcp-sse--initialize-result)))
+    (should (equal (alist-get 'protocolVersion result) claude-code-ide-mcp-version))
+    (should (equal (let ((json-encoding-pretty-print nil))
+                     (json-encode (alist-get 'capabilities result)))
+                   "{}"))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-dispatch-initialize ()
+  "Test dispatching `initialize' and `notifications/initialized'."
+  (let (sent)
+    (cl-letf (((symbol-function 'claude-code-ide-mcp-sse--send)
+               (lambda (session-id message) (push (cons session-id message) sent))))
+      (claude-code-ide-mcp-sse--dispatch
+       "sid" '((jsonrpc . "2.0") (id . 1) (method . "initialize")))
+      (should (alist-get 'result (cdr (car sent))))
+      (setq sent nil)
+      (claude-code-ide-mcp-sse--dispatch
+       "sid" '((jsonrpc . "2.0") (method . "notifications/initialized")))
+      (let ((request (cdr (car sent))))
+        (should (equal (alist-get 'method request) "roots/list"))
+        (should (equal (alist-get 'id request) "emacs-roots-sid"))))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-session-wants-file-p ()
+  "Test root containment filtering."
+  (should (claude-code-ide-mcp-sse--session-wants-file-p '(:root nil) "/tmp/anything.el"))
+  (should (claude-code-ide-mcp-sse--session-wants-file-p '(:root "/tmp/repo/") "/tmp/repo/main.el"))
+  (should-not (claude-code-ide-mcp-sse--session-wants-file-p '(:root "/tmp/repo/") "/tmp/sibling/main.el")))
+
+(ert-deftest claude-code-ide-mcp-sse-test-flush-selection-dedupes ()
+  "Test an unchanged point sends once; a moved point sends again."
+  (let* ((file (make-temp-file "sse-test-"))
+         (buf (find-file-noselect file)))
+    (unwind-protect
+        (with-current-buffer buf
+          (insert "line one\nline two\n")
+          (setq claude-code-ide-mcp-sse--last-state nil
+                claude-code-ide-mcp-sse--last-payload nil
+                claude-code-ide-mcp-sse--last-file nil)
+          (let ((count 0))
+            (cl-letf (((symbol-function 'claude-code-ide-mcp-sse--broadcast-selection)
+                       (lambda () (cl-incf count))))
+              (goto-char (point-min))
+              (claude-code-ide-mcp-sse--flush-selection (current-buffer))
+              (claude-code-ide-mcp-sse--flush-selection (current-buffer))
+              (should (= count 1))
+              (goto-char (point-max))
+              (claude-code-ide-mcp-sse--flush-selection (current-buffer))
+              (should (= count 2)))))
+      (kill-buffer buf)
+      (delete-file file))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-flush-selection-caches-without-sessions ()
+  "Test the selection cache stays current even with no connected sessions.
+This is the regression guard for the replay path: gating tracking on
+connected sessions would silently break first-connect replay."
+  (let* ((file (make-temp-file "sse-test-"))
+         (buf (find-file-noselect file)))
+    (unwind-protect
+        (with-current-buffer buf
+          (insert "hello\n")
+          (clrhash claude-code-ide-mcp-sse--sessions)
+          (setq claude-code-ide-mcp-sse--last-state nil
+                claude-code-ide-mcp-sse--last-payload nil
+                claude-code-ide-mcp-sse--last-file nil)
+          (claude-code-ide-mcp-sse--flush-selection (current-buffer))
+          (should claude-code-ide-mcp-sse--last-payload)
+          (should (equal claude-code-ide-mcp-sse--last-file (buffer-file-name))))
+      (kill-buffer buf)
+      (delete-file file))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-apply-roots-decodes-utf8 ()
+  "Test `roots/list' URI decoding handles non-ASCII paths."
+  (let ((claude-code-ide-mcp-sse--sessions (make-hash-table :test 'equal))
+        (claude-code-ide-mcp-sse--last-payload nil)
+        (claude-code-ide-mcp-sse--last-file nil))
+    (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (claude-code-ide-mcp-sse--apply-roots
+     "sid"
+     (list (cons 'roots (vector (list (cons 'uri "file:///tmp/pr%C3%B6ject/"))))))
+    (should (string-prefix-p
+             (plist-get (gethash "sid" claude-code-ide-mcp-sse--sessions) :root)
+             "/tmp/pröject/main.el"))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-sweep-stale-lockfiles ()
+  "Test the sweep removes dead-pid and unparsable lockfiles, keeps the rest."
+  (let* ((dir (file-name-as-directory (make-temp-file "sse-lockfiles-" t)))
+         (claude-code-ide-mcp-sse-lockfile-directory dir))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "emacs-999999.json" dir)
+            (insert (json-encode `((pid . 999999)))))
+          (with-temp-file (expand-file-name (format "emacs-%d.json" (emacs-pid)) dir)
+            (insert (json-encode `((pid . ,(emacs-pid))))))
+          (with-temp-file (expand-file-name "emacs-truncated.json" dir)
+            (insert "{\"pid\":"))
+          (with-temp-file (expand-file-name "vscode.json" dir)
+            (insert (json-encode `((pid . 999999)))))
+          (claude-code-ide-mcp-sse--sweep-stale-lockfiles)
+          (should-not (file-exists-p (expand-file-name "emacs-999999.json" dir)))
+          (should-not (file-exists-p (expand-file-name "emacs-truncated.json" dir)))
+          (should (file-exists-p (expand-file-name (format "emacs-%d.json" (emacs-pid)) dir)))
+          (should (file-exists-p (expand-file-name "vscode.json" dir))))
+      (delete-directory dir t))))
+
 ;;; Emacs Tools Tests
 
 (ert-deftest claude-code-ide-emacs-tools-test-imenu-list-symbols ()

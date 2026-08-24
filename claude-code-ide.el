@@ -68,6 +68,7 @@
 (require 'claude-code-ide-debug)
 (require 'claude-code-ide-manager)
 (require 'claude-code-ide-mcp)
+(require 'claude-code-ide-mcp-sse-server)
 (require 'claude-code-ide-session)
 (require 'claude-code-ide-session-idle)
 (require 'claude-code-ide-transient)
@@ -1606,6 +1607,7 @@ Returns a cons cell of (buffer . process) on success."
 
 (defun claude-code-ide--create-pi-terminal-session (buffer-name working-dir _port continue resume session-id)
   "Create a new terminal session for Pi or Oh My Pi."
+  (claude-code-ide-mcp-sse-ensure-server)
   (let ((cmd (claude-code-ide--build-pi-command continue resume session-id))
         (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name))))
     (claude-code-ide-debug "Session ID: %s" session-id)
