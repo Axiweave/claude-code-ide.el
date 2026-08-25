@@ -10726,6 +10726,118 @@ connected sessions would silently break first-connect replay."
       (with-current-buffer file-buf (setq buffer-file-name nil))
       (kill-buffer file-buf))))
 
+(ert-deftest claude-code-ide-test-send-current-file-falls-back-to-visible-session ()
+  "Test send-current-file falls back to any visible session buffer
+when the current file has no project and no project-associated session."
+  (let ((sent-string nil)
+        (sent-in-buffer nil)
+        (visible-buf (generate-new-buffer "*test-visible-session*"))
+        (source-buf (generate-new-buffer "test-source-no-project")))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-buf
+            (setq buffer-file-name "/tmp/outside-project/notes.el"))
+          (let ((session (claude-code-ide-session-create
+                          :id "visible-session"
+                          :directory "/tmp/some-other-project/"
+                          :buffer visible-buf)))
+            (puthash "visible-session" session claude-code-ide--sessions)
+            (set-window-buffer (split-window-right) visible-buf)
+            (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                       (lambda (&optional _dir) "*test-claude-buffer*"))
+                      ((symbol-function 'claude-code-ide--terminal-send-string)
+                       (lambda (str &optional _paste)
+                         (setq sent-string str
+                               sent-in-buffer (current-buffer))))
+                      ((symbol-function 'project-current)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                       (lambda () nil))
+                      ((symbol-function 'claude-code-ide--get-session-buffer)
+                       (lambda (&optional _dir) nil)))
+              (with-current-buffer source-buf
+                (claude-code-ide-send-current-file)))
+            (should (equal sent-string "@/tmp/outside-project/notes.el "))
+            (should (eq sent-in-buffer visible-buf))
+            (remhash "visible-session" claude-code-ide--sessions)))
+      (with-current-buffer source-buf (setq buffer-file-name nil))
+      (when-let ((win (get-buffer-window visible-buf)))
+        (unless (one-window-p t) (delete-window win)))
+      (kill-buffer visible-buf)
+      (kill-buffer source-buf))))
+
+(ert-deftest claude-code-ide-test-send-current-file-cross-project-uses-absolute-path ()
+  "Test send-current-file sends the absolute path when the file's
+project differs from the target session's directory."
+  (let ((sent-string nil)
+        (sent-in-buffer nil)
+        (session-buf (generate-new-buffer "*test-session-b*"))
+        (source-buf (generate-new-buffer "test-source-project-a")))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-buf
+            (setq buffer-file-name "/home/user/project-a/src/main.el"))
+          (let ((session (claude-code-ide-session-create
+                          :id "session-b"
+                          :directory "/tmp/project-b/"
+                          :buffer session-buf)))
+            (puthash "session-b" session claude-code-ide--sessions)
+            (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                       (lambda (&optional _dir) "*test-session-b*"))
+                      ((symbol-function 'claude-code-ide--terminal-send-string)
+                       (lambda (str &optional _paste)
+                         (setq sent-string str
+                               sent-in-buffer (current-buffer))))
+                      ((symbol-function 'project-current)
+                       (lambda (&rest _) '(vc . "/home/user/project-a/")))
+                      ((symbol-function 'project-root)
+                       (lambda (_) "/home/user/project-a/"))
+                      ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                       (lambda () nil))
+                      ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                       (lambda (_buf) nil)))
+              (with-current-buffer source-buf
+                (claude-code-ide-send-current-file)))
+            (should (equal sent-string "@/home/user/project-a/src/main.el "))
+            (should (eq sent-in-buffer session-buf))
+            (remhash "session-b" claude-code-ide--sessions)))
+      (with-current-buffer source-buf (setq buffer-file-name nil))
+      (kill-buffer session-buf)
+      (kill-buffer source-buf))))
+
+(ert-deftest claude-code-ide-test-send-current-file-relative-to-session-directory ()
+  "Test send-current-file sends a relative path when the file lies
+inside the target session's directory."
+  (let ((sent-string nil)
+        (session-buf (generate-new-buffer "*test-session-same*"))
+        (source-buf (generate-new-buffer "test-source-same-project")))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-buf
+            (setq buffer-file-name "/home/user/project/src/main.el"))
+          (let ((session (claude-code-ide-session-create
+                          :id "session-same"
+                          :directory "/home/user/project/"
+                          :buffer session-buf)))
+            (puthash "session-same" session claude-code-ide--sessions)
+            (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+                       (lambda (&optional _dir) "*test-session-same*"))
+                      ((symbol-function 'claude-code-ide--terminal-send-string)
+                       (lambda (str &optional _paste) (setq sent-string str)))
+                      ((symbol-function 'project-current)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                       (lambda () nil))
+                      ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                       (lambda (_buf) nil)))
+              (with-current-buffer source-buf
+                (claude-code-ide-send-current-file)))
+            (should (equal sent-string "@src/main.el "))
+            (remhash "session-same" claude-code-ide--sessions)))
+      (with-current-buffer source-buf (setq buffer-file-name nil))
+      (kill-buffer session-buf)
+      (kill-buffer source-buf))))
+
 (ert-deftest claude-code-ide-test-send-current-file-line-reference ()
   "Test send-current-file-line-reference sends an absolute path by default."
   (let ((sent-string nil))

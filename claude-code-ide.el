@@ -628,9 +628,48 @@ whitespace, and always appends a trailing space."
    reference-body
    " "))
 
+(defun claude-code-ide--any-visible-session-buffer ()
+  "Return a live Claude Code session buffer with a window on this frame.
+Returns nil if no session buffer currently has a visible window."
+  (let (found)
+    (maphash (lambda (_id session)
+               (unless found
+                 (let ((buffer (claude-code-ide-session-buffer session)))
+                   (when (and buffer (buffer-live-p buffer) (get-buffer-window buffer))
+                     (setq found buffer)))))
+             claude-code-ide--sessions)
+    found))
+
+(defun claude-code-ide--reference-target-buffer ()
+  "Return the session buffer a file reference would be sent to, or nil.
+Prefers the project-associated session, then any session buffer
+visible on this frame."
+  (or (claude-code-ide--get-session-buffer)
+      (claude-code-ide--any-visible-session-buffer)))
+
+(defun claude-code-ide--file-reference-path (file &optional target-buffer)
+  "Return FILE formatted for a reference sent to TARGET-BUFFER's session.
+FILE is an absolute path.  Returns a path relative to the target
+session's directory when FILE lies inside it; otherwise the absolute
+path.  When the target session is unknown, falls back to the current
+project root.  TARGET-BUFFER defaults to the resolved reference target."
+  (let* ((target (or target-buffer (claude-code-ide--reference-target-buffer)))
+         (session (and target (claude-code-ide--session-for-buffer target)))
+         (root (if session
+                   (claude-code-ide-session-directory session)
+                 (when-let ((project (project-current)))
+                   (project-root project))))
+         (relative (and root (file-relative-name file root))))
+    (if (and relative (not (string-prefix-p "../" relative)))
+        relative
+      file)))
+
 (defun claude-code-ide--send-reference-body (reference-body)
-  "Send REFERENCE-BODY to the visible prompt buffer or session terminal."
-  (let ((buffer (claude-code-ide--get-session-buffer)))
+  "Send REFERENCE-BODY to the visible prompt buffer or session terminal.
+Falls back to any session buffer visible on this frame when the
+current buffer has no project-associated session, e.g. when
+referencing a file that is not part of a project."
+  (let ((buffer (claude-code-ide--reference-target-buffer)))
     (if-let ((prompt-buf (claude-code-ide--find-prompt-buffer)))
         (progn
           (claude-code-ide--prompt-buffer-send-string
@@ -2290,9 +2329,11 @@ RANGE is a cons cell of 1-based start and end lines."
 ;;;###autoload
 (defun claude-code-ide-send-current-file ()
   "Send current buffer's file path with @ prefix to the Claude Code terminal.
-The path is relative to the project root.  When an evil visual
-selection or Emacs region is active, appends a line range suffix
-like #L12-14 (or #L12 for a single line).
+The path is relative to the target session's directory, or the
+absolute path when the file lies outside it (e.g. a file from a
+different project).  When an evil visual selection or Emacs region
+is active, appends a line range suffix like #L12-14 (or #L12 for a
+single line).
 When called from Dired or Treemacs, uses the file at point.
 When called from a Claude Code session buffer, uses the most
 recent visible file-visiting buffer on the current frame."
@@ -2300,19 +2341,18 @@ recent visible file-visiting buffer on the current frame."
   (let* ((context (claude-code-ide--get-file-reference-context))
          (file (car context))
          (ctx-buf (cdr context))
-         (target-buffer (claude-code-ide--get-session-buffer)))
+         (target-buffer (claude-code-ide--reference-target-buffer)))
     (unless file
       (user-error "Current buffer is not visiting a file"))
     (let ((reference-body
            (with-current-buffer (or ctx-buf (current-buffer))
-             (let* ((project (project-current t))
-                    (root (project-root project))
-                    (relative (file-relative-name file root))
+             (let* ((path (claude-code-ide--file-reference-path
+                           file target-buffer))
                     (range (when ctx-buf
                              (claude-code-ide--get-selection-line-range)))
                     (suffix (claude-code-ide--format-selection-line-suffix
                              range "#L")))
-               (concat "@" relative suffix)))))
+               (concat "@" path suffix)))))
       (if target-buffer
           (with-current-buffer target-buffer
             (claude-code-ide--send-reference-body reference-body))
@@ -2331,7 +2371,9 @@ With prefix ARG, use `read-file-name' from project root instead of
                  (file-relative-name
                   (completing-read "File: " (project-files project))
                   root)))
-         (reference-body (concat "@" file)))
+         (reference-body
+          (concat "@" (claude-code-ide--file-reference-path
+                       (expand-file-name file root)))))
     (claude-code-ide--send-reference-body reference-body)))
 
 ;;;###autoload
