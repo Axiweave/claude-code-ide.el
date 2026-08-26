@@ -9,7 +9,9 @@
 [[https://www.gnu.org/software/emacs/][file:https://img.shields.io/badge/GNU%20Emacs-28--30-blueviolet.svg]]
 [[https://www.gnu.org/licenses/gpl-3.0][file:https://img.shields.io/badge/License-GPL%20v3-blue.svg]]
 
-*Note:* [[https://yfu.tw/blog/en/open-model-harness/]] — I now use =omp= (Oh My Pi), and it is the only CLI actively checked against.
+#+begin_quote
+*Note:* [[https://yfu.tw/blog/en/open-model-harness/]] — I now use =omp= (Oh My Pi), and it is the only CLI actively checked against. Some omp-specific features (live-prompt window/cursor sync, clipboard image paste, selection-change notifications) require my fork, [[https://github.com/Axiweave/oh-my-pi][Axiweave/oh-my-pi]], rather than upstream omp.
+#+end_quote
 
 * Overview
 
