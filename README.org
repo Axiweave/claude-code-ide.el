@@ -202,6 +202,7 @@ The manager can:
 - Show repo-local sessions with branch-first labels by default, falling back to basename when detached
 - Pin sessions to keep them at the top
 - Preserve manual ordering within pinned and unpinned groups
+- Edit and pin the complete session order for one manager scope
 - Restore per-session window layouts when you switch back
 
 When a session is opened through the manager for the first time, the content area defaults to a two-column layout with =magit-status= on the left and the Claude session on the right. If =magit= is unavailable, it falls back to =dired=. Manager state can persist across Emacs restarts through =persist.el=.
@@ -222,6 +223,7 @@ You can reach the manager in two ways:
   - =n= to move to the next manager session and switch to it
   - =p= to move to the previous manager session and switch to it
   - =P= to pin or unpin the current active manager session
+  - =E= to edit and pin the complete order for the selected manager scope
   - =1..9= to switch to manager slots 1 through 9
   - =0= to switch to manager slot 10
   - =M= to focus the manager window
@@ -265,6 +267,7 @@ When point is in the manager buffer:
 - =RET= switches to the session at point
 - =SPC= switches to the session at point
 - =P= toggles pin state for the selected row
+- =E= opens the complete pin-order editor for the selected manager scope
 - =s= starts a sibling session with the current CLI; =S= starts one with explicit permissions bypass
 - =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
 - =M-p= moves the selected row up within its current pinned or unpinned group
@@ -274,6 +277,25 @@ When point is in the manager buffer:
 - =0= jumps to slot 10
 
 Pinned rows always stay above unpinned rows. Reordering only swaps items within the current bucket, so moving a pinned row never pushes it below unpinned rows.
+
+*** Pin Order Editor
+
+Press =E= in the sidebar or main transient to open the pin-order editor. You can also run =M-x claude-code-ide-manager-edit-pin-order=.
+
+The editor lists every session that was live in the selected scope when it opened. It uses one numbered row per session.
+
+- =M-p= moves the current row up and renumbers all rows
+- =M-n= moves the current row down and renumbers all rows
+- In Evil mode, use =V=, =d=, and =p= to move complete rows; stale row numbers are allowed
+- =C-c C-c= validates every opening row, pins all snapshot sessions, and applies the displayed order
+- Empty lines between rows are allowed
+- =C-c C-k= discards all edits
+
+Apply requires every opening row exactly once with unchanged visible text. It infers pin order from physical row order and ignores displayed numbers. Hidden session keys identify rows, so equal visible names remain distinct.
+
+Do not recreate rows by typing their text. Typed rows do not contain the required hidden session key.
+
+Sessions started after the editor opens stay outside its snapshot. Apply leaves those sessions unpinned, so the configured fallback sort still orders them.
 
 *** Switching Behavior
 

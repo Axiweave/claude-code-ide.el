@@ -524,6 +524,18 @@ Append the current branch when SESSION-KEY is on a named branch."
 (defvar-local claude-code-ide-manager--last-point-path nil
   "Last full path shown in the echo area for the current manager buffer.")
 
+(defvar-local claude-code-ide-manager--pin-order-scope nil
+  "Scope edited by the current pin-order buffer.")
+
+(defvar-local claude-code-ide-manager--pin-order-snapshot nil
+  "Opening pin-order snapshot as ordered (SESSION-KEY . NAME) pairs.")
+
+(defvar-local claude-code-ide-manager--pin-order-return-window nil
+  "Content window replaced by the current pin-order buffer.")
+
+(defvar-local claude-code-ide-manager--pin-order-return-buffer nil
+  "Content buffer replaced by the current pin-order buffer.")
+
 (defun claude-code-ide-manager--manager-buffer-p (&optional buffer)
   "Return non-nil when BUFFER is a manager buffer."
   (when-let ((buffer (or buffer (current-buffer))))
@@ -618,10 +630,20 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
+(define-key claude-code-ide-manager-mode-map (kbd "E") #'claude-code-ide-manager-edit-pin-order)
 (define-key claude-code-ide-manager-mode-map (kbd "r") #'claude-code-ide-manager-rename-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
+
+(defvar claude-code-ide-manager-pin-order-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'claude-code-ide-manager-pin-order-apply)
+    (define-key map (kbd "C-c C-k") #'claude-code-ide-manager-pin-order-cancel)
+    (define-key map (kbd "M-p") #'claude-code-ide-manager-pin-order-move-up)
+    (define-key map (kbd "M-n") #'claude-code-ide-manager-pin-order-move-down)
+    map)
+  "Keymap for `claude-code-ide-manager-pin-order-mode'.")
 (dotimes (index 10)
   (let ((slot (if (= index 9) 10 (1+ index))))
     (define-key
@@ -649,6 +671,11 @@ scope when it is visible; otherwise return the first visible scope."
   (add-hook 'post-command-hook #'claude-code-ide-manager--show-point-path nil t)
   (when (featurep 'hl-line)
     (hl-line-mode -1)))
+
+(define-derived-mode claude-code-ide-manager-pin-order-mode text-mode
+  "CC-Pin-Order"
+  "Major mode for editing the complete manager pin order."
+  (setq truncate-lines t))
 
 (defun claude-code-ide-manager--serialize-item (item)
   "Convert manager ITEM to a persistable plist."
@@ -1265,6 +1292,235 @@ This mirrors mouse hover text for keyboard navigation in the manager."
           (claude-code-ide-manager--sorted-items
            (claude-code-ide-manager--scope-items scope))))
 
+(defun claude-code-ide-manager--item-visible-name (item)
+  "Return ITEM's visible name in the manager."
+  (if (or claude-code-ide-manager-show-session-order
+          (claude-code-ide-manager-item-custom-name item))
+      (claude-code-ide-manager-item-display-name item)
+    (claude-code-ide-manager--replace-display-suffix
+     (claude-code-ide-manager-item-display-name item)
+     (format "%s" (claude-code-ide-manager-item-order item))
+     nil)))
+
+(defun claude-code-ide-manager--render-pin-order-editor (snapshot)
+  "Render ordered SNAPSHOT rows in the current pin-order buffer."
+  (erase-buffer)
+  (cl-loop for (session-key . name) in snapshot
+           for index from 1
+           do
+           (insert (format "%d. " index))
+           (let ((name-start (point)))
+             (insert name)
+             (add-text-properties
+              name-start (point)
+              (list 'claude-code-ide-manager-session-key session-key
+                    'rear-nonsticky
+                    '(claude-code-ide-manager-session-key))))
+           (insert "\n"))
+  (goto-char (point-min)))
+
+(defun claude-code-ide-manager--pin-order-renumber ()
+  "Renumber each pin-order row from top to bottom."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((index 1))
+      (while (< (point) (point-max))
+        (unless (looking-at "[0-9]+\\.")
+          (user-error "Cannot renumber malformed row %d" index))
+        (replace-match (format "%d." index) t t)
+        (setq index (1+ index))
+        (forward-line 1)))))
+
+(defun claude-code-ide-manager--pin-order-move-row (direction)
+  "Move the current pin-order row in DIRECTION."
+  (let* ((current-start (line-beginning-position))
+         (current-end (line-beginning-position 2))
+         (neighbor-start
+          (if (< direction 0)
+              (line-beginning-position 0)
+            current-end))
+         (neighbor-end
+          (if (< direction 0)
+              current-start
+            (save-excursion
+              (goto-char neighbor-start)
+              (line-beginning-position 2)))))
+    (when (if (< direction 0)
+              (< neighbor-start current-start)
+            (< neighbor-start (point-max)))
+      (let* ((region-start (min current-start neighbor-start))
+             (region-end (max current-end neighbor-end))
+             (current-row
+              (buffer-substring current-start current-end))
+             (neighbor-row
+              (buffer-substring neighbor-start neighbor-end))
+             (moved-start
+              (if (< direction 0)
+                  region-start
+                (+ region-start (length neighbor-row))))
+             marker)
+        (atomic-change-group
+          (delete-region region-start region-end)
+          (goto-char region-start)
+          (if (< direction 0)
+              (insert current-row neighbor-row)
+            (insert neighbor-row current-row))
+          (setq marker (copy-marker moved-start))
+          (claude-code-ide-manager--pin-order-renumber))
+        (goto-char marker)
+        (set-marker marker nil)
+        (beginning-of-line)))))
+
+(defun claude-code-ide-manager-pin-order-move-up ()
+  "Move the current pin-order row up."
+  (interactive)
+  (claude-code-ide-manager--pin-order-move-row -1))
+
+(defun claude-code-ide-manager-pin-order-move-down ()
+  "Move the current pin-order row down."
+  (interactive)
+  (claude-code-ide-manager--pin-order-move-row 1))
+
+(defun claude-code-ide-manager--validate-pin-order-editor ()
+  "Validate the current pin-order buffer and return ordered session keys."
+  (let* ((snapshot claude-code-ide-manager--pin-order-snapshot)
+         (expected-count (length snapshot))
+         (actual-count
+          (count-matches "^.+$" (point-min) (point-max)))
+         (seen (make-hash-table :test 'equal))
+         keys)
+    (unless (= actual-count expected-count)
+      (user-error "Expected %d rows, found %d"
+                  expected-count actual-count))
+    (save-excursion
+      (goto-char (point-min))
+      (cl-loop for row-number from 1 to expected-count
+               do
+               (while (looking-at-p "^$")
+                 (forward-line 1))
+               (unless (looking-at "[0-9]+\\. \\(.+\\)$")
+                 (user-error "Malformed row %d" row-number))
+               (let* ((name (match-string-no-properties 1))
+                      (name-start (match-beginning 1))
+                      (name-end (match-end 1))
+                      (session-key
+                       (get-text-property
+                        name-start
+                        'claude-code-ide-manager-session-key))
+                      (snapshot-row (and session-key
+                                         (assoc session-key snapshot))))
+                 (unless
+                     (and session-key
+                          (equal
+                           (next-single-property-change
+                            name-start
+                            'claude-code-ide-manager-session-key
+                            nil name-end)
+                           name-end)
+                          (equal
+                           (get-text-property
+                            (1- name-end)
+                            'claude-code-ide-manager-session-key)
+                           session-key))
+                   (user-error "Row %d has no complete session identity"
+                               row-number))
+                 (unless snapshot-row
+                   (user-error "Row %d has a foreign session identity"
+                               row-number))
+                 (when (gethash session-key seen)
+                   (user-error "Session appears more than once"))
+                 (unless (equal name (cdr snapshot-row))
+                   (user-error "Row %d session name changed"
+                               row-number))
+                 (puthash session-key t seen)
+                 (push session-key keys))
+               (forward-line 1)))
+    (dolist (snapshot-row snapshot)
+      (unless (gethash (car snapshot-row) seen)
+        (user-error "A snapshot session is missing")))
+    (let ((live-visible-keys
+           (mapcar
+            #'claude-code-ide-session-id
+            (claude-code-ide-manager--scope-sessions
+             claude-code-ide-manager--pin-order-scope
+             (claude-code-ide-manager--live-sessions)))))
+      (dolist (snapshot-row snapshot)
+        (unless (member (car snapshot-row) live-visible-keys)
+          (user-error "A snapshot session is no longer live in this scope"))))
+    (nreverse keys)))
+
+(defun claude-code-ide-manager-pin-order-apply ()
+  "Validate and apply the complete pinned session order."
+  (interactive)
+  (let* ((scope claude-code-ide-manager--pin-order-scope)
+         (session-keys
+          (claude-code-ide-manager--validate-pin-order-editor)))
+    (claude-code-ide-manager-refresh-items scope)
+    (let ((items
+           (mapcar
+            (lambda (session-key)
+              (claude-code-ide-manager--item-by-session-key
+               scope session-key))
+            session-keys)))
+      (unless (cl-every #'identity items)
+        (user-error "A snapshot session vanished before apply"))
+      (cl-loop for item in items
+               for order-key from 1
+               do
+               (setf (claude-code-ide-manager-item-pinned item) t
+                     (claude-code-ide-manager-item-order-key item) order-key))
+      (claude-code-ide-manager--save-state)
+      (claude-code-ide-manager--render scope)
+      (set-buffer-modified-p nil)
+      (claude-code-ide-manager--close-pin-order-editor))))
+
+(defun claude-code-ide-manager-pin-order-cancel ()
+  "Discard pin-order edits and close the editor."
+  (interactive)
+  (set-buffer-modified-p nil)
+  (claude-code-ide-manager--close-pin-order-editor))
+
+(defun claude-code-ide-manager--close-pin-order-editor ()
+  "Close the current pin-order editor and restore its content buffer."
+  (let ((editor (current-buffer))
+        (return-window claude-code-ide-manager--pin-order-return-window)
+        (return-buffer claude-code-ide-manager--pin-order-return-buffer))
+    (when (and (window-live-p return-window)
+               (buffer-live-p return-buffer))
+      (set-window-buffer return-window return-buffer)
+      (select-window return-window))
+    (kill-buffer editor)))
+
+;;;###autoload
+(defun claude-code-ide-manager-edit-pin-order ()
+  "Edit the complete pinned session order for the selected manager scope."
+  (interactive)
+  (let* ((scope (claude-code-ide-manager--scope-for-command))
+         (items (claude-code-ide-manager-refresh-items scope))
+         (items (claude-code-ide-manager--sorted-items items)))
+    (unless items
+      (user-error "No live sessions in the selected manager scope"))
+    (let* ((snapshot
+            (mapcar
+             (lambda (item)
+               (cons (claude-code-ide-manager-item-session-key item)
+                     (claude-code-ide-manager--item-visible-name item)))
+             items))
+           (window (claude-code-ide-manager--content-window))
+           (return-buffer (window-buffer window))
+           (editor (generate-new-buffer "*claude-code-manager-pin-order*")))
+      (with-current-buffer editor
+        (claude-code-ide-manager-pin-order-mode)
+        (setq-local claude-code-ide-manager--pin-order-scope scope
+                    claude-code-ide-manager--pin-order-snapshot snapshot
+                    claude-code-ide-manager--pin-order-return-window window
+                    claude-code-ide-manager--pin-order-return-buffer return-buffer)
+        (claude-code-ide-manager--render-pin-order-editor snapshot))
+      (set-window-buffer window editor)
+      (select-window window)
+      (message
+       "C-c C-c applies; C-c C-k cancels; M-p and M-n move rows."))))
+
 (defun claude-code-ide-manager--insert-item (scope item slot)
   "Insert ITEM into the current buffer using SLOT for SCOPE."
   (let* ((start (point))
@@ -1283,14 +1539,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
     (insert " ")
     (insert (if (numberp slot) (format "%d." slot) " -"))
     (insert " ")
-    (insert
-     (if (or claude-code-ide-manager-show-session-order
-             (claude-code-ide-manager-item-custom-name item))
-         (claude-code-ide-manager-item-display-name item)
-       (claude-code-ide-manager--replace-display-suffix
-        (claude-code-ide-manager-item-display-name item)
-        (format "%s" (claude-code-ide-manager-item-order item))
-        nil)))
+    (insert (claude-code-ide-manager--item-visible-name item))
     (insert "\n")
     (add-text-properties
      start (point)

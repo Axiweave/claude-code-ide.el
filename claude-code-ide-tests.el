@@ -13421,6 +13421,486 @@ sessions back to working every few seconds with no real output."
       (should claude-code-ide-session-idle-p)
       (should-not claude-code-ide-session-working-p))))
 
+(ert-deftest claude-code-ide-test-manager-pin-order-renders-numbered-rows-with-hidden-keys ()
+  "The pin-order editor renders stable hidden identities."
+  (with-temp-buffer
+    (claude-code-ide-manager-pin-order-mode)
+    (let ((snapshot '(("one" . "same")
+                      ("two" . "same"))))
+      (claude-code-ide-manager--render-pin-order-editor snapshot)
+      (should (equal (buffer-string) "1. same\n2. same\n"))
+      (goto-char (point-min))
+      (dolist (expected-key '("one" "two"))
+        (should (looking-at "[0-9]+\\. same$"))
+        (let ((name-start (+ (line-beginning-position) 3))
+              (name-end (line-end-position)))
+          (should-not
+           (get-text-property
+            (line-beginning-position)
+            'claude-code-ide-manager-session-key))
+          (should
+           (equal
+            (get-text-property
+             name-start 'claude-code-ide-manager-session-key)
+            expected-key))
+          (should
+           (equal
+            (next-single-property-change
+             name-start 'claude-code-ide-manager-session-key nil name-end)
+            name-end))
+          (should
+           (memq 'claude-code-ide-manager-session-key
+                 (get-text-property (1- name-end) 'rear-nonsticky))))
+        (forward-line 1)))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-reorders-duplicate-labels ()
+  "Equal visible labels keep their identities through row moves."
+  (with-temp-buffer
+    (claude-code-ide-manager-pin-order-mode)
+    (claude-code-ide-manager--render-pin-order-editor
+     '(("one" . "same")
+       ("two" . "same")))
+    (claude-code-ide-manager-pin-order-move-down)
+    (should (equal (buffer-string) "1. same\n2. same\n"))
+    (goto-char (point-min))
+    (should
+     (equal
+      (get-text-property 4 'claude-code-ide-manager-session-key)
+      "two"))
+    (forward-line 1)
+    (should
+     (equal
+      (get-text-property
+       (+ (line-beginning-position) 3)
+       'claude-code-ide-manager-session-key)
+      "one"))
+    (claude-code-ide-manager-pin-order-move-up)
+    (goto-char (point-min))
+    (should
+     (equal
+      (get-text-property 4 'claude-code-ide-manager-session-key)
+      "one"))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-preserves-linewise-kill-yank-identities ()
+  "Linewise kill and yank keep each row's session identity."
+  (with-temp-buffer
+    (claude-code-ide-manager-pin-order-mode)
+    (claude-code-ide-manager--render-pin-order-editor
+     '(("one" . "same")
+       ("two" . "same")
+       ("three" . "last")))
+    (let ((kill-ring nil)
+          (select-enable-clipboard nil)
+          (interprogram-cut-function nil)
+          (interprogram-paste-function nil))
+      (kill-region (line-beginning-position)
+                   (line-beginning-position 2))
+      (goto-char (point-max))
+      (yank))
+    (should (equal (buffer-string)
+                   "2. same\n3. last\n1. same\n"))
+    (goto-char (point-min))
+    (dolist (expected-key '("two" "three" "one"))
+      (should
+       (equal
+        (get-text-property
+         (+ (line-beginning-position) 3)
+         'claude-code-ide-manager-session-key)
+        expected-key))
+      (forward-line 1))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-infers-order-from-stale-numbers ()
+  "Validation uses physical row order and ignores stale row numbers."
+  (let ((sessions
+         (list (claude-code-ide-session-create :id "one")
+               (claude-code-ide-session-create :id "two"))))
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope
+                  '(:type global)
+                  claude-code-ide-manager--pin-order-snapshot
+                  '(("one" . "same")
+                    ("two" . "same")))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (let ((kill-ring nil)
+            (select-enable-clipboard nil)
+            (interprogram-cut-function nil)
+            (interprogram-paste-function nil))
+        (kill-region (line-beginning-position)
+                     (line-beginning-position 2))
+        (goto-char (point-max))
+        (yank))
+      (should (equal (buffer-string) "2. same\n1. same\n"))
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager--live-sessions)
+            (lambda () sessions)))
+        (should
+         (equal
+          (claude-code-ide-manager--validate-pin-order-editor)
+          '("two" "one")))))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-allows-empty-lines ()
+  "Validation ignores empty lines between session rows."
+  (let ((sessions
+         (list (claude-code-ide-session-create :id "one")
+               (claude-code-ide-session-create :id "two"))))
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope
+                  '(:type global)
+                  claude-code-ide-manager--pin-order-snapshot
+                  '(("one" . "one")
+                    ("two" . "two")))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (goto-char (point-min))
+      (forward-line 1)
+      (insert "\n")
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager--live-sessions)
+            (lambda () sessions)))
+        (should
+         (equal
+          (claude-code-ide-manager--validate-pin-order-editor)
+          '("one" "two")))))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-apply-pins-snapshot-in-exact-order ()
+  "Apply pins every snapshot row in its physical order."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (one (make-claude-code-ide-manager-item
+               :session-key "one" :display-name "same"
+               :pinned nil :order-key 9))
+         (two (make-claude-code-ide-manager-item
+               :session-key "two" :display-name "same"
+               :pinned nil :order-key 8))
+         (items (list one two))
+         (sessions
+          (list (claude-code-ide-session-create :id "one")
+                (claude-code-ide-session-create :id "two")))
+         (refresh-count 0)
+         (save-count 0)
+         (render-count 0)
+         closed)
+    (claude-code-ide-manager--set-scope-items scope items)
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope scope
+                  claude-code-ide-manager--pin-order-snapshot
+                  '(("one" . "same")
+                    ("two" . "same")))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (claude-code-ide-manager-pin-order-move-down)
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager--live-sessions)
+            (lambda () sessions))
+           ((symbol-function 'claude-code-ide-manager-refresh-items)
+            (lambda (&optional _scope _state-loaded-p)
+              (cl-incf refresh-count)
+              items))
+           ((symbol-function 'claude-code-ide-manager--save-state)
+            (lambda () (cl-incf save-count)))
+           ((symbol-function 'claude-code-ide-manager--render)
+            (lambda (&optional _scope) (cl-incf render-count)))
+           ((symbol-function
+             'claude-code-ide-manager--close-pin-order-editor)
+            (lambda () (setq closed t))))
+        (claude-code-ide-manager-pin-order-apply)))
+    (should closed)
+    (should (= refresh-count 1))
+    (should (= save-count 1))
+    (should (= render-count 1))
+    (should (claude-code-ide-manager-item-pinned two))
+    (should (= (claude-code-ide-manager-item-order-key two) 1))
+    (should (claude-code-ide-manager-item-pinned one))
+    (should (= (claude-code-ide-manager-item-order-key one) 2))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-cancel-restores-content-without-mutation ()
+  "Cancel restores the content buffer without changing manager items."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((item (make-claude-code-ide-manager-item
+                :session-key "one" :display-name "one"
+                :pinned nil :order-key 7))
+         (content-buffer (generate-new-buffer "*cc-pin-order-content*"))
+         (editor (generate-new-buffer "*cc-pin-order-cancel*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (let ((window (selected-window)))
+            (with-current-buffer editor
+              (claude-code-ide-manager-pin-order-mode)
+              (setq-local
+               claude-code-ide-manager--pin-order-snapshot
+               '(("one" . "one"))
+               claude-code-ide-manager--pin-order-return-window window
+               claude-code-ide-manager--pin-order-return-buffer
+               content-buffer)
+              (claude-code-ide-manager--render-pin-order-editor
+               claude-code-ide-manager--pin-order-snapshot))
+            (set-window-buffer window editor)
+            (select-window window)
+            (with-current-buffer editor
+              (claude-code-ide-manager-pin-order-cancel))
+            (should-not (buffer-live-p editor))
+            (should (eq (window-buffer window) content-buffer))
+            (should-not (claude-code-ide-manager-item-pinned item))
+            (should (= (claude-code-ide-manager-item-order-key item) 7))))
+      (when (buffer-live-p editor)
+        (kill-buffer editor))
+      (when (buffer-live-p content-buffer)
+        (kill-buffer content-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-rejects-malformed-syntax ()
+  "Malformed rows fail without closing the editor."
+  (let ((sessions
+         (list (claude-code-ide-session-create :id "one")
+               (claude-code-ide-session-create :id "two"))))
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope
+                  '(:type global)
+                  claude-code-ide-manager--pin-order-snapshot
+                  '(("one" . "one")
+                    ("two" . "two")))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (delete-char 1)
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager--live-sessions)
+            (lambda () sessions)))
+        (should-error
+         (claude-code-ide-manager--validate-pin-order-editor)
+         :type 'user-error)
+        (should (buffer-live-p (current-buffer)))))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-rejects-invalid-row-identities ()
+  "Missing, copied, foreign, and changed rows fail validation."
+  (let ((sessions
+         (list (claude-code-ide-session-create :id "one")
+               (claude-code-ide-session-create :id "two"))))
+    (dolist (variant '(missing-row duplicate-key missing-key
+                                   foreign-key changed-label))
+      (with-temp-buffer
+        (claude-code-ide-manager-pin-order-mode)
+        (setq-local claude-code-ide-manager--pin-order-scope
+                    '(:type global)
+                    claude-code-ide-manager--pin-order-snapshot
+                    '(("one" . "same")
+                      ("two" . "same")))
+        (claude-code-ide-manager--render-pin-order-editor
+         claude-code-ide-manager--pin-order-snapshot)
+        (pcase variant
+          ('missing-row
+           (goto-char (point-min))
+           (forward-line 1)
+           (delete-region (line-beginning-position) (point-max)))
+          ('duplicate-key
+           (goto-char (point-min))
+           (forward-line 1)
+           (put-text-property
+            (+ (line-beginning-position) 3) (line-end-position)
+            'claude-code-ide-manager-session-key "one"))
+          ('missing-key
+           (remove-text-properties
+            (+ (line-beginning-position) 3) (line-end-position)
+            '(claude-code-ide-manager-session-key nil)))
+          ('foreign-key
+           (put-text-property
+            (+ (line-beginning-position) 3) (line-end-position)
+            'claude-code-ide-manager-session-key "foreign"))
+          ('changed-label
+           (subst-char-in-region
+            (+ (line-beginning-position) 3)
+            (+ (line-beginning-position) 4)
+            ?s ?x)))
+        (cl-letf
+            (((symbol-function 'claude-code-ide-manager--live-sessions)
+              (lambda () sessions)))
+          (should-error
+           (claude-code-ide-manager--validate-pin-order-editor)
+           :type 'user-error))))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-rejects-vanished-session-atomically ()
+  "A vanished snapshot session prevents all manager mutation."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (one (make-claude-code-ide-manager-item
+               :session-key "one" :display-name "one"
+               :pinned nil :order-key 9))
+         (two (make-claude-code-ide-manager-item
+               :session-key "two" :display-name "two"
+               :pinned nil :order-key 8))
+         (items (list one two))
+         (sessions (list (claude-code-ide-session-create :id "one")))
+         (refresh-count 0)
+         (save-count 0)
+         (render-count 0)
+         closed)
+    (claude-code-ide-manager--set-scope-items scope items)
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope scope
+                  claude-code-ide-manager--pin-order-snapshot
+                  '(("one" . "one")
+                    ("two" . "two")))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager--live-sessions)
+            (lambda () sessions))
+           ((symbol-function 'claude-code-ide-manager-refresh-items)
+            (lambda (&optional _scope _state-loaded-p)
+              (cl-incf refresh-count)
+              items))
+           ((symbol-function 'claude-code-ide-manager--save-state)
+            (lambda () (cl-incf save-count)))
+           ((symbol-function 'claude-code-ide-manager--render)
+            (lambda (&optional _scope) (cl-incf render-count)))
+           ((symbol-function
+             'claude-code-ide-manager--close-pin-order-editor)
+            (lambda () (setq closed t))))
+        (should-error
+         (claude-code-ide-manager-pin-order-apply)
+         :type 'user-error)))
+    (should (= refresh-count 0))
+    (should (= save-count 0))
+    (should (= render-count 0))
+    (should-not closed)
+    (should-not (claude-code-ide-manager-item-pinned one))
+    (should (= (claude-code-ide-manager-item-order-key one) 9))
+    (should-not (claude-code-ide-manager-item-pinned two))
+    (should (= (claude-code-ide-manager-item-order-key two) 8))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-leaves-new-sessions-on-fallback-sort ()
+  "Apply leaves post-open sessions unpinned and fallback-sorted."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (scope '(:type global))
+         (one (make-claude-code-ide-manager-item
+               :session-key "one" :display-name "one"
+               :pinned nil :order-key most-positive-fixnum))
+         (two (make-claude-code-ide-manager-item
+               :session-key "two" :display-name "two"
+               :pinned nil :order-key most-positive-fixnum))
+         (new-zeta (make-claude-code-ide-manager-item
+                    :session-key "new-zeta" :display-name "zeta"
+                    :pinned nil :order-key most-positive-fixnum))
+         (new-alpha (make-claude-code-ide-manager-item
+                     :session-key "new-alpha" :display-name "alpha"
+                     :pinned nil :order-key most-positive-fixnum))
+         (items (list one two new-zeta new-alpha))
+         (sessions
+          (mapcar
+           (lambda (session-key)
+             (claude-code-ide-session-create :id session-key))
+           '("one" "two" "new-zeta" "new-alpha"))))
+    (claude-code-ide-manager--set-scope-items scope items)
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope scope
+                  claude-code-ide-manager--pin-order-snapshot
+                  '(("one" . "one")
+                    ("two" . "two")))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (claude-code-ide-manager-pin-order-move-down)
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager--live-sessions)
+            (lambda () sessions))
+           ((symbol-function 'claude-code-ide-manager-refresh-items)
+            (lambda (&optional _scope _state-loaded-p) items))
+           ((symbol-function 'claude-code-ide-manager--save-state)
+            #'ignore)
+           ((symbol-function 'claude-code-ide-manager--render)
+            #'ignore)
+           ((symbol-function
+             'claude-code-ide-manager--close-pin-order-editor)
+            #'ignore))
+        (claude-code-ide-manager-pin-order-apply)))
+    (should-not (claude-code-ide-manager-item-pinned new-alpha))
+    (should (= (claude-code-ide-manager-item-order-key new-alpha)
+               most-positive-fixnum))
+    (should-not (claude-code-ide-manager-item-pinned new-zeta))
+    (should (= (claude-code-ide-manager-item-order-key new-zeta)
+               most-positive-fixnum))
+    (should
+     (equal
+      (mapcar #'claude-code-ide-manager-item-session-key
+              (claude-code-ide-manager--sorted-items items))
+      '("two" "one" "new-alpha" "new-zeta")))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-bindings ()
+  "The manager and main transient expose the pin-order editor."
+  (should
+   (eq (lookup-key claude-code-ide-manager-mode-map (kbd "E"))
+       'claude-code-ide-manager-edit-pin-order))
+  (should
+   (eq
+    (plist-get
+     (claude-code-ide-tests--transient-suffix-plist
+      'claude-code-ide-menu "E")
+     :command)
+    'claude-code-ide-manager-edit-pin-order)))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-opens-selected-scope-in-content-window ()
+  "The editor refreshes its scope and uses the normal content window."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type repo :git-root "/tmp/repo/"))
+         (items
+          (list
+           (make-claude-code-ide-manager-item
+            :session-key "one" :display-name "same · 1" :order 1)
+           (make-claude-code-ide-manager-item
+            :session-key "two" :display-name "same · 2" :order 2)))
+         (content-buffer (generate-new-buffer "*cc-pin-order-open-content*"))
+         (manager-buffer (claude-code-ide-manager--get-buffer scope))
+         editor
+         refreshed-scope)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer content-buffer)
+          (let* ((content-window (selected-window))
+                 (manager-window
+                  (display-buffer-in-side-window
+                   manager-buffer '((side . left)))))
+            (select-window manager-window)
+            (cl-letf
+                (((symbol-function 'claude-code-ide-manager-refresh-items)
+                  (lambda (&optional target-scope _state-loaded-p)
+                    (setq refreshed-scope target-scope)
+                    items)))
+              (claude-code-ide-manager-edit-pin-order))
+            (setq editor (current-buffer))
+            (should (eq (selected-window) content-window))
+            (should (derived-mode-p 'claude-code-ide-manager-pin-order-mode))
+            (should (equal refreshed-scope scope))
+            (should (equal claude-code-ide-manager--pin-order-scope scope))
+            (should
+             (equal claude-code-ide-manager--pin-order-snapshot
+                    '(("one" . "same")
+                      ("two" . "same"))))
+            (claude-code-ide-manager-pin-order-cancel)
+            (should-not (buffer-live-p editor))
+            (should (eq (window-buffer content-window) content-buffer))
+            (let ((claude-code-ide-manager--command-scope scope))
+              (cl-letf
+                  (((symbol-function 'claude-code-ide-manager-refresh-items)
+                    (lambda (&optional _scope _state-loaded-p) nil)))
+                (should-error
+                 (claude-code-ide-manager-edit-pin-order)
+                 :type 'user-error)))))
+      (when (buffer-live-p editor)
+        (kill-buffer editor))
+      (when (buffer-live-p content-buffer)
+        (kill-buffer content-buffer))
+      (when (buffer-live-p manager-buffer)
+        (kill-buffer manager-buffer)))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
