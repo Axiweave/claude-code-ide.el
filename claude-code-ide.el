@@ -642,10 +642,10 @@ Returns nil if no session buffer currently has a visible window."
 
 (defun claude-code-ide--reference-target-buffer ()
   "Return the session buffer a file reference would be sent to, or nil.
-Prefers the project-associated session, then any session buffer
-visible on this frame."
-  (or (claude-code-ide--get-session-buffer)
-      (claude-code-ide--any-visible-session-buffer)))
+Prefers any session buffer visible on this frame, then falls back
+to the project-associated session."
+  (or (claude-code-ide--any-visible-session-buffer)
+      (claude-code-ide--get-session-buffer)))
 
 (defun claude-code-ide--file-reference-path (file &optional target-buffer)
   "Return FILE formatted for a reference sent to TARGET-BUFFER's session.
