@@ -406,7 +406,7 @@ the target window is already visible."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-session-id order last-accessed-at custom-name)
+  id directory process buffer cli-session-id order created-at last-accessed-at custom-name)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -1705,14 +1705,16 @@ CONTINUE and RESUME select the CLI conversation mode."
             (setq mcp-tools-started-p t)
             (claude-code-ide-mcp-server-session-started
              session-id working-dir buffer)
-            (setq session
-                  (claude-code-ide-session-create
-                   :id session-id
-                   :directory working-dir
-                   :process process
-                   :buffer buffer
-                   :order (claude-code-ide--next-session-order working-dir)
-                   :last-accessed-at (float-time)))
+            (let ((created-at (float-time)))
+              (setq session
+                    (claude-code-ide-session-create
+                     :id session-id
+                     :directory working-dir
+                     :process process
+                     :buffer buffer
+                     :order (claude-code-ide--next-session-order working-dir)
+                     :created-at created-at
+                     :last-accessed-at created-at)))
             (claude-code-ide--register-session session)
             (set-process-sentinel
              process
