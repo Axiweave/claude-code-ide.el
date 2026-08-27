@@ -354,6 +354,16 @@ Ensures a clean state before each test that involves process management."
   (when (fboundp 'claude-code-ide-manager--reset-state)
     (claude-code-ide-manager--reset-state)))
 
+(defun claude-code-ide-tests--transient-suffix-plist (prefix key)
+  "Return the property list for PREFIX suffix KEY across Transient versions."
+  (let ((suffix (transient-get-suffix prefix key)))
+    (if (keywordp (cadr suffix))
+        (cdr suffix)
+      (or (cl-find-if (lambda (part)
+                        (and (consp part) (keywordp (car part))))
+                      suffix)
+          (error "Invalid Transient suffix: %S" suffix)))))
+
 (defun claude-code-ide-tests--wait-for-process (buffer)
   "Wait for the process in BUFFER to finish.
 This prevents race conditions in tests by ensuring mock processes
@@ -748,6 +758,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                 :directory "/tmp/project/"
                 :custom-name "work"
                 :order 3
+                :created-at 42
                 :display-name "project · work"
                 :secondary-text "/tmp/project/"
                 :pinned t
@@ -758,7 +769,8 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should (equal (claude-code-ide-manager-item-directory restored)
                    "/tmp/project/"))
     (should (equal (claude-code-ide-manager-item-custom-name restored) "work"))
-    (should (= (claude-code-ide-manager-item-order restored) 3))))
+    (should (= (claude-code-ide-manager-item-order restored) 3))
+    (should (= (claude-code-ide-manager-item-created-at restored) 42))))
 
 (ert-deftest claude-code-ide-test-manager-adopts-legacy-directory-state-once ()
   "The earliest live sibling receives old directory-keyed manager state."
@@ -1461,7 +1473,9 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-sorts-pinned-before-unpinned ()
   "Test pinned items sort before unpinned items."
-  (let* ((a (make-claude-code-ide-manager-item
+  (let* ((claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (a (make-claude-code-ide-manager-item
              :session-key "a" :display-name "a" :secondary-text "a"
              :pinned nil :order-key 2 :live-p t))
          (b (make-claude-code-ide-manager-item
@@ -1474,10 +1488,39 @@ have completed before cleanup.  Waits up to 5 seconds."
                            (claude-code-ide-manager--sorted-items (list a b c)))
                    '("b" "c" "a")))))
 
+(ert-deftest claude-code-ide-test-manager-global-sorts-display-names-naturally ()
+  "Global scope sorts raw display names naturally in both directions."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-sort-by 'name)
+        (claude-code-ide-manager-sort-reverse nil)
+        (scope '(:type global))
+        (items
+         (list
+          (make-claude-code-ide-manager-item
+           :session-key "session-11"
+           :directory "/tmp/a/"
+           :display-name "project · 11")
+          (make-claude-code-ide-manager-item
+           :session-key "session-2"
+           :directory "/tmp/b/"
+           :display-name "project · 2")
+          (make-claude-code-ide-manager-item
+           :session-key "session-1"
+           :directory "/tmp/c/"
+           :display-name "project · 1"))))
+    (claude-code-ide-manager--set-scope-items scope items)
+    (should (equal (claude-code-ide-manager--visible-session-keys scope)
+                   '("session-1" "session-2" "session-11")))
+    (setq claude-code-ide-manager-sort-reverse t)
+    (should (equal (claude-code-ide-manager--visible-session-keys scope)
+                   '("session-11" "session-2" "session-1")))))
+
 (ert-deftest claude-code-ide-test-manager-repo-sorts-fallback-by-display-name ()
   "Test repo scope falls back to visible label ordering."
   (claude-code-ide-tests--reset-manager-state)
   (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        (claude-code-ide-manager-sort-by 'name)
+        (claude-code-ide-manager-sort-reverse nil)
         (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-repo-sort-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-repo-sort-b" :buffer nil)))
@@ -1519,6 +1562,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test repo scope sorts numeric display-name components naturally."
   (claude-code-ide-tests--reset-manager-state)
   (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        (claude-code-ide-manager-sort-by 'name)
+        (claude-code-ide-manager-sort-reverse nil)
         (items (list (make-claude-code-ide-manager-item
                       :session-key "session-11" :display-name "main · 11"
                       :pinned nil :live-p t)
@@ -1536,6 +1581,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test version-equivalent repo labels use session keys as a tie-breaker."
   (claude-code-ide-tests--reset-manager-state)
   (let ((scope '(:type repo :git-root "/tmp/repo/"))
+        (claude-code-ide-manager-sort-by 'name)
+        (claude-code-ide-manager-sort-reverse nil)
         (items (list (make-claude-code-ide-manager-item
                       :session-key "session-b" :display-name "main · 01"
                       :pinned nil :live-p t)
@@ -1548,7 +1595,8 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-repo-sort-keeps-order-key-precedence ()
   "Test repo scope still honors explicit order keys before label sorting."
-  (let* ((scope '(:type repo :git-root "/tmp/repo/"))
+  (let* ((claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
          (a (make-claude-code-ide-manager-item
              :session-key "/tmp/repo/a"
              :display-name "zeta"
@@ -1564,8 +1612,76 @@ have completed before cleanup.  Waits up to 5 seconds."
              :order-key 2
              :live-p t)))
     (should (equal (mapcar #'claude-code-ide-manager-item-session-key
-                           (claude-code-ide-manager--sorted-items (list a b) scope))
+                           (claude-code-ide-manager--sorted-items (list a b)))
                    '("/tmp/repo/a" "/tmp/repo/b")))))
+
+(ert-deftest claude-code-ide-test-manager-sorts-by-created-at ()
+  "Manager items sort by immutable session creation time."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((claude-code-ide-manager-sort-by 'created-at)
+         (claude-code-ide-manager-sort-reverse nil)
+         (scope '(:type global))
+         (sessions
+          (list
+           (claude-code-ide-session-create
+            :id "session-30" :directory "/tmp/session-30/"
+            :order 5 :created-at 30)
+           (claude-code-ide-session-create
+            :id "session-20-b" :directory "/tmp/session-20-b/"
+            :order 4 :created-at 20)
+           (claude-code-ide-session-create
+            :id "session-missing" :directory "/tmp/session-missing/"
+            :order 3 :created-at nil)
+           (claude-code-ide-session-create
+            :id "session-10" :directory "/tmp/session-10/"
+            :order 2 :created-at 10)
+           (claude-code-ide-session-create
+            :id "session-20-a" :directory "/tmp/session-20-a/"
+            :order 1 :created-at 20)))
+         (items
+          (mapcar (lambda (session)
+                    (claude-code-ide-manager--make-item scope session))
+                  sessions)))
+    (should
+     (equal
+      (mapcar #'claude-code-ide-manager-item-session-key
+              (claude-code-ide-manager--sorted-items items))
+      '("session-missing" "session-10"
+        "session-20-a" "session-20-b" "session-30")))
+    (setq claude-code-ide-manager-sort-reverse t)
+    (should
+     (equal
+      (mapcar #'claude-code-ide-manager-item-session-key
+              (claude-code-ide-manager--sorted-items items))
+      '("session-30" "session-20-b"
+        "session-20-a" "session-10" "session-missing")))))
+
+(ert-deftest claude-code-ide-test-manager-configured-sort-keeps-precedence ()
+  "Configured reversal keeps pins and manual order ahead of its fallback."
+  (let ((claude-code-ide-manager-sort-by 'created-at)
+        (claude-code-ide-manager-sort-reverse t)
+        (items
+         (list
+          (make-claude-code-ide-manager-item
+           :session-key "fallback"
+           :created-at 20)
+          (make-claude-code-ide-manager-item
+           :session-key "order-two"
+           :created-at 30
+           :order-key 2)
+          (make-claude-code-ide-manager-item
+           :session-key "pinned"
+           :created-at 10
+           :pinned t)
+          (make-claude-code-ide-manager-item
+           :session-key "order-one"
+           :created-at 10
+           :order-key 1))))
+    (should
+     (equal
+      (mapcar #'claude-code-ide-manager-item-session-key
+              (claude-code-ide-manager--sorted-items items))
+      '("pinned" "order-one" "order-two" "fallback")))))
 
 (ert-deftest claude-code-ide-test-manager-assigns-visible-slots-1-to-10 ()
   "Test visible rows map to slot numbers in order."
@@ -6757,6 +6873,43 @@ have completed before cleanup.  Waits up to 5 seconds."
                             :command)
                  'claude-code-ide-manager-rename-at-point)))
 
+(ert-deftest claude-code-ide-test-manager-sort-commands-refresh-sidebars ()
+  "Changing either manager sort option redraws every sidebar once."
+  (let ((claude-code-ide-manager-sort-by 'name)
+        (claude-code-ide-manager-sort-reverse nil)
+        (refresh-count 0))
+    (cl-letf (((symbol-function
+                'claude-code-ide-manager--refresh-sidebar-state)
+               (lambda (&optional _scope _reassert)
+                 (setq refresh-count (1+ refresh-count)))))
+      (claude-code-ide-manager-set-sort-by 'created-at)
+      (should (eq claude-code-ide-manager-sort-by 'created-at))
+      (should (= refresh-count 1))
+      (claude-code-ide-manager-toggle-sort-reverse)
+      (should claude-code-ide-manager-sort-reverse)
+      (should (= refresh-count 2)))))
+
+(ert-deftest claude-code-ide-test-manager-sort-menu-shows-current-options ()
+  "Manager sort menu descriptions reflect the current options."
+  (let* ((claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (sort-suffix
+          (claude-code-ide-tests--transient-suffix-plist
+           'claude-code-ide-manager-sort-menu "s"))
+         (reverse-suffix
+          (claude-code-ide-tests--transient-suffix-plist
+           'claude-code-ide-manager-sort-menu "r"))
+         (sort-description (plist-get sort-suffix :description))
+         (reverse-description (plist-get reverse-suffix :description)))
+    (should (plist-get sort-suffix :transient))
+    (should (plist-get reverse-suffix :transient))
+    (should (equal (funcall sort-description) "Sort by (name)"))
+    (should (equal (funcall reverse-description) "Reverse order (OFF)"))
+    (setq claude-code-ide-manager-sort-by 'created-at)
+    (setq claude-code-ide-manager-sort-reverse t)
+    (should (equal (funcall sort-description) "Sort by (created-at)"))
+    (should (equal (funcall reverse-description) "Reverse order (ON)"))))
+
 (ert-deftest claude-code-ide-test-transient-exposes-manager-commands ()
   "Test the main transient exposes cc-manager bindings."
   (should (transient-get-suffix 'claude-code-ide-menu "t"))
@@ -6772,7 +6925,13 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (transient-get-suffix 'claude-code-ide-menu "1"))
   (should (transient-get-suffix 'claude-code-ide-menu "0"))
   (should (transient-get-suffix 'claude-code-ide-menu "M"))
-  (should (transient-get-suffix 'claude-code-ide-menu "g")))
+  (should (transient-get-suffix 'claude-code-ide-menu "g"))
+  (should
+   (eq (plist-get
+        (claude-code-ide-tests--transient-suffix-plist
+         'claude-code-ide-menu "z")
+        :command)
+       'claude-code-ide-manager-sort-menu)))
 
 (ert-deftest claude-code-ide-test-transient-exposes-manager-open-and-repo-toggle-bindings ()
   "Main transient binds `o` to manager-open and `w` to repo manager toggle."

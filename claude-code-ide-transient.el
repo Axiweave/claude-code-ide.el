@@ -53,6 +53,7 @@
 (declare-function claude-code-ide-session-id "claude-code-ide" (session))
 (declare-function claude-code-ide-manager-switch-to-session "claude-code-ide-manager" (session-key &optional keep-manager-focus scope))
 (declare-function claude-code-ide-manager--visible-sidebar-scope-for-frame "claude-code-ide-manager" (&optional frame))
+(declare-function claude-code-ide-manager--refresh-sidebar-state "claude-code-ide-manager" (&optional scope reassert))
 (declare-function claude-code-ide-manager-toggle-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-global-sidebar "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-repo-sidebar "claude-code-ide-manager" ())
@@ -101,6 +102,8 @@
 (defvar claude-code-ide-manager--command-scope)
 (defvar claude-code-ide-manager--open-target)
 (defvar claude-code-ide-manager--open-scope)
+(defvar claude-code-ide-manager-sort-by)
+(defvar claude-code-ide-manager-sort-reverse)
 
 ;;; Helper Functions
 
@@ -595,6 +598,40 @@ Otherwise, if multiple sessions exist, prompt for selection."
 
 ;;; Transient Menus
 
+(transient-define-suffix claude-code-ide-manager-set-sort-by (sort-by)
+  "Set the manager session sort key."
+  (interactive
+   (list (intern
+          (completing-read
+           "Sort manager sessions by: "
+           '("name" "created-at")
+           nil t nil nil
+           (symbol-name claude-code-ide-manager-sort-by)))))
+  (setq claude-code-ide-manager-sort-by sort-by)
+  (claude-code-ide-manager--refresh-sidebar-state))
+
+(transient-define-suffix claude-code-ide-manager-toggle-sort-reverse ()
+  "Toggle reverse manager session sorting."
+  (interactive)
+  (setq claude-code-ide-manager-sort-reverse
+        (not claude-code-ide-manager-sort-reverse))
+  (claude-code-ide-manager--refresh-sidebar-state))
+
+(transient-define-prefix claude-code-ide-manager-sort-menu ()
+  "Configure manager session sorting."
+  [["Manager Session Sorting"
+    ("s" claude-code-ide-manager-set-sort-by
+     :description
+     (lambda ()
+       (format "Sort by (%s)" claude-code-ide-manager-sort-by))
+     :transient t)
+    ("r" claude-code-ide-manager-toggle-sort-reverse
+     :description
+     (lambda ()
+       (format "Reverse order (%s)"
+               (if claude-code-ide-manager-sort-reverse "ON" "OFF")))
+     :transient t)]])
+
 ;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)
 (transient-define-prefix claude-code-ide-menu ()
   "Claude Code IDE main menu."
@@ -633,6 +670,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("9" "Manager slot 9" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 9)))
     ("0" "Manager slot 10" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 10)))
     ("M" "Focus manager" claude-code-ide-manager-focus)
+    ("z" "Sort manager sessions" claude-code-ide-manager-sort-menu)
     ("g" "Refresh manager" claude-code-ide-manager-refresh)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)

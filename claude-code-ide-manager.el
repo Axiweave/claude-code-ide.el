@@ -31,6 +31,7 @@
 (declare-function claude-code-ide--preferred-session "claude-code-ide" (directory))
 (declare-function claude-code-ide--touch-session "claude-code-ide" (session-id))
 (declare-function claude-code-ide-session-buffer "claude-code-ide" (session))
+(declare-function claude-code-ide-session-created-at "claude-code-ide" (session))
 (declare-function claude-code-ide-session-custom-name "claude-code-ide" (session))
 (declare-function claude-code-ide-session-directory "claude-code-ide" (session))
 (declare-function claude-code-ide-session-id "claude-code-ide" (session))
@@ -101,6 +102,17 @@
   :type 'boolean
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-sort-by 'name
+  "Sort manager sessions by this fallback key."
+  :type '(choice (const :tag "Name" name)
+                 (const :tag "Creation time" created-at))
+  :group 'claude-code-ide-manager)
+
+(defcustom claude-code-ide-manager-sort-reverse nil
+  "Whether to reverse sorting after pin and manual-order precedence."
+  :type 'boolean
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-default-target 'global
   "Default target for generic manager commands."
   :type '(choice (const :tag "Global" global)
@@ -166,6 +178,7 @@ back to `project.el' otherwise."
   directory
   custom-name
   order
+  created-at
   display-name
   secondary-text
   pinned
@@ -643,6 +656,7 @@ scope when it is visible; otherwise return the first visible scope."
         :directory (claude-code-ide-manager-item-directory item)
         :custom-name (claude-code-ide-manager-item-custom-name item)
         :order (claude-code-ide-manager-item-order item)
+        :created-at (claude-code-ide-manager-item-created-at item)
         :display-name (claude-code-ide-manager-item-display-name item)
         :secondary-text (claude-code-ide-manager-item-secondary-text item)
         :pinned (claude-code-ide-manager-item-pinned item)
@@ -656,6 +670,7 @@ scope when it is visible; otherwise return the first visible scope."
    :directory (plist-get data :directory)
    :custom-name (plist-get data :custom-name)
    :order (plist-get data :order)
+   :created-at (plist-get data :created-at)
    :display-name (plist-get data :display-name)
    :secondary-text (plist-get data :secondary-text)
    :pinned (plist-get data :pinned)
@@ -905,6 +920,7 @@ default to the global scope for backward compatibility."
        :directory directory
        :custom-name custom-name
        :order order
+       :created-at (claude-code-ide-session-created-at session)
        :display-name (if custom-name
                          (claude-code-ide-manager--replace-display-suffix
                           display-name order custom-name)
@@ -917,15 +933,6 @@ default to the global scope for backward compatibility."
                       most-positive-fixnum)
        :live-p t))))
 
-(defun claude-code-ide-manager--fallback-sort-key (item &optional scope)
-  "Return the fallback sort key for ITEM within SCOPE."
-  (if (eq (plist-get scope :type) 'repo)
-      (or (claude-code-ide-manager-item-display-name item)
-          (claude-code-ide-manager-item-session-key item))
-    (format "%s\0%020d"
-            (or (claude-code-ide-manager-item-directory item)
-                (claude-code-ide-manager-item-session-key item))
-            (or (claude-code-ide-manager-item-order item) 0))))
 
 (defun claude-code-ide-manager--build-items (scope)
   "Build manager items for the live sessions visible within SCOPE."
@@ -934,12 +941,44 @@ default to the global scope for backward compatibility."
           (claude-code-ide-manager--scope-sessions
            scope (claude-code-ide-manager--live-sessions))))
 
-(defun claude-code-ide-manager--sorted-items (items &optional scope)
-  "Return ITEMS sorted for sidebar display within SCOPE."
-  (sort (copy-sequence items)
-        (lambda (left right)
-          (let ((left-key (claude-code-ide-manager--fallback-sort-key left scope))
-                (right-key (claude-code-ide-manager--fallback-sort-key right scope)))
+(defun claude-code-ide-manager--sorted-items (items)
+  "Return ITEMS sorted for sidebar display."
+  (let* ((base-predicate
+          (pcase claude-code-ide-manager-sort-by
+            ('name
+             (lambda (left right)
+               (let ((left-name
+                      (or (claude-code-ide-manager-item-display-name left)
+                          (claude-code-ide-manager-item-session-key left)))
+                     (right-name
+                      (or (claude-code-ide-manager-item-display-name right)
+                          (claude-code-ide-manager-item-session-key right))))
+                 (cond
+                  ((string-version-lessp left-name right-name) t)
+                  ((string-version-lessp right-name left-name) nil)
+                  (t
+                   (string< (claude-code-ide-manager-item-session-key left)
+                            (claude-code-ide-manager-item-session-key right)))))))
+            ('created-at
+             (lambda (left right)
+               (let ((left-created-at
+                      (or (claude-code-ide-manager-item-created-at left) 0))
+                     (right-created-at
+                      (or (claude-code-ide-manager-item-created-at right) 0)))
+                 (if (= left-created-at right-created-at)
+                     (string< (claude-code-ide-manager-item-session-key left)
+                              (claude-code-ide-manager-item-session-key right))
+                   (< left-created-at right-created-at)))))
+            (_
+             (error "Unknown manager sort key: %S"
+                    claude-code-ide-manager-sort-by))))
+         (fallback-predicate
+          (if claude-code-ide-manager-sort-reverse
+              (lambda (left right)
+                (funcall base-predicate right left))
+            base-predicate)))
+    (sort (copy-sequence items)
+          (lambda (left right)
             (cond
              ((and (claude-code-ide-manager-item-pinned left)
                    (not (claude-code-ide-manager-item-pinned right)))
@@ -955,23 +994,14 @@ default to the global scope for backward compatibility."
                      most-positive-fixnum)
                  (or (claude-code-ide-manager-item-order-key right)
                      most-positive-fixnum)))
-             ((string= left-key right-key)
-              (string< (claude-code-ide-manager-item-session-key left)
-                       (claude-code-ide-manager-item-session-key right)))
              (t
-              (if (eq (plist-get scope :type) 'repo)
-                  (cond
-                   ((string-version-lessp left-key right-key) t)
-                   ((string-version-lessp right-key left-key) nil)
-                   (t (string< (claude-code-ide-manager-item-session-key left)
-                               (claude-code-ide-manager-item-session-key right))))
-                (string< left-key right-key))))))))
+              (funcall fallback-predicate left right)))))))
 
-(defun claude-code-ide-manager--slot-map (items &optional scope)
-  "Return a hash table mapping visible ITEMS to quick slots within SCOPE."
+(defun claude-code-ide-manager--slot-map (items)
+  "Return a hash table mapping visible ITEMS to quick slots."
   (let ((slots (make-hash-table :test 'equal))
         (slot 1))
-    (dolist (item (claude-code-ide-manager--sorted-items items scope))
+    (dolist (item (claude-code-ide-manager--sorted-items items))
       (when (<= slot 10)
         (puthash (claude-code-ide-manager-item-session-key item) slot slots)
         (setq slot (1+ slot))))
@@ -1233,8 +1263,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   "Return visible session keys for SCOPE in sidebar order."
   (mapcar #'claude-code-ide-manager-item-session-key
           (claude-code-ide-manager--sorted-items
-           (claude-code-ide-manager--scope-items scope)
-           scope)))
+           (claude-code-ide-manager--scope-items scope))))
 
 (defun claude-code-ide-manager--insert-item (scope item slot)
   "Insert ITEM into the current buffer using SLOT for SCOPE."
@@ -1295,9 +1324,9 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                   stored-session-key
                   (get-text-property (point) 'claude-code-ide-manager-session-key)))
              (inhibit-read-only t)
-             (slots (claude-code-ide-manager--slot-map items scope)))
+             (slots (claude-code-ide-manager--slot-map items)))
         (erase-buffer)
-        (dolist (item (claude-code-ide-manager--sorted-items items scope))
+        (dolist (item (claude-code-ide-manager--sorted-items items))
           (claude-code-ide-manager--insert-item
            scope
            item
@@ -1637,8 +1666,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
 DIRECTION should be -1 for up or 1 for down."
   (let* ((sorted (claude-code-ide-manager--sorted-items
-                  (claude-code-ide-manager--scope-items scope)
-                  scope))
+                  (claude-code-ide-manager--scope-items scope)))
          (index (cl-position session-key sorted
                              :key #'claude-code-ide-manager-item-session-key
                              :test #'equal)))
@@ -2397,7 +2425,7 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
   (let* ((scope (claude-code-ide-manager--scope-for-command))
          (items (claude-code-ide-manager--scope-items scope)))
     (when-let* ((item (nth (1- slot)
-                           (cl-subseq (claude-code-ide-manager--sorted-items items scope)
+                           (cl-subseq (claude-code-ide-manager--sorted-items items)
                                       0
                                       (min 10 (length items)))))
                 (session-key (claude-code-ide-manager-item-session-key item)))
@@ -2410,7 +2438,7 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
   (let* ((scope (claude-code-ide-manager--scope-for-command))
          (items (claude-code-ide-manager--scope-items scope)))
     (when-let* ((item (nth (1- slot)
-                           (cl-subseq (claude-code-ide-manager--sorted-items items scope)
+                           (cl-subseq (claude-code-ide-manager--sorted-items items)
                                       0
                                       (min 10 (length items)))))
                 (session-key (claude-code-ide-manager-item-session-key item)))
