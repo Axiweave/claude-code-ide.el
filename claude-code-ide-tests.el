@@ -4426,7 +4426,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         completion-choices
         calls)
     (cl-letf (((symbol-function 'completing-read)
-              (lambda (&rest args)
+               (lambda (&rest args)
                  (setq completion-choices (nth 1 args))
                  "Codex (codex)"))
               ((symbol-function 'claude-code-ide--start-session)

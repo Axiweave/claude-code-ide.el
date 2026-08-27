@@ -163,11 +163,11 @@ When BYPASS is non-nil, bypass permissions.
 With prefix ARG, select the CLI for this launch."
   (interactive (list nil current-prefix-arg))
   (let* ((claude-code-ide--session-cli-type
-         (unless arg claude-code-ide--session-cli-type))
-        (claude-code-ide-cli-path
-         (claude-code-ide--transient-cli-path arg))
-        (claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags bypass)))
+          (unless arg claude-code-ide--session-cli-type))
+         (claude-code-ide-cli-path
+          (claude-code-ide--transient-cli-path arg))
+         (claude-code-ide-cli-extra-flags
+          (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session nil nil nil t)))
 
 (defun claude-code-ide--continue-description ()
@@ -190,11 +190,11 @@ When BYPASS is non-nil, bypass permissions.
 With prefix ARG, select the CLI for this launch."
   (interactive (list nil current-prefix-arg))
   (let* ((claude-code-ide--session-cli-type
-         (unless arg claude-code-ide--session-cli-type))
-        (claude-code-ide-cli-path
-         (claude-code-ide--transient-cli-path arg))
-        (claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags bypass)))
+          (unless arg claude-code-ide--session-cli-type))
+         (claude-code-ide-cli-path
+          (claude-code-ide--transient-cli-path arg))
+         (claude-code-ide-cli-extra-flags
+          (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session
      nil nil (claude-code-ide--get-current-directory) t)))
 
@@ -215,11 +215,11 @@ When BYPASS is non-nil, bypass permissions.
 With prefix ARG, select the CLI for this launch."
   (interactive (list nil current-prefix-arg))
   (let* ((claude-code-ide--session-cli-type
-         (unless arg claude-code-ide--session-cli-type))
-        (claude-code-ide-cli-path
-         (claude-code-ide--transient-cli-path arg))
-        (claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags bypass)))
+          (unless arg claude-code-ide--session-cli-type))
+         (claude-code-ide-cli-path
+          (claude-code-ide--transient-cli-path arg))
+         (claude-code-ide-cli-extra-flags
+          (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session t nil nil t)))
 
 (defun claude-code-ide--resume-description ()
@@ -235,11 +235,11 @@ When BYPASS is non-nil, bypass permissions.
 With prefix ARG, select the CLI for this launch."
   (interactive (list nil current-prefix-arg))
   (let* ((claude-code-ide--session-cli-type
-         (unless arg claude-code-ide--session-cli-type))
-        (claude-code-ide-cli-path
-         (claude-code-ide--transient-cli-path arg))
-        (claude-code-ide-cli-extra-flags
-         (claude-code-ide--transient-launch-flags bypass)))
+          (unless arg claude-code-ide--session-cli-type))
+         (claude-code-ide-cli-path
+          (claude-code-ide--transient-cli-path arg))
+         (claude-code-ide-cli-extra-flags
+          (claude-code-ide--transient-launch-flags bypass)))
     (claude-code-ide--start-session nil t nil t)))
 
 (defun claude-code-ide--start-skip-description ()
