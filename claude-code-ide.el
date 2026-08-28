@@ -847,9 +847,15 @@ Signal a `user-error' when the current buffer is not in a project."
 
 
 (defun claude-code-ide--record-ghostel-title (&rest _args)
-  "Store the current Ghostel title on its live session."
+  "Store the current Ghostel title on its live session.
+For a zmx-backed session, mirror a changed title to a zmx `title'
+label so `zmx list' shows it in terminals."
   (when-let ((session (claude-code-ide--session-for-buffer)))
-    (setf (claude-code-ide-session-title session) ghostel--title)))
+    (let ((old (claude-code-ide-session-title session)))
+      (setf (claude-code-ide-session-title session) ghostel--title)
+      (when-let ((zmx-name (claude-code-ide-session-zmx-name session)))
+        (unless (equal ghostel--title old)
+          (claude-code-ide-zmx-set-title zmx-name ghostel--title))))))
 
 (defun claude-code-ide--install-ghostel-title-observer ()
   "Install the Ghostel title observer once."
@@ -1963,10 +1969,13 @@ buffer with full session integration."
         (claude-code-ide-log "No zmx sessions found")
       (let* ((candidates
               (mapcar (lambda (entry)
-                        (cons (format "%s  %s  %s"
+                        (cons (format "%s  %s  %s%s"
                                       (plist-get entry :name)
                                       (or (plist-get entry :start_dir) "")
-                                      (or (plist-get entry :cmd) ""))
+                                      (or (plist-get entry :cmd) "")
+                                      (if-let ((title (plist-get entry :title)))
+                                          (concat "  " (subst-char-in-string ?_ ?\s title))
+                                        ""))
                               entry))
                       sessions))
              (choice (completing-read "Attach to zmx session: " candidates nil t))

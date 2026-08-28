@@ -14625,6 +14625,41 @@ Return a plist with :killed-zmx and :killed-buffer."
                 :id "plain-id" :directory "/tmp/proj/"))))
     (should-error (claude-code-ide-copy-zmx-name) :type 'user-error)))
 
+(ert-deftest claude-code-ide-test-zmx-set-title-encodes-whitespace ()
+  "Titles are pushed as a `title=' label with whitespace as `_'."
+  (let (captured)
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (&rest args) (setq captured args))))
+      (claude-code-ide-zmx-set-title "cci-omp-proj-x" "Fix parser bug")
+      (should (equal (nthcdr 2 captured)
+                     '("zmx" "set" "cci-omp-proj-x" "title=Fix_parser_bug")))
+      (setq captured nil)
+      (claude-code-ide-zmx-set-title "cci-omp-proj-x" "   ")
+      (should-not captured)
+      (claude-code-ide-zmx-set-title nil "Fix")
+      (should-not captured))))
+
+(ert-deftest claude-code-ide-test-zmx-title-mirrored-on-change-only ()
+  "Ghostel titles reach zmx once per change; plain sessions never push."
+  (defvar ghostel--title)
+  (let ((session (claude-code-ide-session-create
+                  :id "title-id" :directory "/tmp/proj/"
+                  :zmx-name "cci-omp-proj-x"))
+        pushes)
+    (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+               (lambda (&optional _) session))
+              ((symbol-function 'claude-code-ide-zmx-set-title)
+               (lambda (_name title) (push title pushes))))
+      (let ((ghostel--title "Fix parser bug"))
+        (claude-code-ide--record-ghostel-title)
+        (claude-code-ide--record-ghostel-title))
+      (should (equal pushes '("Fix parser bug")))
+      (should (equal (claude-code-ide-session-title session) "Fix parser bug"))
+      (setf (claude-code-ide-session-zmx-name session) nil)
+      (let ((ghostel--title "Another title"))
+        (claude-code-ide--record-ghostel-title))
+      (should (equal pushes '("Fix parser bug"))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
