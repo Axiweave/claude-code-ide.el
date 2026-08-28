@@ -13922,10 +13922,98 @@ sessions back to working every few seconds with no real output."
      :command)
     'claude-code-ide-manager-edit-pin-order)))
 
+(ert-deftest claude-code-ide-test-manager-pin-order-title-stays-single-line ()
+  "The pin-order editor flattens title line breaks without losing identity."
+  (let* ((claude-code-ide-manager-show-session-order nil)
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
+         (session-one
+          (claude-code-ide-session-create
+           :id "one" :title "Reviewing\r\nsession state"))
+         (session-two
+          (claude-code-ide-session-create :id "two"))
+         (items
+          (list
+           (make-claude-code-ide-manager-item
+            :session-key "one" :display-name "project · 1" :order 1)
+           (make-claude-code-ide-manager-item
+            :session-key "two" :display-name "project · 2" :order 2))))
+    (claude-code-ide--put-session session-one)
+    (claude-code-ide--put-session session-two)
+    (should
+     (equal (claude-code-ide-manager--pin-order-item-names items)
+            '(("one" . "project - Reviewing session state")
+              ("two" . "project"))))
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (let ((snapshot (claude-code-ide-manager--pin-order-item-names items)))
+        (setq-local claude-code-ide-manager--pin-order-scope
+                    '(:type global)
+                    claude-code-ide-manager--pin-order-snapshot
+                    snapshot)
+        (claude-code-ide-manager--render-pin-order-editor snapshot)
+        (should
+         (equal (buffer-string)
+                "1. project - Reviewing session state\n2. project\n"))
+        (cl-letf
+            (((symbol-function 'claude-code-ide-manager--live-sessions)
+              (lambda () (list session-one session-two))))
+          (should
+           (equal (claude-code-ide-manager--validate-pin-order-editor)
+                  '("one" "two"))))))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-omits-title-without-ambiguity ()
+  "A unique manager label never gains a title suffix."
+  (let* ((claude-code-ide-manager-show-session-order nil)
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
+         (session-one
+          (claude-code-ide-session-create :id "one" :title "Alpha work"))
+         (session-two
+          (claude-code-ide-session-create :id "two" :title "Beta work"))
+         (items
+          (list
+           (make-claude-code-ide-manager-item
+            :session-key "one" :display-name "alpha · 1" :order 1)
+           (make-claude-code-ide-manager-item
+            :session-key "two" :display-name "beta · 1" :order 1))))
+    (claude-code-ide--put-session session-one)
+    (claude-code-ide--put-session session-two)
+    (should
+     (equal (claude-code-ide-manager--pin-order-item-names items)
+            '(("one" . "alpha") ("two" . "beta"))))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-titles-can-be-disabled ()
+  "Disabling the option keeps every row plain, even when ambiguous."
+  (let* ((claude-code-ide-manager-show-session-order nil)
+         (claude-code-ide-manager-pin-order-show-titles nil)
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
+         (session-one
+          (claude-code-ide-session-create
+           :id "one" :title "Reviewing\r\nsession state"))
+         (session-two
+          (claude-code-ide-session-create :id "two"))
+         (items
+          (list
+           (make-claude-code-ide-manager-item
+            :session-key "one" :display-name "project · 1" :order 1)
+           (make-claude-code-ide-manager-item
+            :session-key "two" :display-name "project · 2" :order 2))))
+    (claude-code-ide--put-session session-one)
+    (claude-code-ide--put-session session-two)
+    (should
+     (equal (claude-code-ide-manager--pin-order-item-names items)
+            '(("one" . "project") ("two" . "project"))))))
+
 (ert-deftest claude-code-ide-test-manager-pin-order-opens-selected-scope-in-content-window ()
   "The editor refreshes its scope and uses the normal content window."
   (claude-code-ide-tests--reset-manager-state)
-  (let* ((scope '(:type repo :git-root "/tmp/repo/"))
+  (let* ((claude-code-ide-manager-show-session-order nil)
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
+         (first-session
+          (claude-code-ide-session-create
+           :id "one" :title "Reviewing session state"))
+         (second-session
+          (claude-code-ide-session-create :id "two"))
+         (scope '(:type repo :git-root "/tmp/repo/"))
          (items
           (list
            (make-claude-code-ide-manager-item
@@ -13938,6 +14026,8 @@ sessions back to working every few seconds with no real output."
          refreshed-scope)
     (unwind-protect
         (progn
+          (claude-code-ide--put-session first-session)
+          (claude-code-ide--put-session second-session)
           (delete-other-windows)
           (switch-to-buffer content-buffer)
           (let* ((content-window (selected-window))
@@ -13958,8 +14048,20 @@ sessions back to working every few seconds with no real output."
             (should (equal claude-code-ide-manager--pin-order-scope scope))
             (should
              (equal claude-code-ide-manager--pin-order-snapshot
-                    '(("one" . "same")
+                    '(("one" . "same - Reviewing session state")
                       ("two" . "same"))))
+            (should
+             (equal (buffer-string)
+                    "1. same - Reviewing session state\n2. same\n"))
+            (setf (claude-code-ide-session-title first-session)
+                  "Changed title")
+            (should
+             (equal claude-code-ide-manager--pin-order-snapshot
+                    '(("one" . "same - Reviewing session state")
+                      ("two" . "same"))))
+            (should
+             (equal (buffer-string)
+                    "1. same - Reviewing session state\n2. same\n"))
             (claude-code-ide-manager-pin-order-cancel)
             (should-not (buffer-live-p editor))
             (should (eq (window-buffer content-window) content-buffer))

@@ -37,6 +37,7 @@
 (declare-function claude-code-ide-session-id "claude-code-ide" (session))
 (declare-function claude-code-ide-session-order "claude-code-ide" (session))
 (declare-function claude-code-ide-session-process "claude-code-ide" (session))
+(declare-function claude-code-ide-session-title "claude-code-ide" (session))
 (declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
@@ -99,6 +100,14 @@
 
 (defcustom claude-code-ide-manager-show-session-order nil
   "Whether generated session order suffixes appear in manager rows."
+  :type 'boolean
+  :group 'claude-code-ide-manager)
+
+(defcustom claude-code-ide-manager-pin-order-show-titles t
+  "Whether the pin-order editor appends session titles to ambiguous rows.
+
+A row keeps its plain manager label when that label is unique among the
+rows of the same editor."
   :type 'boolean
   :group 'claude-code-ide-manager)
 
@@ -1302,6 +1311,27 @@ This mirrors mouse hover text for keyboard navigation in the manager."
      (format "%s" (claude-code-ide-manager-item-order item))
      nil)))
 
+(defun claude-code-ide-manager--pin-order-item-names (items)
+  "Return ordered (SESSION-KEY . NAME) rows for ITEMS in the pin-order editor."
+  (let ((bases (mapcar #'claude-code-ide-manager--item-visible-name items))
+        (counts (make-hash-table :test 'equal)))
+    (dolist (base bases)
+      (puthash base (1+ (gethash base counts 0)) counts))
+    (cl-loop
+     for item in items
+     for base in bases
+     for session-key = (claude-code-ide-manager-item-session-key item)
+     for session = (and claude-code-ide-manager-pin-order-show-titles
+                        (> (gethash base counts) 1)
+                        (claude-code-ide-manager--session-record session-key))
+     for title = (and session (claude-code-ide-session-title session))
+     collect
+     (cons session-key
+           (if (and (stringp title) (not (string-empty-p title)))
+               (concat base " - "
+                       (replace-regexp-in-string "[\r\n]+" " " title))
+             base)))))
+
 (defun claude-code-ide-manager--render-pin-order-editor (snapshot)
   "Render ordered SNAPSHOT rows in the current pin-order buffer."
   (erase-buffer)
@@ -1501,11 +1531,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
     (unless items
       (user-error "No live sessions in the selected manager scope"))
     (let* ((snapshot
-            (mapcar
-             (lambda (item)
-               (cons (claude-code-ide-manager-item-session-key item)
-                     (claude-code-ide-manager--item-visible-name item)))
-             items))
+            (claude-code-ide-manager--pin-order-item-names items))
            (window (claude-code-ide-manager--content-window))
            (return-buffer (window-buffer window))
            (editor (generate-new-buffer "*claude-code-manager-pin-order*")))
