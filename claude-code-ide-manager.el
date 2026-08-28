@@ -649,6 +649,8 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
+(define-key claude-code-ide-manager-mode-map (kbd "M-k") #'claude-code-ide-manager-move-up)
+(define-key claude-code-ide-manager-mode-map (kbd "M-j") #'claude-code-ide-manager-move-down)
 (define-key claude-code-ide-manager-mode-map (kbd "C-s") #'claude-code-ide-manager-sort-menu)
 (define-key claude-code-ide-manager-mode-map (kbd "?") #'claude-code-ide-manager-dispatch)
 
