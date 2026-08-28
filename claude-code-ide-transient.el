@@ -65,6 +65,14 @@
 (declare-function claude-code-ide-manager-focus "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-refresh "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-edit-pin-order "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-switch-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-switch-at-point-preserve-focus "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-start-session-at-point "claude-code-ide-manager" (&optional dangerous arg))
+(declare-function claude-code-ide-manager-start-session-at-point-skip-permissions "claude-code-ide-manager" (&optional arg))
+(declare-function claude-code-ide-manager-toggle-pin "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-reset-layout-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-move-up "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-move-down "claude-code-ide-manager" ())
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-port "claude-code-ide-mcp" (session))
@@ -632,6 +640,28 @@ Otherwise, if multiple sessions exist, prompt for selection."
        (format "Reverse order (%s)"
                (if claude-code-ide-manager-sort-reverse "ON" "OFF")))
      :transient t)]])
+
+;;;###autoload (autoload 'claude-code-ide-manager-dispatch "claude-code-ide-transient" "Dispatch a manager sidebar command." t)
+(transient-define-prefix claude-code-ide-manager-dispatch ()
+  "Dispatch a manager sidebar command."
+  [["Switch"
+    ("RET" "Switch to session" claude-code-ide-manager-switch-at-point)
+    ("SPC" "Switch (keep focus)" claude-code-ide-manager-switch-at-point-preserve-focus)
+    ("n" "Next session" claude-code-ide-manager-next-line)
+    ("p" "Previous session" claude-code-ide-manager-previous-line)]
+   ["Sessions"
+    ("s" "Start session at point" claude-code-ide-manager-start-session-at-point)
+    ("S" "Start (skip permissions)" claude-code-ide-manager-start-session-at-point-skip-permissions)
+    ("o" "Open project/worktree" claude-code-ide-manager-open)
+    ("r" "Rename session" claude-code-ide-manager-rename-at-point)
+    ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]
+   ["Arrange"
+    ("P" "Toggle pin" claude-code-ide-manager-toggle-pin)
+    ("E" "Edit pin order" claude-code-ide-manager-edit-pin-order)
+    ("M-p" "Move row up" claude-code-ide-manager-move-up)
+    ("M-n" "Move row down" claude-code-ide-manager-move-down)
+    ("C-s" "Sort menu" claude-code-ide-manager-sort-menu)
+    ("g" "Refresh" claude-code-ide-manager-refresh)]])
 
 ;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)
 (transient-define-prefix claude-code-ide-menu ()

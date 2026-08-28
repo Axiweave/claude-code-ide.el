@@ -7009,6 +7009,30 @@ have completed before cleanup.  Waits up to 5 seconds."
         :command)
        'claude-code-ide-manager-sort-menu)))
 
+(ert-deftest claude-code-ide-test-manager-dispatch-mirrors-sidebar-keys ()
+  "The `?' dispatch transient mirrors the sidebar keymap commands."
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "?"))
+              'claude-code-ide-manager-dispatch))
+  (dolist (binding '(("RET" . claude-code-ide-manager-switch-at-point)
+                     ("SPC" . claude-code-ide-manager-switch-at-point-preserve-focus)
+                     ("n" . claude-code-ide-manager-next-line)
+                     ("p" . claude-code-ide-manager-previous-line)
+                     ("s" . claude-code-ide-manager-start-session-at-point)
+                     ("S" . claude-code-ide-manager-start-session-at-point-skip-permissions)
+                     ("o" . claude-code-ide-manager-open)
+                     ("r" . claude-code-ide-manager-rename-at-point)
+                     ("R" . claude-code-ide-manager-reset-layout-at-point)
+                     ("P" . claude-code-ide-manager-toggle-pin)
+                     ("E" . claude-code-ide-manager-edit-pin-order)
+                     ("M-p" . claude-code-ide-manager-move-up)
+                     ("M-n" . claude-code-ide-manager-move-down)
+                     ("C-s" . claude-code-ide-manager-sort-menu)
+                     ("g" . claude-code-ide-manager-refresh)))
+    (should (eq (plist-get (claude-code-ide-tests--transient-suffix-plist
+                            'claude-code-ide-manager-dispatch (car binding))
+                           :command)
+                (cdr binding)))))
+
 (ert-deftest claude-code-ide-test-transient-exposes-manager-open-and-repo-toggle-bindings ()
   "Main transient binds `o` to manager-open and `w` to repo manager toggle."
   (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "o")) :command)

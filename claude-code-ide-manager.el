@@ -44,6 +44,7 @@
 (declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
 (declare-function claude-code-ide--transient-cli-path "claude-code-ide-transient" (arg))
 (declare-function claude-code-ide--transient-launch-flags "claude-code-ide-transient" (&optional bypass))
+(declare-function claude-code-ide-manager-dispatch "claude-code-ide-transient" ())
 
 (defvar claude-code-ide--session-cli-type)
 (defvar claude-code-ide-cli-path)
@@ -644,6 +645,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
+(define-key claude-code-ide-manager-mode-map (kbd "?") #'claude-code-ide-manager-dispatch)
 
 (defvar claude-code-ide-manager-pin-order-mode-map
   (let ((map (make-sparse-keymap)))
