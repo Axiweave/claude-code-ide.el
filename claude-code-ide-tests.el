@@ -14078,9 +14078,35 @@ sessions back to working every few seconds with no real output."
       'claude-code-ide-menu "E")
      :command)
     'claude-code-ide-manager-edit-pin-order))
+  (dolist (binding '(("M-p" . claude-code-ide-manager-pin-order-move-up)
+                     ("M-k" . claude-code-ide-manager-pin-order-move-up)
+                     ("M-n" . claude-code-ide-manager-pin-order-move-down)
+                     ("M-j" . claude-code-ide-manager-pin-order-move-down)))
+    (should
+     (eq (lookup-key claude-code-ide-manager-pin-order-mode-map
+                     (kbd (car binding)))
+         (cdr binding))))
   (should
    (eq (lookup-key claude-code-ide-manager-pin-order-mode-map (kbd "C-c C-s"))
        'claude-code-ide-manager-sort-menu)))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-evil-keys-mirror-meta-bindings ()
+  "Evil setup mirrors every editor M- binding into normal state."
+  (let (mirrored)
+    (cl-letf (((symbol-function 'evil-define-key*)
+               (lambda (state _keymap key definition)
+                 (push (list state (key-description key) definition)
+                       mirrored))))
+      (claude-code-ide-manager--setup-pin-order-evil-keys))
+    (dolist (binding '(("M-p" . claude-code-ide-manager-pin-order-move-up)
+                       ("M-k" . claude-code-ide-manager-pin-order-move-up)
+                       ("M-n" . claude-code-ide-manager-pin-order-move-down)
+                       ("M-j" . claude-code-ide-manager-pin-order-move-down)))
+      (should (member (list 'normal (car binding) (cdr binding))
+                      mirrored)))
+    (should-not (cl-find-if (lambda (entry)
+                              (string-prefix-p "C-c" (nth 1 entry)))
+                            mirrored))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-sort-change-resyncs-editor ()
   "A sort change made from the editor rebuilds its rows in the new order.

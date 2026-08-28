@@ -628,6 +628,7 @@ scope when it is visible; otherwise return the first visible scope."
 (claude-code-ide-manager--apply-window-compatibility)
 
 (declare-function evil-set-initial-state "evil" (mode state))
+(declare-function evil-define-key* "evil-core" (state keymap &rest bindings))
 
 (defvar claude-code-ide-manager-mode-map (make-sparse-keymap)
   "Keymap for `claude-code-ide-manager-mode'.")
@@ -656,6 +657,8 @@ scope when it is visible; otherwise return the first visible scope."
     (define-key map (kbd "C-c C-s") #'claude-code-ide-manager-sort-menu)
     (define-key map (kbd "M-p") #'claude-code-ide-manager-pin-order-move-up)
     (define-key map (kbd "M-n") #'claude-code-ide-manager-pin-order-move-down)
+    (define-key map (kbd "M-k") #'claude-code-ide-manager-pin-order-move-up)
+    (define-key map (kbd "M-j") #'claude-code-ide-manager-pin-order-move-down)
     map)
   "Keymap for `claude-code-ide-manager-pin-order-mode'.")
 (dotimes (index 10)
@@ -672,10 +675,28 @@ scope when it is visible; otherwise return the first visible scope."
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'claude-code-ide-manager-mode 'emacs)))
 
+(defun claude-code-ide-manager--setup-pin-order-evil-keys ()
+  "Mirror pin-order editor M- bindings into Evil normal state.
+Does nothing when Evil is not available.  Keymaps store M- keys
+under the ESC prefix, so iterate that sub-keymap."
+  (when (fboundp 'evil-define-key*)
+    (let ((esc-map (lookup-key claude-code-ide-manager-pin-order-mode-map
+                               (kbd "ESC"))))
+      (when (keymapp esc-map)
+        (map-keymap
+         (lambda (event definition)
+           (when (and (integerp event) (commandp definition))
+             (evil-define-key* 'normal
+                               claude-code-ide-manager-pin-order-mode-map
+                               (vector 27 event) definition)))
+         esc-map)))))
+
 (with-eval-after-load 'evil
-  (claude-code-ide-manager--setup-evil-state))
+  (claude-code-ide-manager--setup-evil-state)
+  (claude-code-ide-manager--setup-pin-order-evil-keys))
 
 (claude-code-ide-manager--setup-evil-state)
+(claude-code-ide-manager--setup-pin-order-evil-keys)
 
 (define-derived-mode claude-code-ide-manager-mode special-mode "CC-Manager"
   "Major mode for the cc-manager sidebar."
@@ -1581,7 +1602,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
       (set-window-buffer window editor)
       (select-window window)
       (message
-       "C-c C-c applies; C-c C-k cancels; M-p and M-n move rows."))))
+       "C-c C-c applies; C-c C-k cancels; M-p/M-k and M-n/M-j move rows."))))
 
 (defun claude-code-ide-manager--insert-item (scope item slot)
   "Insert ITEM into the current buffer using SLOT for SCOPE."
