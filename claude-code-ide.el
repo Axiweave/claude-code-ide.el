@@ -88,6 +88,7 @@
 (defvar ghostel--cursor-pos)
 (defvar ghostel--cursor-char-pos)
 (defvar ghostel--input-mode)
+(defvar ghostel--title)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -406,7 +407,7 @@ the target window is already visible."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-session-id order created-at last-accessed-at custom-name)
+  id directory process buffer cli-session-id order created-at last-accessed-at custom-name title)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -843,6 +844,22 @@ Signal a `user-error' when the current buffer is not in a project."
      claude-code-ide--sessions)
     found))
 
+
+(defun claude-code-ide--record-ghostel-title (&rest _args)
+  "Store the current Ghostel title on its live session."
+  (when-let ((session (claude-code-ide--session-for-buffer)))
+    (setf (claude-code-ide-session-title session) ghostel--title)))
+
+(defun claude-code-ide--install-ghostel-title-observer ()
+  "Install the Ghostel title observer once."
+  (when (and (fboundp 'ghostel--set-title)
+             (not (advice-member-p #'claude-code-ide--record-ghostel-title
+                                   'ghostel--set-title)))
+    (advice-add 'ghostel--set-title :after
+                #'claude-code-ide--record-ghostel-title)))
+
+(with-eval-after-load 'ghostel
+  (claude-code-ide--install-ghostel-title-observer))
 (defun claude-code-ide--touch-session-for-buffer (&optional buffer)
   "Mark BUFFER's exact live session as recently accessed."
   (when-let ((session (claude-code-ide--session-for-buffer buffer)))
@@ -1065,7 +1082,10 @@ range should be attached."
 (defun claude-code-ide--register-session (session)
   "Register SESSION and install global advice for the first live session."
   (let* ((process (claude-code-ide-session-process session))
-         (backend (claude-code-ide--backend-for-process process)))
+         (backend (claude-code-ide--backend-for-process process))
+         (buffer (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+                          (claude-code-ide-session-buffer session))
+                     (claude-code-ide--session-buffer-from-process process))))
     (when (= (hash-table-count claude-code-ide--sessions) 0)
       (claude-code-ide--install-terminal-resize-observer backend)
       (when (and (eq (claude-code-ide--current-cli-type) 'claude)
@@ -1075,6 +1095,10 @@ range should be attached."
         (advice-add (claude-code-ide--terminal-resize-handler backend)
                     :around #'claude-code-ide--terminal-reflow-filter)))
     (prog1 (claude-code-ide--put-session session)
+      (when buffer
+        (with-current-buffer buffer
+          (when (eq claude-code-ide--terminal-backend 'ghostel)
+            (claude-code-ide--record-ghostel-title))))
       (claude-code-ide-manager-refresh-all))))
 
 (defun claude-code-ide--cleanup-dead-processes ()

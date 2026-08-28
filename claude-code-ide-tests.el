@@ -164,6 +164,13 @@
   "Mock Ghostel cursor buffer position.")
 (defvar ghostel--input-mode nil
   "Mock Ghostel input mode.")
+(defvar-local ghostel--title nil
+  "Mock Ghostel terminal title.")
+
+(defun ghostel--set-title (title)
+  "Store normalized mock Ghostel TITLE."
+  (setq ghostel--title (unless (equal title "") title)))
+
 
 (defun ghostel--filter (_process _string)
   "Mock ghostel filter function for testing."
@@ -6463,6 +6470,75 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer buffer-one))
       (when (buffer-live-p buffer-two)
         (kill-buffer buffer-two)))))
+
+(ert-deftest claude-code-ide-test-ghostel-title-observer-updates-exact-session ()
+  "Test Ghostel titles update only their owning live session."
+  (let* ((session-buffer-one
+          (generate-new-buffer "*claude-code[test-ghostel-title-one]*"))
+         (session-buffer-two
+          (generate-new-buffer "*claude-code[test-ghostel-title-two]*"))
+         (other-buffer
+          (generate-new-buffer "*test-unregistered-ghostel-title*"))
+         (session-one
+          (claude-code-ide-session-create
+           :id "ghostel-title-one" :process session-buffer-one
+           :buffer session-buffer-one))
+         (session-two
+          (claude-code-ide-session-create
+           :id "ghostel-title-two" :process session-buffer-two
+           :buffer session-buffer-two))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (dolist (buffer (list session-buffer-one session-buffer-two
+                                other-buffer))
+            (with-current-buffer buffer
+              (setq-local claude-code-ide--terminal-backend 'ghostel)))
+          (claude-code-ide--put-session session-one)
+          (claude-code-ide--put-session session-two)
+          (with-current-buffer session-buffer-one
+            (ghostel--set-title "Reviewing session state"))
+          (should (equal (claude-code-ide-session-title session-one)
+                         "Reviewing session state"))
+          (should-not (claude-code-ide-session-title session-two))
+          (with-current-buffer session-buffer-one
+            (ghostel--set-title ""))
+          (should-not (claude-code-ide-session-title session-one))
+          (setf (claude-code-ide-session-title session-one) "one"
+                (claude-code-ide-session-title session-two) "two")
+          (with-current-buffer other-buffer
+            (ghostel--set-title "Unregistered"))
+          (should (equal (claude-code-ide-session-title session-one) "one"))
+          (should (equal (claude-code-ide-session-title session-two) "two")))
+      (dolist (buffer (list session-buffer-one session-buffer-two other-buffer))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-register-session-captures-early-ghostel-title ()
+  "Test registration captures a Ghostel title reported during startup."
+  (let* ((session-buffer
+          (generate-new-buffer "*claude-code[test-early-ghostel-title]*"))
+         (session
+          (claude-code-ide-session-create
+           :id "early-ghostel-title" :process session-buffer
+           :buffer session-buffer))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-prevent-reflow-glitch nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer session-buffer
+            (setq-local claude-code-ide--terminal-backend 'ghostel)
+            (setq-local ghostel--title "Early session title"))
+          (cl-letf (((symbol-function
+                      'claude-code-ide--install-terminal-resize-observer)
+                     #'ignore)
+                    ((symbol-function 'claude-code-ide-manager-refresh-all)
+                     #'ignore))
+            (claude-code-ide--register-session session))
+          (should (equal (claude-code-ide-session-title session)
+                         "Early session title")))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
 
 (ert-deftest claude-code-ide-test-register-session-uses-session-backend-for-reflow-guard ()
   "Test reflow guard follows the launched session backend, not the global default."
