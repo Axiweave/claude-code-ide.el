@@ -204,6 +204,8 @@ How it works:
 
 Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, or after an Emacs restart, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected.
 
+The zmx integration follows the design of [[https://github.com/ArthurHeymans/emacs-term-sessions][emacs-term-sessions]] (GPL-3+), which provides general-purpose persistent terminals on top of zmx. This package implements only the small agent-session subset itself, so there is no dependency. Use emacs-term-sessions when you want persistent shells beyond coding agents.
+
 ** CC Manager
 
 =claude-code-ide-manager-toggle-sidebar= manages a dedicated left sidebar for live Claude sessions, similar to a Treemacs-style frame panel. The manager is additive: existing commands such as =claude-code-ide-list-sessions= still work as before.
