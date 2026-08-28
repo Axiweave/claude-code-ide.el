@@ -1,0 +1,37 @@
+# Context
+
+Glossary for claude-code-ide.el. One term, one meaning.
+
+## Terms
+
+### Session
+The Emacs-side object: keyed by session-id, holds the terminal buffer,
+window state, and idle tracking. Without zmx, it owns the agent process
+and dies with Emacs.
+
+### Zmx session
+A backend-owned persistent PTY managed by the external `zmx` program.
+It survives Emacs restarts and buffer kills. Emacs is one attach client
+among several; a plain terminal is another.
+
+### Attach
+Opening a terminal buffer (or terminal window) as a client of an
+existing zmx session. The agent process does not restart.
+
+### Detach
+Closing an attach client while the zmx session and its agent process
+keep running.
+
+### Adoption
+Creating a Session for a zmx session that was launched outside Emacs,
+so it gains a buffer, idle tracking, and manager visibility.
+
+### Agent
+One of the supported CLIs: Claude Code, Codex, OpenCode, Pi, Oh My Pi.
+
+## Known limitation
+Environment variables (for example MCP/SSE ports) are fixed when the
+zmx session is created. Attaching from a different Emacs instance, or
+moving between Emacs and a terminal, keeps the original environment, so
+port-based integrations break after such a switch. Accepted; not worked
+around.

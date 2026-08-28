@@ -1,50 +1,90 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# claude-code-ide.el Constitution
+
+Governing principles for changes to this Emacs package. It provides
+project-aware terminal sessions for Claude Code, Codex, OpenCode, Pi, and
+Oh My Pi (omp), plus MCP integration for Claude Code. When a spec, plan, or
+task conflicts with this document, this document wins.
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Shared Session Core, Thin Agent Adapters
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+All agents route through the shared layers: session setup and interaction
+(`claude-code-ide-session.el`), idle/working tracking
+(`claude-code-ide-session-idle.el`), and window/sidebar workflows. Code that
+constructs an agent-specific CLI command stays isolated in its adapter; it
+never leaks into the shared layers. A feature for one agent must not fork
+session, terminal, or window logic — extend the shared layer with a
+dispatch point instead. The agent list and CLI paths are user configuration,
+not package policy: `claude-code-ide-agent-definitions` stays a `defconst`
+baseline and the package ships no agent-selection command.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### II. Batch-Verifiable Quality Gate (NON-NEGOTIABLE)
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+Every change passes `./scripts/compile-and-test.sh`: byte-compilation of all
+`*.el` files, then the full ERT suite in batch mode. New logic ships with
+ERT tests in `claude-code-ide-tests.el`. Tests must run without a display
+and without optional packages installed — mock vterm, websocket, and other
+optional dependencies the way the existing suite does. A change that only
+passes interactively, or only with optional packages present, is not done.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### III. Optional Dependencies Stay Optional
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+Hard `require` is allowed only for the declared `Package-Requires`
+dependencies. Terminal backends (vterm, eat), diagnostics providers
+(flycheck, flymake), and transport packages loaded at feature boundaries
+(websocket, web-server) load via soft require — `(require 'foo nil t)` or
+`condition-case` — and fail at the point of use with an actionable
+`user-error` naming the missing package. The package must load, byte-compile,
+and pass tests with none of them installed.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### IV. Terminal-Backend Neutrality
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+Backend-specific behavior dispatches on the live buffer (`derived-mode-p`
+checks) inside the session layer. A new session feature works on vterm, eat,
+and ghostel, or it degrades with an explicit, user-visible message for the
+unsupported backend. Silent per-backend behavior differences are defects.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+### V. Simplicity and Compatibility
+
+Target Emacs 28.1+ per `Package-Requires`. No new runtime dependency without
+written justification in the plan's Complexity Tracking table. Prefer the
+smallest working change; delete code the change obsoletes in the same
+change. No model or agent self-references in source code or commit messages.
+
+## Elisp Standards
+
+- Every file uses `lexical-binding: t` and the GPL-3+ header block.
+- Public symbols use the `claude-code-ide-` prefix; internal symbols use a
+  `--` separator (e.g. `claude-code-ide--get-session-buffer`).
+- Formatting is what `./scripts/format-and-clean.sh` produces: standard
+  Emacs Lisp indentation, spaces only, no trailing whitespace. Treat
+  unexpected formatter indentation as a syntax diagnostic (unbalanced
+  parentheses or quotes).
+- Cross-file references to non-required code use `declare-function` and
+  `defvar` forward declarations, not hard requires.
+
+## Development Workflow
+
+- Specs and tasks live in spec-kit under `.specify/`; create features with
+  `.specify/scripts/bash/create-new-feature.sh`. There is no external issue
+  tracker.
+- Domain vocabulary and decisions live in `CONTEXT.md` and `docs/adr/` per
+  `docs/agents/domain.md`; create them lazily, and flag ADR conflicts
+  instead of silently overriding them.
+- Work on the current branch. Never commit unless the user asks. Respect
+  `.gitignore`. Keep `docs/superpowers/` local and uncommitted.
+- When a change makes AGENTS.md incorrect, update AGENTS.md in the same
+  change.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes other practice documents for spec-kit work.
+The `/speckit.plan` Constitution Check gate verifies plans against the Core
+Principles; violations require a Complexity Tracking entry justifying why no
+simpler alternative works. Amendments edit this file, bump the version
+below (semver: principle removals or reversals are MAJOR, new principles or
+sections MINOR, wording fixes PATCH), and update AGENTS.md if the two
+diverge.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-08-28 | **Last Amended**: 2026-08-28
