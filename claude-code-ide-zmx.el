@@ -154,14 +154,20 @@ not exist yet; without CMD the result only reattaches."
 
 (defun claude-code-ide-zmx-infer-cli-command (cmd)
   "Return the agent CLI command matching zmx CMD string, or nil.
-Matches the base name of the first word of CMD against
+Skips shell wrapper words (command, exec, env, nohup) and VAR=value
+assignments, then matches the base name of the first real word against
 `claude-code-ide-agent-definitions' and `claude-code-ide-cli-path'."
   (when (and cmd (not (string-empty-p (string-trim cmd))))
-    (let ((head (file-name-nondirectory
-                 (car (split-string-and-unquote cmd)))))
-      (or (car (member head (mapcar #'cdr claude-code-ide-agent-definitions)))
-          (and (equal head (file-name-nondirectory claude-code-ide-cli-path))
-               claude-code-ide-cli-path)))))
+    (let* ((words (seq-drop-while
+                   (lambda (word)
+                     (or (member word '("command" "exec" "env" "nohup"))
+                         (string-match-p "\\`[A-Za-z_][A-Za-z0-9_]*=" word)))
+                   (split-string-and-unquote cmd)))
+           (head (and words (file-name-nondirectory (car words)))))
+      (when head
+        (or (car (member head (mapcar #'cdr claude-code-ide-agent-definitions)))
+            (and (equal head (file-name-nondirectory claude-code-ide-cli-path))
+                 claude-code-ide-cli-path))))))
 
 ;;; Control
 

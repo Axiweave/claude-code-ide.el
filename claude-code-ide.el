@@ -1998,7 +1998,10 @@ session integration."
               (or (claude-code-ide-zmx-infer-cli-command (plist-get entry :cmd))
                   (claude-code-ide--read-agent
                    (format "Agent running in %s: " name)))))
-        (claude-code-ide--create-session directory nil nil name)))))
+        (let ((claude-code-ide--suppress-initial-display t))
+          (when-let ((session (claude-code-ide--create-session directory nil nil name)))
+            (claude-code-ide-manager-switch-to-session
+             (claude-code-ide-session-id session))))))))
 
 
 ;;;###autoload
