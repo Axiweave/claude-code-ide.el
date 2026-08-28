@@ -6951,10 +6951,13 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-manager-sort-commands-refresh-sidebars ()
   "Changing either manager sort option redraws every sidebar once."
+  (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide-manager-sort-by 'name)
         (claude-code-ide-manager-sort-reverse nil)
         (refresh-count 0))
-    (cl-letf (((symbol-function
+    (cl-letf (((symbol-function 'claude-code-ide-manager--save-state)
+               (lambda () nil))
+              ((symbol-function
                 'claude-code-ide-manager--refresh-sidebar-state)
                (lambda (&optional _scope _reassert)
                  (setq refresh-count (1+ refresh-count)))))
@@ -13665,13 +13668,13 @@ sessions back to working every few seconds with no real output."
           (claude-code-ide-manager--validate-pin-order-editor)
           '("one" "two")))))))
 
-(ert-deftest claude-code-ide-test-manager-pin-order-apply-pins-snapshot-in-exact-order ()
-  "Apply pins every snapshot row in its physical order."
+(ert-deftest claude-code-ide-test-manager-pin-order-apply-orders-rows-and-clears-pins ()
+  "Apply sets the full order and clears every pin in the scope."
   (claude-code-ide-tests--reset-manager-state)
   (let* ((scope '(:type global))
          (one (make-claude-code-ide-manager-item
                :session-key "one" :display-name "same"
-               :pinned nil :order-key 9))
+               :pinned t :order-key 9))
          (two (make-claude-code-ide-manager-item
                :session-key "two" :display-name "same"
                :pinned nil :order-key 8))
@@ -13712,10 +13715,140 @@ sessions back to working every few seconds with no real output."
     (should (= refresh-count 1))
     (should (= save-count 1))
     (should (= render-count 1))
-    (should (claude-code-ide-manager-item-pinned two))
+    (should-not (claude-code-ide-manager-item-pinned two))
     (should (= (claude-code-ide-manager-item-order-key two) 1))
-    (should (claude-code-ide-manager-item-pinned one))
+    (should-not (claude-code-ide-manager-item-pinned one))
     (should (= (claude-code-ide-manager-item-order-key one) 2))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-apply-unpins-items-outside-snapshot ()
+  "Apply clears pins even for scope items missing from the snapshot."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (one (make-claude-code-ide-manager-item
+               :session-key "one" :display-name "one"
+               :pinned nil :order-key 9))
+         (two (make-claude-code-ide-manager-item
+               :session-key "two" :display-name "two"
+               :pinned nil :order-key 8))
+         (mid-edit (make-claude-code-ide-manager-item
+                    :session-key "mid-edit" :display-name "mid-edit"
+                    :pinned t :order-key most-positive-fixnum))
+         (items (list one two mid-edit))
+         (sessions
+          (list (claude-code-ide-session-create :id "one")
+                (claude-code-ide-session-create :id "two")))
+         closed)
+    (claude-code-ide-manager--set-scope-items scope items)
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope scope
+                  claude-code-ide-manager--pin-order-snapshot
+                  '(("one" . "one")
+                    ("two" . "two")))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager--live-sessions)
+            (lambda () sessions))
+           ((symbol-function 'claude-code-ide-manager-refresh-items)
+            (lambda (&optional _scope _state-loaded-p) items))
+           ((symbol-function 'claude-code-ide-manager--save-state)
+            (lambda () nil))
+           ((symbol-function 'claude-code-ide-manager--render)
+            (lambda (&optional _scope) nil))
+           ((symbol-function
+             'claude-code-ide-manager--close-pin-order-editor)
+            (lambda () (setq closed t))))
+        (claude-code-ide-manager-pin-order-apply)))
+    (should closed)
+    (should-not (claude-code-ide-manager-item-pinned mid-edit))
+    (should (= (claude-code-ide-manager-item-order-key mid-edit)
+               most-positive-fixnum))
+    (should (= (claude-code-ide-manager-item-order-key one) 1))
+    (should (= (claude-code-ide-manager-item-order-key two) 2))))
+
+(ert-deftest claude-code-ide-test-manager-move-down-orders-fresh-sessions ()
+  "Moving a fresh session materializes keys so the swap takes effect."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (alpha (make-claude-code-ide-manager-item
+                 :session-key "alpha" :display-name "alpha"
+                 :pinned nil :order-key most-positive-fixnum))
+         (beta (make-claude-code-ide-manager-item
+                :session-key "beta" :display-name "beta"
+                :pinned nil :order-key most-positive-fixnum)))
+    (claude-code-ide-manager--set-scope-items scope (list alpha beta))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--save-state)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide-manager--render)
+               (lambda (&optional _scope) nil)))
+      (claude-code-ide-manager--swap-order scope alpha beta))
+    (should (= (claude-code-ide-manager-item-order-key beta) 1))
+    (should (= (claude-code-ide-manager-item-order-key alpha) 2))
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items
+                            (claude-code-ide-manager--scope-items scope)))
+                   '("beta" "alpha")))))
+
+(ert-deftest claude-code-ide-test-manager-sidebar-sort-change-clears-manual-order ()
+  "Sidebar sort change clears finite manual order keys, keeps pins."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (one (make-claude-code-ide-manager-item
+               :session-key "one" :display-name "one"
+               :pinned t :order-key 1))
+         (two (make-claude-code-ide-manager-item
+               :session-key "two" :display-name "two"
+               :pinned nil :order-key 2))
+         (fresh (make-claude-code-ide-manager-item
+                 :session-key "fresh" :display-name "fresh"
+                 :pinned nil :order-key most-positive-fixnum))
+         (save-count 0))
+    (claude-code-ide-manager--set-scope-items scope (list one two fresh))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-manager--save-state)
+                 (lambda () (cl-incf save-count)))
+                ((symbol-function
+                  'claude-code-ide-manager--refresh-sidebar-state)
+                 (lambda (&optional _scope _reassert) nil)))
+        (claude-code-ide-manager-set-sort-by 'created-at)))
+    (should-not (claude-code-ide-manager-item-order-key one))
+    (should-not (claude-code-ide-manager-item-order-key two))
+    (should (= (claude-code-ide-manager-item-order-key fresh)
+               most-positive-fixnum))
+    (should (claude-code-ide-manager-item-pinned one))
+    (should-not (claude-code-ide-manager-item-pinned two))
+    (should (= save-count 1))))
+
+(ert-deftest claude-code-ide-test-manager-editor-sort-change-keeps-manual-order ()
+  "Sort change inside the order editor leaves stored keys intact."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((scope '(:type global))
+         (claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (one (make-claude-code-ide-manager-item
+               :session-key "one" :display-name "one"
+               :pinned nil :order-key 1))
+         (save-count 0))
+    (claude-code-ide-manager--set-scope-items scope (list one))
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope scope)
+      (cl-letf (((symbol-function 'claude-code-ide-manager--save-state)
+                 (lambda () (cl-incf save-count)))
+                ((symbol-function
+                  'claude-code-ide-manager--pin-order-resync)
+                 (lambda () nil))
+                ((symbol-function
+                  'claude-code-ide-manager--refresh-sidebar-state)
+                 (lambda (&optional _scope _reassert) nil)))
+        (claude-code-ide-manager-set-sort-by 'created-at)))
+    (should (= (claude-code-ide-manager-item-order-key one) 1))
+    (should (= save-count 0))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-cancel-restores-content-without-mutation ()
   "Cancel restores the content buffer without changing manager items."

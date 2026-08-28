@@ -66,6 +66,7 @@
 (declare-function claude-code-ide-manager-refresh "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-edit-pin-order "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager--pin-order-resync "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager--clear-manual-order "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-at-point-preserve-focus "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-start-session-at-point "claude-code-ide-manager" (&optional dangerous arg))
@@ -618,6 +619,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
            nil t nil nil
            (symbol-name claude-code-ide-manager-sort-by)))))
   (setq claude-code-ide-manager-sort-by sort-by)
+  (unless (derived-mode-p 'claude-code-ide-manager-pin-order-mode)
+    (when (claude-code-ide-manager--clear-manual-order)
+      (message "Sort changed; manual session order cleared")))
   (claude-code-ide-manager--refresh-sidebar-state)
   (when (derived-mode-p 'claude-code-ide-manager-pin-order-mode)
     (claude-code-ide-manager--pin-order-resync)))
@@ -627,6 +631,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
   (interactive)
   (setq claude-code-ide-manager-sort-reverse
         (not claude-code-ide-manager-sort-reverse))
+  (unless (derived-mode-p 'claude-code-ide-manager-pin-order-mode)
+    (when (claude-code-ide-manager--clear-manual-order)
+      (message "Sort changed; manual session order cleared")))
   (claude-code-ide-manager--refresh-sidebar-state)
   (when (derived-mode-p 'claude-code-ide-manager-pin-order-mode)
     (claude-code-ide-manager--pin-order-resync)))
@@ -662,7 +669,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]
    ["Arrange"
     ("P" "Toggle pin" claude-code-ide-manager-toggle-pin)
-    ("E" "Edit pin order" claude-code-ide-manager-edit-pin-order)
+    ("E" "Edit session order" claude-code-ide-manager-edit-pin-order)
     ("M-p" "Move row up" claude-code-ide-manager-move-up)
     ("M-n" "Move row down" claude-code-ide-manager-move-down)
     ("C-s" "Sort menu" claude-code-ide-manager-sort-menu)
@@ -695,7 +702,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("p" "Previous manager session" claude-code-ide-manager-previous-line)
     ("v" "Rename manager session" claude-code-ide-manager-rename-at-point)
     ("P" "Pin current manager session" claude-code-ide-manager-toggle-current-session-pin)
-    ("E" "Edit manager pin order" claude-code-ide-manager-edit-pin-order)
+    ("E" "Edit manager session order" claude-code-ide-manager-edit-pin-order)
     ("1" "Manager slot 1" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 1)))
     ("2" "Manager slot 2" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 2)))
     ("3" "Manager slot 3" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 3)))

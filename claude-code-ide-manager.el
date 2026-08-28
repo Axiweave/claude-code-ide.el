@@ -849,6 +849,19 @@ default to the global scope for backward compatibility."
       (cl-pushnew item items :test #'eq))
     items))
 
+(defun claude-code-ide-manager--clear-manual-order ()
+  "Clear stored manual order keys across every scope.
+Return non-nil when any key was cleared."
+  (let (cleared)
+    (dolist (item (claude-code-ide-manager--all-items))
+      (let ((key (claude-code-ide-manager-item-order-key item)))
+        (when (and key (/= key most-positive-fixnum))
+          (setf (claude-code-ide-manager-item-order-key item) nil)
+          (setq cleared t))))
+    (when cleared
+      (claude-code-ide-manager--save-state))
+    cleared))
+
 (defun claude-code-ide-manager--replace-display-suffix
     (display-name old-suffix new-suffix)
   "Replace OLD-SUFFIX with NEW-SUFFIX in DISPLAY-NAME."
@@ -1368,7 +1381,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
     (let ((snapshot (claude-code-ide-manager--pin-order-item-names items)))
       (setq-local claude-code-ide-manager--pin-order-snapshot snapshot)
       (claude-code-ide-manager--render-pin-order-editor snapshot)
-      (message "Pin-order rows reloaded; unsaved edits were replaced"))))
+      (message "Order rows reloaded; unsaved edits were replaced"))))
 
 (defun claude-code-ide-manager--pin-order-renumber ()
   "Renumber each pin-order row from top to bottom."
@@ -1501,7 +1514,8 @@ This mirrors mouse hover text for keyboard navigation in the manager."
     (nreverse keys)))
 
 (defun claude-code-ide-manager-pin-order-apply ()
-  "Validate and apply the complete pinned session order."
+  "Validate and apply the complete session order.
+Applying clears every pin in the scope; pin again from the sidebar."
   (interactive)
   (let* ((scope claude-code-ide-manager--pin-order-scope)
          (session-keys
@@ -1515,15 +1529,16 @@ This mirrors mouse hover text for keyboard navigation in the manager."
             session-keys)))
       (unless (cl-every #'identity items)
         (user-error "A snapshot session vanished before apply"))
+      (cl-loop for item in (claude-code-ide-manager--scope-items scope)
+               do (setf (claude-code-ide-manager-item-pinned item) nil))
       (cl-loop for item in items
                for order-key from 1
-               do
-               (setf (claude-code-ide-manager-item-pinned item) t
-                     (claude-code-ide-manager-item-order-key item) order-key))
+               do (setf (claude-code-ide-manager-item-order-key item) order-key))
       (claude-code-ide-manager--save-state)
       (claude-code-ide-manager--render scope)
       (set-buffer-modified-p nil)
-      (claude-code-ide-manager--close-pin-order-editor))))
+      (claude-code-ide-manager--close-pin-order-editor)
+      (message "Session order applied; pins cleared"))))
 
 (defun claude-code-ide-manager-pin-order-cancel ()
   "Discard pin-order edits and close the editor."
@@ -1544,7 +1559,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 
 ;;;###autoload
 (defun claude-code-ide-manager-edit-pin-order ()
-  "Edit the complete pinned session order for the selected manager scope."
+  "Edit the complete session order for the selected manager scope."
   (interactive)
   (let* ((scope (claude-code-ide-manager--scope-for-command))
          (items (claude-code-ide-manager-refresh-items scope))
@@ -1975,8 +1990,16 @@ DIRECTION should be -1 for up or 1 for down."
                        (claude-code-ide-manager-item-pinned candidate)))
           candidate)))))
 
+(defun claude-code-ide-manager--materialize-order-keys (scope)
+  "Assign explicit order keys matching SCOPE's current visible order."
+  (cl-loop for item in (claude-code-ide-manager--sorted-items
+                        (claude-code-ide-manager--scope-items scope))
+           for order-key from 1
+           do (setf (claude-code-ide-manager-item-order-key item) order-key)))
+
 (defun claude-code-ide-manager--swap-order (scope left right)
   "Swap order keys for LEFT and RIGHT within SCOPE."
+  (claude-code-ide-manager--materialize-order-keys scope)
   (let ((left-order (claude-code-ide-manager-item-order-key left))
         (right-order (claude-code-ide-manager-item-order-key right)))
     (setf (claude-code-ide-manager-item-order-key left) right-order)
