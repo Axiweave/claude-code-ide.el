@@ -70,3 +70,13 @@ Debug logging can also be enabled in Emacs; ask the user for the resulting log w
 - Keep `docs/superpowers/` local and uncommitted.
 - Respect `.gitignore`; never use `git add -f` unless the user explicitly requests it.
 - Never commit changes unless the user explicitly asks.
+
+## Agent skills
+
+### Issue tracker
+
+There is no external issue tracker. Specs and tasks live in spec-kit under `.specify/` (specs created with `.specify/scripts/bash/create-new-feature.sh`, templates in `.specify/templates/`). When a skill says "publish to the issue tracker", create or update the relevant spec-kit spec/tasks files instead.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
