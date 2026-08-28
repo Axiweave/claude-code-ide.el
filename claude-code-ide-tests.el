@@ -14330,6 +14330,274 @@ The resync ignores pin state and stored order keys."
       (when (buffer-live-p manager-buffer)
         (kill-buffer manager-buffer)))))
 
+;;; zmx-backed persistent sessions
+
+(ert-deftest claude-code-ide-test-zmx-parse-list-line ()
+  "Detailed key=value rows parse into plists; nameless rows drop."
+  (let ((entry (claude-code-ide-zmx--parse-list-line
+                "name=cci-omp-proj-abc123\tpid=42\tstart_dir=/tmp/proj\tcmd=omp --continue")))
+    (should (equal (plist-get entry :name) "cci-omp-proj-abc123"))
+    (should (equal (plist-get entry :start_dir) "/tmp/proj"))
+    (should (equal (plist-get entry :cmd) "omp --continue"))
+    (should (equal (plist-get entry :pid) "42")))
+  (should-not (claude-code-ide-zmx--parse-list-line "pid=42\tcmd=omp"))
+  (should-not (claude-code-ide-zmx--parse-list-line "   ")))
+
+(ert-deftest claude-code-ide-test-zmx-list-sessions-short-format ()
+  "Bare-name rows from older zmx builds yield name-only plists."
+  (cl-letf (((symbol-function 'claude-code-ide-zmx--call)
+             (lambda (&rest _) "dev\nbuild\n")))
+    (should (equal (claude-code-ide-zmx-list-sessions)
+                   '((:name "dev") (:name "build"))))))
+
+(ert-deftest claude-code-ide-test-zmx-list-sessions-empty ()
+  "The `no sessions found' placeholder row is dropped."
+  (cl-letf (((symbol-function 'claude-code-ide-zmx--call)
+             (lambda (&rest _) "no sessions found\n")))
+    (should-not (claude-code-ide-zmx-list-sessions))))
+
+(ert-deftest claude-code-ide-test-zmx-session-name-format ()
+  "Names follow <prefix><agent>-<project>-<id-short> with sanitizing."
+  (let ((claude-code-ide-zmx-session-prefix "cci-"))
+    (should (equal (claude-code-ide-zmx-session-name
+                    'omp "/tmp/My Project.el/" "claude-My Project.el-20260828-101112-a1b2c3")
+                   "cci-omp-my-project-el-a1b2c3"))
+    (should (equal (claude-code-ide-zmx--offer-prefix 'claude "/tmp/proj")
+                   "cci-claude-proj-"))))
+
+(ert-deftest claude-code-ide-test-zmx-sanitize ()
+  (should (equal (claude-code-ide-zmx--sanitize "My Project.el") "my-project-el"))
+  (should (equal (claude-code-ide-zmx--sanitize "--weird__name--") "weird-name"))
+  (should (equal (claude-code-ide-zmx--sanitize "simple") "simple")))
+
+(ert-deftest claude-code-ide-test-zmx-ensure-signals-without-binary ()
+  "Missing zmx executable raises a `user-error' naming the program."
+  (cl-letf (((symbol-function 'executable-find) (lambda (_) nil)))
+    (should-error (claude-code-ide-zmx--ensure) :type 'user-error)))
+
+(ert-deftest claude-code-ide-test-zmx-wrap-command ()
+  "Wrapping preserves agent flags; nil command attaches only."
+  (let ((claude-code-ide-zmx-program "zmx"))
+    (should (equal (claude-code-ide-zmx-wrap-command "cci-omp-p-x" "omp --continue")
+                   "zmx attach cci-omp-p-x omp --continue"))
+    (should (equal (claude-code-ide-zmx-wrap-command "cci-omp-p-x")
+                   "zmx attach cci-omp-p-x"))))
+
+(ert-deftest claude-code-ide-test-zmx-wrap-at-shared-seam-per-cli ()
+  "Every CLI type gets wrapped through the shared terminal seam."
+  (dolist (cli-path '("claude" "codex" "opencode" "pi" "omp"))
+    (let ((claude-code-ide-cli-path cli-path)
+          (claude-code-ide-zmx--pending-name "cci-test-name")
+          (claude-code-ide-zmx--pending-attach-only nil)
+          captured-cmd)
+      (cl-letf (((symbol-function 'claude-code-ide--resolve-terminal-backend)
+                 (lambda (&optional _) 'vterm))
+                ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+                ((symbol-function 'vterm)
+                 (lambda (&rest _)
+                   (setq captured-cmd vterm-shell)
+                   (error "Stop after capture"))))
+        (ignore-errors
+          (claude-code-ide--create-terminal-with-command
+           "*test*" temporary-file-directory
+           (format "%s --continue" cli-path) nil)))
+      (should (equal captured-cmd
+                     (format "zmx attach cci-test-name %s --continue" cli-path))))))
+
+(ert-deftest claude-code-ide-test-zmx-no-wrap-without-pending-name ()
+  "Nil pending name leaves the command untouched (use-zmx off path)."
+  (let ((claude-code-ide-zmx--pending-name nil)
+        captured-cmd)
+    (cl-letf (((symbol-function 'claude-code-ide--resolve-terminal-backend)
+               (lambda (&optional _) 'vterm))
+              ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+              ((symbol-function 'vterm)
+               (lambda (&rest _)
+                 (setq captured-cmd vterm-shell)
+                 (error "Stop after capture"))))
+      (ignore-errors
+        (claude-code-ide--create-terminal-with-command
+         "*test*" temporary-file-directory "claude -c" nil)))
+    (should (equal captured-cmd "claude -c"))))
+
+(ert-deftest claude-code-ide-test-zmx-launch-spec-off-and-attach ()
+  "Spec is nil with zmx off; forced attach name wins regardless."
+  (let ((claude-code-ide-use-zmx nil))
+    (should-not (claude-code-ide--zmx-launch-spec "/tmp/p" nil nil "id-x" nil))
+    (should (equal (claude-code-ide--zmx-launch-spec "/tmp/p" nil nil "id-x" "adopted")
+                   '("adopted" . t)))))
+
+(ert-deftest claude-code-ide-test-zmx-launch-spec-new-when-no-eligible ()
+  "No eligible sessions creates a new name without prompting."
+  (let ((claude-code-ide-use-zmx t)
+        (claude-code-ide-cli-path "omp")
+        (claude-code-ide--sessions (make-hash-table :test #'equal))
+        prompted)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () nil))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) (setq prompted t) "")))
+      (let ((spec (claude-code-ide--zmx-launch-spec
+                   "/tmp/proj" nil nil "claude-proj-20260828-101112-a1b2c3" nil)))
+        (should-not prompted)
+        (should (equal spec '("cci-omp-proj-a1b2c3")))))))
+
+(ert-deftest claude-code-ide-test-zmx-launch-spec-offers-eligible ()
+  "Eligible orphaned sessions are offered; selection reattaches."
+  (let ((claude-code-ide-use-zmx t)
+        (claude-code-ide-cli-path "omp")
+        (claude-code-ide--sessions (make-hash-table :test #'equal))
+        offered)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-proj-old1")
+                            (:name "cci-claude-proj-x")
+                            (:name "unrelated"))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq offered collection)
+                 "cci-omp-proj-old1")))
+      (let ((spec (claude-code-ide--zmx-launch-spec
+                   "/tmp/proj" nil nil "claude-proj-20260828-101112-a1b2c3" nil)))
+        (should (equal spec '("cci-omp-proj-old1" . t)))
+        (should (equal offered '("cci-omp-proj-old1" "Create new session")))))))
+
+(ert-deftest claude-code-ide-test-zmx-launch-spec-excludes-live-sessions ()
+  "Sessions already attached in this Emacs are not offered again."
+  (let ((claude-code-ide-use-zmx t)
+        (claude-code-ide-cli-path "omp")
+        (claude-code-ide--sessions (make-hash-table :test #'equal))
+        prompted)
+    (puthash "live-id"
+             (claude-code-ide-session-create
+              :id "live-id" :directory "/tmp/proj/"
+              :zmx-name "cci-omp-proj-old1")
+             claude-code-ide--sessions)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-proj-old1"))))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) (setq prompted t) "")))
+      (let ((spec (claude-code-ide--zmx-launch-spec
+                   "/tmp/proj" nil nil "claude-proj-20260828-101112-a1b2c3" nil)))
+        (should-not prompted)
+        (should (equal spec '("cci-omp-proj-a1b2c3")))))))
+
+(ert-deftest claude-code-ide-test-zmx-launch-spec-continue-skips-offer ()
+  "Continue/resume starts never offer reattach (fresh flagged command)."
+  (let ((claude-code-ide-use-zmx t)
+        (claude-code-ide-cli-path "omp")
+        (claude-code-ide--sessions (make-hash-table :test #'equal))
+        prompted)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-proj-old1"))))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) (setq prompted t) "")))
+      (dolist (mode '((t . nil) (nil . t)))
+        (let ((spec (claude-code-ide--zmx-launch-spec
+                     "/tmp/proj" (car mode) (cdr mode)
+                     "claude-proj-20260828-101112-a1b2c3" nil)))
+          (should-not prompted)
+          (should (equal spec '("cci-omp-proj-a1b2c3"))))))))
+
+(ert-deftest claude-code-ide-test-zmx-infer-cli-command ()
+  "Command heads map to agent CLIs, including path-qualified heads."
+  (let ((claude-code-ide-cli-path "/opt/custom/mycli"))
+    (should (equal (claude-code-ide-zmx-infer-cli-command "omp --continue") "omp"))
+    (should (equal (claude-code-ide-zmx-infer-cli-command "/usr/local/bin/claude -c") "claude"))
+    (should (equal (claude-code-ide-zmx-infer-cli-command "codex") "codex"))
+    (should (equal (claude-code-ide-zmx-infer-cli-command "mycli --flag")
+                   "/opt/custom/mycli"))
+    (should-not (claude-code-ide-zmx-infer-cli-command "htop"))
+    (should-not (claude-code-ide-zmx-infer-cli-command nil))
+    (should-not (claude-code-ide-zmx-infer-cli-command "  "))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-adopts-session ()
+  "Adoption resolves directory and CLI from zmx list metadata."
+  (let (create-args)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "demo" :start_dir "/tmp/proj" :cmd "omp"))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt candidates &rest _) (caar candidates)))
+              ((symbol-function 'claude-code-ide--create-session)
+               (lambda (&rest args)
+                 (setq create-args (cons claude-code-ide-cli-path args)))))
+      (claude-code-ide-attach))
+    (should (equal create-args '("omp" "/tmp/proj/" nil nil "demo")))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-prompts-on-unknown-command ()
+  "Unknown session commands fall back to the agent prompt."
+  (let (create-args)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "demo" :start_dir "/tmp/proj" :cmd "htop"))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt candidates &rest _) (caar candidates)))
+              ((symbol-function 'claude-code-ide--read-agent)
+               (lambda (&rest _) "codex"))
+              ((symbol-function 'claude-code-ide--create-session)
+               (lambda (&rest args)
+                 (setq create-args (cons claude-code-ide-cli-path args)))))
+      (claude-code-ide-attach))
+    (should (equal create-args '("codex" "/tmp/proj/" nil nil "demo")))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-no-sessions ()
+  "Empty zmx list logs instead of erroring."
+  (let (created)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () nil))
+              ((symbol-function 'claude-code-ide--create-session)
+               (lambda (&rest _) (setq created t))))
+      (claude-code-ide-attach))
+    (should-not created)))
+
+(defun claude-code-ide-tests--zmx-stop-fixture (zmx-name confirm)
+  "Run `claude-code-ide-stop' on a ZMX-NAME session; CONFIRM the prompt.
+Return a plist with :killed-zmx and :killed-buffer."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (buffer (generate-new-buffer "*claude-zmx-stop-test*"))
+        killed-zmx killed-buffer)
+    (unwind-protect
+        (progn
+          (puthash "stop-id"
+                   (claude-code-ide-session-create
+                    :id "stop-id" :directory "/tmp/proj/" :buffer buffer
+                    :zmx-name zmx-name)
+                   claude-code-ide--sessions)
+          (cl-letf (((symbol-function 'claude-code-ide--get-attached-working-directory)
+                     (lambda () "/tmp/proj/"))
+                    ((symbol-function 'claude-code-ide--get-session-buffer)
+                     (lambda (&optional _) buffer))
+                    ((symbol-function 'yes-or-no-p)
+                     (lambda (_) confirm))
+                    ((symbol-function 'claude-code-ide-zmx-kill)
+                     (lambda (name) (setq killed-zmx name)))
+                    ((symbol-function 'kill-buffer)
+                     (lambda (&optional _) (setq killed-buffer t))))
+            (claude-code-ide-stop))
+          (list :killed-zmx killed-zmx :killed-buffer killed-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-zmx-stop-confirmed-kills-session ()
+  (let ((result (claude-code-ide-tests--zmx-stop-fixture "cci-omp-proj-x" t)))
+    (should (equal (plist-get result :killed-zmx) "cci-omp-proj-x"))
+    (should (plist-get result :killed-buffer))))
+
+(ert-deftest claude-code-ide-test-zmx-stop-declined-keeps-session ()
+  (let ((result (claude-code-ide-tests--zmx-stop-fixture "cci-omp-proj-x" nil)))
+    (should-not (plist-get result :killed-zmx))
+    (should-not (plist-get result :killed-buffer))))
+
+(ert-deftest claude-code-ide-test-zmx-stop-plain-session-never-calls-kill ()
+  (let ((result (claude-code-ide-tests--zmx-stop-fixture nil t)))
+    (should-not (plist-get result :killed-zmx))
+    (should (plist-get result :killed-buffer))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

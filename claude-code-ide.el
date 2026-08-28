@@ -74,6 +74,7 @@
 (require 'claude-code-ide-transient)
 (require 'claude-code-ide-mcp-server)
 (require 'claude-code-ide-emacs-tools)
+(require 'claude-code-ide-zmx)
 
 ;; External variable declarations
 (defvar eat-terminal)
@@ -407,7 +408,7 @@ the target window is already visible."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-session-id order created-at last-accessed-at custom-name title)
+  id directory process buffer cli-session-id order created-at last-accessed-at custom-name title zmx-name)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -1531,6 +1532,10 @@ ENV-VARS is a list of \"KEY=VALUE\" environment variable strings.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
+  (when claude-code-ide-zmx--pending-name
+    (setq cmd (claude-code-ide-zmx-wrap-command
+               claude-code-ide-zmx--pending-name
+               (unless claude-code-ide-zmx--pending-attach-only cmd))))
   (let* ((cli-type (claude-code-ide--current-cli-type))
          (backend (claude-code-ide--resolve-terminal-backend cli-type)))
     (claude-code-ide--terminal-ensure-backend)
@@ -1703,15 +1708,53 @@ Returns a cons cell of (buffer . process) on success."
      (claude-code-ide-session-buffer session)
      (claude-code-ide-session-directory session))))
 
-(defun claude-code-ide--create-session (working-dir continue resume)
+(defun claude-code-ide--zmx-live-names ()
+  "Return zmx names attached by live sessions in this Emacs instance."
+  (let (names)
+    (maphash (lambda (_id session)
+               (when-let ((name (claude-code-ide-session-zmx-name session)))
+                 (push name names)))
+             claude-code-ide--sessions)
+    names))
+
+(defun claude-code-ide--zmx-launch-spec (working-dir continue resume session-id attach-name)
+  "Return (ZMX-NAME . ATTACH-ONLY) for the session being created, or nil.
+WORKING-DIR, CONTINUE, RESUME, and SESSION-ID describe the new session.
+ATTACH-NAME forces reattach/adoption of that existing zmx session.
+A plain start offers eligible orphaned zmx sessions via `completing-read'."
+  (cond
+   (attach-name (cons attach-name t))
+   ((not claude-code-ide-use-zmx) nil)
+   (t
+    (claude-code-ide-zmx--ensure)
+    (let* ((cli-type (claude-code-ide--current-cli-type))
+           (new-name (claude-code-ide-zmx-session-name cli-type working-dir session-id))
+           (eligible (and (not continue) (not resume)
+                          (claude-code-ide-zmx--eligible-sessions
+                           (claude-code-ide-zmx--offer-prefix cli-type working-dir)
+                           (claude-code-ide--zmx-live-names)))))
+      (if (null eligible)
+          (cons new-name nil)
+        (let ((choice (completing-read
+                       "Reattach to zmx session: "
+                       (append eligible '("Create new session")) nil t)))
+          (if (equal choice "Create new session")
+              (cons new-name nil)
+            (cons choice t))))))))
+
+(defun claude-code-ide--create-session (working-dir continue resume &optional zmx-attach-name)
   "Create a terminal session in WORKING-DIR.
-CONTINUE and RESUME select the CLI conversation mode."
+CONTINUE and RESUME select the CLI conversation mode.
+ZMX-ATTACH-NAME reattaches to that existing zmx session instead of
+running a freshly built CLI command."
   (claude-code-ide--terminal-ensure-backend)
   (let* ((session-id
           (make-temp-name
            (format "claude-%s-%s-"
                    (file-name-nondirectory (directory-file-name working-dir))
                    (format-time-string "%Y%m%d-%H%M%S"))))
+         (zmx-spec (claude-code-ide--zmx-launch-spec
+                    working-dir continue resume session-id zmx-attach-name))
          (buffer-name
           (generate-new-buffer-name
            (claude-code-ide--get-buffer-name working-dir)))
@@ -1721,9 +1764,11 @@ CONTINUE and RESUME select the CLI conversation mode."
         (progn
           (setq port (claude-code-ide-mcp-start working-dir session-id)
                 mcp-started-p t)
-          (let ((buffer-and-process
-                 (claude-code-ide--create-terminal-session
-                  buffer-name working-dir port continue resume session-id)))
+          (let* ((claude-code-ide-zmx--pending-name (car zmx-spec))
+                 (claude-code-ide-zmx--pending-attach-only (cdr zmx-spec))
+                 (buffer-and-process
+                  (claude-code-ide--create-terminal-session
+                   buffer-name working-dir port continue resume session-id)))
             (setq buffer (car buffer-and-process)
                   process (cdr buffer-and-process))
             (setq mcp-tools-started-p t)
@@ -1738,7 +1783,8 @@ CONTINUE and RESUME select the CLI conversation mode."
                      :buffer buffer
                      :order (claude-code-ide--next-session-order working-dir)
                      :created-at created-at
-                     :last-accessed-at created-at)))
+                     :last-accessed-at created-at
+                     :zmx-name (car zmx-spec))))
             (claude-code-ide--register-session session)
             (set-process-sentinel
              process
@@ -1864,18 +1910,60 @@ conversation in the current directory."
 
 ;;;###autoload
 (defun claude-code-ide-stop ()
-  "Stop the Claude Code session for the current project or directory."
+  "Stop the Claude Code session for the current project or directory.
+For a zmx-backed session, ask before killing the zmx session; killing
+it stops the agent process for every attached client."
   (interactive)
   (let* ((working-dir (claude-code-ide--get-attached-working-directory))
-         (buffer (claude-code-ide--get-session-buffer)))
-    (if buffer
-        (progn
-          ;; Kill the buffer (cleanup will be handled by hooks)
-          ;; The process sentinel will handle cleanup when the process dies
-          (kill-buffer buffer)
-          (claude-code-ide-log "Stopping Claude Code in %s..."
-                               (file-name-nondirectory (directory-file-name working-dir))))
-      (claude-code-ide-log "No Claude Code session is running in this directory"))))
+         (buffer (claude-code-ide--get-session-buffer))
+         (session (and buffer (claude-code-ide--session-for-buffer buffer)))
+         (zmx-name (and session (claude-code-ide-session-zmx-name session))))
+    (cond
+     ((null buffer)
+      (claude-code-ide-log "No Claude Code session is running in this directory"))
+     ((and zmx-name
+           (not (yes-or-no-p (format "Kill zmx session %s (killing stops the agent everywhere)? "
+                                     zmx-name))))
+      (claude-code-ide-log "Kept zmx session %s running" zmx-name))
+     (t
+      (when zmx-name
+        (claude-code-ide-zmx-kill zmx-name))
+      ;; Kill the buffer (cleanup will be handled by hooks)
+      ;; The process sentinel will handle cleanup when the process dies
+      (kill-buffer buffer)
+      (claude-code-ide-log "Stopping Claude Code in %s..."
+                           (file-name-nondirectory (directory-file-name working-dir)))))))
+
+;;;###autoload
+(defun claude-code-ide-attach ()
+  "Adopt a zmx session into a Claude Code IDE session.
+List zmx sessions (including ones launched outside Emacs), infer the
+agent CLI from the session's command, and open an attached terminal
+buffer with full session integration."
+  (interactive)
+  (claude-code-ide-zmx--ensure)
+  (let ((sessions (claude-code-ide-zmx-list-sessions)))
+    (if (null sessions)
+        (claude-code-ide-log "No zmx sessions found")
+      (let* ((candidates
+              (mapcar (lambda (entry)
+                        (cons (format "%s  %s  %s"
+                                      (plist-get entry :name)
+                                      (or (plist-get entry :start_dir) "")
+                                      (or (plist-get entry :cmd) ""))
+                              entry))
+                      sessions))
+             (choice (completing-read "Attach to zmx session: " candidates nil t))
+             (entry (cdr (assoc choice candidates)))
+             (name (plist-get entry :name))
+             (directory (file-name-as-directory
+                         (or (plist-get entry :start_dir)
+                             (read-directory-name "Project directory for session: "))))
+             (claude-code-ide-cli-path
+              (or (claude-code-ide-zmx-infer-cli-command (plist-get entry :cmd))
+                  (claude-code-ide--read-agent
+                   (format "Agent running in %s: " name)))))
+        (claude-code-ide--create-session directory nil nil name)))))
 
 
 ;;;###autoload

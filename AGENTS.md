@@ -15,6 +15,7 @@ This Emacs package provides project-aware terminal sessions for Claude Code, Cod
 - `claude-code-ide.el` — entry points, CLI dispatch, process tracking, and window workflows
 - `claude-code-ide-session.el` — shared terminal-session setup and interaction
 - `claude-code-ide-session-idle.el` — idle and working-state tracking
+- `claude-code-ide-zmx.el` — optional zmx backend for persistent, reattachable agent sessions
 - `claude-code-ide-manager.el` — global and repository-local session sidebars and persisted layouts
 - `claude-code-ide-transient.el` — transient menus
 

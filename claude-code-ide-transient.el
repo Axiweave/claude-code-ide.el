@@ -664,6 +664,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ["Sessions"
     ("s" "Start session at point" claude-code-ide-manager-start-session-at-point)
     ("S" "Start (skip permissions)" claude-code-ide-manager-start-session-at-point-skip-permissions)
+    ("a" "Attach to zmx session" claude-code-ide-attach)
     ("o" "Open project/worktree" claude-code-ide-manager-open)
     ("r" "Rename session" claude-code-ide-manager-rename-at-point)
     ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]
@@ -690,6 +691,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("R" claude-code-ide--resume-skip-permissions :description claude-code-ide--resume-skip-description)
     ("N" "New session" claude-code-ide-new-session)
+    ("a" "Attach to zmx session" claude-code-ide-attach)
     ("q" "Stop current session" claude-code-ide-stop)
     ("l" "List related sessions" claude-code-ide-list-related-sessions)
     ("L" "List all sessions" claude-code-ide-list-sessions)]

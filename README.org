@@ -185,6 +185,25 @@ You can run multiple Claude Code instances simultaneously for different projects
 - The window can be closed with standard Emacs window commands (=C-x 0=) without stopping Claude
 - Use =claude-code-ide-toggle-recent= to toggle the most recent Claude window from anywhere, regardless of your current project context. This is useful when you're outside a project directory but want to quickly hide/show Claude
 
+** Persistent Sessions with zmx
+
+Agent processes normally die with Emacs. With [[https://github.com/neurosnap/zmx][zmx]] installed, the package can run each agent CLI inside a zmx session. The process then survives Emacs restarts, buffer kills, and dropped connections. You can detach in Emacs and reattach from a plain terminal, or the reverse.
+
+Enable it globally:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-use-zmx t)
+#+end_src
+
+How it works:
+
+- New sessions run as =zmx attach <name> <agent-command>=. Names follow =cci-<agent>-<project>-<id>= (see =claude-code-ide-zmx-session-prefix=).
+- On session start, matching detached zmx sessions for the project and agent are offered for reattach, with a "Create new session" option. Starts with =--continue= or =--resume= skip the offer and create a new session.
+- =M-x claude-code-ide-attach= lists all zmx sessions, including ones started outside Emacs, and adopts the selection into a full session with idle tracking and manager visibility.
+- Killing the buffer or closing the window detaches only. =M-x claude-code-ide-stop= asks before it kills the zmx session, because that stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
+
+Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, or after an Emacs restart, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected.
+
 ** CC Manager
 
 =claude-code-ide-manager-toggle-sidebar= manages a dedicated left sidebar for live Claude sessions, similar to a Treemacs-style frame panel. The manager is additive: existing commands such as =claude-code-ide-list-sessions= still work as before.
@@ -270,6 +289,7 @@ When point is in the manager buffer:
 - =E= opens the complete pin-order editor for the selected manager scope
 - =s= starts a sibling session with the current CLI; =S= starts one with explicit permissions bypass
 - =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
+- =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
 - =g= refreshes the sidebar from the current live session table
