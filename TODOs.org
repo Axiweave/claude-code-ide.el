@@ -1,0 +1,6 @@
+:PROPERTIES:
+:CATEGORY: claude-code-ide.el
+:END:
+* DONE zmx integration
+https://github.com/ArthurHeymans/emacs-term-sessions
+or self build
