@@ -14598,6 +14598,33 @@ Return a plist with :killed-zmx and :killed-buffer."
     (should-not (plist-get result :killed-zmx))
     (should (plist-get result :killed-buffer))))
 
+(ert-deftest claude-code-ide-test-zmx-copy-name ()
+  "Copying puts the zmx name on the kill ring; non-zmx sessions error."
+  (let ((buffer (generate-new-buffer "*claude-zmx-copy-test*"))
+        (kill-ring nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _)
+                     (claude-code-ide-session-create
+                      :id "copy-id" :directory "/tmp/proj/" :buffer buffer
+                      :zmx-name "cci-omp-proj-x"))))
+          (claude-code-ide-copy-zmx-name)
+          (should (equal (car kill-ring) "cci-omp-proj-x")))
+      (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-zmx-copy-name-errors ()
+  "No session and non-zmx session both raise `user-error'."
+  (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+             (lambda (&optional _) nil))
+            ((symbol-function 'claude-code-ide--get-session-buffer)
+             (lambda (&optional _) nil)))
+    (should-error (claude-code-ide-copy-zmx-name) :type 'user-error))
+  (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+             (lambda (&optional _)
+               (claude-code-ide-session-create
+                :id "plain-id" :directory "/tmp/proj/"))))
+    (should-error (claude-code-ide-copy-zmx-name) :type 'user-error)))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

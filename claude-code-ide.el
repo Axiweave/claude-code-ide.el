@@ -1935,6 +1935,22 @@ it stops the agent process for every attached client."
                            (file-name-nondirectory (directory-file-name working-dir)))))))
 
 ;;;###autoload
+(defun claude-code-ide-copy-zmx-name ()
+  "Copy the current session's zmx name to the kill ring.
+Use it to run `zmx attach <name>' from a plain terminal."
+  (interactive)
+  (let* ((session (or (claude-code-ide--session-for-buffer)
+                      (when-let ((buffer (claude-code-ide--get-session-buffer)))
+                        (claude-code-ide--session-for-buffer buffer))))
+         (name (and session (claude-code-ide-session-zmx-name session))))
+    (cond
+     ((null session) (user-error "No session for this buffer or project"))
+     ((null name) (user-error "Session is not zmx-backed"))
+     (t
+      (kill-new name)
+      (message "Copied zmx name: %s" name)))))
+
+;;;###autoload
 (defun claude-code-ide-attach ()
   "Adopt a zmx session into a Claude Code IDE session.
 List zmx sessions (including ones launched outside Emacs), infer the
