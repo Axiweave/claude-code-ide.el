@@ -172,15 +172,19 @@ Matches the base name of the first word of CMD against
 
 (defun claude-code-ide-zmx-set-title (name title)
   "Set the `title' label of zmx session NAME to TITLE, asynchronously.
-zmx splits label values on whitespace, so runs of whitespace are
-encoded as `_'.  Fire-and-forget: errors are ignored."
-  (when (and name title (not (string-empty-p (string-trim title))))
+zmx label values only accept [a-zA-Z0-9-_.], so every other character
+run is encoded as one `_'.  Fire-and-forget: errors are ignored."
+  (when-let* ((name)
+              (title)
+              (value (string-trim
+                      (replace-regexp-in-string
+                       "[^a-zA-Z0-9._-]+" "_" title)
+                      "_+" "_+"))
+              ((not (string-empty-p value))))
     (ignore-errors
       (start-process "claude-code-ide-zmx-set-title" nil
                      claude-code-ide-zmx-program "set" name
-                     (concat "title="
-                             (replace-regexp-in-string
-                              "[ \t\n]+" "_" (string-trim title)))))))
+                     (concat "title=" value)))))
 
 (provide 'claude-code-ide-zmx)
 ;;; claude-code-ide-zmx.el ends here

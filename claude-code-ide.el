@@ -1959,24 +1959,34 @@ Use it to run `zmx attach <name>' from a plain terminal."
 ;;;###autoload
 (defun claude-code-ide-attach ()
   "Adopt a zmx session into a Claude Code IDE session.
-List zmx sessions (including ones launched outside Emacs), infer the
-agent CLI from the session's command, and open an attached terminal
-buffer with full session integration."
+List zmx sessions (including ones launched outside Emacs), excluding
+ones already attached in this Emacs instance, infer the agent CLI from
+the session's command, and open an attached terminal buffer with full
+session integration."
   (interactive)
   (claude-code-ide-zmx--ensure)
-  (let ((sessions (claude-code-ide-zmx-list-sessions)))
+  (let* ((live (claude-code-ide--zmx-live-names))
+         (sessions (seq-remove (lambda (entry)
+                                 (member (plist-get entry :name) live))
+                               (claude-code-ide-zmx-list-sessions))))
     (if (null sessions)
-        (claude-code-ide-log "No zmx sessions found")
+        (claude-code-ide-log "No zmx sessions to adopt")
       (let* ((candidates
               (mapcar (lambda (entry)
-                        (cons (format "%s  %s  %s%s"
-                                      (plist-get entry :name)
-                                      (or (plist-get entry :start_dir) "")
-                                      (or (plist-get entry :cmd) "")
-                                      (if-let ((title (plist-get entry :title)))
-                                          (concat "  " (subst-char-in-string ?_ ?\s title))
-                                        ""))
-                              entry))
+                        (let ((project (if-let ((dir (plist-get entry :start_dir)))
+                                           (file-name-nondirectory (directory-file-name dir))
+                                         "?"))
+                              (title (plist-get entry :title)))
+                          (cons (concat
+                                 project
+                                 (when title
+                                   (concat "  " (subst-char-in-string ?_ ?\s title)))
+                                 "  " (or (plist-get entry :cmd) "")
+                                 ;; Keep candidates unique but hide the raw
+                                 ;; zmx name; `assoc' ignores text properties.
+                                 (propertize (concat "  " (plist-get entry :name))
+                                             'invisible t))
+                                entry)))
                       sessions))
              (choice (completing-read "Attach to zmx session: " candidates nil t))
              (entry (cdr (assoc choice candidates)))
