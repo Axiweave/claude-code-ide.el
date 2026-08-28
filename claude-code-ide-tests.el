@@ -14370,6 +14370,37 @@ The resync ignores pin state and stored order keys."
   (should (equal (claude-code-ide-zmx--sanitize "--weird__name--") "weird-name"))
   (should (equal (claude-code-ide-zmx--sanitize "simple") "simple")))
 
+(ert-deftest claude-code-ide-test-zmx-eligible-sessions-orphans-only ()
+  "Orphans-only keeps 0-client rows; attached and clientless rows drop."
+  (let ((claude-code-ide-cli-path "omp"))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-p-a" :clients "0")
+                            (:name "cci-omp-p-b" :clients "1")
+                            (:name "cci-omp-p-c")
+                            (:name "cci-omp-p-live" :clients "0")
+                            (:name "other-x" :clients "0")))))
+      (should (equal (claude-code-ide-zmx--eligible-sessions
+                      'omp "/tmp/p" '("cci-omp-p-live") t)
+                     '("cci-omp-p-a")))
+      (should (equal (claude-code-ide-zmx--eligible-sessions
+                      'omp "/tmp/p" '("cci-omp-p-live"))
+                     '("cci-omp-p-a" "cci-omp-p-b" "cci-omp-p-c"))))))
+
+(ert-deftest claude-code-ide-test-zmx-eligible-sessions-metadata-match ()
+  "Shell-started sessions match by start_dir and agent command."
+  (let ((claude-code-ide-cli-path "omp"))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "zsh-omp-p-x" :clients "0"
+                             :start_dir "/tmp/p" :cmd "command omp")
+                            (:name "zsh-claude-p-y" :clients "0"
+                             :start_dir "/tmp/p" :cmd "claude")
+                            (:name "zsh-omp-other-z" :clients "0"
+                             :start_dir "/tmp/other" :cmd "omp")
+                            (:name "zsh-htop" :clients "0"
+                             :start_dir "/tmp/p" :cmd "htop")))))
+      (should (equal (claude-code-ide-zmx--eligible-sessions 'omp "/tmp/p" nil t)
+                     '("zsh-omp-p-x"))))))
+
 (ert-deftest claude-code-ide-test-zmx-ensure-signals-without-binary ()
   "Missing zmx executable raises a `user-error' naming the program."
   (cl-letf (((symbol-function 'executable-find) (lambda (_) nil)))
@@ -14484,15 +14515,34 @@ The resync ignores pin state and stored order keys."
         (should-not prompted)
         (should (equal spec '("cci-omp-proj-a1b2c3")))))))
 
-(ert-deftest claude-code-ide-test-zmx-launch-spec-continue-skips-offer ()
-  "Continue/resume starts never offer reattach (fresh flagged command)."
+(ert-deftest claude-code-ide-test-zmx-launch-spec-continue-offers-orphans ()
+  "Continue/resume offers reattach when an orphaned (0-client) session exists."
+  (let ((claude-code-ide-use-zmx t)
+        (claude-code-ide-cli-path "omp")
+        (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-proj-old1" :clients "0"))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt candidates &rest _)
+                 (should (member "Create new session" candidates))
+                 "cci-omp-proj-old1")))
+      (dolist (mode '((t . nil) (nil . t)))
+        (should (equal (claude-code-ide--zmx-launch-spec
+                        "/tmp/proj" (car mode) (cdr mode)
+                        "claude-proj-20260828-101112-a1b2c3" nil)
+                       '("cci-omp-proj-old1" . t)))))))
+
+(ert-deftest claude-code-ide-test-zmx-launch-spec-continue-skips-attached ()
+  "Continue/resume never offers sessions with clients or unknown client count."
   (let ((claude-code-ide-use-zmx t)
         (claude-code-ide-cli-path "omp")
         (claude-code-ide--sessions (make-hash-table :test #'equal))
         prompted)
     (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
               ((symbol-function 'claude-code-ide-zmx-list-sessions)
-               (lambda () '((:name "cci-omp-proj-old1"))))
+               (lambda () '((:name "cci-omp-proj-old1" :clients "1")
+                            (:name "cci-omp-proj-old2"))))
               ((symbol-function 'completing-read)
                (lambda (&rest _) (setq prompted t) "")))
       (dolist (mode '((t . nil) (nil . t)))

@@ -34,6 +34,7 @@
 
 (defvar claude-code-ide-agent-definitions)
 (defvar claude-code-ide-cli-path)
+(declare-function claude-code-ide--cli-type-for-command "claude-code-ide" (command))
 
 (defcustom claude-code-ide-use-zmx nil
   "When non-nil, run agent CLIs inside zmx sessions.
@@ -132,13 +133,36 @@ The unique suffix reuses the random tail of SESSION-ID."
   (concat (claude-code-ide-zmx--offer-prefix cli-type directory)
           (car (last (split-string session-id "-")))))
 
-(defun claude-code-ide-zmx--eligible-sessions (prefix live-names)
-  "Return names of zmx sessions matching PREFIX, excluding LIVE-NAMES.
-LIVE-NAMES are zmx names already attached in this Emacs instance."
-  (seq-remove (lambda (name) (member name live-names))
-              (seq-filter (lambda (name) (string-prefix-p prefix name))
-                          (mapcar (lambda (session) (plist-get session :name))
-                                  (claude-code-ide-zmx-list-sessions)))))
+(defun claude-code-ide-zmx--eligible-sessions (cli-type directory live-names &optional orphans-only)
+  "Return names of zmx sessions for CLI-TYPE in DIRECTORY, excluding LIVE-NAMES.
+A session is eligible when its name carries the generated offer
+prefix, or when its start_dir is DIRECTORY and its command runs the
+same agent CLI (sessions started outside Emacs).  LIVE-NAMES are zmx
+names already attached in this Emacs instance.  With ORPHANS-ONLY,
+keep only sessions zmx reports as having zero attached clients; rows
+without a clients field (older zmx builds that print bare names) are
+dropped."
+  (let ((prefix (claude-code-ide-zmx--offer-prefix cli-type directory))
+        (dir (file-name-as-directory (expand-file-name directory))))
+    (mapcar (lambda (session) (plist-get session :name))
+            (seq-filter
+             (lambda (session)
+               (let ((name (plist-get session :name))
+                     (start-dir (plist-get session :start_dir)))
+                 (and (not (member name live-names))
+                      (or (not orphans-only)
+                          (equal (plist-get session :clients) "0"))
+                      (or (string-prefix-p prefix name)
+                          (and start-dir
+                               (equal (file-name-as-directory
+                                       (expand-file-name start-dir))
+                                      dir)
+                               (let ((cli (claude-code-ide-zmx-infer-cli-command
+                                           (plist-get session :cmd))))
+                                 (and cli
+                                      (eq (claude-code-ide--cli-type-for-command cli)
+                                          cli-type))))))))
+             (claude-code-ide-zmx-list-sessions)))))
 
 ;;; Command wrapping
 

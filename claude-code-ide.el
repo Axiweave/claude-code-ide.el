@@ -1223,17 +1223,21 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
 
 ;;; CLI Detection
 
-(defun claude-code-ide--configured-cli-type ()
-  "Detect CLI type from `claude-code-ide-cli-path'.
-Returns \\='claude, \\='codex, \\='opencode, \\='pi, or \\='omp based on the basename prefix.
-Unknown CLIs fall back to \\='claude."
-  (let ((basename (file-name-nondirectory claude-code-ide-cli-path)))
+(defun claude-code-ide--cli-type-for-command (command)
+  "Return the CLI type symbol for COMMAND's basename.
+Returns \\='claude, \\='codex, \\='opencode, \\='pi, or \\='omp based on the
+basename prefix.  Unknown commands fall back to \\='claude."
+  (let ((basename (file-name-nondirectory command)))
     (cond
      ((string-prefix-p "opencode" basename) 'opencode)
      ((string-prefix-p "omp" basename) 'omp)
      ((string-prefix-p "pi" basename) 'pi)
      ((string-prefix-p "code" basename) 'codex)
      (t 'claude))))
+
+(defun claude-code-ide--configured-cli-type ()
+  "Detect CLI type from `claude-code-ide-cli-path'."
+  (claude-code-ide--cli-type-for-command claude-code-ide-cli-path))
 
 (defun claude-code-ide--detect-cli ()
   "Detect if Claude Code CLI is available."
@@ -1727,7 +1731,8 @@ Returns a cons cell of (buffer . process) on success."
   "Return (ZMX-NAME . ATTACH-ONLY) for the session being created, or nil.
 WORKING-DIR, CONTINUE, RESUME, and SESSION-ID describe the new session.
 ATTACH-NAME forces reattach/adoption of that existing zmx session.
-A plain start offers eligible orphaned zmx sessions via `completing-read'."
+A plain start offers eligible zmx sessions via `completing-read';
+continue/resume starts offer only sessions with zero attached clients."
   (cond
    (attach-name (cons attach-name t))
    ((not claude-code-ide-use-zmx) nil)
@@ -1735,10 +1740,10 @@ A plain start offers eligible orphaned zmx sessions via `completing-read'."
     (claude-code-ide-zmx--ensure)
     (let* ((cli-type (claude-code-ide--current-cli-type))
            (new-name (claude-code-ide-zmx-session-name cli-type working-dir session-id))
-           (eligible (and (not continue) (not resume)
-                          (claude-code-ide-zmx--eligible-sessions
-                           (claude-code-ide-zmx--offer-prefix cli-type working-dir)
-                           (claude-code-ide--zmx-live-names)))))
+           (eligible (claude-code-ide-zmx--eligible-sessions
+                      cli-type working-dir
+                      (claude-code-ide--zmx-live-names)
+                      (or continue resume))))
       (if (null eligible)
           (cons new-name nil)
         (let ((choice (completing-read
