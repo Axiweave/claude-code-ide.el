@@ -1824,7 +1824,11 @@ running a freshly built CLI command."
                  (setq-local eat-kill-buffer-on-exit t))))
             (sleep-for claude-code-ide-terminal-initialization-delay)
             (unless claude-code-ide--suppress-initial-display
-              (claude-code-ide--display-buffer-in-side-window buffer))
+              (if (cdr zmx-spec)
+                  ;; Reattaching to an existing zmx session: reveal it
+                  ;; in its managed layout instead of the current one.
+                  (claude-code-ide-manager-switch-to-session session-id)
+                (claude-code-ide--display-buffer-in-side-window buffer)))
             (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
                                  (cond (continue "continued and ")
                                        (resume "resumed and ")
