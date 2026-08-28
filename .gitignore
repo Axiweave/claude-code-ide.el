@@ -8,3 +8,5 @@ dist/
 .DS_Store
 docs/plans/
 docs/superpowers/
+refs/
+/.omp/
