@@ -692,6 +692,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("R" claude-code-ide--resume-skip-permissions :description claude-code-ide--resume-skip-description)
     ("N" "New session" claude-code-ide-new-session)
     ("a" "Attach to zmx session" claude-code-ide-attach)
+    ("y" "Copy zmx session name" claude-code-ide-copy-zmx-name)
     ("q" "Stop current session" claude-code-ide-stop)
     ("l" "List related sessions" claude-code-ide-list-related-sessions)
     ("L" "List all sessions" claude-code-ide-list-sessions)]
