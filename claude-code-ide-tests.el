@@ -13944,7 +13944,75 @@ sessions back to working every few seconds with no real output."
      (claude-code-ide-tests--transient-suffix-plist
       'claude-code-ide-menu "E")
      :command)
-    'claude-code-ide-manager-edit-pin-order)))
+    'claude-code-ide-manager-edit-pin-order))
+  (should
+   (eq (lookup-key claude-code-ide-manager-pin-order-mode-map (kbd "C-c C-s"))
+       'claude-code-ide-manager-sort-menu)))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-sort-change-resyncs-editor ()
+  "A sort change made from the editor rebuilds its rows in the new order.
+The resync ignores pin state and stored order keys."
+  (let* ((claude-code-ide-manager-show-session-order nil)
+         (claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
+         (items
+          (list
+           (make-claude-code-ide-manager-item
+            :session-key "one" :display-name "alpha · 1" :order 1
+            :created-at 200 :pinned t :order-key 1)
+           (make-claude-code-ide-manager-item
+            :session-key "two" :display-name "beta · 1" :order 1
+            :created-at 100))))
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope
+                  '(:type global)
+                  claude-code-ide-manager--pin-order-snapshot
+                  (claude-code-ide-manager--pin-order-item-names
+                   (claude-code-ide-manager--sorted-items items)))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (should (equal (buffer-string) "1. alpha\n2. beta\n"))
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager-refresh-items)
+            (lambda (&optional _scope _state-loaded-p) items))
+           ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state)
+            (lambda (&optional _scope _reassert) nil)))
+        (claude-code-ide-manager-set-sort-by 'created-at)
+        (should (equal (buffer-string) "1. beta\n2. alpha\n"))
+        (should (equal claude-code-ide-manager--pin-order-snapshot
+                       '(("two" . "beta") ("one" . "alpha"))))
+        (claude-code-ide-manager-toggle-sort-reverse)
+        (should (equal (buffer-string) "1. alpha\n2. beta\n"))))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-sort-resync-requires-live-items ()
+  "A sort change from an editor whose scope has no items signals an error."
+  (let* ((claude-code-ide-manager-show-session-order nil)
+         (claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
+         (items
+          (list
+           (make-claude-code-ide-manager-item
+            :session-key "one" :display-name "alpha · 1" :order 1))))
+    (with-temp-buffer
+      (claude-code-ide-manager-pin-order-mode)
+      (setq-local claude-code-ide-manager--pin-order-scope
+                  '(:type global)
+                  claude-code-ide-manager--pin-order-snapshot
+                  (claude-code-ide-manager--pin-order-item-names items))
+      (claude-code-ide-manager--render-pin-order-editor
+       claude-code-ide-manager--pin-order-snapshot)
+      (should (equal (buffer-string) "1. alpha\n"))
+      (cl-letf
+          (((symbol-function 'claude-code-ide-manager-refresh-items)
+            (lambda (&optional _scope _state-loaded-p) nil))
+           ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state)
+            (lambda (&optional _scope _reassert) nil)))
+        (should-error (claude-code-ide-manager-set-sort-by 'created-at)
+                      :type 'user-error)
+        (should (equal (buffer-string) "1. alpha\n"))))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-title-stays-single-line ()
   "The pin-order editor flattens title line breaks without losing identity."

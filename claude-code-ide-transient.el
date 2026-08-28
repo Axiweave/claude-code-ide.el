@@ -65,6 +65,7 @@
 (declare-function claude-code-ide-manager-focus "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-refresh "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-edit-pin-order "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager--pin-order-resync "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-at-point-preserve-focus "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-start-session-at-point "claude-code-ide-manager" (&optional dangerous arg))
@@ -617,14 +618,18 @@ Otherwise, if multiple sessions exist, prompt for selection."
            nil t nil nil
            (symbol-name claude-code-ide-manager-sort-by)))))
   (setq claude-code-ide-manager-sort-by sort-by)
-  (claude-code-ide-manager--refresh-sidebar-state))
+  (claude-code-ide-manager--refresh-sidebar-state)
+  (when (derived-mode-p 'claude-code-ide-manager-pin-order-mode)
+    (claude-code-ide-manager--pin-order-resync)))
 
 (transient-define-suffix claude-code-ide-manager-toggle-sort-reverse ()
   "Toggle reverse manager session sorting."
   (interactive)
   (setq claude-code-ide-manager-sort-reverse
         (not claude-code-ide-manager-sort-reverse))
-  (claude-code-ide-manager--refresh-sidebar-state))
+  (claude-code-ide-manager--refresh-sidebar-state)
+  (when (derived-mode-p 'claude-code-ide-manager-pin-order-mode)
+    (claude-code-ide-manager--pin-order-resync)))
 
 (transient-define-prefix claude-code-ide-manager-sort-menu ()
   "Configure manager session sorting."

@@ -44,6 +44,7 @@
 (declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
 (declare-function claude-code-ide--transient-cli-path "claude-code-ide-transient" (arg))
 (declare-function claude-code-ide--transient-launch-flags "claude-code-ide-transient" (&optional bypass))
+(declare-function claude-code-ide-manager-sort-menu "claude-code-ide-transient" ())
 (declare-function claude-code-ide-manager-dispatch "claude-code-ide-transient" ())
 
 (defvar claude-code-ide--session-cli-type)
@@ -645,12 +646,14 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
+(define-key claude-code-ide-manager-mode-map (kbd "C-s") #'claude-code-ide-manager-sort-menu)
 (define-key claude-code-ide-manager-mode-map (kbd "?") #'claude-code-ide-manager-dispatch)
 
 (defvar claude-code-ide-manager-pin-order-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") #'claude-code-ide-manager-pin-order-apply)
     (define-key map (kbd "C-c C-k") #'claude-code-ide-manager-pin-order-cancel)
+    (define-key map (kbd "C-c C-s") #'claude-code-ide-manager-sort-menu)
     (define-key map (kbd "M-p") #'claude-code-ide-manager-pin-order-move-up)
     (define-key map (kbd "M-n") #'claude-code-ide-manager-pin-order-move-down)
     map)
@@ -979,8 +982,10 @@ default to the global scope for backward compatibility."
           (claude-code-ide-manager--scope-sessions
            scope (claude-code-ide-manager--live-sessions))))
 
-(defun claude-code-ide-manager--sorted-items (items)
-  "Return ITEMS sorted for sidebar display."
+(defun claude-code-ide-manager--sorted-items (items &optional ignore-pin-order)
+  "Return ITEMS sorted for sidebar display.
+With IGNORE-PIN-ORDER, sort purely by the configured sort key and
+direction, ignoring pin state and stored order keys."
   (let* ((base-predicate
           (pcase claude-code-ide-manager-sort-by
             ('name
@@ -1016,24 +1021,26 @@ default to the global scope for backward compatibility."
                 (funcall base-predicate right left))
             base-predicate)))
     (sort (copy-sequence items)
-          (lambda (left right)
-            (cond
-             ((and (claude-code-ide-manager-item-pinned left)
-                   (not (claude-code-ide-manager-item-pinned right)))
-              t)
-             ((and (claude-code-ide-manager-item-pinned right)
-                   (not (claude-code-ide-manager-item-pinned left)))
-              nil)
-             ((/= (or (claude-code-ide-manager-item-order-key left)
-                      most-positive-fixnum)
-                  (or (claude-code-ide-manager-item-order-key right)
-                      most-positive-fixnum))
-              (< (or (claude-code-ide-manager-item-order-key left)
-                     most-positive-fixnum)
-                 (or (claude-code-ide-manager-item-order-key right)
-                     most-positive-fixnum)))
-             (t
-              (funcall fallback-predicate left right)))))))
+          (if ignore-pin-order
+              fallback-predicate
+            (lambda (left right)
+              (cond
+               ((and (claude-code-ide-manager-item-pinned left)
+                     (not (claude-code-ide-manager-item-pinned right)))
+                t)
+               ((and (claude-code-ide-manager-item-pinned right)
+                     (not (claude-code-ide-manager-item-pinned left)))
+                nil)
+               ((/= (or (claude-code-ide-manager-item-order-key left)
+                        most-positive-fixnum)
+                    (or (claude-code-ide-manager-item-order-key right)
+                        most-positive-fixnum))
+                (< (or (claude-code-ide-manager-item-order-key left)
+                       most-positive-fixnum)
+                   (or (claude-code-ide-manager-item-order-key right)
+                       most-positive-fixnum)))
+               (t
+                (funcall fallback-predicate left right))))))))
 
 (defun claude-code-ide-manager--slot-map (items)
   "Return a hash table mapping visible ITEMS to quick slots."
@@ -1350,6 +1357,18 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                     '(claude-code-ide-manager-session-key))))
            (insert "\n"))
   (goto-char (point-min)))
+
+(defun claude-code-ide-manager--pin-order-resync ()
+  "Rebuild the current pin-order editor from its scope with current sorting."
+  (let* ((scope claude-code-ide-manager--pin-order-scope)
+         (items (claude-code-ide-manager--sorted-items
+                 (claude-code-ide-manager-refresh-items scope) t)))
+    (unless items
+      (user-error "No live sessions in the selected manager scope"))
+    (let ((snapshot (claude-code-ide-manager--pin-order-item-names items)))
+      (setq-local claude-code-ide-manager--pin-order-snapshot snapshot)
+      (claude-code-ide-manager--render-pin-order-editor snapshot)
+      (message "Pin-order rows reloaded; unsaved edits were replaced"))))
 
 (defun claude-code-ide-manager--pin-order-renumber ()
   "Renumber each pin-order row from top to bottom."
