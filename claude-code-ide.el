@@ -408,7 +408,7 @@ the target window is already visible."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-session-id order created-at last-accessed-at custom-name title zmx-name)
+  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -1192,6 +1192,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
          (directory (claude-code-ide-session-directory session))
          (process (claude-code-ide-session-process session))
          (buffer (claude-code-ide-session-buffer session))
+         (cli-type (claude-code-ide-session-cli-type session))
          (backend (claude-code-ide--backend-for-process process)))
     (when (= (hash-table-count claude-code-ide--sessions) 0)
       (claude-code-ide--remove-terminal-resize-observer backend)
@@ -1203,8 +1204,9 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
                (= (hash-table-count claude-code-ide--sessions) 0))
       (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer)
       (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))
-    (claude-code-ide-mcp-stop-session session-id)
-    (claude-code-ide-mcp-server-session-ended session-id)
+    (when (eq cli-type 'claude)
+      (claude-code-ide-mcp-stop-session session-id)
+      (claude-code-ide-mcp-server-session-ended session-id))
     (claude-code-ide-manager-session-ended session-id)
     (when (buffer-live-p buffer)
       (let ((kill-buffer-hook nil)
@@ -1685,7 +1687,6 @@ Returns a cons cell of (buffer . process) on success."
 
 (defun claude-code-ide--create-pi-terminal-session (buffer-name working-dir _port continue resume session-id)
   "Create a new terminal session for Pi or Oh My Pi."
-  (claude-code-ide-mcp-sse-ensure-server)
   (let ((cmd (claude-code-ide--build-pi-command continue resume session-id))
         (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name))))
     (claude-code-ide-debug "Session ID: %s" session-id)
@@ -1764,6 +1765,10 @@ running a freshly built CLI command."
            (format "claude-%s-%s-"
                    (file-name-nondirectory (directory-file-name working-dir))
                    (format-time-string "%Y%m%d-%H%M%S"))))
+         (cli-type (claude-code-ide--current-cli-type))
+         (agent-name
+          (car (rassoc (symbol-name cli-type)
+                       claude-code-ide-agent-definitions)))
          (zmx-spec (claude-code-ide--zmx-launch-spec
                     working-dir continue resume session-id zmx-attach-name))
          (buffer-name
@@ -1773,8 +1778,12 @@ running a freshly built CLI command."
          mcp-started-p mcp-tools-started-p)
     (condition-case err
         (progn
-          (setq port (claude-code-ide-mcp-start working-dir session-id)
-                mcp-started-p t)
+          (pcase cli-type
+            ('claude
+             (setq port (claude-code-ide-mcp-start working-dir session-id)
+                   mcp-started-p t))
+            ('omp
+             (setq port (claude-code-ide-mcp-sse-ensure-server))))
           (let* ((claude-code-ide-zmx--pending-name (car zmx-spec))
                  (claude-code-ide-zmx--pending-attach-only (cdr zmx-spec))
                  (buffer-and-process
@@ -1782,9 +1791,10 @@ running a freshly built CLI command."
                    buffer-name working-dir port continue resume session-id)))
             (setq buffer (car buffer-and-process)
                   process (cdr buffer-and-process))
-            (setq mcp-tools-started-p t)
-            (claude-code-ide-mcp-server-session-started
-             session-id working-dir buffer)
+            (when (eq cli-type 'claude)
+              (setq mcp-tools-started-p t)
+              (claude-code-ide-mcp-server-session-started
+               session-id working-dir buffer))
             (let ((created-at (float-time)))
               (setq session
                     (claude-code-ide-session-create
@@ -1792,6 +1802,7 @@ running a freshly built CLI command."
                      :directory working-dir
                      :process process
                      :buffer buffer
+                     :cli-type cli-type
                      :order (claude-code-ide--next-session-order working-dir)
                      :created-at created-at
                      :last-accessed-at created-at
@@ -1829,13 +1840,17 @@ running a freshly built CLI command."
                   ;; in its managed layout instead of the current one.
                   (claude-code-ide-manager-switch-to-session session-id)
                 (claude-code-ide--display-buffer-in-side-window buffer)))
-            (claude-code-ide-log "Claude Code %sstarted in %s with MCP on port %d%s"
+            (claude-code-ide-log "%s %sstarted in %s%s%s"
+                                 agent-name
                                  (cond (continue "continued and ")
                                        (resume "resumed and ")
                                        (t ""))
                                  (file-name-nondirectory
                                   (directory-file-name working-dir))
-                                 port
+                                 (if (and port
+                                          (memq cli-type '(claude omp)))
+                                     (format " with MCP on port %d" port)
+                                   "")
                                  (if claude-code-ide-cli-debug
                                      " (debug mode enabled)"
                                    ""))

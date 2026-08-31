@@ -338,6 +338,7 @@ Ensures a clean state before each test that involves process management."
     :directory directory
     :process process
     :buffer (or buffer (claude-code-ide--session-buffer-from-process process))
+    :cli-type 'claude
     :order claude-code-ide-tests--session-sequence
     :last-accessed-at claude-code-ide-tests--session-sequence)))
 
@@ -6428,10 +6429,12 @@ have completed before cleanup.  Waits up to 5 seconds."
         (progn
           (claude-code-ide--put-session
            (claude-code-ide-session-create :id "dead" :directory directory
-                                           :process "dead-process"))
+                                           :process "dead-process"
+                                           :cli-type 'claude))
           (claude-code-ide--put-session
            (claude-code-ide-session-create :id "live" :directory directory
-                                           :process live-process))
+                                           :process live-process
+                                           :cli-type 'claude))
           (cl-letf (((symbol-function 'claude-code-ide-mcp-server-session-ended)
                      (lambda (session-id) (push session-id ended-session-ids)))
                     ((symbol-function 'claude-code-ide-mcp-stop-session)
@@ -6513,10 +6516,12 @@ have completed before cleanup.  Waits up to 5 seconds."
                    (lambda (&optional _backend) nil)))
           (claude-code-ide--put-session
            (claude-code-ide-session-create :id "one" :directory directory
-                                           :process buffer-one :buffer buffer-one))
+                                           :process buffer-one :buffer buffer-one
+                                           :cli-type 'claude))
           (claude-code-ide--put-session
            (claude-code-ide-session-create :id "two" :directory directory
-                                           :process buffer-two :buffer buffer-two))
+                                           :process buffer-two :buffer buffer-two
+                                           :cli-type 'claude))
           (claude-code-ide--cleanup-on-exit "one")
           (should (claude-code-ide--get-session "two"))
           (should (equal stopped '("one")))
@@ -6526,6 +6531,24 @@ have completed before cleanup.  Waits up to 5 seconds."
         (kill-buffer buffer-one))
       (when (buffer-live-p buffer-two)
         (kill-buffer buffer-two)))))
+
+(ert-deftest claude-code-ide-test-cleanup-non-claude-keeps-claude-mcp-state ()
+  "Stopping another agent does not release Claude-owned MCP resources."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        stopped ended)
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "omp" :directory "/tmp/project/" :cli-type 'omp))
+    (cl-letf (((symbol-function 'claude-code-ide-mcp-stop-session)
+               (lambda (&rest _) (setq stopped t)))
+              ((symbol-function 'claude-code-ide-mcp-server-session-ended)
+               (lambda (&rest _) (setq ended t)))
+              ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore)
+              ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
+               #'ignore))
+      (claude-code-ide--cleanup-on-exit "omp"))
+    (should-not stopped)
+    (should-not ended)))
 
 (ert-deftest claude-code-ide-test-ghostel-title-observer-updates-exact-session ()
   "Test Ghostel titles update only their owning live session."
@@ -11712,6 +11735,65 @@ inside the target session's directory."
       (dolist (buffer buffers)
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-create-session-uses-agent-mcp-transport-and-port ()
+  "Session startup uses and reports only the current agent's MCP transport."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-cli-debug nil)
+        messages websocket-starts sse-starts terminal-ports tool-sessions)
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                 #'ignore)
+                ((symbol-function 'claude-code-ide--zmx-launch-spec)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'claude-code-ide-mcp-start)
+                 (lambda (&rest _)
+                   (push (claude-code-ide--current-cli-type) websocket-starts)
+                   26015))
+                ((symbol-function 'claude-code-ide-mcp-sse-ensure-server)
+                 (lambda ()
+                   (push (claude-code-ide--current-cli-type) sse-starts)
+                   27182))
+                ((symbol-function 'claude-code-ide--create-terminal-session)
+                 (lambda (_buffer-name _directory port &rest _)
+                   (push (cons (claude-code-ide--current-cli-type) port)
+                         terminal-ports)
+                   (cons (current-buffer) (current-buffer))))
+                ((symbol-function 'claude-code-ide-mcp-server-session-started)
+                 (lambda (&rest _)
+                   (push (claude-code-ide--current-cli-type) tool-sessions)))
+                ((symbol-function 'claude-code-ide--register-session) #'ignore)
+                ((symbol-function 'set-process-sentinel) #'ignore)
+                ((symbol-function 'claude-code-ide--current-terminal-backend)
+                 (lambda () 'eat))
+                ((symbol-function 'sleep-for) #'ignore)
+                ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                 #'ignore)
+                ((symbol-function 'claude-code-ide-log)
+                 (lambda (&rest args)
+                   (push (apply #'format args) messages))))
+        (dolist (claude-code-ide-cli-path
+                 '("claude" "codex" "opencode" "pi" "omp"))
+          (claude-code-ide--create-session "/tmp/project/" t nil))))
+    (should (equal websocket-starts '(claude)))
+    (should (equal sse-starts '(omp)))
+    (should (equal tool-sessions '(claude)))
+    (should
+     (equal
+      (nreverse terminal-ports)
+      '((claude . 26015)
+        (codex)
+        (opencode)
+        (pi)
+        (omp . 27182))))
+    (should
+     (equal
+      (nreverse messages)
+      '("Claude Code continued and started in project with MCP on port 26015"
+        "Codex continued and started in project"
+        "OpenCode continued and started in project"
+        "Pi continued and started in project"
+        "Oh My Pi continued and started in project with MCP on port 27182")))))
 
 (ert-deftest claude-code-ide-test-create-session-rolls-back-after-core-registration ()
   "A post-registration startup error tears down every ID-scoped resource."

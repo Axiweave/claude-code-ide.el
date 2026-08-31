@@ -6,7 +6,7 @@ If an instruction here becomes incorrect or outdated, update this file in the sa
 
 ## Project overview
 
-This Emacs package provides project-aware terminal sessions for Claude Code, Codex, OpenCode, Pi, and Oh My Pi (`omp`). Session management, terminal integration, and window workflows are shared across agents; MCP integration is currently specific to Claude Code.
+This Emacs package provides project-aware terminal sessions for Claude Code, Codex, OpenCode, Pi, and Oh My Pi (`omp`). Session management, terminal integration, and window workflows are shared across agents. MCP integration supports Claude Code and Oh My Pi.
 
 ## Architecture
 
