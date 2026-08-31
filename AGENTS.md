@@ -53,6 +53,14 @@ Add tests for new logic. The suite mocks optional dependencies such as vterm and
 
 Claude Code hooks in `.claude/settings.json` format edited Elisp and run the verification script on stop. Other agents must run the equivalent checks explicitly.
 
+When an Emacs server is available, reload changed Elisp in the live Emacs after verification.
+
+```bash
+emacsclient --eval '(load "/absolute/path/to/changed-file.el")'
+```
+
+Reload each changed Elisp file. Restart Emacs instead when a changed native module requires it.
+
 For WebSocket debugging, record traffic between VS Code and Claude Code with:
 
 ```bash
