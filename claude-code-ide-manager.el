@@ -636,6 +636,7 @@ scope when it is visible; otherwise return the first visible scope."
 
 (define-key claude-code-ide-manager-mode-map (kbd "g") #'claude-code-ide-manager-refresh)
 (define-key claude-code-ide-manager-mode-map (kbd "RET") #'claude-code-ide-manager-switch-at-point)
+(define-key claude-code-ide-manager-mode-map (kbd "<mouse-1>") #'claude-code-ide-manager-switch-at-mouse)
 (define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)
 (define-key claude-code-ide-manager-mode-map (kbd "n") #'claude-code-ide-manager-next-line)
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
@@ -1628,11 +1629,11 @@ Applying clears every pin in the scope; pin again from the sidebar."
     (insert " ")
     (insert (claude-code-ide-manager--item-visible-name item))
     (insert "\n")
+    (add-text-properties start (1- (point)) '(mouse-face highlight))
     (add-text-properties
      start (point)
      (append
-      (list 'claude-code-ide-manager-session-key
-            session-key
+      (list 'claude-code-ide-manager-session-key session-key
             'help-echo (claude-code-ide-manager--session-help-echo
                         session-key
                         (claude-code-ide-manager-item-secondary-text item)))
@@ -2718,6 +2719,12 @@ default layout is rebuilt."
   (when-let ((item (claude-code-ide-manager--item-at-point)))
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item))))
+
+(defun claude-code-ide-manager-switch-at-mouse (event)
+  "Switch to the session clicked by mouse EVENT."
+  (interactive "e")
+  (mouse-set-point event)
+  (claude-code-ide-manager-switch-at-point))
 
 (defun claude-code-ide-manager-switch-at-point-preserve-focus ()
   "Switch to the session on the current row and keep focus in the manager."

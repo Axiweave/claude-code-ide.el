@@ -4181,6 +4181,62 @@ have completed before cleanup.  Waits up to 5 seconds."
         (call-interactively (key-binding (kbd "SPC")))
         (should (equal switched "/tmp/project-a"))))))
 
+(ert-deftest claude-code-ide-test-manager-mouse-1-switches-clicked-row ()
+  "Test mouse-1 activates the clicked manager row."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((first-session-key "/tmp/project-a")
+        (second-session-key "/tmp/project-b"))
+    (setq claude-code-ide-manager--items
+          (list
+           (make-claude-code-ide-manager-item
+            :session-key first-session-key
+            :display-name "project-a"
+            :secondary-text first-session-key
+            :pinned nil
+            :order-key 1
+            :live-p t)
+           (make-claude-code-ide-manager-item
+            :session-key second-session-key
+            :display-name "project-b"
+            :secondary-text second-session-key
+            :pinned nil
+            :order-key 2
+            :live-p t)))
+    (let* ((manager-buffer
+            (claude-code-ide-manager--get-buffer '(:type global)))
+           (manager-window (selected-window))
+           second-row-position
+           switch-call)
+      (save-window-excursion
+        (set-window-buffer manager-window manager-buffer)
+        (select-window manager-window)
+        (with-current-buffer manager-buffer
+          (claude-code-ide-manager--render '(:type global))
+          (goto-char (point-min))
+          (forward-line 1)
+          (setq second-row-position (point))
+          (should (eq (get-text-property second-row-position 'mouse-face)
+                      'highlight))
+          (should-not
+           (get-text-property (line-end-position) 'mouse-face))
+          (goto-char (point-min)))
+        (let* ((command
+                (lookup-key claude-code-ide-manager-mode-map
+                            (kbd "<mouse-1>")))
+               (event
+                (list 'mouse-1
+                      (list (selected-window) second-row-position
+                            '(0 . 1) 0))))
+          (should (eq command
+                      'claude-code-ide-manager-switch-at-mouse))
+          (cl-letf
+              (((symbol-function
+                 'claude-code-ide-manager-switch-to-session)
+                (lambda (&rest args)
+                  (setq switch-call args))))
+            (funcall command event))))
+      (should (equal switch-call (list second-session-key))))))
+
 (ert-deftest claude-code-ide-test-manager-open-global-switches-existing-session ()
   "Test global manager open switches directly to an existing live session."
   (claude-code-ide-tests--reset-manager-state)
