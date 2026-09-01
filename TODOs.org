@@ -4,3 +4,22 @@
 * DONE zmx integration
 https://github.com/ArthurHeymans/emacs-term-sessions
 or self build
+* TODO zmx adopt-through-start renders stale until manual window resize
+Adopting an existing zmx session via the start-time reattach offer shows a
+squashed/stale ghostel buffer; a manual window resize fixes it.
+Direct =claude-code-ide-attach= renders fine; both paths share
+=claude-code-ide--create-session=.
+Tried (both insufficient):
+- PTY size jiggle via =set-process-window-size=
+- =ghostel--adjust-size WINDOW t= on a 0.2s timer after display
+Next suspect: timer fires before the zmx replay finishes; hook the forced
+redraw to the first process output after attach instead. Also compare
+window/grid sizes at display time between the two paths.
+* TODO manager mouse hover highlight does not fill the whole row
+The temporary highlight under the mouse pointer still does not span the full
+manager row.
+Tried (insufficient):
+- =mouse-face (:inherit highlight :extend t)= on the row text without the newline
+- zero-width manager window fringes through buffer-local values and
+  =set-window-fringes=; the live window reported zero-width fringes, but the
+  visual result did not change
