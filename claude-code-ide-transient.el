@@ -371,7 +371,7 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
 (defun claude-code-ide--session-status ()
   "Return a string describing the current session status."
   (let ((cli-path (or claude-code-ide-cli-path "unknown")))
-    (if-let ((session (claude-code-ide-mcp--get-current-session)))
+    (if-let* ((session (claude-code-ide-mcp--get-current-session)))
         (let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
                (project-name (file-name-nondirectory (directory-file-name project-dir))))
           (propertize (format "Active session in [%s] (%s)" project-name cli-path)
@@ -401,7 +401,7 @@ OPERATION is either `set' or `clear'.  CLI-PATH is used when OPERATION is `set'.
              (add-dir-local-variable nil 'claude-code-ide-cli-path cli-path file))
             ('clear
              (delete-dir-local-variable nil 'claude-code-ide-cli-path file)))
-          (when-let ((buffer (get-file-buffer file)))
+          (when-let* ((buffer (get-file-buffer file)))
             (with-current-buffer buffer
               (save-buffer))
             (unless existing-buffer

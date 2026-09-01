@@ -329,7 +329,7 @@ back to `project.el' otherwise."
                               ".git")))
      (file-name-as-directory
       (file-name-directory (directory-file-name common-dir))))
-   (when-let ((root (ignore-errors (vc-git-root default-directory))))
+   (when-let* ((root (ignore-errors (vc-git-root default-directory))))
      (file-name-as-directory (expand-file-name root)))))
 
 (defun claude-code-ide-manager--session-record (session-or-key)
@@ -341,10 +341,10 @@ back to `project.el' otherwise."
 
 (defun claude-code-ide-manager--session-directory (session-or-key)
   "Return the directory represented by SESSION-OR-KEY."
-  (or (when-let ((session
+  (or (when-let* ((session
                   (claude-code-ide-manager--session-record session-or-key)))
         (claude-code-ide-session-directory session))
-      (when-let ((item (and (stringp session-or-key)
+      (when-let* ((item (and (stringp session-or-key)
                             (claude-code-ide-manager--item-by-session-key
                              session-or-key))))
         (claude-code-ide-manager-item-directory item))
@@ -352,7 +352,7 @@ back to `project.el' otherwise."
 
 (defun claude-code-ide-manager--session-buffer (session-key)
   "Return SESSION-KEY's exact live buffer, or its legacy directory buffer."
-  (if-let ((session (claude-code-ide--get-session session-key)))
+  (if-let* ((session (claude-code-ide--get-session session-key)))
       (or (and (buffer-live-p (claude-code-ide-session-buffer session))
                (claude-code-ide-session-buffer session))
           (let ((process (claude-code-ide-session-process session)))
@@ -389,7 +389,7 @@ Append the current branch when SESSION-KEY is on a named branch."
   "Resolve TARGET into a manager scope plist."
   (pcase target
     ('global '(:type global))
-    ('repo (if-let ((git-root (claude-code-ide-manager--current-git-root)))
+    ('repo (if-let* ((git-root (claude-code-ide-manager--current-git-root)))
                (list :type 'repo :git-root git-root)
              (user-error "No git repo for repo-local manager")))
     ((pred listp) target)
@@ -430,7 +430,7 @@ Append the current branch when SESSION-KEY is on a named branch."
 
 (defun claude-code-ide-manager--scope-display-name (scope session-or-key)
   "Return the display name for SESSION-OR-KEY within SCOPE."
-  (if-let ((session (claude-code-ide-manager--session-record session-or-key)))
+  (if-let* ((session (claude-code-ide-manager--session-record session-or-key)))
       (pcase (plist-get scope :type)
         ('global (claude-code-ide-manager--default-session-label session))
         ('repo
@@ -570,7 +570,7 @@ Append the current branch when SESSION-KEY is on a named branch."
 
 (defun claude-code-ide-manager--manager-buffer-p (&optional buffer)
   "Return non-nil when BUFFER is a manager buffer."
-  (when-let ((buffer (or buffer (current-buffer))))
+  (when-let* ((buffer (or buffer (current-buffer))))
     (with-current-buffer buffer
       (derived-mode-p 'claude-code-ide-manager-mode))))
 
@@ -595,7 +595,7 @@ scope when it is visible; otherwise return the first visible scope."
        (when (and (window-live-p window)
                   (eq (window-frame window) frame)
                   (claude-code-ide-manager--valid-sidebar-window-p window))
-         (when-let ((scope (claude-code-ide-manager--scope-from-buffer
+         (when-let* ((scope (claude-code-ide-manager--scope-from-buffer
                             (window-buffer window))))
            (push scope visible-scopes))))
      'no-minibuf
@@ -821,7 +821,7 @@ under the ESC prefix, so iterate that sub-keymap."
 (defun claude-code-ide-manager--restore-state (data)
   "Restore manager state from persisted DATA."
   (setq claude-code-ide-manager--scope-state
-        (if-let ((scopes (plist-get data :scopes)))
+        (if-let* ((scopes (plist-get data :scopes)))
             (claude-code-ide-manager--deserialize-scope-state scopes)
           (let ((table (make-hash-table :test 'equal)))
             (puthash "global"
@@ -930,7 +930,7 @@ Return non-nil when any key was cleared."
   (let (sessions)
     (maphash
      (lambda (session-id _)
-       (when-let ((session (claude-code-ide--get-session session-id)))
+       (when-let* ((session (claude-code-ide--get-session session-id)))
          (when (process-live-p (claude-code-ide-session-process session))
            (push session sessions))))
      claude-code-ide--sessions)
@@ -1120,7 +1120,7 @@ direction, ignoring pin state and stored order keys."
 
 (defun claude-code-ide-manager--session-idle-p (session-key)
   "Return non-nil when SESSION-KEY's live buffer is idle-enabled and idle."
-  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
+  (when-let* ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (and (claude-code-ide-manager--buffer-local-value
           'claude-code-ide-session-idle-enabled buffer)
          (claude-code-ide-manager--buffer-local-value
@@ -1128,7 +1128,7 @@ direction, ignoring pin state and stored order keys."
 
 (defun claude-code-ide-manager--session-working-p (session-key)
   "Return non-nil when SESSION-KEY's live buffer has tracked activity."
-  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
+  (when-let* ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (and (claude-code-ide-manager--buffer-local-value
           'claude-code-ide-session-idle-enabled buffer)
          (claude-code-ide-manager--buffer-local-value
@@ -1241,7 +1241,7 @@ Idle markers take precedence over working and pinned markers."
         (claude-code-ide-manager--save-state)
         (claude-code-ide-manager--refresh-sidebar-state nil nil))
       (when selected-scope
-        (when-let ((sidebar-window
+        (when-let* ((sidebar-window
                     (claude-code-ide-manager--sidebar-window selected-scope)))
           (select-window sidebar-window))))))
 
@@ -1342,7 +1342,7 @@ When STATE-LOADED-P is non-nil, do not reload persisted state."
 
 (defun claude-code-ide-manager--item-at-point ()
   "Return manager item referenced by point."
-  (when-let ((session-key (get-text-property (point) 'claude-code-ide-manager-session-key)))
+  (when-let* ((session-key (get-text-property (point) 'claude-code-ide-manager-session-key)))
     (claude-code-ide-manager--item-by-session-key
      (claude-code-ide-manager--scope-for-command)
      session-key)))
@@ -1351,7 +1351,7 @@ When STATE-LOADED-P is non-nil, do not reload persisted state."
   "Show the current row's full path in the echo area.
 This mirrors mouse hover text for keyboard navigation in the manager."
   (when (eq (current-buffer) (window-buffer (selected-window)))
-    (when-let ((session-key (get-text-property (point)
+    (when-let* ((session-key (get-text-property (point)
                                                'claude-code-ide-manager-session-key)))
       (claude-code-ide-manager--set-scope-selected-session-key
        (claude-code-ide-manager--scope-from-buffer (current-buffer))
@@ -1659,7 +1659,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
             'help-echo (claude-code-ide-manager--session-help-echo
                         session-key
                         (claude-code-ide-manager-item-secondary-text item)))
-      (when-let ((face (claude-code-ide-manager--row-face
+      (when-let* ((face (claude-code-ide-manager--row-face
                         scope session-key)))
         (list 'face face))))))
 
@@ -1691,7 +1691,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
            item
            (gethash (claude-code-ide-manager-item-session-key item) slots)))
         (goto-char (point-min))
-        (when-let ((target-session-key
+        (when-let* ((target-session-key
                     (cond
                      ((and selected-session-key
                            (member selected-session-key visible-session-keys))
@@ -1722,7 +1722,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
   "Return the visible Treemacs sidebar window when available."
   (cl-find-if
    (lambda (window)
-     (when-let ((buffer (window-buffer window)))
+     (when-let* ((buffer (window-buffer window)))
        (with-current-buffer buffer
          (and (eq major-mode 'treemacs-mode)
               (eq (window-parameter window 'window-side) 'left)))))
@@ -1805,7 +1805,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
 
 (defun claude-code-ide-manager--valid-collocated-sidebar-window-p (window)
   "Return non-nil when WINDOW is a valid collocated manager sidebar."
-  (when-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+  (when-let* ((treemacs-window (claude-code-ide-manager--treemacs-window)))
     (and (window-live-p window)
          (window-parameter window 'claude-code-ide-manager-sidebar)
          (window-parameter window 'claude-code-ide-manager-collocated)
@@ -1821,7 +1821,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
   "Return the scopes whose manager sidebars are currently visible."
   (let (scopes)
     (dolist (buffer (claude-code-ide-manager--manager-buffers))
-      (when-let ((scope (claude-code-ide-manager--scope-from-buffer buffer)))
+      (when-let* ((scope (claude-code-ide-manager--scope-from-buffer buffer)))
         (when (claude-code-ide-manager--sidebar-window scope)
           (push scope scopes))))
     (nreverse scopes)))
@@ -1829,7 +1829,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
 (defun claude-code-ide-manager--adopt-visible-sidebar-window (window)
   "Mark WINDOW as a manager-owned sidebar without changing its geometry."
   (set-window-parameter window 'claude-code-ide-manager-sidebar t)
-  (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+  (if-let* ((treemacs-window (claude-code-ide-manager--treemacs-window)))
       (if (claude-code-ide-manager--window-collocated-with-treemacs-p
            window treemacs-window)
           (let ((treemacs-params
@@ -1852,7 +1852,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
 (defun claude-code-ide-manager--adopt-visible-sidebars (scopes)
   "Adopt any already-visible manager windows for SCOPES as sidebars."
   (dolist (scope scopes)
-    (when-let ((window (claude-code-ide-manager--visible-manager-window scope)))
+    (when-let* ((window (claude-code-ide-manager--visible-manager-window scope)))
       (when (claude-code-ide-manager--valid-sidebar-window-p window)
         (claude-code-ide-manager--adopt-visible-sidebar-window window)))))
 
@@ -1864,13 +1864,13 @@ Applying clears every pin in the scope; pin again from the sidebar."
 
 (defun claude-code-ide-manager--session-managed-p (session-key)
   "Return non-nil when SESSION-KEY already has manager-owned layout state."
-  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
+  (when-let* ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (and (buffer-live-p buffer)
          (buffer-local-value 'claude-code-ide-manager--managed-session buffer))))
 
 (defun claude-code-ide-manager--mark-session-managed (session-key)
   "Mark SESSION-KEY's live session buffer as manager-owned."
-  (when-let ((buffer (claude-code-ide-manager--session-buffer session-key)))
+  (when-let* ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq-local claude-code-ide-manager--managed-session t)))))
@@ -1904,7 +1904,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
     (when (window-live-p manager-window)
       (set-window-parameter manager-window 'window-side side)
       (set-window-parameter manager-window 'window-slot slot))
-    (when-let ((parent (window-parent treemacs-window)))
+    (when-let* ((parent (window-parent treemacs-window)))
       (set-window-parameter parent 'window-side side))))
 
 (defun claude-code-ide-manager--clear-collocated-side-metadata
@@ -1914,7 +1914,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
     (set-window-parameter treemacs-window 'window-side nil))
   (when (window-live-p manager-window)
     (set-window-parameter manager-window 'window-side nil))
-  (when-let ((parent (or (and (window-live-p treemacs-window)
+  (when-let* ((parent (or (and (window-live-p treemacs-window)
                               (window-parent treemacs-window))
                          (and (window-live-p manager-window)
                               (window-parent manager-window)))))
@@ -2100,7 +2100,7 @@ When Treemacs is visible, collocate the manager beneath it.
 Otherwise, use the standalone left side window layout."
   (claude-code-ide-manager-refresh scope)
   (claude-code-ide-manager--normalize-visible-manager-windows scope)
-  (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+  (if-let* ((treemacs-window (claude-code-ide-manager--treemacs-window)))
       (claude-code-ide-manager--show-collocated-sidebar treemacs-window scope)
     (progn
       (claude-code-ide-manager--delete-stale-collocated-sidebar-windows scope)
@@ -2119,7 +2119,7 @@ Otherwise, use the standalone left side window layout."
 
 (defun claude-code-ide-manager--hide-sidebar (&optional scope)
   "Hide the manager sidebar for SCOPE."
-  (when-let ((window (or (claude-code-ide-manager--sidebar-window scope)
+  (when-let* ((window (or (claude-code-ide-manager--sidebar-window scope)
                          (claude-code-ide-manager--stale-collocated-sidebar-window
                           scope))))
     (if (window-parameter window 'claude-code-ide-manager-collocated)
@@ -2179,12 +2179,12 @@ With a negative ARG, hide the sidebar."
 (defun claude-code-ide-manager--sync-point-to-session-key (scope session-key)
   "Move manager buffer point for SCOPE to SESSION-KEY when the buffer exists."
   (claude-code-ide-manager--set-scope-selected-session-key scope session-key)
-  (when-let ((buffer (get-buffer
+  (when-let* ((buffer (get-buffer
                       (claude-code-ide-manager--buffer-name-for-scope scope))))
     (with-current-buffer buffer
       (claude-code-ide-manager--move-point-to-session-key session-key)
       (let ((position (point)))
-        (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
+        (when-let* ((window (claude-code-ide-manager--sidebar-window scope)))
           (set-window-point window position))))))
 
 (defun claude-code-ide-manager--window-collocated-with-treemacs-p
@@ -2216,9 +2216,9 @@ With a negative ARG, hide the sidebar."
     (let ((buffer-scope (claude-code-ide-manager--scope-from-buffer buffer)))
       (when (or (null scope)
                 (equal buffer-scope scope))
-        (when-let ((window (claude-code-ide-manager--visible-manager-window
+        (when-let* ((window (claude-code-ide-manager--visible-manager-window
                             buffer-scope)))
-          (if-let ((treemacs-window (claude-code-ide-manager--treemacs-window)))
+          (if-let* ((treemacs-window (claude-code-ide-manager--treemacs-window)))
               (if (claude-code-ide-manager--valid-collocated-sidebar-window-p
                    window)
                   (let ((treemacs-params
@@ -2258,7 +2258,7 @@ owned sidebar windows."
         (with-current-buffer buffer
           (claude-code-ide-manager--render buffer-scope)
           (let ((position (point)))
-            (when-let ((window (claude-code-ide-manager--sidebar-window
+            (when-let* ((window (claude-code-ide-manager--sidebar-window
                                 buffer-scope)))
               (set-window-point window position))))))))
 
@@ -2374,7 +2374,7 @@ owned sidebar windows."
   "Move point to the next manager row and switch to it."
   (interactive)
   (let ((scope (claude-code-ide-manager--scope-for-command)))
-    (when-let ((session-key (claude-code-ide-manager--cycle-session-key scope 1)))
+    (when-let* ((session-key (claude-code-ide-manager--cycle-session-key scope 1)))
       (claude-code-ide-manager--sync-point-to-session-key scope session-key)
       (claude-code-ide-manager-switch-to-session
        session-key
@@ -2384,7 +2384,7 @@ owned sidebar windows."
   "Move point to the previous manager row and switch to it."
   (interactive)
   (let ((scope (claude-code-ide-manager--scope-for-command)))
-    (when-let ((session-key (claude-code-ide-manager--cycle-session-key scope -1)))
+    (when-let* ((session-key (claude-code-ide-manager--cycle-session-key scope -1)))
       (claude-code-ide-manager--sync-point-to-session-key scope session-key)
       (claude-code-ide-manager-switch-to-session
        session-key
@@ -2438,14 +2438,14 @@ owned sidebar windows."
                                   (claude-code-ide-manager-item-session-key item)))
                       (equal name
                              (claude-code-ide-manager-item-custom-name item))
-                      (when-let ((other-directory
+                      (when-let* ((other-directory
                                   (claude-code-ide-manager-item-directory item)))
                         (equal directory
                                (file-name-as-directory
                                 (expand-file-name other-directory))))))
                items)
           (user-error "Session name already used in %s" directory))))
-    (when-let ((session (claude-code-ide--get-session session-key)))
+    (when-let* ((session (claude-code-ide--get-session session-key)))
       (claude-code-ide--set-session-custom-name session name))
     (let ((session-items
            (cl-remove-if-not
@@ -2470,7 +2470,7 @@ owned sidebar windows."
 (defun claude-code-ide-manager-rename-at-point ()
   "Prompt for a custom name for the manager item at point."
   (interactive)
-  (if-let ((item (claude-code-ide-manager--item-at-point)))
+  (if-let* ((item (claude-code-ide-manager--item-at-point)))
       (claude-code-ide-manager-rename-session
        (claude-code-ide-manager-item-session-key item)
        (read-string "Session name (empty to clear): "
@@ -2479,7 +2479,7 @@ owned sidebar windows."
 
 (defun claude-code-ide-manager--toggle-pin-for-session-key (scope session-key)
   "Toggle pin state for SESSION-KEY within SCOPE."
-  (when-let ((item (claude-code-ide-manager--item-by-session-key scope session-key)))
+  (when-let* ((item (claude-code-ide-manager--item-by-session-key scope session-key)))
     (setf (claude-code-ide-manager-item-pinned item)
           (not (claude-code-ide-manager-item-pinned item)))
     (claude-code-ide-manager--set-scope-items
@@ -2564,7 +2564,7 @@ Return the selected window when successful."
     (let* ((selected-buffer-name (plist-get layout :selected-buffer-name))
            (selected-buffer
             (and selected-buffer-name
-                 (when-let ((buffer (get-buffer selected-buffer-name)))
+                 (when-let* ((buffer (get-buffer selected-buffer-name)))
                    (unless (claude-code-ide-manager--manager-buffer-p buffer)
                      buffer))))
            (session-buffer (claude-code-ide-manager--session-buffer session-key))
@@ -2653,7 +2653,7 @@ Return the selected window when successful."
 
 (defun claude-code-ide-manager--reset-session-idle-state (session-key)
   "Clear idle monitoring state for SESSION-KEY after an explicit manager switch."
-  (when-let ((session-buffer (claude-code-ide-manager--session-buffer session-key)))
+  (when-let* ((session-buffer (claude-code-ide-manager--session-buffer session-key)))
     (with-current-buffer session-buffer
       (when (bound-and-true-p claude-code-ide-session-idle-enabled)
         (claude-code-ide-session-idle-clear-state)))))
@@ -2698,7 +2698,7 @@ session layout is updated."
           (claude-code-ide-manager--sync-treemacs-to-session session-key))
         (claude-code-ide-manager--refresh-sidebar-state scope nil)
         (if keep-manager-focus
-            (when-let ((window (claude-code-ide-manager--sidebar-window scope)))
+            (when-let* ((window (claude-code-ide-manager--sidebar-window scope)))
               (select-window window)
               (claude-code-ide-manager--sync-point-to-session-key scope session-key))
           (when (window-live-p preferred-window)
@@ -2749,7 +2749,7 @@ default layout is rebuilt."
 (defun claude-code-ide-manager-switch-at-point ()
   "Switch to the session on the current row."
   (interactive)
-  (when-let ((item (claude-code-ide-manager--item-at-point)))
+  (when-let* ((item (claude-code-ide-manager--item-at-point)))
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item))))
 
@@ -2762,7 +2762,7 @@ default layout is rebuilt."
 (defun claude-code-ide-manager-switch-at-point-preserve-focus ()
   "Switch to the session on the current row and keep focus in the manager."
   (interactive)
-  (when-let ((item (claude-code-ide-manager--item-at-point)))
+  (when-let* ((item (claude-code-ide-manager--item-at-point)))
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item)
      t)))
@@ -2787,7 +2787,7 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
             (claude-code-ide--transient-cli-path arg))
            (claude-code-ide-cli-extra-flags
             (claude-code-ide--transient-launch-flags dangerous)))
-      (when-let ((session (claude-code-ide--start-session
+      (when-let* ((session (claude-code-ide--start-session
                            nil nil directory t)))
         (claude-code-ide-manager-switch-to-session
          (claude-code-ide-session-id session) nil scope)))))
@@ -2800,7 +2800,7 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
 (defun claude-code-ide-manager-reset-layout-at-point ()
   "Reset the selected session to the default manager layout."
   (interactive)
-  (when-let ((item (claude-code-ide-manager--item-at-point)))
+  (when-let* ((item (claude-code-ide-manager--item-at-point)))
     (claude-code-ide-manager-reset-layout
      (claude-code-ide-manager-item-session-key item))))
 

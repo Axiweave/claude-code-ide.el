@@ -137,7 +137,7 @@ return the string to insert."
 
 (defun claude-code-ide-session--default-reader (buffer)
   "Return non-nil when BUFFER has the standard Claude Code session name."
-  (when-let ((name (if (stringp buffer) buffer (buffer-name buffer))))
+  (when-let* ((name (if (stringp buffer) buffer (buffer-name buffer))))
     (string-prefix-p "*claude-code[" name)))
 
 (defun claude-code-ide-session-buffer-p (buffer)
@@ -206,7 +206,7 @@ return the string to insert."
     (hl-line-mode -1))
   (face-remap-add-relative 'nobreak-space :inherit 'default)
   (add-hook 'vterm-copy-mode-hook #'claude-code-ide-session--vterm-copy-mode-hook nil t)
-  (when-let ((proc (get-buffer-process (current-buffer))))
+  (when-let* ((proc (get-buffer-process (current-buffer))))
     (set-process-query-on-exit-flag proc nil)
     (when (fboundp 'process-put)
       (process-put proc 'read-output-max 4096)))
