@@ -5780,6 +5780,33 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when (buffer-live-p dired-buffer)
         (kill-buffer dired-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-status-buffer-function-is-configurable ()
+  "Test the default layout status buffer comes from the configured function."
+  (let ((custom-buffer (get-buffer-create "*cc-custom-status*"))
+        (dired-buffer (get-buffer-create "*cc-dired*"))
+        (seen nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'dired-noselect)
+                   (lambda (_directory) dired-buffer)))
+          (let ((claude-code-ide-manager-status-buffer-function
+                 (lambda (directory)
+                   (setq seen directory)
+                   custom-buffer)))
+            (should (eq (claude-code-ide-manager--open-status-buffer "/tmp/project-a")
+                        custom-buffer))
+            (should (equal seen "/tmp/project-a")))
+          (let ((claude-code-ide-manager-status-buffer-function
+                 (lambda (_directory) 'not-a-buffer)))
+            (should (eq (claude-code-ide-manager--open-status-buffer "/tmp/project-a")
+                        dired-buffer)))
+          (let ((claude-code-ide-manager-status-buffer-function
+                 (lambda (_directory) (error "boom"))))
+            (should (eq (claude-code-ide-manager--open-status-buffer "/tmp/project-a")
+                        dired-buffer))))
+      (dolist (buffer (list custom-buffer dired-buffer))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest claude-code-ide-test-manager-switch-restores-last-selected-window ()
   "Test restore selects the saved focused buffer when available."
   (claude-code-ide-tests--reset-manager-state)

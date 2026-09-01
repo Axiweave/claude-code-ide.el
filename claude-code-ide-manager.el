@@ -98,6 +98,17 @@ status buffer."
                  (const :tag "Left (middle)" left))
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-status-buffer-function
+  #'claude-code-ide-manager-magit-status-buffer
+  "Function that returns the status buffer for the default layout.
+It receives the session project DIRECTORY and returns a buffer shown
+beside the session window.  When it signals an error or returns a
+non-buffer, the layout falls back to a Dired buffer for DIRECTORY."
+  :type '(choice (function-item claude-code-ide-manager-magit-status-buffer)
+                 (function-item dired-noselect)
+                 function)
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-repo-include-nested nil
   "Whether repo-local managers include nested git directories."
   :type 'boolean
@@ -2525,14 +2536,23 @@ owned sidebar windows."
         :window-state (window-state-get (frame-root-window) t)
         :selected-buffer-name (buffer-name (window-buffer (selected-window)))))
 
+(defun claude-code-ide-manager-magit-status-buffer (directory)
+  "Return the magit status buffer for DIRECTORY, or a Dired buffer without magit."
+  (if (fboundp 'magit-status-setup-buffer)
+      (magit-status-setup-buffer directory)
+    (dired-noselect directory)))
+
 (defun claude-code-ide-manager--open-status-buffer (directory)
-  "Return the status buffer for DIRECTORY."
-  (condition-case nil
-      (if (fboundp 'magit-status-setup-buffer)
-          (magit-status-setup-buffer directory)
-        (dired-noselect directory))
-    (error
-     (dired-noselect directory))))
+  "Return the status buffer for DIRECTORY.
+Call `claude-code-ide-manager-status-buffer-function' and fall back to
+Dired when it fails or returns a non-buffer."
+  (let ((buffer (condition-case nil
+                    (funcall claude-code-ide-manager-status-buffer-function
+                             directory)
+                  (error nil))))
+    (if (buffer-live-p buffer)
+        buffer
+      (dired-noselect directory))))
 
 (defun claude-code-ide-manager--restore-layout (session-key)
   "Restore saved layout for SESSION-KEY.
