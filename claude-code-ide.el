@@ -1186,6 +1186,16 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
         window)
       (claude-code-ide--display-buffer-in-side-window buffer)))
 
+(defun claude-code-ide--close-session-windows (buffer)
+  "Close every window showing session BUFFER, on any frame.
+Killing BUFFER alone leaves an ordinary window alive showing an unrelated
+buffer, while a side window is deleted; this makes both layouts behave the
+same.  Emacs refuses to delete a frame's sole main window, and that window
+keeps whatever buffer the following kill puts in it."
+  (dolist (window (get-buffer-window-list buffer 'no-minibuf t))
+    (when (window-live-p window)
+      (ignore-errors (delete-window window)))))
+
 (defun claude-code-ide--cleanup-session-resources (session)
   "Clean up resources owned by SESSION after it leaves the live-session table."
   (let* ((session-id (claude-code-ide-session-id session))
@@ -1209,6 +1219,7 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
       (claude-code-ide-mcp-server-session-ended session-id))
     (claude-code-ide-manager-session-ended session-id)
     (when (buffer-live-p buffer)
+      (claude-code-ide--close-session-windows buffer)
       (let ((kill-buffer-hook nil)
             (kill-buffer-query-functions nil))
         (kill-buffer buffer)))

@@ -6552,6 +6552,57 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should-not stopped)
     (should-not ended)))
 
+(ert-deftest claude-code-ide-test-cleanup-closes-session-window ()
+  "Session cleanup deletes the window that displayed the exited session."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (buffer (generate-new-buffer "*claude-code[cleanup-window]*"))
+         (root (selected-window))
+         (window (split-window root nil 'below)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-mcp-stop-session) #'ignore)
+                  ((symbol-function 'claude-code-ide-mcp-server-session-ended) #'ignore)
+                  ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore)
+                  ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
+                   #'ignore))
+          (set-window-buffer window buffer)
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "window" :directory "/tmp/project/"
+                                           :process buffer :buffer buffer
+                                           :cli-type 'omp))
+          (claude-code-ide--cleanup-on-exit "window")
+          (should-not (window-live-p window))
+          (should (window-live-p root))
+          (should-not (buffer-live-p buffer)))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-cleanup-keeps-undeletable-sole-window ()
+  "Cleanup kills the buffer even when Emacs refuses to delete its window."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (buffer (generate-new-buffer "*claude-code[cleanup-sole-window]*"))
+         (window (frame-root-window))
+         (previous (window-buffer window)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-mcp-stop-session) #'ignore)
+                  ((symbol-function 'claude-code-ide-mcp-server-session-ended) #'ignore)
+                  ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore)
+                  ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
+                   #'ignore))
+          (set-window-buffer window buffer)
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "sole" :directory "/tmp/project/"
+                                           :process buffer :buffer buffer
+                                           :cli-type 'omp))
+          (claude-code-ide--cleanup-on-exit "sole")
+          (should (window-live-p window))
+          (should-not (buffer-live-p buffer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (and (window-live-p window) (buffer-live-p previous))
+        (set-window-buffer window previous)))))
+
 (ert-deftest claude-code-ide-test-ghostel-title-observer-updates-exact-session ()
   "Test Ghostel titles update only their owning live session."
   (let* ((session-buffer-one
