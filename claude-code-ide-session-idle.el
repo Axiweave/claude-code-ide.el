@@ -121,12 +121,6 @@ prevents idle timer scheduling and idle hook execution."
 (defvar-local claude-code-ide-session-tracking-started-p t
   "Non-nil when idle and working tracking are active for this session.")
 
-(defvaralias 'claude-code-ide-session-idle--enabled
-  'claude-code-ide-session-idle-enabled)
-
-(defvaralias 'claude-code-ide-session-idle--timer
-  'claude-code-ide-session-idle-timer)
-
 (defvar claude-code-ide-session-idle--in-visibility-refresh nil
   "Non-nil while visible-session idle state is being refreshed.")
 

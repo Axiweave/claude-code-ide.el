@@ -328,7 +328,7 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
   (claude-code-ide-manager--run-open-action nil nil))
 
 (defun claude-code-ide-manager-open-start-skip-permissions ()
-  "Start a new session in the manager-selected target with dangerous permissions bypass."
+  "Start a new session in the manager-selected target, bypassing permissions."
   (interactive)
   (claude-code-ide-manager--run-open-action nil nil t))
 

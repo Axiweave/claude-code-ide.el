@@ -316,7 +316,7 @@ terminal) without losing the last real selection."
 
 (defun claude-code-ide-mcp-sse--handle-get (request)
   "Handle a GET /sse REQUEST, keeping the connection open as an SSE stream."
-  (with-slots (process) request
+  (let ((process (ws-process request)))
     (let ((session-id (format "%d-%d" (emacs-pid) (cl-incf claude-code-ide-mcp-sse--session-counter))))
       (ws-response-header process 200
                            '("Content-Type" . "text/event-stream")
@@ -338,7 +338,7 @@ terminal) without losing the last real selection."
 
 (defun claude-code-ide-mcp-sse--handle-post (request)
   "Handle a POST /messages/SESSION-ID REQUEST carrying a JSON-RPC message."
-  (with-slots (process) request
+  (let ((process (ws-process request)))
     (let* ((headers (ws-headers request))
            (body (ws-body request))
            (url (cdr (assoc :POST headers)))

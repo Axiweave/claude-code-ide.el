@@ -101,7 +101,7 @@ Returns a cons cell of (server . port)."
           (claude-code-ide-debug "MCP server started on port %d" actual-port)
           ;; Set up process sentinel to detect crashes
           (set-process-sentinel process
-                                (lambda (proc event)
+                                (lambda (_proc event)
                                   (claude-code-ide-debug "MCP server process event: %s" event)
                                   (when (string-match-p "\\(exited\\|killed\\|terminated\\)" event)
                                     (claude-code-ide-debug "MCP server died unexpectedly"))))
@@ -122,7 +122,7 @@ Returns a cons cell of (server . port)."
   "Handle GET request to /mcp endpoint for SSE fallback."
   ;; For now, return 404 as we're implementing Streamable HTTP only
   ;; This could be extended to support SSE for backward compatibility
-  (with-slots (process) request
+  (let ((process (ws-process request)))
     (ws-send-404 process)))
 
 (defun claude-code-ide-mcp-http-server--handle-post (request)
@@ -315,7 +315,7 @@ Returns a list of arguments in the correct order."
 
 (defun claude-code-ide-mcp-http-server--send-json-response (request status body)
   "Send JSON response to REQUEST with STATUS and BODY."
-  (with-slots (process) request
+  (let ((process (ws-process request)))
     (let ((headers (list (cons "Content-Type" "application/json")
                          (cons "Access-Control-Allow-Origin" "*"))))
       (apply #'ws-response-header process status headers)
@@ -325,7 +325,7 @@ Returns a list of arguments in the correct order."
 
 (defun claude-code-ide-mcp-http-server--send-empty-response (request)
   "Send an empty HTTP 200 response for notifications."
-  (with-slots (process) request
+  (let ((process (ws-process request)))
     (ws-response-header process 200
                         (cons "Content-Type" "text/plain")
                         (cons "Content-Length" "0"))

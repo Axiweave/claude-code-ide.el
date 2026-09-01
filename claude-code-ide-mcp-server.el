@@ -117,7 +117,8 @@ call it and what it returns.
 ARGS: A list of plists specifying the arguments, or nil for a function that
 takes no arguments.  Each plist in ARGS should have the following keys:
 - :name - Argument name (string)
-- :type - Argument type (symbol: string, number, integer, boolean, array, object, null)
+- :type - Argument type (symbol: string, number, integer, boolean, array,
+  object, null)
 - :description - Argument description (string)
 - :optional - Whether the argument is optional (boolean, default nil)
 - :enum - For enumerated types, a vector of allowed values
@@ -158,7 +159,7 @@ Returns the tool specification for convenience."
 
 (defun claude-code-ide--tool-format-p (tool-spec)
   "Determine format of TOOL-SPEC.
-Returns 'old for (symbol . plist) format, 'new for plist format."
+Returns `old' for (symbol . plist) format, `new' for plist format."
   (cond
    ;; Old format: (function-symbol :description "..." :parameters ...)
    ((and (consp tool-spec)

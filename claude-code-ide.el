@@ -211,7 +211,7 @@ Set to nil to disable (default)."
 (defcustom claude-code-ide-mcp-allowed-tools 'auto
   "Configuration for allowed MCP tools when MCP server is enabled.
 Can be one of:
-  'auto - Automatically allow all configured emacs-tools (default)
+  `auto' - Automatically allow all configured emacs-tools (default)
   nil - Disable the --allowedTools flag
   A string - Custom pattern/tools passed directly to --allowedTools
   A list of strings - List of specific tool names to allow"
@@ -346,6 +346,11 @@ with imperceptible latency."
   :type 'number
   :group 'claude-code-ide)
 
+(define-obsolete-variable-alias
+  'claude-code-ide-eat-initialization-delay
+  'claude-code-ide-terminal-initialization-delay
+  "0.2.6")
+
 (defcustom claude-code-ide-terminal-initialization-delay 0.1
   "Initialization delay for terminal stability.
 Provides a brief stabilization period when launching terminals
@@ -390,11 +395,6 @@ the terminal, the terminal window is selected.  Only switches if
 the target window is already visible."
   :type 'boolean
   :group 'claude-code-ide)
-
-(define-obsolete-variable-alias
-  'claude-code-ide-eat-initialization-delay
-  'claude-code-ide-terminal-initialization-delay
-  "0.2.6")
 
 ;;; Constants
 
@@ -1267,8 +1267,8 @@ basename prefix.  Unknown commands fall back to \\='claude."
 
 ;;; Commands
 
-(defun claude-code-ide--toggle-existing-window (existing-buffer working-dir)
-  "Toggle visibility of EXISTING-BUFFER window for WORKING-DIR.
+(defun claude-code-ide--toggle-existing-window (existing-buffer _working-dir)
+  "Toggle visibility of EXISTING-BUFFER window.
 If the window is visible, it will be hidden.
 If the window is not visible, it will be shown in a side window."
   (let ((window (get-buffer-window existing-buffer)))
@@ -1296,7 +1296,7 @@ If CONTINUE is non-nil, add the -c flag.
 If RESUME is non-nil, add the -r flag.
 If SESSION-ID is provided, it's included in the MCP server URL path.
 If `claude-code-ide-cli-debug' is non-nil, add the -d flag.
-If `claude-code-ide-system-prompt' is non-nil, add the --append-system-prompt flag.
+If `claude-code-ide-system-prompt' is non-nil, add --append-system-prompt.
 Additional flags from `claude-code-ide-cli-extra-flags' are also included."
   (let ((claude-cmd claude-code-ide-cli-path))
     ;; Add debug flag if enabled
@@ -2162,7 +2162,7 @@ recent visible file-visiting buffer on the current frame."
 
 ;;;###autoload
 (defun claude-code-ide-send-double-escape ()
-  "Send double escape key to the Claude Code terminal buffer for the current project."
+  "Send double escape to the Claude Code terminal for the current project."
   (interactive)
   (if-let* ((buffer (claude-code-ide--get-session-buffer)))
       (with-current-buffer buffer
@@ -2172,8 +2172,8 @@ recent visible file-visiting buffer on the current frame."
 
 ;;;###autoload
 (defun claude-code-ide-insert-newline ()
-  "Send newline (backslash + return) to the Claude Code terminal buffer for the current project.
-This simulates typing backslash followed by Enter, which Claude Code interprets as a newline."
+  "Send backslash + return to the Claude Code terminal for the current project.
+Claude Code interprets backslash followed by Enter as a newline."
   (interactive)
   (if-let* ((buffer (claude-code-ide--get-session-buffer)))
       (with-current-buffer buffer

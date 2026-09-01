@@ -108,9 +108,6 @@ return the string to insert."
   :type '(repeat function)
   :group 'claude-code-ide-session)
 
-(defvaralias 'claude-code-ide-session-reader-functions
-  'claude-code-ide-session-buffer-predicate-functions)
-
 (defvar claude-code-ide-session-setup-hook nil
   "Hook run after a Claude Code session buffer has been configured.")
 
