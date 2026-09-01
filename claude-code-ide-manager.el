@@ -1629,7 +1629,9 @@ Applying clears every pin in the scope; pin again from the sidebar."
     (insert " ")
     (insert (claude-code-ide-manager--item-visible-name item))
     (insert "\n")
-    (add-text-properties start (1- (point)) '(mouse-face highlight))
+    (add-text-properties
+     start (1- (point))
+     '(mouse-face highlight))
     (add-text-properties
      start (point)
      (append

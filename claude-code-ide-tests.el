@@ -4056,6 +4056,7 @@ have completed before cleanup.  Waits up to 5 seconds."
               (should (member -1 hl-line-args)))
           (kill-buffer (current-buffer)))))))
 
+
 (ert-deftest claude-code-ide-test-manager-installs-evil-initial-state ()
   "Test manager starts in Evil emacs state when Evil is available."
   (let (initial-state-calls)
@@ -4216,8 +4217,9 @@ have completed before cleanup.  Waits up to 5 seconds."
           (goto-char (point-min))
           (forward-line 1)
           (setq second-row-position (point))
-          (should (eq (get-text-property second-row-position 'mouse-face)
-                      'highlight))
+          (should
+           (eq (get-text-property second-row-position 'mouse-face)
+               'highlight))
           (should-not
            (get-text-property (line-end-position) 'mouse-face))
           (goto-char (point-min)))
