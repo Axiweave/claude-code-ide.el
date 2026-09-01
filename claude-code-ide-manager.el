@@ -89,6 +89,15 @@
   :type 'integer
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-session-window-side 'right
+  "Side of the content area where the default layout puts the session window.
+`right' places the session window at the far right of the frame.
+`left' places it in the middle, between the manager sidebar and the
+status buffer."
+  :type '(choice (const :tag "Right" right)
+                 (const :tag "Left (middle)" left))
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-repo-include-nested nil
   "Whether repo-local managers include nested git directories."
   :type 'boolean
@@ -2603,7 +2612,9 @@ Return the selected window when successful."
       (let ((status-window (selected-window))
             (session-window nil))
         (set-window-buffer status-window status-buffer)
-        (setq session-window (split-window status-window nil 'right))
+        (setq session-window
+              (split-window status-window nil
+                            claude-code-ide-manager-session-window-side))
         (set-window-buffer session-window session-buffer)
         (setq claude-code-ide-manager--current-session-key session-key)
         (claude-code-ide-manager--set-scope-active-session-key scope session-key)

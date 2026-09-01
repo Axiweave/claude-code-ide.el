@@ -5568,6 +5568,33 @@ have completed before cleanup.  Waits up to 5 seconds."
                 (kill-buffer buffer)))
             (list session-buffer status-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-default-layout-session-window-side ()
+  "Test the default layout honors `claude-code-ide-manager-session-window-side'."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (get-buffer-create "*cc-session*"))
+        (status-buffer (get-buffer-create "*cc-status*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (_directory) session-buffer))
+                  ((symbol-function 'magit-status-setup-buffer)
+                   (lambda (_directory) status-buffer)))
+          (dolist (side '(right left))
+            (let ((claude-code-ide-manager-session-window-side side))
+              (delete-other-windows)
+              (let ((session-window
+                     (claude-code-ide-manager--build-default-layout "/tmp/project-a"))
+                    (status-window (get-buffer-window status-buffer)))
+                (should (window-live-p session-window))
+                (should (window-live-p status-window))
+                (should (eq side (if (< (window-left-column session-window)
+                                        (window-left-column status-window))
+                                     'left
+                                   'right)))))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-buffer status-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-switch-from-sidebar-builds-default-layout ()
   "Test switching from the manager sidebar can build the default layout."
   (claude-code-ide-tests--reset-manager-state)
