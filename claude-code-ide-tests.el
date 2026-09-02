@@ -988,6 +988,12 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "r"))
               #'claude-code-ide-manager-rename-at-point)))
 
+(ert-deftest claude-code-ide-test-manager-mode-binds-bang-to-clear-idle-state ()
+  "Manager mode exposes idle-state cleanup on `!'."
+  (should
+   (eq (lookup-key claude-code-ide-manager-mode-map (kbd "!"))
+       #'claude-code-ide-manager-clear-all-idle-state)))
+
 (ert-deftest claude-code-ide-test-manager-mode-binds-s-to-new-sibling-session ()
   "Manager mode exposes sibling session launch on `s' and `S'."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "s"))
@@ -3915,6 +3921,34 @@ have completed before cleanup.  Waits up to 5 seconds."
             (should (eq clear-buffer session-buffer)))
         (when (buffer-live-p session-buffer)
           (kill-buffer session-buffer))))))
+
+(ert-deftest claude-code-ide-test-manager-clears-all-idle-state ()
+  "Test the manager clears idle state for distinct sessions in one directory."
+  (let ((buffer-a (generate-new-buffer "*claude-code[test-clear-all-idle-a]*"))
+        (buffer-b (generate-new-buffer "*claude-code[test-clear-all-idle-b]*"))
+        (caller-buffer (current-buffer)))
+    (unwind-protect
+        (progn
+          (dolist (buffer (list buffer-a buffer-b))
+            (with-current-buffer buffer
+              (setq default-directory "/tmp/"
+                    claude-code-ide-session-idle-enabled t
+                    claude-code-ide-session-idle-p t
+                    claude-code-ide-session-working-p t)))
+          (cl-letf (((symbol-function 'claude-code-ide-manager--live-session-keys)
+                     (lambda () '("session-a" "session-b")))
+                    ((symbol-function 'claude-code-ide-manager--session-buffer)
+                     (lambda (session-key)
+                       (if (equal session-key "session-a") buffer-a buffer-b)))
+                    ((symbol-function 'claude-code-ide-session-buffer-p)
+                     (lambda (_buffer) t)))
+            (should (= (claude-code-ide-manager-clear-all-idle-state) 2))
+            (should (eq (current-buffer) caller-buffer))
+            (dolist (buffer (list buffer-a buffer-b))
+              (with-current-buffer buffer
+                (should-not claude-code-ide-session-idle-p)
+                (should claude-code-ide-session-working-p)))))
+      (mapc #'kill-buffer (list buffer-a buffer-b)))))
 
 (ert-deftest claude-code-ide-test-manager-switch-syncs-treemacs-project-and-file-when-visible ()
   (let (calls)

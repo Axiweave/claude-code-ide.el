@@ -673,6 +673,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "M-k") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-j") #'claude-code-ide-manager-move-down)
 (define-key claude-code-ide-manager-mode-map (kbd "C-s") #'claude-code-ide-manager-sort-menu)
+(define-key claude-code-ide-manager-mode-map (kbd "!") #'claude-code-ide-manager-clear-all-idle-state)
 (define-key claude-code-ide-manager-mode-map (kbd "?") #'claude-code-ide-manager-dispatch)
 
 (defvar claude-code-ide-manager-pin-order-mode-map
@@ -2656,7 +2657,16 @@ Return the selected window when successful."
   (when-let* ((session-buffer (claude-code-ide-manager--session-buffer session-key)))
     (with-current-buffer session-buffer
       (when (bound-and-true-p claude-code-ide-session-idle-enabled)
-        (claude-code-ide-session-idle-clear-state)))))
+        (claude-code-ide-session-idle-clear-state)
+        t))))
+
+(defun claude-code-ide-manager-clear-all-idle-state ()
+  "Clear idle state for every live session and return the number cleared."
+  (interactive)
+  (let ((count 0))
+    (dolist (session-key (claude-code-ide-manager--live-session-keys) count)
+      (when (claude-code-ide-manager--reset-session-idle-state session-key)
+        (cl-incf count)))))
 
 (defun claude-code-ide-manager-switch-to-session (session-key &optional keep-manager-focus scope)
   "Switch the current frame to SESSION-KEY.
