@@ -1178,6 +1178,130 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-manager-start-session-at-point-skip-permissions)
         (should (equal captured '(codex codex)))))))
 
+;;; Agent state (session_state_changed) tests
+
+(defmacro claude-code-ide-tests--with-agent-state-fixture (buffer &rest body)
+  "Run BODY with BUFFER registered as a zmx-backed session named cci-omp-proj-x."
+  (declare (indent 1))
+  `(let ((,buffer (generate-new-buffer "*cc-agent-state*"))
+         (claude-code-ide--sessions (make-hash-table :test 'equal))
+         (claude-code-ide-mcp-sse--sessions (make-hash-table :test 'equal)))
+     (unwind-protect
+         (cl-letf (((symbol-function 'claude-code-ide-session-buffer-p)
+                    (lambda (_buffer) t))
+                   ((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                    (lambda (&optional _buffer) nil)))
+           (puthash "agent-id"
+                    (claude-code-ide-session-create
+                     :id "agent-id" :directory "/tmp/proj/" :buffer ,buffer
+                     :zmx-name "cci-omp-proj-x")
+                    claude-code-ide--sessions)
+           ,@body)
+       (kill-buffer ,buffer))))
+
+(defun claude-code-ide-tests--dispatch-agent-state (session-id state &optional zmx-name)
+  "Dispatch a `session_state_changed' for SESSION-ID with STATE and ZMX-NAME."
+  (claude-code-ide-mcp-sse--dispatch
+   session-id
+   `((jsonrpc . "2.0")
+     (method . "session_state_changed")
+     (params . ((state . ,state) (zmxSession . ,(or zmx-name "cci-omp-proj-x")))))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-dispatch-session-state ()
+  "Test `session_state_changed' stores state on the zmx-resolved session buffer."
+  (claude-code-ide-tests--with-agent-state-fixture buffer
+    (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (claude-code-ide-tests--dispatch-agent-state "sid" "needs-input")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
+    (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "sid"))
+    (should (eq (plist-get (gethash "sid" claude-code-ide-mcp-sse--sessions) :buffer) buffer))
+    (claude-code-ide-tests--dispatch-agent-state "sid" "bogus")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
+    (claude-code-ide-tests--dispatch-agent-state "sid" "done" "nope")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
+    (claude-code-ide-mcp-sse--forget-session "sid")
+    (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
+    (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))
+    (should-not (gethash "sid" claude-code-ide-mcp-sse--sessions))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-stale-session-keeps-replacement-state ()
+  "Test a stale SSE session's disconnect leaves a newer session's state alone."
+  (claude-code-ide-tests--with-agent-state-fixture buffer
+    (puthash "old" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (puthash "new" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (claude-code-ide-tests--dispatch-agent-state "old" "working")
+    (claude-code-ide-tests--dispatch-agent-state "new" "done")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'done))
+    (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "new"))
+    (claude-code-ide-mcp-sse--forget-session "old")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'done))
+    (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "new"))
+    (should-not (gethash "old" claude-code-ide-mcp-sse--sessions))
+    (claude-code-ide-mcp-sse--forget-session "new")
+    (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
+    (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))))
+
+(ert-deftest claude-code-ide-session-idle-test-set-agent-state-acknowledges-visible-result ()
+  "Test a visible buffer turns `done' and `failed' into `idle', but keeps `needs-input'."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (cl-letf (((symbol-function 'claude-code-ide-session-buffer-p) (lambda (_buffer) t)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                 (lambda (&optional _buffer) t)))
+        (claude-code-ide-session-idle-set-agent-state 'done)
+        (should (eq claude-code-ide-session-agent-state 'idle))
+        (claude-code-ide-session-idle-set-agent-state 'failed)
+        (should (eq claude-code-ide-session-agent-state 'idle))
+        (claude-code-ide-session-idle-set-agent-state 'needs-input)
+        (should (eq claude-code-ide-session-agent-state 'needs-input)))
+      (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                 (lambda (&optional _buffer) nil)))
+        (claude-code-ide-session-idle-set-agent-state 'done)
+        (should (eq claude-code-ide-session-agent-state 'done))))))
+
+(ert-deftest claude-code-ide-test-manager-agent-state-glyphs ()
+  "Test manager rows show the CLI-reported agent state over output markers."
+  (claude-code-ide-tests--reset-manager-state)
+  (let* ((directory "/tmp/agent-state/project/")
+         (session-buffer (generate-new-buffer "*claude-code[project]*"))
+         (process (make-pipe-process :name "cc-agent-state" :buffer session-buffer))
+         (claude-code-ide--sessions (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (with-current-buffer session-buffer
+            (setq-local claude-code-ide-session-idle-enabled t
+                        claude-code-ide-session-idle-p t))
+          (claude-code-ide-tests--put-session directory process)
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key directory
+                       :display-name "project"
+                       :secondary-text directory
+                       :pinned nil
+                       :order-key 1
+                       :live-p t)))
+          (dolist (case (list (list 'idle nil
+                                    (list claude-code-ide-manager--bell-glyph
+                                          claude-code-ide-manager--working-glyph))
+                              (list 'needs-input claude-code-ide-manager--needs-input-glyph nil)
+                              (list 'done claude-code-ide-manager--done-glyph nil)
+                              (list 'failed claude-code-ide-manager--failed-glyph nil)
+                              (list 'working claude-code-ide-manager--working-glyph nil)
+                              (list nil claude-code-ide-manager--bell-glyph nil)))
+            (with-current-buffer session-buffer
+              (setq-local claude-code-ide-session-agent-state (nth 0 case)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer)
+              (claude-code-ide-manager--render)
+              (goto-char (point-min))
+              (let ((row (claude-code-ide-tests--manager-row-text)))
+                (when (nth 1 case)
+                  (should (string-match-p (regexp-quote (nth 1 case)) row)))
+                (dolist (absent (nth 2 case))
+                  (should-not (string-match-p (regexp-quote absent) row)))))))
+      (ignore-errors (delete-process process))
+      (when (buffer-live-p session-buffer)
+        (kill-buffer session-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-start-session-at-point-requires-row ()
   "Sibling launch reports when point is not on a manager row."
   (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)

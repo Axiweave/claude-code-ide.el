@@ -35,7 +35,10 @@
 ;; It advertises itself through a lockfile in ~/.omp/ide/, accepts a
 ;; GET /sse connection per omp client, and pushes `selection_changed'
 ;; notifications to every session whose `roots/list' answer contains
-;; the selected file.  It exposes no MCP tools; the empty `capabilities'
+;; the selected file.  It also accepts the inbound `session_state_changed'
+;; notification that omp sends for its own lifecycle (idle, working,
+;; needs-input, done, failed) and stores that state on the matching Emacs
+;; session buffer.  It exposes no MCP tools; the empty `capabilities'
 ;; object returned from `initialize' is what keeps omp from calling
 ;; `tools/list', `resources/list', and `prompts/list'.
 ;;
@@ -49,6 +52,7 @@
 
 (require 'json)
 (require 'cl-lib)
+(require 'subr-x)
 (require 'eieio)
 (require 'url-util)
 (require 'claude-code-ide-debug)
@@ -70,6 +74,9 @@
 (declare-function ws-body "web-server" (request))
 (declare-function ws-response-header "web-server" (proc code &rest headers))
 (declare-function ws-send-404 "web-server" (proc &rest msg-and-args))
+(declare-function claude-code-ide--session-buffer-for-agent "claude-code-ide" (zmx-name buffer-name))
+(declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
+(declare-function claude-code-ide-session-idle-set-agent-state "claude-code-ide-session-idle" (state))
 
 ;;; Constants
 
@@ -88,7 +95,8 @@ through XDG.")
 
 (defvar claude-code-ide-mcp-sse--sessions (make-hash-table :test 'equal)
   "Hash table mapping session-id strings to plists.
-Each plist has the shape (:process PROC :root DIR-OR-NIL).")
+Each plist has the shape
+\(:process PROC :root DIR-OR-NIL :buffer SESSION-BUFFER-OR-NIL).")
 
 (defvar claude-code-ide-mcp-sse--session-counter 0
   "Counter used to mint unique session ids.")
@@ -104,6 +112,12 @@ Each plist has the shape (:process PROC :root DIR-OR-NIL).")
 
 (defvar claude-code-ide-mcp-sse--last-file nil
   "Absolute file name the last selection payload was computed from, or nil.")
+
+(defvar-local claude-code-ide-mcp-sse--agent-state-owner nil
+  "SSE session id whose `session_state_changed' report set this agent state.
+Only that session may clear the state when it disconnects.  OMP closes the
+old transport without waiting when it reconnects, so an old GET sentinel
+can run after the replacement session already reported.")
 
 ;;; Frame + write primitives
 
@@ -231,6 +245,44 @@ so a region selected before the client connected is not lost."
          (method . "selection_changed")
          (params . ,claude-code-ide-mcp-sse--last-payload))))))
 
+(defconst claude-code-ide-mcp-sse--agent-states
+  '("idle" "working" "needs-input" "done" "failed")
+  "Agent state strings accepted from `session_state_changed'.")
+
+(defun claude-code-ide-mcp-sse--apply-session-state (session-id params)
+  "Store the agent state in PARAMS on the session buffer reported by SESSION-ID."
+  (let* ((state (alist-get 'state params))
+         (zmx-name (alist-get 'zmxSession params))
+         (buffer-name (alist-get 'bufferName params))
+         (buffer (claude-code-ide--session-buffer-for-agent
+                  (and (stringp zmx-name) zmx-name)
+                  (and (stringp buffer-name) buffer-name)))
+         (session (gethash session-id claude-code-ide-mcp-sse--sessions)))
+    (cond
+     ((not (member state claude-code-ide-mcp-sse--agent-states))
+      (claude-code-ide-debug "Ignoring unknown agent state: %S" state))
+     ((null buffer)
+      (claude-code-ide-debug "No session buffer for agent state: %S" params))
+     (t
+      (when session
+        (puthash session-id (plist-put session :buffer buffer)
+                 claude-code-ide-mcp-sse--sessions))
+      (with-current-buffer buffer
+        (setq claude-code-ide-mcp-sse--agent-state-owner session-id)
+        (claude-code-ide-session-idle-set-agent-state (intern state)))))))
+
+(defun claude-code-ide-mcp-sse--forget-session (session-id)
+  "Drop SESSION-ID and clear the agent state it still owns."
+  (let ((buffer (plist-get (gethash session-id claude-code-ide-mcp-sse--sessions) :buffer)))
+    (remhash session-id claude-code-ide-mcp-sse--sessions)
+    (when (and (buffer-live-p buffer)
+               (claude-code-ide-session-buffer-p buffer)
+               (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer)
+                      session-id))
+      (with-current-buffer buffer
+        (setq claude-code-ide-mcp-sse--agent-state-owner nil)
+        (claude-code-ide-session-idle-set-agent-state nil)))))
+
 (defun claude-code-ide-mcp-sse--dispatch (session-id message)
   "Dispatch a decoded JSON-RPC MESSAGE received for SESSION-ID."
   (let ((method (alist-get 'method message))
@@ -247,6 +299,8 @@ so a region selected before the client connected is not lost."
          (id . ,(format "emacs-roots-%s" session-id))
          (method . "roots/list")
          (params . ,(make-hash-table :test 'equal)))))
+     ((equal method "session_state_changed")
+      (claude-code-ide-mcp-sse--apply-session-state session-id (alist-get 'params message)))
      (method
       (if id
           (claude-code-ide-mcp-sse--send
@@ -329,7 +383,7 @@ terminal) without losing the last real selection."
        process
        (lambda (proc _event)
          (unless (process-live-p proc)
-           (remhash session-id claude-code-ide-mcp-sse--sessions)
+           (claude-code-ide-mcp-sse--forget-session session-id)
            (let ((server (plist-get (process-plist proc) :server)))
              (when server
                (setf (ws-requests server)
@@ -393,7 +447,8 @@ terminal) without losing the last real selection."
   "Stop the SSE server and clean up all of its state."
   (interactive)
   (claude-code-ide-mcp-sse--remove-lockfile)
-  (clrhash claude-code-ide-mcp-sse--sessions)
+  (dolist (session-id (hash-table-keys claude-code-ide-mcp-sse--sessions))
+    (claude-code-ide-mcp-sse--forget-session session-id))
   (when claude-code-ide-mcp-sse--selection-timer
     (cancel-timer claude-code-ide-mcp-sse--selection-timer)
     (setq claude-code-ide-mcp-sse--selection-timer nil))

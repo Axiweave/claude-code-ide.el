@@ -202,6 +202,15 @@ back to `project.el' otherwise."
 (defconst claude-code-ide-manager--pin-glyph "📌"
   "Pin glyph used to mark pinned sessions in the manager sidebar.")
 
+(defconst claude-code-ide-manager--needs-input-glyph "❓"
+  "Glyph used to mark sessions whose agent waits for the user.")
+
+(defconst claude-code-ide-manager--done-glyph "✅"
+  "Glyph used to mark sessions whose agent finished a turn.")
+
+(defconst claude-code-ide-manager--failed-glyph "❌"
+  "Glyph used to mark sessions whose agent turn failed.")
+
 (defconst claude-code-ide-manager--marker-gutter-width 2
   "Fixed display width for the left marker gutter.")
 
@@ -1137,15 +1146,27 @@ direction, ignoring pin state and stored order keys."
          (claude-code-ide-manager--buffer-local-value
           'claude-code-ide-session-working-p buffer))))
 
+(defun claude-code-ide-manager--session-agent-state (session-key)
+  "Return the CLI-reported agent state for SESSION-KEY's live buffer, or nil."
+  (when-let* ((buffer (claude-code-ide-manager--session-buffer session-key)))
+    (claude-code-ide-manager--buffer-local-value 'claude-code-ide-session-agent-state buffer)))
+
 (defun claude-code-ide-manager--marker-gutter (item)
   "Return a fixed-width marker gutter for ITEM.
-Idle markers take precedence over working and pinned markers."
-  (let* ((marker (cond
-                  ((claude-code-ide-manager--session-idle-p
-                    (claude-code-ide-manager-item-session-key item))
+A CLI-reported agent state takes precedence over terminal-output
+markers, which take precedence over the pin marker."
+  (let* ((session-key (claude-code-ide-manager-item-session-key item))
+         (agent-state (claude-code-ide-manager--session-agent-state session-key))
+         (marker (cond
+                  ((eq agent-state 'needs-input) claude-code-ide-manager--needs-input-glyph)
+                  ((eq agent-state 'done) claude-code-ide-manager--done-glyph)
+                  ((eq agent-state 'failed) claude-code-ide-manager--failed-glyph)
+                  ((eq agent-state 'working) claude-code-ide-manager--working-glyph)
+                  ((and (null agent-state)
+                        (claude-code-ide-manager--session-idle-p session-key))
                    claude-code-ide-manager--bell-glyph)
-                  ((claude-code-ide-manager--session-working-p
-                    (claude-code-ide-manager-item-session-key item))
+                  ((and (null agent-state)
+                        (claude-code-ide-manager--session-working-p session-key))
                    claude-code-ide-manager--working-glyph)
                   ((claude-code-ide-manager-item-pinned item)
                    claude-code-ide-manager--pin-glyph)
@@ -1156,15 +1177,20 @@ Idle markers take precedence over working and pinned markers."
 
 (defun claude-code-ide-manager--row-face (scope session-key)
   "Return the face to apply to SESSION-KEY's row within SCOPE."
-  (cond
-   ((equal session-key
-           (or (claude-code-ide-manager--scope-active-session-key scope)
-               claude-code-ide-manager--current-session-key))
-    'claude-code-ide-manager-current-session-face)
-   ((claude-code-ide-manager--session-idle-p session-key)
-    'claude-code-ide-manager-idle-session-face)
-   ((claude-code-ide-manager--session-working-p session-key)
-    'claude-code-ide-manager-working-session-face)))
+  (let ((agent-state (claude-code-ide-manager--session-agent-state session-key)))
+    (cond
+     ((equal session-key
+             (or (claude-code-ide-manager--scope-active-session-key scope)
+                 claude-code-ide-manager--current-session-key))
+      'claude-code-ide-manager-current-session-face)
+     ((memq agent-state '(needs-input done failed))
+      'claude-code-ide-manager-idle-session-face)
+     ((eq agent-state 'working)
+      'claude-code-ide-manager-working-session-face)
+     ((and (null agent-state) (claude-code-ide-manager--session-idle-p session-key))
+      'claude-code-ide-manager-idle-session-face)
+     ((and (null agent-state) (claude-code-ide-manager--session-working-p session-key))
+      'claude-code-ide-manager-working-session-face))))
 
 (defun claude-code-ide-manager--session-key-for-buffer (buffer)
   "Return the session key whose live buffer is BUFFER."
@@ -1252,7 +1278,8 @@ Idle markers take precedence over working and pinned markers."
   "Return the current buffer's manager-visible idle/working status."
   (list (bound-and-true-p claude-code-ide-session-idle-enabled)
         (bound-and-true-p claude-code-ide-session-idle-p)
-        (bound-and-true-p claude-code-ide-session-working-p)))
+        (bound-and-true-p claude-code-ide-session-working-p)
+        (bound-and-true-p claude-code-ide-session-agent-state)))
 
 (defun claude-code-ide-manager--refresh-after-session-status-change (orig-fn &rest args)
   "Refresh the sidebar when ORIG-FN changes manager-visible session status."
@@ -1295,6 +1322,10 @@ Idle markers take precedence over working and pinned markers."
   (unless (advice-member-p #'claude-code-ide-manager--refresh-after-session-status-change
                            'claude-code-ide-session-idle-clear-state)
     (advice-add 'claude-code-ide-session-idle-clear-state
+                :around #'claude-code-ide-manager--refresh-after-session-status-change))
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-session-status-change
+                           'claude-code-ide-session-idle-set-agent-state)
+    (advice-add 'claude-code-ide-session-idle-set-agent-state
                 :around #'claude-code-ide-manager--refresh-after-session-status-change))
   (when (advice-member-p #'claude-code-ide-manager--refresh-after-session-status-change
                          'claude-code-ide-session-idle-record-activity)

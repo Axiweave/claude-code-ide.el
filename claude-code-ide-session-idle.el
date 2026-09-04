@@ -97,6 +97,11 @@ prevents idle timer scheduling and idle hook execution."
 (defvar-local claude-code-ide-session-working-p nil
   "Non-nil when the current session buffer has seen recent terminal output.")
 
+(defvar-local claude-code-ide-session-agent-state nil
+  "Agent state reported by the CLI over MCP for the current session buffer.
+One of nil, `idle', `working', `needs-input', `done', or `failed'.
+nil means the CLI has not reported, so terminal-output detection applies.")
+
 (defvar-local claude-code-ide-session-idle-generation 0
   "Monotonic token for the currently scheduled idle callback.")
 
@@ -251,6 +256,17 @@ prevents idle timer scheduling and idle hook execution."
   (interactive)
   (claude-code-ide-session-idle--ensure-session-buffer)
   (claude-code-ide-session-idle--clear-timer))
+
+(defun claude-code-ide-session-idle-set-agent-state (state)
+  "Record STATE as the current session buffer's agent state.
+A `done' or `failed' STATE becomes `idle' when the buffer is already
+visible in a focused frame, because the user already sees the result."
+  (claude-code-ide-session-idle--ensure-session-buffer)
+  (setq claude-code-ide-session-agent-state
+        (if (and (memq state '(done failed))
+                 (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p))
+            'idle
+          state)))
 
 (defun claude-code-ide-session-idle--ensure-session-buffer ()
   "Signal a user error unless the current buffer is a session buffer."
@@ -442,7 +458,9 @@ fresh output from the session backend."
                       (not (memq buffer seen-buffers)))
              (push buffer seen-buffers)
              (with-current-buffer buffer
-               (claude-code-ide-session-idle-clear-state)))))
+               (claude-code-ide-session-idle-clear-state)
+               (when (memq claude-code-ide-session-agent-state '(done failed))
+                 (claude-code-ide-session-idle-set-agent-state 'idle))))))
        'no-minibuf
        'visible))))
 

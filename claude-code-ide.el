@@ -845,6 +845,23 @@ Signal a `user-error' when the current buffer is not in a project."
      claude-code-ide--sessions)
     found))
 
+(defun claude-code-ide--session-buffer-for-agent (zmx-name buffer-name)
+  "Return the live session buffer identified by ZMX-NAME or BUFFER-NAME.
+ZMX-NAME wins because it survives Emacs restarts.  BUFFER-NAME covers
+sessions that run without zmx.  Return nil when neither matches."
+  (let (found)
+    (when zmx-name
+      (maphash (lambda (_id session)
+                 (when (and (not found)
+                            (equal (claude-code-ide-session-zmx-name session) zmx-name))
+                   (setq found (claude-code-ide-session-buffer session))))
+               claude-code-ide--sessions))
+    (unless found
+      (let ((buffer (and buffer-name (get-buffer buffer-name))))
+        (when (and buffer (claude-code-ide--session-for-buffer buffer))
+          (setq found buffer))))
+    (and (buffer-live-p found) found)))
+
 
 (defun claude-code-ide--record-ghostel-title (&rest _args)
   "Store the current Ghostel title on its live session.

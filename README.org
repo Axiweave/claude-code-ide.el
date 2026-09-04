@@ -23,7 +23,7 @@ This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manz
 
 - [[*CC Manager][CC Manager]] global and repo-local sidebars, quick slots, and persistent per-session layouts
 - CLI-aware start, continue, and resume workflows for Claude Code, Codex, OpenCode, Pi, and Oh My Pi; see [[*Basic Commands][Basic Commands]]
-- Output-driven idle and working indicators in the [[*CC Manager][CC Manager]]
+- Session state indicators in the [[*CC Manager][CC Manager]]: Oh My Pi reports idle, working, needs-input, done, and failed over MCP; other agents use output-driven idle and working detection
 - [[*Terminal Backend Configuration][Ghostel and per-CLI terminal backend selection]]
 - Expanded transient navigation and file-reference workflows; see [[*Basic Commands][Basic Commands]] and [[*Session Customization][Session Customization]]
 
@@ -202,7 +202,7 @@ How it works:
 - =M-x claude-code-ide-attach= lists all zmx sessions, including ones started outside Emacs, and adopts the selection into a full session with idle tracking and manager visibility.
 - Killing the buffer or closing the window detaches only. =M-x claude-code-ide-stop= asks before it kills the zmx session, because that stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
 
-Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, or after an Emacs restart, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected.
+Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, or after an Emacs restart, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected. Exception: Oh My Pi rediscovers the Emacs SSE endpoint and reconnects on its own, so selection sync and session state resume after an Emacs restart.
 
 The zmx integration follows the design of [[https://github.com/ArthurHeymans/emacs-term-sessions][emacs-term-sessions]] (GPL-3+), which provides general-purpose persistent terminals on top of zmx. This package implements only the small agent-session subset itself, so there is no dependency. Use emacs-term-sessions when you want persistent shells beyond coding agents.
 
@@ -263,13 +263,15 @@ Each row in the sidebar represents one live Claude session derived from the exis
 
 Quick slots are derived from the current visible order. They are not stored separately, so pinning or reordering a row immediately changes which session each slot selects.
 
-*** Idle Indicator
+*** Session State Indicator
 
 Each row reserves a left gutter so the session names stay aligned whether or not a marker is present.
 
-- Idle-enabled rows that are currently idle show =🔔= in that gutter
-- Pinned rows show =📌= in that gutter when they are not idle
-- Idle rows take marker priority over pinned rows
+- Oh My Pi rows show the state the agent reports over MCP: =❓= when a dialog waits for you (approval, =ask= tool, extension prompt), =✅= when a turn finished, =❌= when a turn failed, =⚙︎= while working, and no marker when idle
+- Viewing a =✅= or =❌= row's session clears the marker; =❓= stays until the agent reports again
+- Rows without an agent report fall back to output detection: idle-enabled rows that are currently idle show =🔔=, rows with recent output show =⚙︎=
+- Pinned rows show =📌= in that gutter when no state marker applies
+- State markers take priority over output markers, which take priority over the pin marker
 - Rows with no marker keep the same alignment with blank gutter padding
 - Idle highlighting applies only to non-current rows
 - The current session keeps =claude-code-ide-manager-current-session-face= even when it is idle
