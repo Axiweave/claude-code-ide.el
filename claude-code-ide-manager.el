@@ -2788,7 +2788,7 @@ The zmx session and its agent process keep running."
          (session-key (claude-code-ide-manager-item-session-key item))
          (session (or (claude-code-ide--get-session session-key)
                       (user-error "Session no longer exists")))
-         (buffer (claude-code-ide-session-buffer session))
+         (buffer (claude-code-ide-manager--session-buffer session-key))
          (zmx-name (claude-code-ide-session-zmx-name session)))
     (unless zmx-name
       (user-error "Session is not zmx-backed"))

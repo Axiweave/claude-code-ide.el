@@ -39,11 +39,12 @@ ids reference [spec.md](../spec.md).
   confirmation run `zmx kill <name>`, then normal cleanup (FR-005).
 - Decline → no action. Session without `zmx-name` → unchanged behavior.
 
-### Unchanged surfaces (explicit non-goals)
+### Detach surfaces
 
 - Buffer kill, window close, Emacs exit: detach only, never prompt, never
   kill (FR-004).
-- Transient menu and manager sidebar: no zmx entries in this feature.
+- Manager `X` detaches its selected zmx-backed session by killing only the
+  local session buffer.
 
 ## Emitted zmx invocations (complete list)
 

@@ -1008,11 +1008,11 @@ have completed before cleanup.  Waits up to 5 seconds."
        #'claude-code-ide-manager-detach-at-point)))
 
 (ert-deftest claude-code-ide-test-manager-detach-at-point-keeps-zmx-running ()
-  "Detaching kills the local session buffer without killing the zmx session."
+  "Detaching kills the local process buffer without killing the zmx session."
   (let* ((buffer (generate-new-buffer "*cc-manager-detach-test*"))
          (item (make-claude-code-ide-manager-item :session-key "attached"))
          (session (claude-code-ide-session-create
-                   :id "attached" :directory "/tmp/project/" :buffer buffer
+                   :id "attached" :directory "/tmp/project/" :process buffer
                    :zmx-name "cci-omp-project-attached"))
          killed-zmx)
     (unwind-protect
