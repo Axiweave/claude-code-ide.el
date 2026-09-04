@@ -1226,6 +1226,25 @@ have completed before cleanup.  Waits up to 5 seconds."
     (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))
     (should-not (gethash "sid" claude-code-ide-mcp-sse--sessions))))
 
+(ert-deftest claude-code-ide-mcp-sse-test-acknowledged-terminal-replay-stays-idle ()
+  "Test SSE replay cannot restore an acknowledged terminal marker."
+  (claude-code-ide-tests--with-agent-state-fixture buffer
+    (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (dolist (state '("done" "failed"))
+      (claude-code-ide-tests--dispatch-agent-state "sid" "working")
+      (claude-code-ide-tests--dispatch-agent-state "sid" state)
+      (with-current-buffer buffer
+        (claude-code-ide-session-idle-set-agent-state 'idle t))
+      (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
+      (claude-code-ide-tests--dispatch-agent-state "sid" state)
+      (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
+                  'idle)))
+    (claude-code-ide-mcp-sse--forget-session "sid")
+    (puthash "new" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (claude-code-ide-tests--dispatch-agent-state "new" "done")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
+                'done))))
+
 (ert-deftest claude-code-ide-mcp-sse-test-stale-session-keeps-replacement-state ()
   "Test a stale SSE session's disconnect leaves a newer session's state alone."
   (claude-code-ide-tests--with-agent-state-fixture buffer
@@ -1258,6 +1277,29 @@ have completed before cleanup.  Waits up to 5 seconds."
         (should (eq claude-code-ide-session-agent-state 'needs-input)))
       (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
                  (lambda (&optional _buffer) nil)))
+        (claude-code-ide-session-idle-set-agent-state 'done)
+        (should (eq claude-code-ide-session-agent-state 'done))))))
+
+(ert-deftest claude-code-ide-session-idle-test-acknowledged-result-ignores-replay ()
+  "Test a repeated terminal report does not restore an acknowledged marker."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (cl-letf (((symbol-function 'claude-code-ide-session-buffer-p) (lambda (_buffer) t)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                 (lambda (&optional _buffer) t)))
+        (claude-code-ide-session-idle-set-agent-state 'done)
+        (should (eq claude-code-ide-session-agent-state 'idle)))
+      (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                 (lambda (&optional _buffer) nil)))
+        (claude-code-ide-session-idle-set-agent-state 'done)
+        (should (eq claude-code-ide-session-agent-state 'idle))
+        (claude-code-ide-session-idle-set-agent-state 'idle)
+        (claude-code-ide-session-idle-set-agent-state 'done)
+        (should (eq claude-code-ide-session-agent-state 'idle))
+        (claude-code-ide-session-idle-set-agent-state nil)
+        (claude-code-ide-session-idle-set-agent-state 'done)
+        (should (eq claude-code-ide-session-agent-state 'done))
+        (claude-code-ide-session-idle-set-agent-state 'working)
         (claude-code-ide-session-idle-set-agent-state 'done)
         (should (eq claude-code-ide-session-agent-state 'done))))))
 

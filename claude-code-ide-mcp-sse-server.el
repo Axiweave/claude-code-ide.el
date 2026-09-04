@@ -76,7 +76,7 @@
 (declare-function ws-send-404 "web-server" (proc &rest msg-and-args))
 (declare-function claude-code-ide--session-buffer-for-agent "claude-code-ide" (zmx-name buffer-name))
 (declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
-(declare-function claude-code-ide-session-idle-set-agent-state "claude-code-ide-session-idle" (state))
+(declare-function claude-code-ide-session-idle-set-agent-state "claude-code-ide-session-idle" (state &optional acknowledged))
 
 ;;; Constants
 

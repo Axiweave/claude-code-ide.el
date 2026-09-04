@@ -12,6 +12,6 @@ Reference tools (cmux `markUnread`, herdr's `unseen`/`seen` ranking) keep the re
 
 ## Consequences
 
-- Emacs never tells Oh My Pi about the rewrite. On reconnect Oh My Pi re-announces `done`, and the same rules apply again.
+- Emacs never tells Oh My Pi about the rewrite. On reconnect Oh My Pi can re-announce `done` or `failed`; Emacs remembers the last report and ignores that unchanged replay after acknowledgment. A new `working` report starts a new turn, so its later result remains visible.
 - `idle` still arrives from Oh My Pi on its own: aborted turn, focus of a non-streaming session, startup, and reconnect re-announce.
 - Output idle (`claude-code-ide-session-idle-p`, the bell) is a separate field and path. It is untouched by this decision.

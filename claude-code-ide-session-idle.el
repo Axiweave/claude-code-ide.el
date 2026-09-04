@@ -102,6 +102,10 @@ prevents idle timer scheduling and idle hook execution."
 One of nil, `idle', `working', `needs-input', `done', or `failed'.
 nil means the CLI has not reported, so terminal-output detection applies.")
 
+(defvar-local claude-code-ide-session-acknowledged-agent-state nil
+  "Terminal agent state already acknowledged in the current session.
+This suppresses reconnect replays until a new turn starts.")
+
 (defvar-local claude-code-ide-session-idle-generation 0
   "Monotonic token for the currently scheduled idle callback.")
 
@@ -257,16 +261,31 @@ nil means the CLI has not reported, so terminal-output detection applies.")
   (claude-code-ide-session-idle--ensure-session-buffer)
   (claude-code-ide-session-idle--clear-timer))
 
-(defun claude-code-ide-session-idle-set-agent-state (state)
+(defun claude-code-ide-session-idle-set-agent-state (state &optional acknowledged)
   "Record STATE as the current session buffer's agent state.
 A `done' or `failed' STATE becomes `idle' when the buffer is already
-visible in a focused frame, because the user already sees the result."
+visible in a focused frame, because the user already sees the result.
+When ACKNOWLEDGED is non-nil, mark the current terminal state as seen."
   (claude-code-ide-session-idle--ensure-session-buffer)
-  (setq claude-code-ide-session-agent-state
-        (if (and (memq state '(done failed))
-                 (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p))
-            'idle
-          state))
+  (when acknowledged
+    (setq claude-code-ide-session-acknowledged-agent-state
+          (and (memq claude-code-ide-session-agent-state '(done failed))
+               claude-code-ide-session-agent-state)))
+  (cond
+   ((null state)
+    (setq claude-code-ide-session-acknowledged-agent-state nil
+          claude-code-ide-session-agent-state nil))
+   ((memq state '(working needs-input))
+    (setq claude-code-ide-session-acknowledged-agent-state nil
+          claude-code-ide-session-agent-state state))
+   ((eq state claude-code-ide-session-acknowledged-agent-state)
+    (setq claude-code-ide-session-agent-state 'idle))
+   ((and (memq state '(done failed))
+         (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p))
+    (setq claude-code-ide-session-acknowledged-agent-state state
+          claude-code-ide-session-agent-state 'idle))
+   (t
+    (setq claude-code-ide-session-agent-state state)))
   (force-mode-line-update t))
 
 (defun claude-code-ide-session-needs-attention-p (&optional buffer)
@@ -476,7 +495,7 @@ fresh output from the session backend."
              (with-current-buffer buffer
                (claude-code-ide-session-idle-clear-state)
                (when (memq claude-code-ide-session-agent-state '(done failed))
-                 (claude-code-ide-session-idle-set-agent-state 'idle))))))
+                 (claude-code-ide-session-idle-set-agent-state 'idle t))))))
        'no-minibuf
        'visible))))
 
