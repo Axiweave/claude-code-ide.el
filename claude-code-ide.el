@@ -2170,6 +2170,25 @@ recent visible file-visiting buffer on the current frame."
       (user-error "Claude Code is not connected.  Please start Claude Code first"))))
 
 ;;;###autoload
+(defun claude-code-ide-set-omp-prompt-command (command)
+  "Set the leading slash COMMAND in the active Oh My Pi prompt."
+  (interactive (list (read-string "OMP slash command: ")))
+  (when (or (zerop (length command))
+            (string-match-p "[[:space:]/]" command)
+            (seq-some (lambda (char)
+                        (or (< char 32)
+                            (and (>= char 127) (<= char 159))))
+                      command))
+    (user-error "Command must not contain spaces, slashes, or control characters"))
+  (if-let* ((buffer (claude-code-ide--get-session-buffer)))
+      (with-current-buffer buffer
+        (unless (eq (claude-code-ide--current-cli-type) 'omp)
+          (user-error "The active session is not Oh My Pi"))
+        (claude-code-ide--terminal-send-string
+         (concat "\e_pi:prompt;" command "\e\\")))
+    (user-error "No Oh My Pi session for this project")))
+
+;;;###autoload
 (defun claude-code-ide-send-escape ()
   "Send escape key to the Claude Code terminal buffer for the current project."
   (interactive)

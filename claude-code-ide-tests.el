@@ -7229,6 +7229,29 @@ have completed before cleanup.  Waits up to 5 seconds."
           (claude-code-ide--terminal-send-return)
           (should (equal ghostel-string-sent "\r")))))))
 
+(ert-deftest claude-code-ide-test-set-omp-prompt-command ()
+  "Test prompt command packets and input validation."
+  (let ((buffer (generate-new-buffer "*test-omp-prompt-command*"))
+        sent-string)
+    (unwind-protect
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (&rest _) "review"))
+                  ((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (&optional _) buffer))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (string &optional _paste)
+                     (setq sent-string string))))
+          (with-current-buffer buffer
+            (setq-local claude-code-ide--session-cli-type 'omp))
+          (call-interactively #'claude-code-ide-set-omp-prompt-command)
+          (should (equal sent-string "\e_pi:prompt;review\e\\"))
+          (dolist (command (list "" "bad name" "/bad" "bad\nname"
+                                 (string #x80)))
+            (should-error
+             (claude-code-ide-set-omp-prompt-command command)
+             :type 'user-error)))
+      (kill-buffer buffer))))
+
 (ert-deftest claude-code-ide-test-send-prompt-command ()
   "Test the claude-code-ide-send-prompt command."
   (let ((test-prompt "Test prompt from minibuffer")
