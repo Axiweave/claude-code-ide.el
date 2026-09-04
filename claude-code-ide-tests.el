@@ -9094,6 +9094,54 @@ have completed before cleanup.  Waits up to 5 seconds."
              (lambda () 'pi)))
     (should (= (claude-code-ide--live-prompt-bottom-margin) 1))))
 
+(ert-deftest claude-code-ide-test-omp-visible-prompt-start ()
+  "OMP prompt start uses the nearest visible gutter without crossing chrome."
+  (with-temp-buffer
+    (insert "────────────────────────\n"
+            "❯ think about this\n"
+            "  explicit continuation\n"
+            "  wrapped continuation")
+    (goto-char (point-min))
+    (search-forward "think")
+    (let ((expected (- (point) (length "think"))))
+      (goto-char (point-max))
+      (let ((cursor (point)))
+        (should (= (claude-code-ide--omp-visible-prompt-start cursor)
+                   expected))
+        (should (= (point) cursor)))))
+  (with-temp-buffer
+    (insert "status band\n╰─ band prompt\n  continuation")
+    (goto-char (point-min))
+    (search-forward "band prompt")
+    (let ((expected (- (point) (length "band prompt"))))
+      (should (= (claude-code-ide--omp-visible-prompt-start (point-max))
+                 expected))))
+  (with-temp-buffer
+    (insert "❯ stale prompt\n"
+            "────────────────────────\n"
+            "current prompt without gutter")
+    (let ((cursor (point-max)))
+      (should (= (claude-code-ide--omp-visible-prompt-start cursor)
+                 cursor)))))
+
+(ert-deftest claude-code-ide-test-omp-visible-prompt-start-command ()
+  "The interactive OMP prompt command moves point from the native cursor."
+  (with-temp-buffer
+    (insert "────────────────────────\n"
+            "❯ think about this\n"
+            "  wrapped continuation")
+    (goto-char (point-min))
+    (search-forward "think")
+    (let ((expected (- (point) (length "think")))
+          (cursor (point-max)))
+      (goto-char (point-min))
+      (cl-letf (((symbol-function
+                  'claude-code-ide--live-prompt-terminal-window-target-point)
+                 (lambda () cursor)))
+        (call-interactively
+         #'claude-code-ide-move-to-omp-visible-prompt-start))
+      (should (= (point) expected)))))
+
 (ert-deftest claude-code-ide-test-live-prompt-ghostel-target-prefers-cursor-char-pos ()
   "Ghostel live-prompt target uses the native cursor buffer position.
 The viewport-coordinate fallback is one line off when the renderer pads
@@ -14923,6 +14971,10 @@ The resync ignores pin state and stored order keys."
     (should (equal (plist-get entry :start_dir) "/tmp/proj"))
     (should (equal (plist-get entry :cmd) "omp --continue"))
     (should (equal (plist-get entry :pid) "42")))
+  (should (equal (plist-get (claude-code-ide-zmx--parse-list-line
+                             "→ name=cci-omp-proj-abc123\tpid=42")
+                            :pid)
+                 "42"))
   (should-not (claude-code-ide-zmx--parse-list-line "pid=42\tcmd=omp"))
   (should-not (claude-code-ide-zmx--parse-list-line "   ")))
 

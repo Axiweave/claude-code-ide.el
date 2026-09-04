@@ -408,7 +408,7 @@ the target window is already visible."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name)
+  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name pid)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -1457,6 +1457,30 @@ cursor position must be tracked to keep the window pinned after layout
 restores."
   (memq (claude-code-ide--current-cli-type) '(codex omp)))
 
+(defun claude-code-ide--omp-visible-prompt-start (cursor)
+  "Return OMP's first visible input position before CURSOR.
+Scan at most 18 physical rows for the nearest known prompt gutter.
+Stop at a preceding composer border or rule.  Return CURSOR when the
+visible prompt has no usable marker."
+  (save-excursion
+    (goto-char cursor)
+    (catch 'prompt-start
+      (dotimes (_ 18 cursor)
+        (beginning-of-line)
+        (cond
+         ((looking-at "\\(?:❯ \\|╰─ \\)")
+          (throw 'prompt-start (match-end 0)))
+         ((looking-at "\\(?:[╭┌]─\\|─+\\)")
+          (throw 'prompt-start cursor)))
+        (forward-line -1)))))
+
+(defun claude-code-ide-move-to-omp-visible-prompt-start ()
+  "Move point to OMP's first visible prompt input position."
+  (interactive)
+  (goto-char
+   (claude-code-ide--omp-visible-prompt-start
+    (claude-code-ide--live-prompt-terminal-window-target-point))))
+
 (defun claude-code-ide--live-prompt-terminal-window-target-point ()
   "Return the live prompt position for the current live-prompt terminal buffer."
   (pcase (claude-code-ide--current-terminal-backend)
@@ -1756,6 +1780,26 @@ Returns a cons cell of (buffer . process) on success."
                  (push name names)))
              claude-code-ide--sessions)
     names))
+
+(defun claude-code-ide-session-agent-pid (session)
+  "Return the agent process pid for SESSION, or nil.
+The first successful lookup is cached in the session's `pid' slot.
+A zmx-backed session asks zmx, since the agent runs under the zmx
+server rather than under Emacs.  Otherwise use the terminal process
+pid, descending one level when that process is a shell wrapper
+\(vterm and ghostel run the command through `sh -c')."
+  (or (claude-code-ide-session-pid session)
+      (setf (claude-code-ide-session-pid session)
+            (if-let* ((name (claude-code-ide-session-zmx-name session)))
+                (claude-code-ide-zmx-session-pid name)
+              (when-let* ((process (claude-code-ide-session-process session))
+                          (pid (and (process-live-p process) (process-id process))))
+                (if (member (alist-get 'comm (process-attributes pid))
+                            '("sh" "bash" "zsh" "fish" "dash"))
+                    (seq-find (lambda (child)
+                                (eql (alist-get 'ppid (process-attributes child)) pid))
+                              (list-system-processes))
+                  pid))))))
 
 (defun claude-code-ide--zmx-launch-spec (working-dir continue resume session-id attach-name)
   "Return (ZMX-NAME . ATTACH-ONLY) for the session being created, or nil.

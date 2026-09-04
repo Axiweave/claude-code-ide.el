@@ -94,9 +94,11 @@ Signal an error when zmx exits nonzero."
 
 (defun claude-code-ide-zmx--parse-list-line (line)
   "Parse a tab-separated key=value LINE from `zmx list' into a plist.
+A leading `→ ' marks the caller's own session and is dropped.
 Return nil for lines without a name field."
   (let (plist)
-    (dolist (field (split-string (string-trim line) "\t" t))
+    (dolist (field (split-string (string-trim (string-remove-prefix "→ " (string-trim line)))
+                                 "\t" t))
       (when (string-match "\\`\\([^=]+\\)=\\(.*\\)\\'" field)
         (setq plist (plist-put plist
                                (intern (concat ":" (match-string 1 field)))
@@ -115,6 +117,16 @@ Older zmx builds that print bare names yield name-only plists."
                              (not (string-prefix-p "no sessions found" name))
                              (list :name name)))))
                 (split-string (claude-code-ide-zmx--call "list") "\n" t))))
+
+(defun claude-code-ide-zmx-session-pid (name)
+  "Return the agent pid of zmx session NAME as an integer, or nil.
+The pid is the direct child of the zmx server, which is the agent
+command itself when the session was created without a shell wrapper."
+  (when-let* ((entry (seq-find (lambda (entry)
+                                 (equal (plist-get entry :name) name))
+                               (claude-code-ide-zmx-list-sessions)))
+              (pid (plist-get entry :pid)))
+    (string-to-number pid)))
 
 ;;; Naming
 
