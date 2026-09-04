@@ -266,7 +266,8 @@ visible in a focused frame, because the user already sees the result."
         (if (and (memq state '(done failed))
                  (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p))
             'idle
-          state)))
+          state))
+  (force-mode-line-update t))
 
 (defun claude-code-ide-session-needs-attention-p (&optional buffer)
   "Return non-nil when BUFFER's session waits for the user.
