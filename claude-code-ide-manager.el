@@ -202,13 +202,15 @@ back to `project.el' otherwise."
 (defconst claude-code-ide-manager--pin-glyph "📌"
   "Pin glyph used to mark pinned sessions in the manager sidebar.")
 
-(defconst claude-code-ide-manager--needs-input-glyph "❓"
-  "Glyph used to mark sessions whose agent waits for the user.")
+(defconst claude-code-ide-manager--needs-input-glyph "?"
+  "Glyph used to mark sessions whose agent waits for the user.
+Text-width glyphs only: emoji such as ❓ report `string-width' 1 but
+render two cells wide, which breaks gutter alignment.")
 
-(defconst claude-code-ide-manager--done-glyph "✅"
+(defconst claude-code-ide-manager--done-glyph "✓"
   "Glyph used to mark sessions whose agent finished a turn.")
 
-(defconst claude-code-ide-manager--failed-glyph "❌"
+(defconst claude-code-ide-manager--failed-glyph "✗"
   "Glyph used to mark sessions whose agent turn failed.")
 
 (defconst claude-code-ide-manager--marker-gutter-width 2
