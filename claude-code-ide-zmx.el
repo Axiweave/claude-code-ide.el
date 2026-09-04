@@ -171,7 +171,7 @@ dropped."
 With CMD (a shell command string), the session runs CMD when it does
 not exist yet; without CMD the result only reattaches."
   (combine-and-quote-strings
-   (append (list claude-code-ide-zmx-program "attach" name)
+   (append (list "env" "-u" "ZMX_SESSION" claude-code-ide-zmx-program "attach" name)
            (and cmd (split-string-and-unquote cmd)))))
 
 ;;; Adoption support

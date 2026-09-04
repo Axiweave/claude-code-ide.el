@@ -14771,9 +14771,9 @@ The resync ignores pin state and stored order keys."
   "Wrapping preserves agent flags; nil command attaches only."
   (let ((claude-code-ide-zmx-program "zmx"))
     (should (equal (claude-code-ide-zmx-wrap-command "cci-omp-p-x" "omp --continue")
-                   "zmx attach cci-omp-p-x omp --continue"))
+                   "env -u ZMX_SESSION zmx attach cci-omp-p-x omp --continue"))
     (should (equal (claude-code-ide-zmx-wrap-command "cci-omp-p-x")
-                   "zmx attach cci-omp-p-x"))))
+                   "env -u ZMX_SESSION zmx attach cci-omp-p-x"))))
 
 (ert-deftest claude-code-ide-test-zmx-wrap-at-shared-seam-per-cli ()
   "Every CLI type gets wrapped through the shared terminal seam."
@@ -14794,7 +14794,30 @@ The resync ignores pin state and stored order keys."
            "*test*" temporary-file-directory
            (format "%s --continue" cli-path) nil)))
       (should (equal captured-cmd
-                     (format "zmx attach cci-test-name %s --continue" cli-path))))))
+                     (format "env -u ZMX_SESSION zmx attach cci-test-name %s --continue" cli-path))))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-clears-nested-session-in-ghostel ()
+  "Ghostel attach commands clear the inherited zmx session marker."
+  (let ((claude-code-ide-cli-path "omp")
+        (claude-code-ide-zmx--pending-name "cci-test-name")
+        (claude-code-ide-zmx--pending-attach-only t)
+        captured-args)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'claude-code-ide--resolve-terminal-backend)
+                     (lambda (&optional _) 'ghostel))
+                    ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (_buffer _program args)
+                       (setq captured-args args)
+                       (error "Stop after capture"))))
+            (ignore-errors
+              (claude-code-ide--create-terminal-with-command
+               "*zmx-ghostel-test*" temporary-file-directory "omp" nil)))
+          (should (equal captured-args
+                         '("-lc" "env -u ZMX_SESSION zmx attach cci-test-name"))))
+      (when-let* ((buffer (get-buffer "*zmx-ghostel-test*")))
+        (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-zmx-no-wrap-without-pending-name ()
   "Nil pending name leaves the command untouched (use-zmx off path)."
