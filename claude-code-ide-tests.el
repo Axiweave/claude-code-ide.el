@@ -1261,6 +1261,21 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-session-idle-set-agent-state 'done)
         (should (eq claude-code-ide-session-agent-state 'done))))))
 
+(ert-deftest claude-code-ide-session-idle-test-needs-attention-p ()
+  "Agent state decides attention; output idle applies only without it."
+  (cl-letf (((symbol-function 'claude-code-ide-session-buffer-p) (lambda (_buffer) t)))
+    (with-temp-buffer
+      (setq-local claude-code-ide-session-idle-enabled t
+                  claude-code-ide-session-idle-p t)
+      (dolist (case '((nil . t) (idle . nil) (working . nil)
+                      (needs-input . t) (done . t) (failed . t)))
+        (setq-local claude-code-ide-session-agent-state (car case))
+        (should (eq (claude-code-ide-session-needs-attention-p) (cdr case))))
+      (setq-local claude-code-ide-session-agent-state nil
+                  claude-code-ide-session-idle-p nil)
+      (should-not (claude-code-ide-session-needs-attention-p))))
+  (should-not (claude-code-ide-session-needs-attention-p (generate-new-buffer-name "nope"))))
+
 (ert-deftest claude-code-ide-test-manager-agent-state-glyphs ()
   "Test manager rows show the CLI-reported agent state over output markers."
   (claude-code-ide-tests--reset-manager-state)

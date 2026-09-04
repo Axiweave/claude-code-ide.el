@@ -268,6 +268,21 @@ visible in a focused frame, because the user already sees the result."
             'idle
           state)))
 
+(defun claude-code-ide-session-needs-attention-p (&optional buffer)
+  "Return non-nil when BUFFER's session waits for the user.
+A reported agent state of `needs-input', `done', or `failed' counts.
+With no agent state, an output-idle session counts instead.  This is
+the rule the manager sidebar uses for its attention markers."
+  (let ((buffer (or buffer (current-buffer))))
+    (and (buffer-live-p buffer)
+         (claude-code-ide-session-buffer-p buffer)
+         (let ((state (buffer-local-value 'claude-code-ide-session-agent-state buffer)))
+           (if state
+               (and (memq state '(needs-input done failed)) t)
+             (and (buffer-local-value 'claude-code-ide-session-idle-enabled buffer)
+                  (buffer-local-value 'claude-code-ide-session-idle-p buffer)
+                  t))))))
+
 (defun claude-code-ide-session-idle--ensure-session-buffer ()
   "Signal a user error unless the current buffer is a session buffer."
   (unless (claude-code-ide-session-buffer-p (current-buffer))

@@ -29,6 +29,14 @@ so it gains a buffer, idle tracking, and manager visibility.
 ### Agent
 One of the supported CLIs: Claude Code, Codex, OpenCode, Pi, Oh My Pi.
 
+### Agent state
+The lifecycle of a turn as the Agent itself reports it: idle, working,
+needs input, done, or failed. Absent when the Agent does not report.
+
+### Output idle
+A Session whose terminal has produced no output for a while. Inferred
+by Emacs, independent of Agent state.
+
 ## Known limitation
 Environment variables (for example MCP/SSE ports) are fixed when the
 zmx session is created. Attaching from a different Emacs instance, or
