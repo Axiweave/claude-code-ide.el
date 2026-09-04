@@ -265,7 +265,9 @@ This suppresses reconnect replays until a new turn starts.")
   "Record STATE as the current session buffer's agent state.
 A `done' or `failed' STATE becomes `idle' when the buffer is already
 visible in a focused frame, because the user already sees the result.
-When ACKNOWLEDGED is non-nil, mark the current terminal state as seen."
+When ACKNOWLEDGED is non-nil, mark the current terminal state as seen.
+A nil STATE clears the display but keeps the acknowledgment: an SSE
+reconnect replays the same terminal state under a new owner."
   (claude-code-ide-session-idle--ensure-session-buffer)
   (when acknowledged
     (setq claude-code-ide-session-acknowledged-agent-state
@@ -273,8 +275,7 @@ When ACKNOWLEDGED is non-nil, mark the current terminal state as seen."
                claude-code-ide-session-agent-state)))
   (cond
    ((null state)
-    (setq claude-code-ide-session-acknowledged-agent-state nil
-          claude-code-ide-session-agent-state nil))
+    (setq claude-code-ide-session-agent-state nil))
    ((memq state '(working needs-input))
     (setq claude-code-ide-session-acknowledged-agent-state nil
           claude-code-ide-session-agent-state state))
