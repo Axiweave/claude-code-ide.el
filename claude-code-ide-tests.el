@@ -412,7 +412,9 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test manager session faces extend their backgrounds across the row."
   (dolist (face '(claude-code-ide-manager-current-session-face
                   claude-code-ide-manager-idle-session-face
-                  claude-code-ide-manager-working-session-face))
+                  claude-code-ide-manager-working-session-face
+                  claude-code-ide-manager-attention-session-face
+                  claude-code-ide-manager-done-session-face))
     (should (eq (face-attribute face :extend nil) t))))
 
 (ert-deftest claude-code-ide-test-manager-global-scope-key-is-stable ()
