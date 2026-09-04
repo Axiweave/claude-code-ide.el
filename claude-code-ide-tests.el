@@ -14903,6 +14903,14 @@ The resync ignores pin state and stored order keys."
   (should-not (claude-code-ide-zmx--parse-list-line "pid=42\tcmd=omp"))
   (should-not (claude-code-ide-zmx--parse-list-line "   ")))
 
+(ert-deftest claude-code-ide-test-zmx-call-from-deleted-directory ()
+  "A stale buffer directory does not prevent a context-free zmx call."
+  (let* ((directory (make-temp-file "claude-code-ide-zmx-" t))
+         (default-directory (file-name-as-directory directory))
+         (claude-code-ide-zmx-program "true"))
+    (delete-directory directory)
+    (should (equal (claude-code-ide-zmx--call "list") ""))))
+
 (ert-deftest claude-code-ide-test-zmx-list-sessions-short-format ()
   "Bare-name rows from older zmx builds yield name-only plists."
   (cl-letf (((symbol-function 'claude-code-ide-zmx--call)

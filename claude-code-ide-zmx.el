@@ -78,14 +78,17 @@ Let-bound together with `claude-code-ide-zmx--pending-name'.")
 (defun claude-code-ide-zmx--call (&rest args)
   "Run zmx with ARGS and return trimmed stdout.
 Signal an error when zmx exits nonzero."
-  (with-temp-buffer
-    (let ((status (apply #'call-process claude-code-ide-zmx-program
-                         nil t nil args)))
-      (unless (eq status 0)
-        (error "zmx %s failed (%s): %s"
-               (string-join args " ") status
-               (string-trim (buffer-string))))
-      (string-trim (buffer-string)))))
+  (let ((default-directory (if (file-directory-p default-directory)
+                               default-directory
+                             temporary-file-directory)))
+    (with-temp-buffer
+      (let ((status (apply #'call-process claude-code-ide-zmx-program
+                           nil t nil args)))
+        (unless (eq status 0)
+          (error "zmx %s failed (%s): %s"
+                 (string-join args " ") status
+                 (string-trim (buffer-string))))
+        (string-trim (buffer-string))))))
 
 ;;; Listing
 
