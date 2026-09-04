@@ -273,7 +273,8 @@ Each row reserves a left gutter so the session names stay aligned whether or not
 - Pinned rows show =📌= in that gutter when no state marker applies
 - State markers take priority over output markers, which take priority over the pin marker
 - Rows with no marker keep the same alignment with blank gutter padding
-- Idle highlighting applies only to non-current rows
+- Row faces: red =claude-code-ide-manager-attention-session-face= is reserved for =?= and =✗=, =✓= uses the blue =claude-code-ide-manager-done-session-face=, working rows use the green =claude-code-ide-manager-working-session-face=, and output-detected idle rows use the amber =claude-code-ide-manager-idle-session-face=
+- State highlighting applies only to non-current rows
 - The current session keeps =claude-code-ide-manager-current-session-face= even when it is idle
 
 #+begin_example

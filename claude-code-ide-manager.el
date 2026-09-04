@@ -181,13 +181,24 @@ back to `project.el' otherwise."
   :group 'claude-code-ide-manager)
 
 (defface claude-code-ide-manager-idle-session-face
-  '((t :background "red" :extend t))
-  "Face used to highlight idle sessions in the manager sidebar."
+  '((t :background "#8a6a14" :foreground "white" :extend t))
+  "Face used to highlight output-detected idle sessions in the manager sidebar."
   :group 'claude-code-ide-manager)
 
 (defface claude-code-ide-manager-working-session-face
   '((t :background "#3f6b4f" :foreground "white" :extend t))
   "Face used to highlight working sessions in the manager sidebar."
+  :group 'claude-code-ide-manager)
+
+(defface claude-code-ide-manager-attention-session-face
+  '((t :background "red" :foreground "white" :extend t))
+  "Face used to highlight sessions that need the user: `needs-input' or `failed'.
+Red is reserved for these rows."
+  :group 'claude-code-ide-manager)
+
+(defface claude-code-ide-manager-done-session-face
+  '((t :background "#2f5f8f" :foreground "white" :extend t))
+  "Face used to highlight sessions whose agent finished a turn."
   :group 'claude-code-ide-manager)
 
 (defconst claude-code-ide-manager--bell-glyph "🔔"
@@ -1185,8 +1196,10 @@ markers, which take precedence over the pin marker."
              (or (claude-code-ide-manager--scope-active-session-key scope)
                  claude-code-ide-manager--current-session-key))
       'claude-code-ide-manager-current-session-face)
-     ((memq agent-state '(needs-input done failed))
-      'claude-code-ide-manager-idle-session-face)
+     ((memq agent-state '(needs-input failed))
+      'claude-code-ide-manager-attention-session-face)
+     ((eq agent-state 'done)
+      'claude-code-ide-manager-done-session-face)
      ((eq agent-state 'working)
       'claude-code-ide-manager-working-session-face)
      ((and (null agent-state) (claude-code-ide-manager--session-idle-p session-key))
