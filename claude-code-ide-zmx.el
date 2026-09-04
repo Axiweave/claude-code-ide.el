@@ -200,17 +200,22 @@ assignments, then matches the base name of the first real word against
   (claude-code-ide-zmx--ensure)
   (claude-code-ide-zmx--call "kill" name))
 
+(defun claude-code-ide-zmx--title-value (title)
+  "Return TITLE encoded as a zmx-safe label value, or nil."
+  (when title
+    (let ((value (string-trim
+                  (replace-regexp-in-string
+                   "[^a-zA-Z0-9._-]+" "_" title)
+                  "_+" "_+")))
+      (unless (string-empty-p value)
+        value))))
+
 (defun claude-code-ide-zmx-set-title (name title)
   "Set the `title' label of zmx session NAME to TITLE, asynchronously.
 zmx label values only accept [a-zA-Z0-9-_.], so every other character
 run is encoded as one `_'.  Fire-and-forget: errors are ignored."
   (when-let* ((name)
-              (title)
-              (value (string-trim
-                      (replace-regexp-in-string
-                       "[^a-zA-Z0-9._-]+" "_" title)
-                      "_+" "_+"))
-              ((not (string-empty-p value))))
+              (value (claude-code-ide-zmx--title-value title)))
     (ignore-errors
       (start-process "claude-code-ide-zmx-set-title" nil
                      claude-code-ide-zmx-program "set" name

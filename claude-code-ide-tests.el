@@ -15141,15 +15141,20 @@ Return a plist with :killed-zmx and :killed-buffer."
                (lambda (&optional _) session))
               ((symbol-function 'claude-code-ide-zmx-set-title)
                (lambda (_name title) (push title pushes))))
-      (let ((ghostel--title "Fix parser bug"))
-        (claude-code-ide--record-ghostel-title)
+      (let ((ghostel--title "π ⠇ Analyze CPU usage in emacs profiler report"))
         (claude-code-ide--record-ghostel-title))
-      (should (equal pushes '("Fix parser bug")))
-      (should (equal (claude-code-ide-session-title session) "Fix parser bug"))
+      (let ((ghostel--title "π ⠋ Analyze CPU usage in emacs profiler report"))
+        (claude-code-ide--record-ghostel-title))
+      (should (equal pushes
+                     '("π ⠇ Analyze CPU usage in emacs profiler report")))
+      (should
+       (equal (claude-code-ide-session-title session)
+              "π ⠋ Analyze CPU usage in emacs profiler report"))
       (setf (claude-code-ide-session-zmx-name session) nil)
       (let ((ghostel--title "Another title"))
         (claude-code-ide--record-ghostel-title))
-      (should (equal pushes '("Fix parser bug"))))))
+      (should (equal pushes
+                     '("π ⠇ Analyze CPU usage in emacs profiler report"))))))
 
 (provide 'claude-code-ide-tests)
 

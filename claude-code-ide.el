@@ -854,7 +854,8 @@ label so `zmx list' shows it in terminals."
     (let ((old (claude-code-ide-session-title session)))
       (setf (claude-code-ide-session-title session) ghostel--title)
       (when-let* ((zmx-name (claude-code-ide-session-zmx-name session)))
-        (unless (equal ghostel--title old)
+        (unless (equal (claude-code-ide-zmx--title-value ghostel--title)
+                       (claude-code-ide-zmx--title-value old))
           (claude-code-ide-zmx-set-title zmx-name ghostel--title))))))
 
 (defun claude-code-ide--install-ghostel-title-observer ()
