@@ -73,6 +73,7 @@
 (declare-function claude-code-ide-manager-start-session-at-point-skip-permissions "claude-code-ide-manager" (&optional arg))
 (declare-function claude-code-ide-manager-toggle-pin "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-reset-layout-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-detach-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-move-up "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-move-down "claude-code-ide-manager" ())
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
@@ -665,6 +666,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("s" "Start session at point" claude-code-ide-manager-start-session-at-point)
     ("S" "Start (skip permissions)" claude-code-ide-manager-start-session-at-point-skip-permissions)
     ("a" "Attach to zmx session" claude-code-ide-attach)
+    ("X" "Detach zmx session" claude-code-ide-manager-detach-at-point)
     ("o" "Open project/worktree" claude-code-ide-manager-open)
     ("r" "Rename session" claude-code-ide-manager-rename-at-point)
     ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]

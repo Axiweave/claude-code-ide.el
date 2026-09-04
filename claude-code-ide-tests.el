@@ -1001,6 +1001,51 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "S"))
               #'claude-code-ide-manager-start-session-at-point-skip-permissions)))
 
+(ert-deftest claude-code-ide-test-manager-mode-binds-x-to-detach ()
+  "Manager mode exposes zmx detach on `X'."
+  (should
+   (eq (lookup-key claude-code-ide-manager-mode-map (kbd "X"))
+       #'claude-code-ide-manager-detach-at-point)))
+
+(ert-deftest claude-code-ide-test-manager-detach-at-point-keeps-zmx-running ()
+  "Detaching kills the local session buffer without killing the zmx session."
+  (let* ((buffer (generate-new-buffer "*cc-manager-detach-test*"))
+         (item (make-claude-code-ide-manager-item :session-key "attached"))
+         (session (claude-code-ide-session-create
+                   :id "attached" :directory "/tmp/project/" :buffer buffer
+                   :zmx-name "cci-omp-project-attached"))
+         killed-zmx)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                   (lambda () item))
+                  ((symbol-function 'claude-code-ide--get-session)
+                   (lambda (session-key)
+                     (and (equal session-key "attached") session)))
+                  ((symbol-function 'claude-code-ide-zmx-kill)
+                   (lambda (&rest _)
+                     (setq killed-zmx t))))
+          (claude-code-ide-manager-detach-at-point)
+          (should-not (buffer-live-p buffer))
+          (should-not killed-zmx))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-detach-at-point-refuses-plain-session ()
+  "Detaching never kills a session that zmx does not back."
+  (let* ((buffer (generate-new-buffer "*cc-manager-detach-plain-test*"))
+         (item (make-claude-code-ide-manager-item :session-key "plain"))
+         (session (claude-code-ide-session-create
+                   :id "plain" :directory "/tmp/project/" :buffer buffer)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                   (lambda () item))
+                  ((symbol-function 'claude-code-ide--get-session)
+                   (lambda (_session-key) session)))
+          (should-error (claude-code-ide-manager-detach-at-point)
+                        :type 'user-error)
+          (should (buffer-live-p buffer)))
+      (kill-buffer buffer))))
+
 (ert-deftest claude-code-ide-test-manager-start-session-at-point-starts-and-switches-sibling ()
   "Starting at point force-creates and switches to a sibling in the row directory."
   (let ((item (make-claude-code-ide-manager-item
@@ -7243,6 +7288,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                      ("s" . claude-code-ide-manager-start-session-at-point)
                      ("S" . claude-code-ide-manager-start-session-at-point-skip-permissions)
                      ("o" . claude-code-ide-manager-open)
+                     ("X" . claude-code-ide-manager-detach-at-point)
                      ("r" . claude-code-ide-manager-rename-at-point)
                      ("R" . claude-code-ide-manager-reset-layout-at-point)
                      ("P" . claude-code-ide-manager-toggle-pin)

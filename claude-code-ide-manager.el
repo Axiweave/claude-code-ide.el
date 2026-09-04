@@ -38,6 +38,7 @@
 (declare-function claude-code-ide-session-order "claude-code-ide" (session))
 (declare-function claude-code-ide-session-process "claude-code-ide" (session))
 (declare-function claude-code-ide-session-title "claude-code-ide" (session))
+(declare-function claude-code-ide-session-zmx-name "claude-code-ide" (session))
 (declare-function claude-code-ide-attach "claude-code-ide" ())
 (declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
@@ -664,6 +665,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
 (define-key claude-code-ide-manager-mode-map (kbd "a") #'claude-code-ide-attach)
+(define-key claude-code-ide-manager-mode-map (kbd "X") #'claude-code-ide-manager-detach-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
 (define-key claude-code-ide-manager-mode-map (kbd "E") #'claude-code-ide-manager-edit-pin-order)
 (define-key claude-code-ide-manager-mode-map (kbd "r") #'claude-code-ide-manager-rename-at-point)
@@ -2776,6 +2778,24 @@ default layout is rebuilt."
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item)
      t)))
+
+(defun claude-code-ide-manager-detach-at-point ()
+  "Detach the zmx-backed session at point from Emacs.
+The zmx session and its agent process keep running."
+  (interactive)
+  (let* ((item (or (claude-code-ide-manager--item-at-point)
+                   (user-error "No manager session at point")))
+         (session-key (claude-code-ide-manager-item-session-key item))
+         (session (or (claude-code-ide--get-session session-key)
+                      (user-error "Session no longer exists")))
+         (buffer (claude-code-ide-session-buffer session))
+         (zmx-name (claude-code-ide-session-zmx-name session)))
+    (unless zmx-name
+      (user-error "Session is not zmx-backed"))
+    (unless (buffer-live-p buffer)
+      (user-error "Session buffer no longer exists"))
+    (kill-buffer buffer)
+    (message "Detached zmx session %s" zmx-name)))
 
 (defun claude-code-ide-manager-start-session-at-point (&optional dangerous arg)
   "Start and switch to a session for the row or repo scope at point.

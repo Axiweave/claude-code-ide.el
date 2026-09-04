@@ -292,6 +292,7 @@ When point is in the manager buffer:
 - =s= starts a sibling session with the current CLI; =S= starts one with explicit permissions bypass
 - =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
 - =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
+- =X= detaches the selected zmx-backed session from Emacs and keeps its agent process running
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
 - =g= refreshes the sidebar from the current live session table
