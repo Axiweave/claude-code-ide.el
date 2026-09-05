@@ -299,16 +299,34 @@ return the string to insert."
     (claude-code-ide-session--touch-current-session)
     (claude-code-ide-session-idle-record-activity)))
 
+(defun claude-code-ide-session-send-omp-packet (kind value)
+  "Send an Oh My Pi `pi:KIND;VALUE' APC packet to the current session buffer.
+
+KIND is \"prompt\" (set the leading slash command) or \"keyword\"
+(insert a standalone magic keyword at the cursor)."
+  (claude-code-ide-session-send-string
+   (concat "\e_pi:" kind ";" value "\e\\")))
+
 (defun claude-code-ide-session-insert-command (&optional command)
   "Insert COMMAND into the current Claude Code session buffer.
 
 When COMMAND is nil, use
-`claude-code-ide-session-command-reader-function'."
+`claude-code-ide-session-command-reader-function'.  For Oh My Pi, a
+bare `/name' sets the prompt's slash command and a bare word inserts
+a magic keyword, both through `pi:' APC packets instead of a paste."
   (interactive)
   (claude-code-ide-session--ensure-session-buffer)
   (let ((text (or command (claude-code-ide-session--read-command))))
     (unless (string-empty-p text)
-      (claude-code-ide-session-send-string text t))))
+      (cond
+       ((not (eq (claude-code-ide--current-cli-type) 'omp))
+        (claude-code-ide-session-send-string text t))
+       ((string-match "\\`/\\([^[:space:]/[:cntrl:]]+\\)[[:space:]]*\\'" text)
+        (claude-code-ide-session-send-omp-packet "prompt" (match-string 1 text)))
+       ((string-match "\\`\\([^[:space:]/[:cntrl:]]+\\)[[:space:]]*\\'" text)
+        (claude-code-ide-session-send-omp-packet "keyword" (match-string 1 text)))
+       (t
+        (claude-code-ide-session-send-string text t))))))
 
 (defun claude-code-ide-session-insert-file-reference (&optional reference)
   "Insert REFERENCE into the current Claude Code session buffer.

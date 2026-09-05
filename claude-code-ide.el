@@ -2228,8 +2228,7 @@ recent visible file-visiting buffer on the current frame."
       (with-current-buffer buffer
         (unless (eq (claude-code-ide--current-cli-type) 'omp)
           (user-error "The active session is not Oh My Pi"))
-        (claude-code-ide--terminal-send-string
-         (concat "\e_pi:prompt;" command "\e\\")))
+        (claude-code-ide-session-send-omp-packet "prompt" command))
     (user-error "No Oh My Pi session for this project")))
 
 ;;;###autoload

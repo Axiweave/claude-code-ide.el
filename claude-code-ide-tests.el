@@ -7238,7 +7238,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                    (lambda (&rest _) "review"))
                   ((symbol-function 'claude-code-ide--get-session-buffer)
                    (lambda (&optional _) buffer))
-                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                  ((symbol-function 'claude-code-ide-session-send-string)
                    (lambda (string &optional _paste)
                      (setq sent-string string))))
           (with-current-buffer buffer
@@ -13640,6 +13640,24 @@ sessions back to working every few seconds with no real output."
           (claude-code-ide-session-insert-command)
           (should (eq reader-buffer (current-buffer)))
           (should (equal sent-string "git status")))))))
+
+(ert-deftest claude-code-ide-test-session-insert-command-omp-packets ()
+  "Test that omp sessions get prompt/keyword packets instead of pastes."
+  (should (require 'claude-code-ide-session nil t))
+  (let (sent)
+    (cl-letf (((symbol-function 'claude-code-ide-session-send-string)
+               (lambda (string &optional paste)
+                 (setq sent (cons string paste)))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-omp-packets]*" t)
+        (setq-local claude-code-ide--session-cli-type 'omp)
+        (claude-code-ide-session-mode 1)
+        (claude-code-ide-session-insert-command "/review ")
+        (should (equal sent '("\e_pi:prompt;review\e\\" . nil)))
+        (claude-code-ide-session-insert-command "orchestrate ")
+        (should (equal sent '("\e_pi:keyword;orchestrate\e\\" . nil)))
+        (claude-code-ide-session-insert-command "/review now")
+        (should (equal sent '("/review now" . t)))))))
 
 (ert-deftest claude-code-ide-test-session-insert-file-reference-uses-reader-function ()
   "Test that the public file-reference insert helper uses the configured reader."
