@@ -5386,6 +5386,280 @@ A `working' or `needs-input' state is left alone by the same clear."
                   (get-buffer "*cc-nav-status*")
                   (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
+(defmacro claude-code-ide-tests--with-priority-sessions (specs &rest body)
+  "Run BODY with SPECS, real manager switches, and isolated session state.
+Each spec contains NAME, STATE, and optional ENABLED, IDLE, WORKING, DIRECTORY.
+Local helpers add-session, session-key, session-buffer, and jump use NAME."
+  (declare (indent 1))
+  `(let ((claude-code-ide--sessions (make-hash-table :test 'equal))
+         (claude-code-ide-manager-persist-state nil)
+         (claude-code-ide-manager-default-target 'global)
+         (claude-code-ide-manager-sort-by 'name)
+         (claude-code-ide-manager-sort-reverse nil)
+         (claude-code-ide-manager--command-scope nil)
+         (status-buffer (generate-new-buffer "*cc-priority-status*"))
+         (scope '(:type global))
+         sessions processes buffers)
+     (claude-code-ide-tests--reset-manager-state)
+     (unwind-protect
+         (save-window-excursion
+           (cl-letf (((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                      (lambda (_directory) status-buffer)))
+             (cl-labels
+                 ((add-session (name state &optional enabled idle working directory)
+                    (let* ((buffer (generate-new-buffer
+                                    (format "*claude-code[%s]*" name)))
+                           (process (make-pipe-process :name name :buffer nil))
+                           (session
+                            (claude-code-ide-tests--put-session
+                             (or directory (format "/tmp/priority/%s/" name))
+                             process buffer)))
+                      (push buffer buffers)
+                      (push process processes)
+                      (push (cons name session) sessions)
+                      (with-current-buffer buffer
+                        (setq-local claude-code-ide-session-agent-state state
+                                    claude-code-ide-session-idle-enabled enabled
+                                    claude-code-ide-session-idle-p idle
+                                    claude-code-ide-session-working-p working))
+                      (claude-code-ide-session-id session)))
+                  (session-key (name)
+                    (claude-code-ide-session-id (cdr (assoc name sessions))))
+                  (session-buffer (name)
+                    (claude-code-ide-session-buffer (cdr (assoc name sessions))))
+                  (jump (name &optional command)
+                    (call-interactively
+                     (or command #'claude-code-ide-manager-next-priority-session))
+                    (should (equal claude-code-ide-manager--current-session-key
+                                   (session-key name)))
+                    (should (eq (window-buffer (selected-window))
+                                (session-buffer name)))))
+               (dolist (spec ,specs)
+                 (apply #'add-session spec))
+               (delete-other-windows)
+               (switch-to-buffer status-buffer)
+               ,@body)))
+       (mapc (lambda (process)
+               (when (process-live-p process)
+                 (delete-process process)))
+             processes)
+       (mapc (lambda (buffer)
+               (when (buffer-live-p buffer)
+                 (kill-buffer buffer)))
+             (append buffers (list status-buffer)
+                     (claude-code-ide-manager--manager-buffers)))
+       (claude-code-ide-tests--reset-manager-state))))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-completes-pass ()
+  "A priority pass visits every session despite persistent requests and acknowledgements."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("00-current" idle)
+     ("01-working" working)
+     ("02-idle" idle)
+     ("03-done" done)
+     ("04-input-a" needs-input)
+     ("05-failed" failed)
+     ("06-input-b" needs-input)
+     ("07-output-idle" nil t t)
+     ("08-output-working" nil t nil t))
+   (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+   (select-window (claude-code-ide-manager--sidebar-window scope))
+   (claude-code-ide-manager--sync-point-to-session-key scope (session-key "04-input-a"))
+   (jump "04-input-a")
+   (select-window (get-buffer-window status-buffer))
+   (dolist (name '("06-input-b" "05-failed" "03-done" "07-output-idle"
+                   "01-working" "08-output-working" "02-idle"))
+     (jump name))
+   (dolist (name '("04-input-a" "06-input-b"))
+     (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                     (session-buffer name))
+                 'needs-input)))
+   (dolist (name '("05-failed" "03-done"))
+     (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                     (session-buffer name))
+                 'idle)))
+   (jump "04-input-a")))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-honors-state-authority ()
+  "Reported state overrides output flags, while equal ranks preserve sidebar order."
+  (dolist (specs '((("00-stale" idle t t t) ("01-target" working))
+                   (("00-stale" working t t) ("01-target" nil t t))
+                   (("00-working" working) ("01-target" nil t t t))
+                   (("00-disabled" nil nil t t) ("01-target" working))
+                   (("00-unknown" unsupported t t t) ("01-target" working))))
+    (claude-code-ide-tests--with-priority-sessions specs
+                                                   (jump "01-target")))
+  (claude-code-ide-tests--with-priority-sessions
+   '(("00-working" working) ("01-input" needs-input))
+   (claude-code-ide-manager-refresh-items scope)
+   (setf (claude-code-ide-manager-item-pinned
+          (claude-code-ide-manager--item-by-session-key
+           scope (session-key "00-working"))) t)
+   (jump "01-input")
+   (jump "00-working"))
+  (claude-code-ide-tests--with-priority-sessions
+   '(("00-input" needs-input) ("01-input" needs-input))
+   (claude-code-ide-manager-refresh-items scope)
+   (setf (claude-code-ide-manager-item-order-key
+          (claude-code-ide-manager--item-by-session-key
+           scope (session-key "01-input"))) 0)
+   (jump "01-input")
+   (jump "00-input")))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-reranks-unvisited ()
+  "State changes and new sessions affect only pending visits to live buffers."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("00-current" idle) ("01-input" needs-input) ("02-working" working)
+     ("03-promoted" working) ("04-ended" working)
+     ("05-bufferless" needs-input))
+   (kill-buffer (session-buffer "05-bufferless"))
+   (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+   (jump "01-input")
+   (with-current-buffer (session-buffer "03-promoted")
+     (setq-local claude-code-ide-session-agent-state 'needs-input))
+   (with-current-buffer (session-buffer "01-input")
+     (setq-local claude-code-ide-session-agent-state 'failed))
+   (delete-process
+    (claude-code-ide-session-process (cdr (assoc "04-ended" sessions))))
+   (jump "03-promoted")
+   (add-session "06-new" 'needs-input)
+   (jump "06-new")
+   (jump "02-working")
+   (should-not (get-buffer "*claude-code[05-bufferless]*"))
+   (jump "03-promoted")))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-isolates-scopes ()
+  "Repository membership and visit sets stay separate from the global pass."
+  (let ((repo '(:type repo :git-root "/tmp/priority-repo/")))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--current-git-root)
+               (lambda ()
+                 (when (string-prefix-p "/tmp/priority-repo/" default-directory)
+                   "/tmp/priority-repo/"))))
+      (claude-code-ide-tests--with-priority-sessions
+       '(("origin" idle nil nil nil "/tmp/priority-repo/origin/")
+         ("inside" working nil nil nil "/tmp/priority-repo/inside/")
+         ("outside" needs-input))
+       (claude-code-ide-manager-switch-to-session (session-key "origin") nil repo)
+       (select-window (claude-code-ide-manager--sidebar-window repo))
+       (jump "inside"))
+      (claude-code-ide-tests--with-priority-sessions
+       '(("P" idle nil nil nil "/tmp/priority-repo/P/")
+         ("W" needs-input nil nil nil "/tmp/priority-repo/W/")
+         ("X" working nil nil nil "/tmp/priority-repo/X/")
+         ("O" idle))
+       (claude-code-ide-manager-switch-to-session (session-key "O") nil scope)
+       (jump "W")
+       (claude-code-ide-manager-switch-to-session (session-key "P") nil repo)
+       (claude-code-ide-manager-toggle-sidebar-for-scope repo 1)
+       (jump "W")
+       (claude-code-ide-manager--hide-sidebar repo)
+       (claude-code-ide-manager--hide-sidebar scope)
+       (select-window (get-buffer-window status-buffer))
+       (should (equal (claude-code-ide-manager--scope-for-command) scope))
+       (jump "X")
+       (should (equal (claude-code-ide-manager--scope-active-session-key scope)
+                      (session-key "X")))))))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-keeps-focus-without-target ()
+  "Empty and current-only scopes leave focus, point, and active state unchanged."
+  (dolist (specs '(nil (("only" idle))))
+    (claude-code-ide-tests--with-priority-sessions specs
+                                                   (when specs
+                                                     (claude-code-ide-manager-switch-to-session (session-key "only") nil scope))
+                                                   (insert "Keep this point")
+                                                   (let ((window (selected-window))
+                                                         (position (point))
+                                                         (active (claude-code-ide-manager--scope-active-session-key scope))
+                                                         (current claude-code-ide-manager--current-session-key)
+                                                         (windows (window-list)))
+                                                     (should-error
+                                                      (call-interactively #'claude-code-ide-manager-next-priority-session)
+                                                      :type 'user-error)
+                                                     (should (eq (selected-window) window))
+                                                     (should (= (point) position))
+                                                     (should (equal (window-list) windows))
+                                                     (should (equal (claude-code-ide-manager--scope-active-session-key scope) active))
+                                                     (should (equal claude-code-ide-manager--current-session-key current))))))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-does-not-consume-failed-switch ()
+  "A failed layout switch leaves its highest-priority visit available."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("00-current" idle) ("01-input" needs-input) ("02-working" working))
+   (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+   (let (attempts)
+     (cl-letf (((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                (lambda (directory)
+                  (push directory attempts)
+                  (when (= (length attempts) 1)
+                    (error "Status buffer is unavailable"))
+                  status-buffer)))
+       (should-error
+        (call-interactively #'claude-code-ide-manager-next-priority-session))
+       (jump "01-input")
+       (should (equal attempts
+                      '("/tmp/priority/01-input/" "/tmp/priority/01-input/")))
+       (jump "02-working")))))
+
+(ert-deftest claude-code-ide-test-manager-uncleared-next-skips-cleared-results ()
+  "Uncleared passes skip acknowledged results and preserve unresolved requests."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("00-current" idle) ("01-stale" idle t t t) ("02-working" working)
+     ("03-done" done) ("04-input-a" needs-input) ("05-failed" failed)
+     ("06-input-b" needs-input) ("07-output-idle" nil t t)
+     ("08-output-working" nil t nil t) ("09-disabled" nil nil t t)
+     ("10-unmarked" nil) ("11-unknown" unsupported t t t))
+   (let ((command #'claude-code-ide-manager-next-uncleared-session))
+     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+     (select-window (claude-code-ide-manager--sidebar-window scope))
+     (jump "04-input-a" command)
+     (claude-code-ide-manager--hide-sidebar scope)
+     (select-window (get-buffer-window status-buffer))
+     (dolist (name '("06-input-b" "05-failed" "03-done" "07-output-idle"
+                     "02-working" "08-output-working"
+                     "04-input-a" "06-input-b" "02-working"))
+       (jump name command))
+     (dolist (name '("05-failed" "03-done"))
+       (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                       (session-buffer name))
+                   'idle))))))
+
+(ert-deftest claude-code-ide-test-manager-uncleared-next-keeps-focus-without-target ()
+  "Cleared sessions do not become targets when no other request remains."
+  (dolist (current '(nil needs-input))
+    (claude-code-ide-tests--with-priority-sessions
+     '(("00-cleared" idle t t t) ("01-unmarked" nil))
+     (when current
+       (add-session "02-current" current)
+       (claude-code-ide-manager-switch-to-session (session-key "02-current") nil scope))
+     (insert "Keep this point")
+     (let ((window (selected-window))
+           (position (point))
+           (active claude-code-ide-manager--current-session-key))
+       (should-error
+        (call-interactively #'claude-code-ide-manager-next-uncleared-session)
+        :type 'user-error)
+       (should (eq (selected-window) window))
+       (should (= (point) position))
+       (should (equal claude-code-ide-manager--current-session-key active))))))
+
+(ert-deftest claude-code-ide-test-manager-uncleared-next-keeps-separate-pass ()
+  "The two commands keep separate visits, and manager reset clears both passes."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("00-current" idle) ("01-input-a" needs-input)
+     ("02-input-b" needs-input) ("03-working" working))
+   (let ((command #'claude-code-ide-manager-next-uncleared-session))
+     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+     (jump "01-input-a")
+     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+     (jump "01-input-a" command)
+     (jump "02-input-b" command)
+     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+     (jump "02-input-b")
+     (jump "03-working" command)
+     (claude-code-ide-tests--reset-manager-state)
+     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+     (jump "01-input-a" command))))
+
 (ert-deftest claude-code-ide-test-manager-avy-switch-selects-only-current-window ()
   "Avy selects only session rows in the selected manager window."
   (claude-code-ide-tests--reset-manager-state)

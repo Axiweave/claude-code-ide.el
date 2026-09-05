@@ -248,6 +248,12 @@ render two cells wide, which breaks gutter alignment.")
 (defvar claude-code-ide-manager--scope-state (make-hash-table :test 'equal)
   "Per-scope manager view state keyed by scope key.")
 
+(defvar claude-code-ide-manager--priority-visits (make-hash-table :test 'equal)
+  "Visited-session sets for each manager scope's current priority pass.")
+
+(defvar claude-code-ide-manager--uncleared-visits (make-hash-table :test 'equal)
+  "Visited-session sets for each manager scope's uncleared priority pass.")
+
 (defvar claude-code-ide-manager--layouts (make-hash-table :test 'equal)
   "Saved layouts keyed by session key.")
 
@@ -896,6 +902,8 @@ under the ESC prefix, so iterate that sub-keymap."
   "Reset in-memory manager state."
   (setq claude-code-ide-manager--items nil)
   (setq claude-code-ide-manager--scope-state (make-hash-table :test 'equal))
+  (setq claude-code-ide-manager--priority-visits (make-hash-table :test 'equal))
+  (setq claude-code-ide-manager--uncleared-visits (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--layouts (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--current-session-key nil)
   (setq claude-code-ide-manager--persisted-state
@@ -1170,6 +1178,19 @@ direction, ignoring pin state and stored order keys."
   "Return the CLI-reported agent state for SESSION-KEY's live buffer, or nil."
   (when-let* ((buffer (claude-code-ide-manager--session-buffer session-key)))
     (claude-code-ide-manager--buffer-local-value 'claude-code-ide-session-agent-state buffer)))
+
+(defun claude-code-ide-manager--session-priority (session-key)
+  "Return SESSION-KEY's state rank, with lower ranks first."
+  (pcase (claude-code-ide-manager--session-agent-state session-key)
+    ('needs-input 0)
+    ('failed 1)
+    ('done 2)
+    ('working 4)
+    ('nil (cond
+           ((claude-code-ide-manager--session-idle-p session-key) 3)
+           ((claude-code-ide-manager--session-working-p session-key) 4)
+           (t 5)))
+    (_ 5)))
 
 (defun claude-code-ide-manager--marker-gutter (item)
   "Return a fixed-width marker gutter for ITEM.
@@ -2437,6 +2458,81 @@ owned sidebar windows."
       (claude-code-ide-manager-switch-to-session
        session-key
        (claude-code-ide-manager--sidebar-buffer-p)))))
+
+(defun claude-code-ide-manager--next-priority-session (visits &optional uncleared-only)
+  "Focus the next priority session using the per-scope VISITS table.
+When UNCLEARED-ONLY is non-nil, exclude cleared and unmarked sessions."
+  (let ((scope (claude-code-ide-manager--scope-for-command)))
+    (claude-code-ide-manager-refresh-items scope)
+    (let* ((eligible
+            (cl-remove-if-not
+             (lambda (key)
+               (buffer-live-p (claude-code-ide-manager--session-buffer key)))
+             (claude-code-ide-manager--visible-session-keys scope)))
+           (scope-key (claude-code-ide-manager--scope-key scope))
+           (visited (gethash scope-key visits))
+           (current
+            (cl-loop for key in
+                     (list (claude-code-ide-manager--session-key-for-buffer
+                            (window-buffer (selected-window)))
+                           (claude-code-ide-manager--visible-layout-session-key)
+                           (claude-code-ide-manager--scope-active-session-key scope)
+                           claude-code-ide-manager--current-session-key)
+                     when (member key eligible) return key))
+           (others (remove current eligible))
+           (unvisited (if visited
+                          (cl-remove-if (lambda (key) (gethash key visited)) others)
+                        others))
+           new-pass target)
+      (unless eligible
+        (user-error "No live sessions in this manager scope"))
+      (unless others
+        (user-error "No other live session in this manager scope"))
+      (cl-flet ((pick (keys)
+                  (let ((best-rank (if uncleared-only 5 most-positive-fixnum))
+                        best)
+                    (dolist (key keys best)
+                      (let ((rank (claude-code-ide-manager--session-priority key)))
+                        (when (< rank best-rank)
+                          (setq best key
+                                best-rank rank)))))))
+        (setq target (pick unvisited))
+        (unless target
+          (setq new-pass t
+                target (pick (cl-remove-if-not
+                              (lambda (key) (and visited (gethash key visited)))
+                              others)))))
+      (unless target
+        (user-error "No other uncleared session in this manager scope"))
+      (let ((window (claude-code-ide-manager-switch-to-session target nil scope))
+            (updated (make-hash-table :test 'equal)))
+        ;; Saved layouts can restore editor focus.  This command visits the agent.
+        (when-let* ((session-window
+                     (get-buffer-window
+                      (claude-code-ide-manager--session-buffer target))))
+          (select-window session-window))
+        (dolist (key eligible)
+          (when (or (equal key target)
+                    (equal key current)
+                    (and (not new-pass) visited (gethash key visited)))
+            (puthash key t updated)))
+        (puthash scope-key updated visits)
+        window))))
+
+(defun claude-code-ide-manager-next-priority-session ()
+  "Focus the next unvisited session in state-priority order."
+  (interactive)
+  (claude-code-ide-manager--next-priority-session
+   claude-code-ide-manager--priority-visits))
+
+(defun claude-code-ide-manager-next-uncleared-session ()
+  "Focus the next unvisited uncleared session in state-priority order.
+Skip cleared and unmarked sessions, but include working sessions.
+Keep a separate pass from
+`claude-code-ide-manager-next-priority-session'."
+  (interactive)
+  (claude-code-ide-manager--next-priority-session
+   claude-code-ide-manager--uncleared-visits t))
 
 (defun claude-code-ide-manager-previous-line ()
   "Move point to the previous manager row and switch to it."

@@ -284,6 +284,40 @@ Each row reserves a left gutter so the session names stay aligned whether or not
   project-b
 #+end_example
 
+*** State-Priority Navigation
+
+=M-x claude-code-ide-manager-next-priority-session= focuses the next unvisited session's terminal from any window, including when the sidebar is hidden.
+It uses the current manager scope, or the configured default scope when no sidebar is visible.
+It includes offscreen rows but excludes sessions without a live process and buffer.
+
+The command uses this priority order:
+
+1. Reported =needs-input=
+2. Reported =failed=
+3. Reported =done=
+4. Output-idle with tracking enabled and no reported state
+5. Reported =working=, or output-working with tracking enabled and no reported state
+6. Other states, including reported =idle=
+
+Reported state takes precedence over output flags.
+Within each priority, the command preserves sidebar pin and manual order.
+The current session counts as visited, and each session gets one visit before the next pass starts.
+New sessions join the current pass, and state changes can promote unvisited sessions.
+A visited session waits until the next pass, even if it requests input again.
+
+Global and repository scopes keep separate passes, shared across frames until Emacs restarts.
+A manual switch counts when that session is current at the next priority command.
+The normal switch path acknowledges =done= and =failed= but leaves =needs-input= unchanged.
+The package does not assign a global key to this command.
+Existing Avy selection and row-order navigation stay unchanged.
+
+=M-x claude-code-ide-manager-next-uncleared-session= uses the same priority order but skips the final group of cleared or unmarked sessions.
+It still includes working sessions.
+Acknowledged results leave this cycle, while unresolved input requests remain eligible for later passes.
+This command keeps its own pass for each scope, separate from =claude-code-ide-manager-next-priority-session=.
+If no other uncleared session remains, it reports a user error without changing focus.
+Neither command changes the other's visits or global key binding.
+
 *** Sidebar Keys
 
 When point is in the manager buffer:
