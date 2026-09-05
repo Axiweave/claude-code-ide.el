@@ -1325,6 +1325,95 @@ have completed before cleanup.  Waits up to 5 seconds."
       (should-not (claude-code-ide-session-needs-attention-p))))
   (should-not (claude-code-ide-session-needs-attention-p (generate-new-buffer-name "nope"))))
 
+(ert-deftest claude-code-ide-test-manager-bell-clear-blocks-stale-done-then-reopens-on-working ()
+  "Manager `!' blanks a hidden bell and blocks a stale done replay.
+A later genuine turn (working, then a real done) becomes visible again."
+  (claude-code-ide-tests--with-agent-state-fixture buffer
+                                                   (let ((process (make-pipe-process :name "cc-bell-ack" :buffer nil)))
+                                                     (unwind-protect
+                                                         (progn
+                                                           (setf (claude-code-ide-session-process (claude-code-ide--get-session "agent-id"))
+                                                                 process)
+                                                           (with-current-buffer buffer
+                                                             (setq-local claude-code-ide-session-idle-enabled t
+                                                                         claude-code-ide-session-idle-p t))
+                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+                                                           ;; Hidden session, no agent report yet: the output-idle bell shows.
+                                                           (should (claude-code-ide-session-needs-attention-p buffer))
+                                                           ;; User presses `!'.
+                                                           (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+                                                           (with-current-buffer buffer
+                                                             (should-not claude-code-ide-session-idle-p))
+                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
+                                                           ;; A done report already in flight must not resurrect a stale check.
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "done")
+                                                           (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle))
+                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
+                                                           ;; Repeated clears and idle reports keep it blank.
+                                                           (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
+                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
+                                                           ;; Reconnect: a new SSE owner replaying the same terminal state stays blank too.
+                                                           (claude-code-ide-mcp-sse--forget-session "sid")
+                                                           (puthash "sid2" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid2" "done")
+                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
+                                                           ;; A genuine new turn, then a real done, becomes visible again.
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid2" "working")
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid2" "done")
+                                                           (should (claude-code-ide-session-needs-attention-p buffer)))
+                                                       (ignore-errors (delete-process process))))))
+
+(ert-deftest claude-code-ide-test-manager-clear-acknowledges-done-and-failed-with-idle-disabled ()
+  "Manager `!' folds and remembers done/failed even with idle tracking off.
+A `working' or `needs-input' state is left alone by the same clear."
+  (claude-code-ide-tests--with-agent-state-fixture buffer
+                                                   (let ((process (make-pipe-process :name "cc-ack-idle-disabled" :buffer nil)))
+                                                     (unwind-protect
+                                                         (progn
+                                                           (setf (claude-code-ide-session-process (claude-code-ide--get-session "agent-id"))
+                                                                 process)
+                                                           (with-current-buffer buffer
+                                                             (setq-local claude-code-ide-session-idle-enabled nil))
+                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+                                                           (dolist (state '("done" "failed"))
+                                                             (claude-code-ide-tests--dispatch-agent-state "sid" "working")
+                                                             (claude-code-ide-tests--dispatch-agent-state "sid" state)
+                                                             (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+                                                             (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle))
+                                                             (should-not (claude-code-ide-session-needs-attention-p buffer))
+                                                             ;; The exact acknowledged state stays remembered on replay.
+                                                             (claude-code-ide-tests--dispatch-agent-state "sid" state)
+                                                             (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle)))
+                                                           ;; A clear during `working' or `needs-input' never touches either state.
+                                                           (dolist (state '("working" "needs-input"))
+                                                             (claude-code-ide-tests--dispatch-agent-state "sid" state)
+                                                             (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+                                                             (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
+                                                                         (intern state)))))
+                                                       (ignore-errors (delete-process process))))))
+
+(ert-deftest claude-code-ide-test-session-idle-ordinary-output-never-acknowledges-result ()
+  "Plain terminal output never folds a reported result, only bells on its own."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (cl-letf (((symbol-function 'claude-code-ide-session-buffer-p) (lambda (_buffer) t))
+            ((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+             (lambda (&optional _buffer) nil))
+            ((symbol-function 'run-with-timer)
+             (lambda (&rest _args) 'mock-idle-timer)))
+    (with-temp-buffer
+      (setq-local claude-code-ide-session-idle-enabled t
+                  claude-code-ide-session-tracking-started-p t
+                  claude-code-ide-session-agent-state 'done)
+      ;; Ordinary backend output must not acknowledge the outstanding result.
+      (claude-code-ide-session-idle-record-activity)
+      (should (eq claude-code-ide-session-agent-state 'done))
+      ;; A non-reporting CLI still gets its output-idle bell once the timer fires.
+      (setq-local claude-code-ide-session-agent-state nil)
+      (claude-code-ide-session-idle-record-activity)
+      (claude-code-ide-session-idle--fire-timer (current-buffer))
+      (should claude-code-ide-session-idle-p))))
+
 (ert-deftest claude-code-ide-test-manager-agent-state-glyphs ()
   "Test manager rows show the CLI-reported agent state over output markers."
   (claude-code-ide-tests--reset-manager-state)
@@ -4142,10 +4231,11 @@ have completed before cleanup.  Waits up to 5 seconds."
       (when-let* ((buffer (get-buffer "*content-2*")))
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-manager-switch-clears-target-idle-state ()
-  "Test explicit manager switches clear idle without starting a new timer."
-  (let ((clear-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-manager-switch-idle]*")))
+(ert-deftest claude-code-ide-test-manager-switch-acknowledges-target-done-state ()
+  "Test an explicit manager switch folds and remembers the target's done state."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-manager-switch-idle]*"))
+        (claude-code-ide--sessions (make-hash-table :test 'equal)))
     (cl-letf (((symbol-function 'claude-code-ide-manager--session-managed-p)
                (lambda (_session-key) t))
               ((symbol-function 'claude-code-ide-manager--restore-layout)
@@ -4153,16 +4243,29 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'claude-code-ide--get-session-buffer)
                (lambda (_session-key)
                  session-buffer))
-              ((symbol-function 'claude-code-ide-session-idle-clear-state)
-               (lambda ()
-                 (setq clear-buffer (current-buffer)))))
+              ((symbol-function 'claude-code-ide-session-buffer-p)
+               (lambda (_buffer) t))
+              ((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+               (lambda (&optional _buffer) nil)))
       (unwind-protect
-          (with-current-buffer session-buffer
-            (setq-local claude-code-ide-session-idle-enabled t
-                        claude-code-ide-session-idle-p t
-                        claude-code-ide-session-idle-timer 'mock-timer)
+          (progn
+            (with-current-buffer session-buffer
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p t
+                          claude-code-ide-session-idle-timer nil
+                          claude-code-ide-session-agent-state 'done))
             (claude-code-ide-manager-switch-to-session "/tmp/project-a" nil '(:type global))
-            (should (eq clear-buffer session-buffer)))
+            ;; The switch is the user seeing the result: it folds to idle and stays
+            ;; folded, instead of leaving the manager showing a stale done marker.
+            ;; `switch-to-session' may leave a different window/buffer selected, so
+            ;; inspect the target buffer explicitly rather than the current buffer.
+            (should (eq (buffer-local-value 'claude-code-ide-session-agent-state session-buffer)
+                        'idle))
+            (should-not (claude-code-ide-session-needs-attention-p session-buffer))
+            (should-not (buffer-local-value 'claude-code-ide-session-idle-p session-buffer))
+            (with-current-buffer session-buffer
+              (claude-code-ide-session-idle-set-agent-state 'done)
+              (should (eq claude-code-ide-session-agent-state 'idle))))
         (when (buffer-live-p session-buffer)
           (kill-buffer session-buffer))))))
 
@@ -5199,8 +5302,8 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-sidebar-navigation-keeps-focus-on-manager ()
   "Test sidebar n/p switch sessions without leaving the manager window."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-a (get-buffer-create "*cc-nav-a*"))
-        (session-b (get-buffer-create "*cc-nav-b*"))
+  (let ((session-a (get-buffer-create "*claude-code[test-nav-a]*"))
+        (session-b (get-buffer-create "*claude-code[test-nav-b]*"))
         (content-buffer (get-buffer-create "*cc-nav-content*"))
         (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-nav-a" :buffer nil))
@@ -5262,8 +5365,8 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-sidebar-navigation-resets-point-to-row-start ()
   "Test sidebar n/p leave point at column zero of the selected row."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-a (get-buffer-create "*cc-nav-col-a*"))
-        (session-b (get-buffer-create "*cc-nav-col-b*"))
+  (let ((session-a (get-buffer-create "*claude-code[test-nav-col-a]*"))
+        (session-b (get-buffer-create "*claude-code[test-nav-col-b]*"))
         (content-buffer (get-buffer-create "*cc-nav-col-content*"))
         (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-nav-col-a" :buffer nil))
@@ -5591,8 +5694,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let* ((repo-scope '(:type repo :git-root "/tmp/repo/"))
          (content-buffer (get-buffer-create "*cc-slot-highlight-content*"))
          (repo-buffer (claude-code-ide-manager--get-buffer repo-scope))
-         (session-a (get-buffer-create "*cc-slot-highlight-a*"))
-         (session-b (get-buffer-create "*cc-slot-highlight-b*"))
+         (session-a (get-buffer-create "*claude-code[test-slot-highlight-a]*"))
+         (session-b (get-buffer-create "*claude-code[test-slot-highlight-b]*"))
          (claude-code-ide--sessions (make-hash-table :test 'equal))
          (process-a (make-pipe-process :name "cc-manager-slot-highlight-a"
                                        :buffer session-a))
@@ -5658,7 +5761,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-space-switch-keeps-focus-on-manager ()
   "Test sidebar SPC switches sessions without leaving the manager window."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-space-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-space-session]*"))
         (content-buffer (get-buffer-create "*cc-space-content*"))
         (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-space-switch" :buffer nil))
@@ -5703,8 +5806,8 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-saves-layout-before-switch ()
   "Test switching captures the current session layout first."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-a (get-buffer-create "*cc-a*"))
-        (session-b (get-buffer-create "*cc-b*"))
+  (let ((session-a (get-buffer-create "*claude-code[test-saves-layout-a]*"))
+        (session-b (get-buffer-create "*claude-code[test-saves-layout-b]*"))
         (extra (get-buffer-create "*cc-extra*")))
     (unwind-protect
         (progn
@@ -5733,8 +5836,8 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-persists-captured-layout ()
   "Test switching saves the captured layout snapshot to persist storage."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-a (get-buffer-create "*cc-a*"))
-        (session-b (get-buffer-create "*cc-b*"))
+  (let ((session-a (get-buffer-create "*claude-code[test-persists-layout-a]*"))
+        (session-b (get-buffer-create "*claude-code[test-persists-layout-b]*"))
         (status-buffer (get-buffer-create "*cc-status*"))
         (claude-code-ide-manager-persist-state t))
     (unwind-protect
@@ -5876,7 +5979,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-from-sidebar-builds-default-layout ()
   "Test switching from the manager sidebar can build the default layout."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-switch-from-sidebar]*"))
         (status-buffer (get-buffer-create "*cc-status*"))
         (claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-sidebar-switch" :buffer nil)))
@@ -5902,7 +6005,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-reset-layout-at-point-builds-default-layout ()
   "Test resetting the selected session layout rebuilds the default layout."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-reset-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-reset-layout-at-point]*"))
         (status-buffer (get-buffer-create "*cc-reset-status*"))
         (manager-buffer (claude-code-ide-manager--get-buffer))
         (content-buffer (get-buffer-create "*cc-reset-content*")))
@@ -5949,7 +6052,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-reset-layout-rebuilds-current-session-default-layout ()
   "Test reset layout does not re-save stale layout for the current session."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-reset-current-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-reset-current-session]*"))
         (status-buffer (get-buffer-create "*cc-reset-current-status*")))
     (unwind-protect
         (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
@@ -5979,7 +6082,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-reset-layout-skips-treemacs-sync-when-hidden ()
   "Test reset layout does not open Treemacs when it is hidden."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-reset-hidden-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-reset-hidden-session]*"))
         (status-buffer (get-buffer-create "*cc-reset-hidden-status*"))
         synced)
     (unwind-protect
@@ -6088,7 +6191,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-restores-last-selected-window ()
   "Test restore selects the saved focused buffer when available."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-switch-restores-last-selected-window]*"))
         (focus-buffer (get-buffer-create "*cc-focus*")))
     (unwind-protect
         (progn
@@ -6116,7 +6219,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-first-switch-to-live-session-uses-default-layout-even-with-saved-layout ()
   "Test a live session's first manager switch bypasses stale saved layouts."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-first-switch-live-session]*"))
         restored
         built)
     (unwind-protect
@@ -6153,7 +6256,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-restores-visible-sidebar-after-layout-restore ()
   "Test switching re-shows a visible sidebar after restoring session content."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-switch-restores-visible-sidebar]*"))
         (content-buffer (get-buffer-create "*cc-content*"))
         (focus-buffer (get-buffer-create "*cc-focus*"))
         (claude-code-ide--sessions (make-hash-table :test 'equal))
@@ -6206,7 +6309,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-keeps-sidebar-visible-when-target-layout-lacks-it ()
   "Test switching keeps a currently visible sidebar even if target layout lacks one."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-switch-keeps-sidebar-visible]*"))
         (content-buffer (get-buffer-create "*cc-content*"))
         (focus-buffer (get-buffer-create "*cc-focus*"))
         (claude-code-ide--sessions (make-hash-table :test 'equal))
@@ -6265,7 +6368,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-adopts-restored-sidebar-without-showing-new-one ()
   "Test switching reuses a restored visible sidebar window instead of recreating it."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-switch-adopts-restored-sidebar]*"))
         (content-buffer (get-buffer-create "*cc-content*"))
         (manager-buffer (claude-code-ide-manager--get-buffer '(:type global)))
         (claude-code-ide--sessions (make-hash-table :test 'equal))
@@ -6316,7 +6419,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-manager-switch-falls-back-to-session-buffer ()
   "Test restore falls back to session buffer when focused buffer is gone."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
+  (let ((session-buffer (get-buffer-create "*claude-code[test-switch-falls-back-session]*"))
         (focus-buffer (get-buffer-create "*cc-focus*")))
     (unwind-protect
         (progn

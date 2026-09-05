@@ -41,7 +41,7 @@
 (declare-function claude-code-ide-session-zmx-name "claude-code-ide" (session))
 (declare-function claude-code-ide-attach "claude-code-ide" ())
 (declare-function claude-code-ide-attach-select "claude-code-ide" ())
-(declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" ())
+(declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" (&optional acknowledged))
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-manager-open-menu "claude-code-ide-transient" ())
@@ -2705,15 +2705,16 @@ Return the selected window when successful."
     nil))
 
 (defun claude-code-ide-manager--reset-session-idle-state (session-key)
-  "Clear idle monitoring state for SESSION-KEY after an explicit manager switch."
+  "Clear idle state and acknowledge results for SESSION-KEY.
+Explicit manager actions apply even when output-idle monitoring is disabled."
   (when-let* ((session-buffer (claude-code-ide-manager--session-buffer session-key)))
     (with-current-buffer session-buffer
-      (when (bound-and-true-p claude-code-ide-session-idle-enabled)
-        (claude-code-ide-session-idle-clear-state)
-        t))))
+      (claude-code-ide-session-idle-clear-state t)
+      t)))
 
 (defun claude-code-ide-manager-clear-all-idle-state ()
-  "Clear idle state for every live session and return the number cleared."
+  "Clear idle state and acknowledge results for every live session.
+Return the number of sessions cleared."
   (interactive)
   (let ((count 0))
     (dolist (session-key (claude-code-ide-manager--live-session-keys) count)

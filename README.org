@@ -269,6 +269,8 @@ Each row reserves a left gutter so the session names stay aligned whether or not
 
 - Oh My Pi rows show the state the agent reports over MCP: =?= when a dialog waits for you (approval, =ask= tool, extension prompt), =✓= when a turn finished, =✗= when a turn failed, =⚙︎= while working, and no marker when idle
 - Viewing a =✓= or =✗= row's session clears the marker; =?= stays until the agent reports again
+- =!= clears output-idle bells and acknowledges completed or failed results for all live sessions, even with output-idle monitoring disabled. Working and input-request states stay visible.
+- A clear before the first agent report remembers a pending acknowledgment across reconnects. A working or input-request report resets the acknowledgment, so later results appear.
 - Rows without an agent report fall back to output detection: idle-enabled rows that are currently idle show =🔔=, rows with recent output show =⚙︎=
 - Pinned rows show =📌= in that gutter when no state marker applies
 - State markers take priority over output markers, which take priority over the pin marker

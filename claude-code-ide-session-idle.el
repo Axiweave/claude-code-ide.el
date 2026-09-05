@@ -104,7 +104,12 @@ nil means the CLI has not reported, so terminal-output detection applies.")
 
 (defvar-local claude-code-ide-session-acknowledged-agent-state nil
   "Terminal agent state already acknowledged in the current session.
-This suppresses reconnect replays until a new turn starts.")
+This suppresses reconnect replays until a new turn starts.  The special
+value `pending' means the user acknowledged the session explicitly while
+no terminal state had been reported yet (or it had already folded to
+`idle'): the next `done' or `failed' report is treated as already seen
+and folds straight to `idle', recording that concrete state in place of
+`pending'.")
 
 (defvar-local claude-code-ide-session-idle-generation 0
   "Monotonic token for the currently scheduled idle callback.")
@@ -255,11 +260,29 @@ This suppresses reconnect replays until a new turn starts.")
         (setq claude-code-ide-session-working-timer nil)
         (claude-code-ide-session-working--set-state nil)))))
 
-(defun claude-code-ide-session-idle-clear-state ()
-  "Clear idle state in the current session buffer without rearming a timer."
+(defun claude-code-ide-session-idle-clear-state (&optional acknowledged)
+  "Clear idle state in the current session buffer without rearming a timer.
+With no ACKNOWLEDGED argument, this only clears the idle timer, the
+behavior every automatic output and visibility path relies on.
+When ACKNOWLEDGED is non-nil, also mark the current agent state as seen:
+a `done' or `failed' state folds to `idle' and that exact state is
+remembered so a stale reconnect replay of it folds again instead of
+reappearing.  A `working' or `needs-input' state is left alone.  When no
+terminal state has been recorded yet and none is already acknowledged,
+a `pending' sentinel is recorded instead, so the very first `done' or
+`failed' report to arrive afterward is treated as already acknowledged."
   (interactive)
   (claude-code-ide-session-idle--ensure-session-buffer)
-  (claude-code-ide-session-idle--clear-timer))
+  (claude-code-ide-session-idle--clear-timer)
+  (when acknowledged
+    (cond
+     ((memq claude-code-ide-session-agent-state '(done failed))
+      (setq claude-code-ide-session-acknowledged-agent-state
+            claude-code-ide-session-agent-state
+            claude-code-ide-session-agent-state 'idle))
+     ((memq claude-code-ide-session-agent-state '(working needs-input)))
+     ((not claude-code-ide-session-acknowledged-agent-state)
+      (setq claude-code-ide-session-acknowledged-agent-state 'pending)))))
 
 (defun claude-code-ide-session-idle-set-agent-state (state &optional acknowledged)
   "Record STATE as the current session buffer's agent state.
@@ -282,7 +305,8 @@ reconnect replays the same terminal state under a new owner."
    ((eq state claude-code-ide-session-acknowledged-agent-state)
     (setq claude-code-ide-session-agent-state 'idle))
    ((and (memq state '(done failed))
-         (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p))
+         (or (eq claude-code-ide-session-acknowledged-agent-state 'pending)
+             (claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)))
     (setq claude-code-ide-session-acknowledged-agent-state state
           claude-code-ide-session-agent-state 'idle))
    (t
