@@ -6,7 +6,7 @@
 ;; Author: Yoav Orot
 ;; Maintainer: Yu-Fu Fu <yufu@yfu.tw>
 ;; Version: 0.2.6
-;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2") (persist "0.6.1") (with-editor "3.4.2"))
+;; Package-Requires: ((emacs "28.1") (websocket "1.12") (transient "0.9.0") (web-server "0.1.2") (persist "0.6.1") (with-editor "3.4.2") (avy "0.5.0"))
 ;; Keywords: ai, claude, code, assistant, mcp, websocket
 ;; URL: https://github.com/axiweave/claude-code-ide.el
 

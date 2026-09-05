@@ -291,6 +291,7 @@ When point is in the manager buffer:
 - =n= moves to the next row, cycling to the first row after the last, and switches to it
 - =p= moves to the previous row, cycling to the last row before the first, and switches to it
 - =RET= switches to the session at point
+- =g= labels visible session names with Avy and focuses the selected session, like =RET=
 - =SPC= switches to the session at point
 - =P= toggles pin state for the selected row
 - =E= opens the complete pin-order editor for the selected manager scope
@@ -303,6 +304,8 @@ When point is in the manager buffer:
 - =G= refreshes the sidebar from the current live session table
 - =1..9= jump directly to the corresponding visible slot
 - =0= jumps to slot 10
+
+=g= and =C-u g= search only the selected manager window. Labels start at each session name's first character. =ESC= and =C-g= cancel selection.
 
 Pinned rows always stay above unpinned rows. Reordering only swaps items within the current bucket, so moving a pinned row never pushes it below unpinned rows.
 

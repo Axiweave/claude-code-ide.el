@@ -84,6 +84,10 @@ if WITH_EDITOR_DIR=$(find_emacs_package "with-editor"); then
     LOAD_PATH="$LOAD_PATH -L $WITH_EDITOR_DIR"
 fi
 
+if AVY_DIR=$(find_emacs_package "avy"); then
+    LOAD_PATH="$LOAD_PATH -L $AVY_DIR"
+fi
+
 if VTERM_DIR=$(find_emacs_package "emacs-libvterm"); then
     LOAD_PATH="$LOAD_PATH -L $VTERM_DIR"
 fi

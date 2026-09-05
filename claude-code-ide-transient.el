@@ -68,6 +68,7 @@
 (declare-function claude-code-ide-manager--pin-order-resync "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager--clear-manual-order "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-avy-switch "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-at-point-preserve-focus "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-start-session-at-point "claude-code-ide-manager" (&optional dangerous arg))
 (declare-function claude-code-ide-manager-start-session-at-point-skip-permissions "claude-code-ide-manager" (&optional arg))
@@ -659,6 +660,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
   "Dispatch a manager sidebar command."
   [["Switch"
     ("RET" "Switch to session" claude-code-ide-manager-switch-at-point)
+    ("g" "Select row with Avy" claude-code-ide-manager-avy-switch)
     ("SPC" "Switch (keep focus)" claude-code-ide-manager-switch-at-point-preserve-focus)
     ("n" "Next session" claude-code-ide-manager-next-line)
     ("p" "Previous session" claude-code-ide-manager-previous-line)]

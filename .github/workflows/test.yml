@@ -75,6 +75,11 @@ jobs:
         run: |
           emacs --version
 
+      - name: Install Avy
+        run: |
+          emacs -Q --batch --eval \
+            "(progn (require 'package) (package-refresh-contents) (package-install 'avy))"
+
       - name: Run compile and test checks
         run: |
           ./scripts/compile-and-test.sh --with-native-compile

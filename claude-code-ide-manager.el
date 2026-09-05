@@ -19,6 +19,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'avy)
 (require 'project)
 (require 'subr-x)
 (require 'persist)
@@ -678,7 +679,7 @@ scope when it is visible; otherwise return the first visible scope."
 (defvar claude-code-ide-manager-mode-map (make-sparse-keymap)
   "Keymap for `claude-code-ide-manager-mode'.")
 
-(define-key claude-code-ide-manager-mode-map (kbd "g") #'undefined)
+(define-key claude-code-ide-manager-mode-map (kbd "g") #'claude-code-ide-manager-avy-switch)
 (define-key claude-code-ide-manager-mode-map (kbd "G") #'claude-code-ide-manager-refresh)
 (define-key claude-code-ide-manager-mode-map (kbd "RET") #'claude-code-ide-manager-switch-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "<mouse-1>") #'claude-code-ide-manager-switch-at-mouse)
@@ -1702,8 +1703,10 @@ Applying clears every pin in the scope; pin again from the sidebar."
     (insert " ")
     (insert (if (numberp slot) (format "%d." slot) " -"))
     (insert " ")
-    (insert (claude-code-ide-manager--item-visible-name item))
-    (insert "\n")
+    (let ((name-start (point)))
+      (insert (claude-code-ide-manager--item-visible-name item) "\n")
+      (put-text-property name-start (min (1+ name-start) (1- (point)))
+                         'claude-code-ide-manager-session-name-start t))
     (add-text-properties
      start (1- (point))
      '(mouse-face highlight))
@@ -2817,6 +2820,27 @@ default layout is rebuilt."
   (when-let* ((item (claude-code-ide-manager--item-at-point)))
     (claude-code-ide-manager-switch-to-session
      (claude-code-ide-manager-item-session-key item))))
+
+(defun claude-code-ide-manager-avy-switch ()
+  "Select a visible manager row with Avy and focus its session."
+  (interactive)
+  (unless (derived-mode-p 'claude-code-ide-manager-mode)
+    (user-error "Select a CC Manager window first"))
+  (let ((avy-action nil))
+    (avy-with claude-code-ide-manager-avy-switch
+              (let ((avy-all-windows nil)
+                    (current-prefix-arg nil)
+                    (avy-dispatch-alist nil))
+                (avy-jump "."
+                          :pred
+                          (lambda ()
+                            (get-text-property
+                             (match-beginning 0)
+                             'claude-code-ide-manager-session-name-start))
+                          :action
+                          (lambda (position)
+                            (goto-char position)
+                            (claude-code-ide-manager-switch-at-point)))))))
 
 (defun claude-code-ide-manager-switch-at-mouse (event)
   "Switch to the session clicked by mouse EVENT."

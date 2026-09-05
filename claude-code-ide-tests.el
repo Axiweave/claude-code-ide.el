@@ -5386,6 +5386,155 @@ A `working' or `needs-input' state is left alone by the same clear."
                   (get-buffer "*cc-nav-status*")
                   (get-buffer (buffer-name (claude-code-ide-manager--get-buffer))))))))
 
+(ert-deftest claude-code-ide-test-manager-avy-switch-selects-only-current-window ()
+  "Avy selects only session rows in the selected manager window."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-a (generate-new-buffer "*claude-code[test-avy-a]*"))
+        (session-b (generate-new-buffer "*claude-code[test-avy-b]*"))
+        (status-buffer (generate-new-buffer "*cc-avy-status*"))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-avy-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-avy-b" :buffer nil))
+        (scope '(:type global))
+        (other-scope '(:type repo :git-root "/tmp/avy-other/"))
+        (avy-all-windows t)
+        (avy-all-windows-alt t)
+        (current-prefix-arg '(4))
+        (avy-single-candidate-jump t)
+        (avy-action nil)
+        (avy-last-candidates nil)
+        (avy-ring (make-ring 20))
+        manager-buffer other-buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                     (lambda (_directory) status-buffer))
+                    ((symbol-function 'read-key)
+                     (lambda (&rest _) (error "Unexpected Avy input")))
+                    ((symbol-function 'avy-resume) (symbol-function 'avy-resume)))
+            (let ((session-key-a
+                   (claude-code-ide-session-id
+                    (claude-code-ide-tests--put-session "/tmp/avy-a/" process-a session-a)))
+                  (session-key-b
+                   (claude-code-ide-session-id
+                    (claude-code-ide-tests--put-session
+                     "/tmp/avy-other/" process-b session-b))))
+              (claude-code-ide-manager--set-scope-items
+               scope (list (make-claude-code-ide-manager-item
+                            :session-key session-key-a :display-name "a"
+                            :order-key 1 :live-p t)))
+              (claude-code-ide-manager--set-scope-items
+               other-scope (list (make-claude-code-ide-manager-item
+                                  :session-key session-key-b :display-name "b"
+                                  :order-key 2 :live-p t)))
+              (claude-code-ide-manager--render scope)
+              (claude-code-ide-manager--render other-scope)
+              (setq manager-buffer (claude-code-ide-manager--get-buffer scope)
+                    other-buffer (claude-code-ide-manager--get-buffer other-scope))
+              (delete-other-windows)
+              (switch-to-buffer manager-buffer)
+              (set-window-buffer (split-window-below) other-buffer)
+              (let ((inhibit-read-only t))
+                (goto-char (point-min))
+                (insert "Heading\n\n")
+                (set-text-properties (point-min) (point) nil)
+                (goto-char (point-min)))
+              (call-interactively (key-binding (kbd "g")))
+              (should (equal claude-code-ide-manager--current-session-key session-key-a))
+              (should (eq (window-buffer (selected-window)) session-a))
+              (should (eq avy-all-windows t))
+              (should (eq avy-all-windows-alt t))
+              (should (equal current-prefix-arg '(4))))))
+      (delete-process process-a)
+      (delete-process process-b)
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-a session-b status-buffer manager-buffer other-buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-avy-switch-cancel-keeps-session ()
+  "ESC and C-g preserve the active session, manager point, and focus."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((session-a (generate-new-buffer "*claude-code[test-avy-cancel-a]*"))
+        (session-b (generate-new-buffer "*claude-code[test-avy-cancel-b]*"))
+        (status-buffer (generate-new-buffer "*cc-avy-cancel-status*"))
+        (claude-code-ide--sessions (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-avy-cancel-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-avy-cancel-b" :buffer nil))
+        (avy-keys '(?a ?s))
+        (avy-style 'pre)
+        (avy-keys-alist nil)
+        (avy-styles-alist nil)
+        (avy-action nil)
+        (avy-last-candidates nil)
+        (avy-ring (make-ring 20))
+        manager-buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                     (lambda (_directory) status-buffer))
+                    ((symbol-function 'avy-resume) (symbol-function 'avy-resume)))
+            (let ((session-key-a
+                   (claude-code-ide-session-id
+                    (claude-code-ide-tests--put-session
+                     "/tmp/avy-cancel-a/" process-a session-a)))
+                  (session-key-b
+                   (claude-code-ide-session-id
+                    (claude-code-ide-tests--put-session
+                     "/tmp/avy-cancel-b/" process-b session-b))))
+              (setq claude-code-ide-manager--items
+                    (list (make-claude-code-ide-manager-item
+                           :session-key session-key-a :display-name "a"
+                           :order-key 1 :live-p t)
+                          (make-claude-code-ide-manager-item
+                           :session-key session-key-b :display-name "b"
+                           :order-key 2 :live-p t)))
+              (delete-other-windows)
+              (switch-to-buffer session-a)
+              (claude-code-ide-manager-switch-to-session session-key-a)
+              (claude-code-ide-manager-focus)
+              (setq manager-buffer (current-buffer))
+              (goto-char (point-min))
+              (let ((active-session claude-code-ide-manager--current-session-key)
+                    (manager-point (point))
+                    (manager-window (selected-window)))
+                (dolist (event '(27 7))
+                  (select-window manager-window)
+                  (goto-char manager-point)
+                  (let ((read-count 0))
+                    (cl-letf (((symbol-function 'read-key)
+                               (lambda (&rest _)
+                                 (cl-incf read-count)
+                                 (let ((labels
+                                        (cl-remove-if-not
+                                         (lambda (overlay)
+                                           (eq (overlay-get overlay 'category) 'avy))
+                                         (overlays-in (point-min) (point-max))))
+                                       name-starts)
+                                   (save-excursion
+                                     (goto-char (point-min))
+                                     (while (re-search-forward " [0-9]+\\. " nil t)
+                                       (push (point) name-starts)))
+                                   (should (equal
+                                            (sort (mapcar #'overlay-start labels) #'<)
+                                            (nreverse name-starts))))
+                                 event)))
+                      (call-interactively (key-binding (kbd "g"))))
+                    (should (= read-count 1)))
+                  (should (equal claude-code-ide-manager--current-session-key active-session))
+                  (should (= (point) manager-point))
+                  (should (eq (selected-window) manager-window))
+                  (should-not
+                   (cl-find-if (lambda (overlay)
+                                 (eq (overlay-get overlay 'category) 'avy))
+                               (overlays-in (point-min) (point-max)))))))))
+      (delete-process process-a)
+      (delete-process process-b)
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list session-a session-b status-buffer manager-buffer)))))
+
 (ert-deftest claude-code-ide-test-manager-sidebar-navigation-resets-point-to-row-start ()
   "Test sidebar n/p leave point at column zero of the selected row."
   (claude-code-ide-tests--reset-manager-state)
@@ -7680,6 +7829,7 @@ A `working' or `needs-input' state is left alone by the same clear."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "?"))
               'claude-code-ide-manager-dispatch))
   (dolist (binding '(("RET" . claude-code-ide-manager-switch-at-point)
+                     ("g" . claude-code-ide-manager-avy-switch)
                      ("SPC" . claude-code-ide-manager-switch-at-point-preserve-focus)
                      ("n" . claude-code-ide-manager-next-line)
                      ("p" . claude-code-ide-manager-previous-line)
