@@ -678,7 +678,8 @@ scope when it is visible; otherwise return the first visible scope."
 (defvar claude-code-ide-manager-mode-map (make-sparse-keymap)
   "Keymap for `claude-code-ide-manager-mode'.")
 
-(define-key claude-code-ide-manager-mode-map (kbd "g") #'claude-code-ide-manager-refresh)
+(define-key claude-code-ide-manager-mode-map (kbd "g") #'undefined)
+(define-key claude-code-ide-manager-mode-map (kbd "G") #'claude-code-ide-manager-refresh)
 (define-key claude-code-ide-manager-mode-map (kbd "RET") #'claude-code-ide-manager-switch-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "<mouse-1>") #'claude-code-ide-manager-switch-at-mouse)
 (define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)

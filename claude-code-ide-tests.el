@@ -7667,7 +7667,7 @@ A `working' or `needs-input' state is left alone by the same clear."
   (should (transient-get-suffix 'claude-code-ide-menu "1"))
   (should (transient-get-suffix 'claude-code-ide-menu "0"))
   (should (transient-get-suffix 'claude-code-ide-menu "M"))
-  (should (transient-get-suffix 'claude-code-ide-menu "g"))
+  (should (transient-get-suffix 'claude-code-ide-menu "G"))
   (should
    (eq (plist-get
         (claude-code-ide-tests--transient-suffix-plist
@@ -7695,7 +7695,7 @@ A `working' or `needs-input' state is left alone by the same clear."
                      ("M-p" . claude-code-ide-manager-move-up)
                      ("M-n" . claude-code-ide-manager-move-down)
                      ("C-s" . claude-code-ide-manager-sort-menu)
-                     ("g" . claude-code-ide-manager-refresh)))
+                     ("G" . claude-code-ide-manager-refresh)))
     (should (eq (plist-get (claude-code-ide-tests--transient-suffix-plist
                             'claude-code-ide-manager-dispatch (car binding))
                            :command)

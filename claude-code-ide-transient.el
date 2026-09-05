@@ -678,7 +678,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("M-p" "Move row up" claude-code-ide-manager-move-up)
     ("M-n" "Move row down" claude-code-ide-manager-move-down)
     ("C-s" "Sort menu" claude-code-ide-manager-sort-menu)
-    ("g" "Refresh" claude-code-ide-manager-refresh)]])
+    ("G" "Refresh" claude-code-ide-manager-refresh)]])
 
 ;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)
 (transient-define-prefix claude-code-ide-menu ()
@@ -723,7 +723,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("0" "Manager slot 10" (lambda () (interactive) (claude-code-ide-manager-switch-by-slot 10)))
     ("M" "Focus manager" claude-code-ide-manager-focus)
     ("z" "Sort manager sessions" claude-code-ide-manager-sort-menu)
-    ("g" "Refresh manager" claude-code-ide-manager-refresh)]
+    ("G" "Refresh manager" claude-code-ide-manager-refresh)]
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
     ;; ("w" "Toggle window visibility" claude-code-ide-toggle-window)

@@ -248,7 +248,7 @@ You can reach the manager in two ways:
   - =1..9= to switch to manager slots 1 through 9
   - =0= to switch to manager slot 10
   - =M= to focus the manager window
-  - =g= to refresh the live session list
+  - =G= to refresh the live session list
 
 *** What The Sidebar Shows
 
@@ -300,7 +300,7 @@ When point is in the manager buffer:
 - =D= or =X= detaches the selected zmx-backed session from Emacs and keeps its agent process running
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
-- =g= refreshes the sidebar from the current live session table
+- =G= refreshes the sidebar from the current live session table
 - =1..9= jump directly to the corresponding visible slot
 - =0= jumps to slot 10
 
