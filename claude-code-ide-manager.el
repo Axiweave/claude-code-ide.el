@@ -1722,7 +1722,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
               " "))
     (insert (claude-code-ide-manager--marker-gutter item))
     (insert " ")
-    (insert (if (numberp slot) (format "%d." slot) " -"))
+    (insert (if (numberp slot) (format "%2d." slot) "  -"))
     (insert " ")
     (let ((name-start (point)))
       (insert (claude-code-ide-manager--item-visible-name item) "\n")

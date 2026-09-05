@@ -936,10 +936,11 @@ have completed before cleanup.  Waits up to 5 seconds."
          (make-claude-code-ide-manager-item
           :session-key "two" :order 2 :display-name "main · 2") 2)
         (goto-char (point-min))
-        (should (equal (list (claude-code-ide-tests--manager-row-text)
-                             (progn (forward-line 1)
-                                    (claude-code-ide-tests--manager-row-text)))
-                       '("    1. main" "    2. main")))))))
+        (should (equal (mapcar #'string-trim-left
+                              (list (claude-code-ide-tests--manager-row-text)
+                                    (progn (forward-line 1)
+                                           (claude-code-ide-tests--manager-row-text))))
+                       '("1. main" "2. main")))))))
 
 (ert-deftest claude-code-ide-test-manager-render-shows-order-when-enabled ()
   "Generated order suffixes remain visible when explicitly enabled."
@@ -954,7 +955,7 @@ have completed before cleanup.  Waits up to 5 seconds."
          scope
          (make-claude-code-ide-manager-item
           :session-key "one" :display-name "main · 1") 1)
-        (should (equal (buffer-string) "    1. main · 1\n"))))))
+        (should (equal (string-trim-left (buffer-string)) "1. main · 1\n"))))))
 
 (ert-deftest claude-code-ide-test-manager-render-keeps-custom-name-when-order-hidden ()
   "Custom names remain visible when generated order display is hidden."
@@ -969,7 +970,7 @@ have completed before cleanup.  Waits up to 5 seconds."
          scope
          (make-claude-code-ide-manager-item
           :session-key "one" :custom-name "work" :display-name "main · work") 1)
-        (should (equal (buffer-string) "    1. main · work\n"))))))
+        (should (equal (string-trim-left (buffer-string)) "1. main · work\n"))))))
 
 (ert-deftest claude-code-ide-test-manager-replace-display-suffix-removes-order ()
   "Removing an order suffix preserves a trailing path disambiguation tail."
