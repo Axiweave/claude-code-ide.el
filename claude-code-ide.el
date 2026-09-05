@@ -89,7 +89,7 @@
 (defvar ghostel--cursor-pos)
 (defvar ghostel--cursor-char-pos)
 (defvar ghostel--input-mode)
-(defvar ghostel--title)
+(defvar ghostel-title)
 
 ;; External function declarations for vterm
 (declare-function vterm "vterm" (&optional arg))
@@ -869,11 +869,11 @@ For a zmx-backed session, mirror a changed title to a zmx `title'
 label so `zmx list' shows it in terminals."
   (when-let* ((session (claude-code-ide--session-for-buffer)))
     (let ((old (claude-code-ide-session-title session)))
-      (setf (claude-code-ide-session-title session) ghostel--title)
+      (setf (claude-code-ide-session-title session) ghostel-title)
       (when-let* ((zmx-name (claude-code-ide-session-zmx-name session)))
-        (unless (equal (claude-code-ide-zmx--title-value ghostel--title)
+        (unless (equal (claude-code-ide-zmx--title-value ghostel-title)
                        (claude-code-ide-zmx--title-value old))
-          (claude-code-ide-zmx-set-title zmx-name ghostel--title))))))
+          (claude-code-ide-zmx-set-title zmx-name ghostel-title))))))
 
 (defun claude-code-ide--install-ghostel-title-observer ()
   "Install the Ghostel title observer once."
@@ -2053,6 +2053,70 @@ Use it to run `zmx attach <name>' from a plain terminal."
       (kill-new name)
       (message "Copied zmx name: %s" name)))))
 
+(defun claude-code-ide--zmx-adoptable-sessions ()
+  "Return zmx session plists not attached in this Emacs instance."
+  (claude-code-ide-zmx--ensure)
+  (let ((live (claude-code-ide--zmx-live-names)))
+    (seq-remove (lambda (entry) (member (plist-get entry :name) live))
+                (claude-code-ide-zmx-list-sessions))))
+
+(defun claude-code-ide--zmx-entry-label (entry)
+  "Return \"PROJECT  TITLE  CMD\" for zmx ENTRY; TITLE is omitted when absent."
+  (let ((project (if-let* ((dir (plist-get entry :start_dir)))
+                     (file-name-nondirectory (directory-file-name dir))
+                   "?"))
+        (title (plist-get entry :title)))
+    (concat project
+            (when title (concat "  " (subst-char-in-string ?_ ?\s title)))
+            "  " (or (plist-get entry :cmd) ""))))
+
+(defun claude-code-ide--attach-zmx-entry (entry directory cli-path)
+  "Adopt zmx ENTRY as a session in DIRECTORY running CLI-PATH.
+Return the new session, or nil when creation returns nil."
+  (let ((claude-code-ide-cli-path cli-path)
+        (claude-code-ide--suppress-initial-display t))
+    (claude-code-ide--create-session (file-name-as-directory directory)
+                                     nil nil (plist-get entry :name))))
+
+(defun claude-code-ide--attach-zmx-entries (entries)
+  "Adopt every zmx entry in ENTRIES without prompting.
+Skip entries whose `:start_dir' is missing or whose `:cmd' does not map
+to a known agent (`claude-code-ide-zmx-infer-cli-command'), log entries
+whose creation signals, and return the number of sessions attached."
+  (let ((attached 0) skipped)
+    (dolist (entry entries)
+      (let* ((name (plist-get entry :name))
+             (directory (plist-get entry :start_dir))
+             (cli-path (claude-code-ide-zmx-infer-cli-command (plist-get entry :cmd))))
+        (if (not (and directory cli-path))
+            (push name skipped)
+          (condition-case err
+              (when (claude-code-ide--attach-zmx-entry entry directory cli-path)
+                (setq attached (1+ attached)))
+            (error
+             (claude-code-ide-log "Failed to attach %s: %s"
+                                  name (error-message-string err))
+             (push name skipped))))))
+    (claude-code-ide-log "Attached %d zmx session%s%s"
+                         attached
+                         (if (= attached 1) "" "s")
+                         (if skipped
+                             (format "; skipped %s" (string-join (nreverse skipped) ", "))
+                           ""))
+    attached))
+
+;;;###autoload
+(defun claude-code-ide-attach-all ()
+  "Adopt every zmx session not already attached in this Emacs instance.
+Sessions without a start directory or with an unrecognized command are
+skipped and named in the summary message; adopt those with
+`claude-code-ide-attach'."
+  (interactive)
+  (let ((sessions (claude-code-ide--zmx-adoptable-sessions)))
+    (if (null sessions)
+        (claude-code-ide-log "No zmx sessions to adopt")
+      (claude-code-ide--attach-zmx-entries sessions))))
+
 ;;;###autoload
 (defun claude-code-ide-attach ()
   "Adopt a zmx session into a Claude Code IDE session.
@@ -2061,44 +2125,160 @@ ones already attached in this Emacs instance, infer the agent CLI from
 the session's command, and open an attached terminal buffer with full
 session integration."
   (interactive)
-  (claude-code-ide-zmx--ensure)
-  (let* ((live (claude-code-ide--zmx-live-names))
-         (sessions (seq-remove (lambda (entry)
-                                 (member (plist-get entry :name) live))
-                               (claude-code-ide-zmx-list-sessions))))
+  (let ((sessions (claude-code-ide--zmx-adoptable-sessions)))
     (if (null sessions)
         (claude-code-ide-log "No zmx sessions to adopt")
       (let* ((candidates
               (mapcar (lambda (entry)
-                        (let ((project (if-let* ((dir (plist-get entry :start_dir)))
-                                           (file-name-nondirectory (directory-file-name dir))
-                                         "?"))
-                              (title (plist-get entry :title)))
-                          (cons (concat
-                                 project
-                                 (when title
-                                   (concat "  " (subst-char-in-string ?_ ?\s title)))
-                                 "  " (or (plist-get entry :cmd) "")
-                                 ;; Keep candidates unique but hide the raw
-                                 ;; zmx name; `assoc' ignores text properties.
-                                 (propertize (concat "  " (plist-get entry :name))
-                                             'invisible t))
-                                entry)))
+                        (cons (concat
+                               (claude-code-ide--zmx-entry-label entry)
+                               ;; Keep candidates unique but hide the raw
+                               ;; zmx name; `assoc' ignores text properties.
+                               (propertize (concat "  " (plist-get entry :name))
+                                           'invisible t))
+                              entry))
                       sessions))
              (choice (completing-read "Attach to zmx session: " candidates nil t))
              (entry (cdr (assoc choice candidates)))
-             (name (plist-get entry :name))
-             (directory (file-name-as-directory
-                         (or (plist-get entry :start_dir)
-                             (read-directory-name "Project directory for session: "))))
-             (claude-code-ide-cli-path
-              (or (claude-code-ide-zmx-infer-cli-command (plist-get entry :cmd))
-                  (claude-code-ide--read-agent
-                   (format "Agent running in %s: " name)))))
-        (let ((claude-code-ide--suppress-initial-display t))
-          (when-let* ((session (claude-code-ide--create-session directory nil nil name)))
-            (claude-code-ide-manager-switch-to-session
-             (claude-code-ide-session-id session))))))))
+             (directory (or (plist-get entry :start_dir)
+                            (read-directory-name "Project directory for session: ")))
+             (cli-path (or (claude-code-ide-zmx-infer-cli-command (plist-get entry :cmd))
+                           (claude-code-ide--read-agent
+                            (format "Agent running in %s: " (plist-get entry :name))))))
+        (when-let* ((session (claude-code-ide--attach-zmx-entry entry directory cli-path)))
+          (claude-code-ide-manager-switch-to-session
+           (claude-code-ide-session-id session)))))))
+
+(defcustom claude-code-ide-attach-select-premark t
+  "When non-nil, `claude-code-ide-attach-select' starts with every row marked."
+  :type 'boolean
+  :group 'claude-code-ide)
+
+(defvar-local claude-code-ide--attach-select-return-window nil
+  "Window that showed the attach-select buffer.")
+(defvar-local claude-code-ide--attach-select-return-buffer nil
+  "Buffer to restore when the attach-select buffer closes.")
+
+(defvar claude-code-ide-attach-select-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "m") #'claude-code-ide-attach-select-mark)
+    (define-key map (kbd "u") #'claude-code-ide-attach-select-unmark)
+    (define-key map (kbd "SPC") #'claude-code-ide-attach-select-toggle)
+    (define-key map (kbd "t") #'claude-code-ide-attach-select-toggle-all)
+    (define-key map (kbd "n") #'next-line)
+    (define-key map (kbd "p") #'previous-line)
+    (define-key map (kbd "C-c C-c") #'claude-code-ide-attach-select-apply)
+    (define-key map (kbd "C-c C-k") #'claude-code-ide-attach-select-cancel)
+    (define-key map (kbd "q") #'claude-code-ide-attach-select-cancel)
+    map)
+  "Keymap for `claude-code-ide-attach-select-mode'.")
+
+(define-derived-mode claude-code-ide-attach-select-mode special-mode "CC-Attach"
+  "Major mode for choosing zmx sessions to adopt."
+  (setq truncate-lines t))
+
+(defun claude-code-ide--attach-select-set-mark (marked)
+  "Set the mark of the row at point to MARKED when point is on a row."
+  (when (get-text-property (line-beginning-position) 'claude-code-ide-zmx-entry)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char (1+ (line-beginning-position)))
+        (delete-char 1)
+        (insert-and-inherit (if marked "X" " "))))))
+
+(defun claude-code-ide--attach-select-marked-p ()
+  "Return non-nil when the row at point is marked."
+  (eq (char-after (1+ (line-beginning-position))) ?X))
+
+(defun claude-code-ide-attach-select-mark ()
+  "Mark the row at point and move to the next row."
+  (interactive)
+  (claude-code-ide--attach-select-set-mark t)
+  (forward-line 1))
+
+(defun claude-code-ide-attach-select-unmark ()
+  "Unmark the row at point and move to the next row."
+  (interactive)
+  (claude-code-ide--attach-select-set-mark nil)
+  (forward-line 1))
+
+(defun claude-code-ide-attach-select-toggle ()
+  "Invert the mark of the row at point and move to the next row."
+  (interactive)
+  (claude-code-ide--attach-select-set-mark
+   (not (claude-code-ide--attach-select-marked-p)))
+  (forward-line 1))
+
+(defun claude-code-ide-attach-select-toggle-all ()
+  "Invert the mark of every row."
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (while (not (eobp))
+      (claude-code-ide--attach-select-set-mark
+       (not (claude-code-ide--attach-select-marked-p)))
+      (forward-line 1))))
+
+(defun claude-code-ide--attach-select-close ()
+  "Kill the attach-select buffer and restore the buffer it replaced."
+  (let ((buffer (current-buffer))
+        (window claude-code-ide--attach-select-return-window)
+        (return-buffer claude-code-ide--attach-select-return-buffer))
+    (when (and (window-live-p window) (buffer-live-p return-buffer))
+      (set-window-buffer window return-buffer)
+      (select-window window))
+    (kill-buffer buffer)))
+
+(defun claude-code-ide-attach-select-apply ()
+  "Attach every marked row, then close the attach-select buffer."
+  (interactive)
+  (let (entries)
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (when (claude-code-ide--attach-select-marked-p)
+          (push (get-text-property (point) 'claude-code-ide-zmx-entry) entries))
+        (forward-line 1)))
+    (unless entries
+      (user-error "No zmx sessions marked"))
+    (claude-code-ide--attach-select-close)
+    (claude-code-ide--attach-zmx-entries (nreverse entries))))
+
+(defun claude-code-ide-attach-select-cancel ()
+  "Close the attach-select buffer without attaching."
+  (interactive)
+  (claude-code-ide--attach-select-close))
+
+;;;###autoload
+(defun claude-code-ide-attach-select ()
+  "Choose zmx sessions to adopt in a buffer, then attach the marked ones.
+`m' and `u' mark and unmark the row at point, `SPC' toggles it, `t'
+inverts every mark, \\`C-c C-c' attaches the marked rows, \\`C-c C-k'
+cancels.  `claude-code-ide-attach-select-premark' decides whether rows
+start marked."
+  (interactive)
+  (let ((sessions (claude-code-ide--zmx-adoptable-sessions)))
+    (if (null sessions)
+        (claude-code-ide-log "No zmx sessions to adopt")
+      (let* ((window (claude-code-ide-manager--content-window))
+             (return-buffer (window-buffer window))
+             (buffer (generate-new-buffer "*claude-code-ide-attach*")))
+        (with-current-buffer buffer
+          (claude-code-ide-attach-select-mode)
+          (setq claude-code-ide--attach-select-return-window window
+                claude-code-ide--attach-select-return-buffer return-buffer)
+          (let ((inhibit-read-only t))
+            (dolist (entry sessions)
+              (insert (propertize
+                       (concat (if claude-code-ide-attach-select-premark "[X] " "[ ] ")
+                               (claude-code-ide--zmx-entry-label entry)
+                               "  " (plist-get entry :name))
+                       'claude-code-ide-zmx-entry entry)
+                      "\n")))
+          (goto-char (point-min)))
+        (set-window-buffer window buffer)
+        (select-window window)
+        (message "m/u/SPC mark, unmark, toggle rows; t inverts all; C-c C-c attaches marked, C-c C-k cancels")))))
 
 
 ;;;###autoload

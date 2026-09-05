@@ -164,12 +164,12 @@
   "Mock Ghostel cursor buffer position.")
 (defvar ghostel--input-mode nil
   "Mock Ghostel input mode.")
-(defvar-local ghostel--title nil
+(defvar-local ghostel-title nil
   "Mock Ghostel terminal title.")
 
 (defun ghostel--set-title (title)
   "Store normalized mock Ghostel TITLE."
-  (setq ghostel--title (unless (equal title "") title)))
+  (setq ghostel-title (unless (equal title "") title)))
 
 
 (defun ghostel--filter (_process _string)
@@ -6992,7 +6992,7 @@ have completed before cleanup.  Waits up to 5 seconds."
         (progn
           (with-current-buffer session-buffer
             (setq-local claude-code-ide--terminal-backend 'ghostel)
-            (setq-local ghostel--title "Early session title"))
+            (setq-local ghostel-title "Early session title"))
           (cl-letf (((symbol-function
                       'claude-code-ide--install-terminal-resize-observer)
                      #'ignore)
@@ -7511,6 +7511,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                      ("S" . claude-code-ide-manager-start-session-at-point-skip-permissions)
                      ("o" . claude-code-ide-manager-open)
                      ("X" . claude-code-ide-manager-detach-at-point)
+                     ("A" . claude-code-ide-attach-select)
                      ("r" . claude-code-ide-manager-rename-at-point)
                      ("R" . claude-code-ide-manager-reset-layout-at-point)
                      ("P" . claude-code-ide-manager-toggle-pin)
@@ -15365,6 +15366,140 @@ The resync ignores pin state and stored order keys."
       (claude-code-ide-attach))
     (should-not created)))
 
+(ert-deftest claude-code-ide-test-zmx-attach-all-adopts-resolvable-and-skips-rest ()
+  "Attach-all adopts resolvable entries, skips the rest, never reveals."
+  (let (create-calls switched)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide--zmx-live-names)
+               (lambda () '("cci-omp-live")))
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-live" :start_dir "/tmp/a" :cmd "omp")
+                            (:name "one" :start_dir "/tmp/one" :cmd "omp")
+                            (:name "two" :start_dir "/tmp/two" :cmd "codex")
+                            (:name "nodir" :cmd "omp")
+                            (:name "nocmd" :start_dir "/tmp/x" :cmd "htop"))))
+              ((symbol-function 'claude-code-ide--create-session)
+               (lambda (&rest args)
+                 (push (list claude-code-ide-cli-path
+                             claude-code-ide--suppress-initial-display args)
+                       create-calls)
+                 (claude-code-ide-session-create :id (nth 3 args) :directory (car args))))
+              ((symbol-function 'claude-code-ide-manager-switch-to-session)
+               (lambda (&rest _) (setq switched t))))
+      (should (= (claude-code-ide-attach-all) 2)))
+    (should (equal (nreverse create-calls)
+                   '(("omp" t ("/tmp/one/" nil nil "one"))
+                     ("codex" t ("/tmp/two/" nil nil "two")))))
+    (should-not switched)))
+
+(ert-deftest claude-code-ide-test-zmx-attach-all-continues-after-error ()
+  "A failing create does not abort the rest of the batch."
+  (let (created)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+              ((symbol-function 'claude-code-ide--zmx-live-names) (lambda () nil))
+              ((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "one" :start_dir "/tmp/one" :cmd "omp")
+                            (:name "two" :start_dir "/tmp/two" :cmd "omp"))))
+              ((symbol-function 'claude-code-ide--create-session)
+               (lambda (dir _ _ name)
+                 (when (equal name "one") (error "boom"))
+                 (push name created)
+                 (claude-code-ide-session-create :id name :directory dir))))
+      (should (= (claude-code-ide-attach-all) 1)))
+    (should (equal created '("two")))))
+
+(defmacro claude-code-ide-tests--with-attach-select (premark created-var &rest body)
+  "Open an attach-select buffer with entries one and two, then run BODY.
+PREMARK binds `claude-code-ide-attach-select-premark'.  CREATED-VAR is
+bound to the list of zmx names passed to `claude-code-ide--create-session'.
+BODY sees `window', `content-buffer' and `select-buffer'."
+  (declare (indent 2))
+  `(let ((,created-var nil)
+         (content-buffer (generate-new-buffer "*cc-attach-select-content*"))
+         (claude-code-ide-attach-select-premark ,premark))
+     (unwind-protect
+         (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+                   ((symbol-function 'claude-code-ide--zmx-live-names) (lambda () nil))
+                   ((symbol-function 'claude-code-ide-zmx-list-sessions)
+                    (lambda () '((:name "one" :start_dir "/tmp/one" :cmd "omp")
+                                 (:name "two" :start_dir "/tmp/two" :cmd "omp"))))
+                   ((symbol-function 'claude-code-ide--create-session)
+                    (lambda (dir _ _ name)
+                      (push name ,created-var)
+                      (claude-code-ide-session-create :id name :directory dir))))
+           (delete-other-windows)
+           (switch-to-buffer content-buffer)
+           (let ((window (selected-window)))
+             (claude-code-ide-attach-select)
+             (let ((select-buffer (window-buffer (selected-window))))
+               (should (eq (selected-window) window))
+               (should (eq (buffer-local-value 'major-mode select-buffer)
+                           'claude-code-ide-attach-select-mode))
+               (unwind-protect
+                   (with-current-buffer select-buffer ,@body)
+                 (when (buffer-live-p select-buffer)
+                   (kill-buffer select-buffer))))))
+       (when (buffer-live-p content-buffer)
+         (kill-buffer content-buffer)))))
+
+(defun claude-code-ide-tests--attach-select-line (n)
+  "Return the text of line N in the current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- n))
+    (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-select-premark-apply-attaches-marked-rows ()
+  "Premarked rows attach on apply after unmarking one; buffer closes."
+  (claude-code-ide-tests--with-attach-select t created
+    (should (string-prefix-p "[X] one  omp  one" (claude-code-ide-tests--attach-select-line 1)))
+    (goto-char (point-min))
+    (claude-code-ide-attach-select-unmark)
+    (should (string-prefix-p "[ ] one" (claude-code-ide-tests--attach-select-line 1)))
+    (let ((buffer (current-buffer)))
+      (claude-code-ide-attach-select-apply)
+      (should (equal created '("two")))
+      (should-not (buffer-live-p buffer))
+      (should (eq (window-buffer window) content-buffer)))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-select-premark-nil-toggle-all ()
+  "Unmarked rows become marked by toggle-all, and apply attaches both."
+  (claude-code-ide-tests--with-attach-select nil created
+    (should (string-prefix-p "[ ] " (claude-code-ide-tests--attach-select-line 1)))
+    (claude-code-ide-attach-select-toggle-all)
+    (should (string-prefix-p "[X] " (claude-code-ide-tests--attach-select-line 1)))
+    (should (string-prefix-p "[X] " (claude-code-ide-tests--attach-select-line 2)))
+    (claude-code-ide-attach-select-apply)
+    (should (equal (sort created #'string<) '("one" "two")))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-select-toggle-flips-row-and-advances ()
+  "SPC toggles the row at point and moves to the next row."
+  (claude-code-ide-tests--with-attach-select t created
+    (should (eq (lookup-key claude-code-ide-attach-select-mode-map (kbd "SPC"))
+                'claude-code-ide-attach-select-toggle))
+    (goto-char (point-min))
+    (claude-code-ide-attach-select-toggle)
+    (should (string-prefix-p "[ ] one" (claude-code-ide-tests--attach-select-line 1)))
+    (should (= (line-number-at-pos) 2))
+    (claude-code-ide-attach-select-apply)
+    (should (equal created '("two")))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-select-cancel-attaches-nothing ()
+  "Cancel closes the buffer, restores content, attaches nothing."
+  (claude-code-ide-tests--with-attach-select t created
+    (let ((buffer (current-buffer)))
+      (claude-code-ide-attach-select-cancel)
+      (should-not created)
+      (should-not (buffer-live-p buffer))
+      (should (eq (window-buffer window) content-buffer)))))
+
+(ert-deftest claude-code-ide-test-zmx-attach-select-apply-without-marks-errors ()
+  "Apply with no marks signals a user-error and keeps the buffer."
+  (claude-code-ide-tests--with-attach-select nil created
+    (should-error (claude-code-ide-attach-select-apply) :type 'user-error)
+    (should (buffer-live-p (current-buffer)))
+    (should-not created)))
+
 (defun claude-code-ide-tests--zmx-stop-fixture (zmx-name confirm)
   "Run `claude-code-ide-stop' on a ZMX-NAME session; CONFIRM the prompt.
 Return a plist with :killed-zmx and :killed-buffer."
@@ -15455,7 +15590,7 @@ Return a plist with :killed-zmx and :killed-buffer."
 
 (ert-deftest claude-code-ide-test-zmx-title-mirrored-on-change-only ()
   "Ghostel titles reach zmx once per change; plain sessions never push."
-  (defvar ghostel--title)
+  (defvar ghostel-title)
   (let ((session (claude-code-ide-session-create
                   :id "title-id" :directory "/tmp/proj/"
                   :zmx-name "cci-omp-proj-x"))
@@ -15464,9 +15599,9 @@ Return a plist with :killed-zmx and :killed-buffer."
                (lambda (&optional _) session))
               ((symbol-function 'claude-code-ide-zmx-set-title)
                (lambda (_name title) (push title pushes))))
-      (let ((ghostel--title "π ⠇ Analyze CPU usage in emacs profiler report"))
+      (let ((ghostel-title "π ⠇ Analyze CPU usage in emacs profiler report"))
         (claude-code-ide--record-ghostel-title))
-      (let ((ghostel--title "π ⠋ Analyze CPU usage in emacs profiler report"))
+      (let ((ghostel-title "π ⠋ Analyze CPU usage in emacs profiler report"))
         (claude-code-ide--record-ghostel-title))
       (should (equal pushes
                      '("π ⠇ Analyze CPU usage in emacs profiler report")))
@@ -15474,7 +15609,7 @@ Return a plist with :killed-zmx and :killed-buffer."
        (equal (claude-code-ide-session-title session)
               "π ⠋ Analyze CPU usage in emacs profiler report"))
       (setf (claude-code-ide-session-zmx-name session) nil)
-      (let ((ghostel--title "Another title"))
+      (let ((ghostel-title "Another title"))
         (claude-code-ide--record-ghostel-title))
       (should (equal pushes
                      '("π ⠇ Analyze CPU usage in emacs profiler report"))))))

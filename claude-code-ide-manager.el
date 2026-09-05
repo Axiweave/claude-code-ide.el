@@ -40,6 +40,7 @@
 (declare-function claude-code-ide-session-title "claude-code-ide" (session))
 (declare-function claude-code-ide-session-zmx-name "claude-code-ide" (session))
 (declare-function claude-code-ide-attach "claude-code-ide" ())
+(declare-function claude-code-ide-attach-select "claude-code-ide" ())
 (declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
@@ -687,6 +688,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
 (define-key claude-code-ide-manager-mode-map (kbd "a") #'claude-code-ide-attach)
+(define-key claude-code-ide-manager-mode-map (kbd "A") #'claude-code-ide-attach-select)
 (define-key claude-code-ide-manager-mode-map (kbd "X") #'claude-code-ide-manager-detach-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
 (define-key claude-code-ide-manager-mode-map (kbd "E") #'claude-code-ide-manager-edit-pin-order)
@@ -721,9 +723,11 @@ scope when it is visible; otherwise return the first visible scope."
        (claude-code-ide-manager-switch-by-slot-preserve-focus slot)))))
 
 (defun claude-code-ide-manager--setup-evil-state ()
-  "Start manager buffers in Evil emacs state when Evil is available."
+  "Start manager and attach-select buffers in Evil emacs state.
+No-op when Evil is unavailable."
   (when (fboundp 'evil-set-initial-state)
-    (evil-set-initial-state 'claude-code-ide-manager-mode 'emacs)))
+    (evil-set-initial-state 'claude-code-ide-manager-mode 'emacs)
+    (evil-set-initial-state 'claude-code-ide-attach-select-mode 'emacs)))
 
 (defun claude-code-ide-manager--setup-pin-order-evil-keys ()
   "Mirror pin-order editor M- bindings into Evil normal state.
