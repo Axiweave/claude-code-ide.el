@@ -418,8 +418,8 @@ fresh output from the session backend."
     (with-current-buffer prompt-buffer
       (when claude-code-ide-session-idle--prompt-owner-directory
         (when-let* ((buffer
-                    (claude-code-ide--get-session-buffer
-                     claude-code-ide-session-idle--prompt-owner-directory)))
+                     (claude-code-ide--get-session-buffer
+                      claude-code-ide-session-idle--prompt-owner-directory)))
           (and (buffer-live-p buffer)
                buffer))))))
 
@@ -481,8 +481,8 @@ fresh output from the session backend."
     (dolist (prompt-buffer
              (claude-code-ide-session-idle--visible-prompt-buffers))
       (when-let* ((buffer
-                  (claude-code-ide-session-idle--prompt-buffer-session-buffer
-                   prompt-buffer)))
+                   (claude-code-ide-session-idle--prompt-buffer-session-buffer
+                    prompt-buffer)))
         (cl-pushnew buffer buffers)))
     (nreverse buffers)))
 
