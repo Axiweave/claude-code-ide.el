@@ -1003,34 +1003,58 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "S"))
               #'claude-code-ide-manager-start-session-at-point-skip-permissions)))
 
-(ert-deftest claude-code-ide-test-manager-mode-binds-x-to-detach ()
-  "Manager mode exposes zmx detach on `X'."
-  (should
-   (eq (lookup-key claude-code-ide-manager-mode-map (kbd "X"))
-       #'claude-code-ide-manager-detach-at-point)))
+(ert-deftest claude-code-ide-test-manager-mode-binds-d-and-x-to-detach ()
+  "Manager mode exposes zmx detach on `D' and `X'."
+  (dolist (key '("D" "X"))
+    (should
+     (eq (lookup-key claude-code-ide-manager-mode-map (kbd key))
+         #'claude-code-ide-manager-detach-at-point))))
 
 (ert-deftest claude-code-ide-test-manager-detach-at-point-keeps-zmx-running ()
-  "Detaching kills the local process buffer without killing the zmx session."
-  (let* ((buffer (generate-new-buffer "*cc-manager-detach-test*"))
-         (item (make-claude-code-ide-manager-item :session-key "attached"))
-         (session (claude-code-ide-session-create
-                   :id "attached" :directory "/tmp/project/" :process buffer
-                   :zmx-name "cci-omp-project-attached"))
-         killed-zmx)
-    (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
-                   (lambda () item))
-                  ((symbol-function 'claude-code-ide--get-session)
-                   (lambda (session-key)
-                     (and (equal session-key "attached") session)))
-                  ((symbol-function 'claude-code-ide-zmx-kill)
-                   (lambda (&rest _)
-                     (setq killed-zmx t))))
-          (claude-code-ide-manager-detach-at-point)
-          (should-not (buffer-live-p buffer))
-          (should-not killed-zmx))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+  "Detaching keeps zmx running and preserves the selected row position."
+  (cl-labels
+      ((check-position
+         (keys expected)
+         (let* ((buffer (generate-new-buffer "*cc-manager-detach-test*"))
+                (item (make-claude-code-ide-manager-item
+                       :session-key "attached"))
+                (session (claude-code-ide-session-create
+                          :id "attached" :directory "/tmp/project/"
+                          :process buffer :zmx-name "cci-omp-project-attached"))
+                (scope '(:type global))
+                killed-zmx
+                selected)
+           (unwind-protect
+               (cl-letf
+                   (((symbol-function 'claude-code-ide-manager--item-at-point)
+                     (lambda () item))
+                    ((symbol-function 'claude-code-ide--get-session)
+                     (lambda (session-key)
+                       (and (equal session-key "attached") session)))
+                    ((symbol-function
+                      'claude-code-ide-manager--scope-for-command)
+                     (lambda () scope))
+                    ((symbol-function
+                      'claude-code-ide-manager--visible-session-keys)
+                     (lambda (_scope)
+                       (if (buffer-live-p buffer)
+                           keys
+                         (cl-remove "attached" keys :test #'equal))))
+                    ((symbol-function
+                      'claude-code-ide-manager--sync-point-to-session-key)
+                     (lambda (actual-scope session-key)
+                       (setq selected (list actual-scope session-key))))
+                    ((symbol-function 'claude-code-ide-zmx-kill)
+                     (lambda (&rest _)
+                       (setq killed-zmx t))))
+                 (claude-code-ide-manager-detach-at-point)
+                 (should-not (buffer-live-p buffer))
+                 (should-not killed-zmx)
+                 (should (equal selected (list scope expected))))
+             (when (buffer-live-p buffer)
+               (kill-buffer buffer))))))
+    (check-position '("before" "attached" "after") "after")
+    (check-position '("before" "attached") "before")))
 
 (ert-deftest claude-code-ide-test-manager-detach-at-point-refuses-plain-session ()
   "Detaching never kills a session that zmx does not back."
@@ -6901,7 +6925,7 @@ A `working' or `needs-input' state is left alone by the same clear."
     (claude-code-ide--put-session
      (claude-code-ide-session-create :id "two" :directory "/tmp/project/"))
     (cl-letf (((symbol-function 'claude-code-ide--cleanup-session-resources)
-               (lambda (session)
+               (lambda (session &optional _keep-buffer)
                  (when (equal (claude-code-ide-session-id session) "one")
                    (claude-code-ide--cleanup-on-exit "two")))))
       (claude-code-ide--cleanup-on-exit "one"))
@@ -6986,6 +7010,55 @@ A `working' or `needs-input' state is left alone by the same clear."
       (claude-code-ide--cleanup-on-exit "omp"))
     (should-not stopped)
     (should-not ended)))
+
+(ert-deftest claude-code-ide-test-cleanup-kill-hook-keeps-native-process-owner ()
+  "Later terminal kill hooks must not terminate a sibling session."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (buffer-a (generate-new-buffer "*claude-code[detach-a]*"))
+         (buffer-b (generate-new-buffer "*claude-code[detach-b]*"))
+         (process-a (make-pipe-process :name "detach-a" :buffer buffer-a
+                                       :noquery t))
+         (process-b (make-pipe-process :name "detach-b" :buffer buffer-b
+                                       :noquery t))
+         hook-buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
+                     #'ignore))
+            (claude-code-ide--put-session
+             (claude-code-ide-session-create
+              :id "a" :directory "/tmp/project/" :buffer buffer-a
+              :process process-a :cli-type 'omp))
+            (claude-code-ide--put-session
+             (claude-code-ide-session-create
+              :id "b" :directory "/tmp/project/" :buffer buffer-b
+              :process process-b :cli-type 'omp))
+            (switch-to-buffer buffer-b)
+            (switch-to-buffer buffer-a)
+            (add-hook 'kill-buffer-hook
+                      (lambda () (claude-code-ide--cleanup-on-exit "a" t))
+                      nil t)
+            (add-hook 'kill-buffer-hook
+                      (lambda ()
+                        (setq hook-buffer (current-buffer))
+                        (when-let* ((process (get-buffer-process (current-buffer))))
+                          (delete-process process)))
+                      t t)
+            (kill-buffer buffer-a)
+            (should (eq hook-buffer buffer-a))
+            (should-not (claude-code-ide--get-session "a"))
+            (should-not (buffer-live-p buffer-a))
+            (should (claude-code-ide--get-session "b"))
+            (should (buffer-live-p buffer-b))
+            (should (process-live-p process-b))))
+      (dolist (process (list process-a process-b))
+        (when (process-live-p process)
+          (delete-process process)))
+      (dolist (buffer (list buffer-a buffer-b))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (let ((kill-buffer-hook nil))
+              (kill-buffer buffer))))))))
 
 (ert-deftest claude-code-ide-test-cleanup-closes-session-window ()
   "Session cleanup deletes the window that displayed the exited session."

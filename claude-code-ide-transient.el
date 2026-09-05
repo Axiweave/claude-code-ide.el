@@ -667,6 +667,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("S" "Start (skip permissions)" claude-code-ide-manager-start-session-at-point-skip-permissions)
     ("a" "Attach to zmx session" claude-code-ide-attach)
     ("A" "Attach zmx sessions (select)" claude-code-ide-attach-select)
+    ("D" "Detach zmx session" claude-code-ide-manager-detach-at-point)
     ("X" "Detach zmx session" claude-code-ide-manager-detach-at-point)
     ("o" "Open project/worktree" claude-code-ide-manager-open)
     ("r" "Rename session" claude-code-ide-manager-rename-at-point)

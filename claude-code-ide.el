@@ -1214,8 +1214,9 @@ keeps whatever buffer the following kill puts in it."
     (when (window-live-p window)
       (ignore-errors (delete-window window)))))
 
-(defun claude-code-ide--cleanup-session-resources (session)
-  "Clean up resources owned by SESSION after it leaves the live-session table."
+(defun claude-code-ide--cleanup-session-resources (session &optional keep-buffer)
+  "Clean up resources owned by SESSION after it leaves the live-session table.
+When KEEP-BUFFER is non-nil, let the active buffer kill finish."
   (let* ((session-id (claude-code-ide-session-id session))
          (directory (claude-code-ide-session-directory session))
          (process (claude-code-ide-session-process session))
@@ -1238,19 +1239,21 @@ keeps whatever buffer the following kill puts in it."
     (claude-code-ide-manager-session-ended session-id)
     (when (buffer-live-p buffer)
       (claude-code-ide--close-session-windows buffer)
-      (let ((kill-buffer-hook nil)
-            (kill-buffer-query-functions nil))
-        (kill-buffer buffer)))
+      (unless keep-buffer
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buffer))))
     (claude-code-ide-debug "Cleaned up Claude Code session for %s"
                            (file-name-nondirectory
                             (directory-file-name directory)))))
 
-(defun claude-code-ide--cleanup-on-exit (session-id)
-  "Remove SESSION-ID and clean up only the resources it owns."
-  (when-let* ((session (claude-code-ide--get-session session-id)))
-    ;; Removing first is the ID-scoped recursion guard for sentinel/hook races.
-    (remhash session-id claude-code-ide--sessions)
-    (claude-code-ide--cleanup-session-resources session)))
+(defun claude-code-ide--cleanup-on-exit (session-id &optional keep-buffer)
+  "Remove SESSION-ID and clean up only the resources it owns.
+The buffer kill hook passes KEEP-BUFFER to prevent a recursive buffer kill."
+  (save-current-buffer
+    (when-let* ((session (claude-code-ide--get-session session-id)))
+      ;; Removing first is the ID-scoped recursion guard for sentinel/hook races.
+      (remhash session-id claude-code-ide--sessions)
+      (claude-code-ide--cleanup-session-resources session keep-buffer))))
 
 ;;; CLI Detection
 
@@ -1895,7 +1898,7 @@ running a freshly built CLI command."
             (with-current-buffer buffer
               (add-hook 'kill-buffer-hook
                         (lambda ()
-                          (claude-code-ide--cleanup-on-exit session-id))
+                          (claude-code-ide--cleanup-on-exit session-id t))
                         nil t)
               (pcase (claude-code-ide--current-terminal-backend)
                 ('vterm

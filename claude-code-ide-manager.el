@@ -690,6 +690,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "a") #'claude-code-ide-attach)
 (define-key claude-code-ide-manager-mode-map (kbd "A") #'claude-code-ide-attach-select)
 (define-key claude-code-ide-manager-mode-map (kbd "X") #'claude-code-ide-manager-detach-at-point)
+(define-key claude-code-ide-manager-mode-map (kbd "D") #'claude-code-ide-manager-detach-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
 (define-key claude-code-ide-manager-mode-map (kbd "E") #'claude-code-ide-manager-edit-pin-order)
 (define-key claude-code-ide-manager-mode-map (kbd "r") #'claude-code-ide-manager-rename-at-point)
@@ -2840,12 +2841,21 @@ The zmx session and its agent process keep running."
          (session (or (claude-code-ide--get-session session-key)
                       (user-error "Session no longer exists")))
          (buffer (claude-code-ide-manager--session-buffer session-key))
-         (zmx-name (claude-code-ide-session-zmx-name session)))
+         (zmx-name (claude-code-ide-session-zmx-name session))
+         (scope (claude-code-ide-manager--scope-for-command))
+         (keys (claude-code-ide-manager--visible-session-keys scope))
+         (index (cl-position session-key keys :test #'equal))
+         (survivor (and index
+                        (or (nth (1+ index) keys)
+                            (nth (1- index) keys)))))
     (unless zmx-name
       (user-error "Session is not zmx-backed"))
     (unless (buffer-live-p buffer)
       (user-error "Session buffer no longer exists"))
     (kill-buffer buffer)
+    (when (member survivor
+                  (claude-code-ide-manager--visible-session-keys scope))
+      (claude-code-ide-manager--sync-point-to-session-key scope survivor))
     (message "Detached zmx session %s" zmx-name)))
 
 (defun claude-code-ide-manager-start-session-at-point (&optional dangerous arg)
