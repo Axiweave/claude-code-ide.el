@@ -63,7 +63,11 @@ integrations break after such a switch."
 (defcustom claude-code-ide-remote-hosts nil
   "SSH destinations available for explicit remote Agent attachment.
 SSH configuration supplies authentication, ports, and jump hosts.
-The package never discovers destinations or connects automatically."
+The package never discovers destinations or connects automatically.
+
+After an explicit remote attachment, the manager may start one
+optional Git metadata control request to the same host.  Startup,
+ordinary refresh, rendering, and navigation never connect."
   :type '(repeat string)
   :group 'claude-code-ide)
 
@@ -103,7 +107,7 @@ The package never discovers destinations or connects automatically."
 (defun claude-code-ide-zmx--valid-directory-p (directory)
   "Return non-nil if DIRECTORY is absolute remote path metadata."
   (and (stringp directory) (string-prefix-p "/" directory)
-       (not (string-match-p "[[:cntrl:]]" directory))))
+       (not (string-match-p "[[:cntrl:]\u007f-\u009f]" directory))))
 
 (defun claude-code-ide-zmx--quote (argument)
   "Quote ARGUMENT for a POSIX shell without expansion."
@@ -117,59 +121,82 @@ The package never discovers destinations or connects automatically."
                                "-u" "ZMX_SESSION_PREFIX" "zmx") args)
                      " ")))
 
-(defun claude-code-ide-zmx--call-remote (host args callback &optional name)
-  "Run remote zmx ARGS on HOST and return the owned SSH process.
-Call CALLBACK once with :host, :operation, :status, :stdout, :stderr,
-:cancelled, and :timeout.  NAME optionally identifies this request.
-The total deadline is thirty seconds.  No request retries."
+(defun claude-code-ide-zmx--run-remote-command
+    (host operation command callback &optional name coding output-limit)
+  "Run remote COMMAND on HOST under OPERATION and return the owned process.
+Call CALLBACK once with :host, :operation, :process, :status, :stdout,
+:stderr, :cancelled, :timeout, and :overflow.  NAME optionally
+identifies this request.  The total deadline is thirty seconds.  No
+request retries.  Reject HOST before any process starts.
+
+CODING, when non-nil, is passed verbatim as the process's `:coding'
+so stdout arrives undecoded instead of through automatic detection;
+the stdout buffer is also made unibyte so bytes round-trip exactly.
+OUTPUT-LIMIT, when non-nil, truncates retained stdout to that many
+bytes and ends the process as soon as it is exceeded, reporting
+:overflow instead of waiting out the full deadline."
   (claude-code-ide-zmx--validate-host host)
-  (when (member (car args) '("attach" "kill"))
-    (claude-code-ide-zmx--validate-name (car (last args))))
   (let ((stdout (generate-new-buffer " *cci-remote-output*"))
         (stderr (generate-new-buffer " *cci-remote-error*"))
         (default-directory temporary-file-directory)
-        process stderr-process timer completed)
+        process stderr-process timer completed overflow)
+    (when coding (with-current-buffer stdout (set-buffer-multibyte nil)))
     (cl-labels
         ((finish
-          (proc)
-          (unless completed
-            (setq completed t)
-            (when timer (cancel-timer timer))
-            (while (accept-process-output stderr-process 0 nil t))
-            (let* ((timeout (process-get proc 'cci-timeout))
-                   (outcome
-                    (list :host host :operation (car args) :process proc
-                          :status (process-exit-status proc)
-                          :stdout (with-current-buffer stdout (buffer-string))
-                          :stderr (with-current-buffer stderr (buffer-string))
-                          :cancelled (and (eq (process-status proc) 'signal)
-                                          (not timeout))
-                          :timeout timeout)))
-              (delete-process proc)
-              (when (process-live-p stderr-process) (delete-process stderr-process))
-              (kill-buffer stdout)
-              (kill-buffer stderr)
-              (condition-case err
-                  (funcall callback outcome)
-                (error (message "Remote request for %s failed: %s"
-                                host (error-message-string err))))))))
+           (proc)
+           (unless completed
+             (setq completed t)
+             (when timer (cancel-timer timer))
+             (while (accept-process-output stderr-process 0 nil t))
+             (let* ((timeout (process-get proc 'cci-timeout))
+                    (outcome
+                     (list :host host :operation operation :process proc
+                           :status (process-exit-status proc)
+                           :stdout (with-current-buffer stdout (buffer-string))
+                           :stderr (with-current-buffer stderr (buffer-string))
+                           :cancelled (and (eq (process-status proc) 'signal)
+                                           (not timeout))
+                           :timeout timeout
+                           :overflow overflow)))
+               (delete-process proc)
+               (when (process-live-p stderr-process) (delete-process stderr-process))
+               (kill-buffer stdout)
+               (kill-buffer stderr)
+               (condition-case err
+                   (funcall callback outcome)
+                 (error (message "Remote request for %s failed: %s"
+                                 host (error-message-string err))))))))
       (condition-case err
           (progn
             (setq stderr-process
-                  (make-pipe-process :name "cci-remote-stderr" :buffer stderr
-                                     :noquery t :sentinel #'ignore))
+                  (apply #'make-pipe-process
+                         :name "cci-remote-stderr" :buffer stderr
+                         :noquery t :sentinel #'ignore
+                         (when coding (list :coding coding))))
             (setq process
-                  (make-process
-                   :name (or name "claude-code-ide-remote")
-                   :buffer stdout :stderr stderr-process :noquery t
-                   :connection-type 'pipe
-                   :command (append '("ssh" "-T" "-n")
-                                    claude-code-ide-zmx--ssh-options
-                                    (list host (claude-code-ide-zmx--remote-command args)))
-                   :sentinel
-                   (lambda (proc _event)
-                     (when (memq (process-status proc) '(exit signal failed))
-                       (finish proc)))))
+                  (apply #'make-process
+                         :name (or name "claude-code-ide-remote")
+                         :buffer stdout :stderr stderr-process :noquery t
+                         :connection-type 'pipe
+                         :command (append '("ssh" "-T" "-n")
+                                          claude-code-ide-zmx--ssh-options
+                                          (list host command))
+                         :sentinel
+                         (lambda (proc _event)
+                           (when (memq (process-status proc) '(exit signal failed))
+                             (finish proc)))
+                         (append
+                          (when coding (list :coding coding))
+                          (when output-limit
+                            (list :filter
+                                  (lambda (proc string)
+                                    (unless overflow
+                                      (with-current-buffer (process-buffer proc)
+                                        (insert string)
+                                        (when (> (buffer-size) output-limit)
+                                          (setq overflow t)
+                                          (delete-region (1+ output-limit) (point-max))
+                                          (delete-process proc))))))))))
             (setq timer
                   (run-at-time
                    30 nil
@@ -186,6 +213,292 @@ The total deadline is thirty seconds.  No request retries."
          (when (buffer-live-p stdout) (kill-buffer stdout))
          (when (buffer-live-p stderr) (kill-buffer stderr))
          (user-error "Cannot start SSH for %s: %s" host (error-message-string err)))))))
+
+(defun claude-code-ide-zmx--call-remote (host args callback &optional name)
+  "Run remote zmx ARGS on HOST and return the owned SSH process.
+Call CALLBACK once with :host, :operation, :process, :status,
+:stdout, :stderr, :cancelled, :timeout, and :overflow.  NAME
+optionally identifies this request.  The total deadline is thirty
+seconds.  No request retries."
+  (when (member (car args) '("attach" "kill"))
+    (claude-code-ide-zmx--validate-name (car (last args))))
+  (claude-code-ide-zmx--run-remote-command
+   host (car args) (claude-code-ide-zmx--remote-command args) callback name))
+
+;;; Remote Git metadata
+
+(defconst claude-code-ide-zmx--metadata-version "cci-git-metadata-v1"
+  "Wire-format version tag for the remote Git metadata probe.")
+
+(defconst claude-code-ide-zmx--metadata-max-directories 32
+  "Maximum directories accepted in one remote metadata batch.")
+
+(defconst claude-code-ide-zmx--metadata-max-command-bytes 16384
+  "Maximum byte size of one remote metadata command.")
+
+(defconst claude-code-ide-zmx--metadata-max-stdout-bytes 1048576
+  "Maximum stdout bytes retained from one remote metadata batch.")
+
+(defun claude-code-ide-zmx--metadata-script (directories)
+  "Return the POSIX shell source probing DIRECTORIES for Git metadata.
+Only ever runs `cd', `git rev-parse', and `git symbolic-ref' inside a
+subshell per directory: no writes, no remote temporary files, no
+other filesystem mutation.  Output is the NUL-delimited wire format
+validated by `claude-code-ide-zmx--parse-metadata'."
+  (concat
+   "unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR CDPATH
+LC_ALL=C
+export LC_ALL
+
+sanitize() { printf '%s' \"$1\" | tr '[:cntrl:]' ' '; }
+emit() { printf '%s\\000%s\\000%s\\000%s\\000%s\\000%s\\000%s\\000' \"$i\" \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" \"$6\"; }
+emit_error() {
+  msg=$(sanitize \"$1\")
+  [ -n \"$msg\" ] || msg=\"unspecified failure\"
+  emit \"error\" \"\" \"\" \"\" \"\" \"$msg\"
+}
+emit_nongit() { emit \"non-git\" \"\" \"$dir\" \"\" \"\" \"\"; }
+emit_git() { emit \"git\" \"$common_abs\" \"$project\" \"$worktree\" \"$branch\" \"\"; }
+
+"
+   "printf '%s\\000%s\\000' "
+   (claude-code-ide-zmx--quote claude-code-ide-zmx--metadata-version) " "
+   (claude-code-ide-zmx--quote (number-to-string (length directories))) "\n"
+   "i=0\n"
+   "for dir in " (mapconcat #'claude-code-ide-zmx--quote directories " ") "; do\n"
+   "  (
+    if ! cd \"$dir\" 2>/dev/null; then
+      emit_error \"cannot enter the requested directory\"
+      exit 0
+    fi
+    common=$(git rev-parse --git-common-dir 2>&1)
+    common_status=$?
+    if [ \"$common_status\" -ne 0 ]; then
+      diag=$common
+      if [ \"$common_status\" -eq 128 ]; then
+        case \"$diag\" in
+          \"fatal: not a git repository (or any of the parent directories): .git\")
+            emit_nongit; exit 0 ;;
+          \"fatal: not a git repository (or any parent up to mount point \"*\")
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\")
+            emit_nongit; exit 0 ;;
+        esac
+      fi
+      emit_error \"$diag\"
+      exit 0
+    fi
+    common_abs=$(cd \"$common\" 2>/dev/null && pwd -P)
+    if [ -z \"$common_abs\" ]; then
+      emit_error \"cannot resolve common directory\"
+      exit 0
+    fi
+    case \"$common_abs\" in
+      */.git) project=${common_abs%/.git}; [ -n \"$project\" ] || project=/ ;;
+      *) project=$common_abs ;;
+    esac
+    toplevel=$(git rev-parse --show-toplevel 2>/dev/null)
+    toplevel_status=$?
+    worktree=\"\"
+    if [ \"$toplevel_status\" -eq 0 ]; then
+      worktree=$(cd \"$toplevel\" 2>/dev/null && pwd -P)
+      if [ -z \"$worktree\" ]; then
+        emit_error \"cannot resolve worktree root\"
+        exit 0
+      fi
+    else
+      if ! bare=$(git rev-parse --is-bare-repository 2>/dev/null) || [ \"$bare\" != \"true\" ]; then
+        emit_error \"cannot read the worktree root\"
+        exit 0
+      fi
+    fi
+    branch=\"\"
+    branch_out=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)
+    branch_status=$?
+    if [ \"$branch_status\" -eq 0 ]; then
+      branch=$branch_out
+    elif [ \"$branch_status\" -ne 1 ]; then
+      emit_error \"cannot read the current branch\"
+      exit 0
+    fi
+    emit_git
+  )
+"
+   "  i=$((i + 1))\n"
+   "done\n"))
+
+(defun claude-code-ide-zmx--metadata-command (directories)
+  "Return the remote command probing DIRECTORIES under an explicit `sh -c'.
+Explicit `sh -c' keeps the probe POSIX regardless of the remote
+user's login shell; a login shell that cannot even parse this single
+quoted argument fails closed instead of weakening quoting."
+  (concat "sh -c " (claude-code-ide-zmx--quote
+                    (claude-code-ide-zmx--metadata-script directories))))
+
+(defun claude-code-ide-zmx--metadata-command-size (directories)
+  "Return the byte size of the remote command probing DIRECTORIES."
+  (string-bytes (claude-code-ide-zmx--metadata-command directories)))
+
+(defun claude-code-ide-zmx--metadata-utf8 (bytes)
+  "Decode BYTES as strict UTF-8, or return nil for invalid scalar values.
+Emacs can decode values above Unicode's maximum code point."
+  (let ((decoded (decode-coding-string bytes 'utf-8 t)))
+    (unless (seq-some (lambda (char)
+                        (or (> char #x10ffff) (<= #xd800 char #xdfff)))
+                      decoded)
+      decoded)))
+
+(defun claude-code-ide-zmx--metadata-clean-p (text)
+  "Return non-nil if TEXT has no control character."
+  (not (string-match-p "[[:cntrl:]\u007f-\u009f]" text)))
+
+(defun claude-code-ide-zmx--metadata-fields (host stdout)
+  "Return HOST's STDOUT split into validated, UTF-8-decoded NUL fields.
+Signal a `user-error' when STDOUT is empty, missing its final NUL
+delimiter, or contains a field that is not valid UTF-8."
+  (unless (and (> (length stdout) 0) (eq (aref stdout (1- (length stdout))) 0))
+    (user-error "Host %s metadata response is empty or missing its final delimiter" host))
+  (mapcar (lambda (field)
+            (or (claude-code-ide-zmx--metadata-utf8 field)
+                (user-error "Host %s metadata response contains invalid UTF-8" host)))
+          (split-string (substring stdout 0 -1) (string 0))))
+
+(defun claude-code-ide-zmx--metadata-canonical-path-p (path)
+  "Return non-nil if PATH has canonical absolute syntax, without filesystem access."
+  (and (claude-code-ide-zmx--valid-directory-p path)
+       (or (equal path "/")
+           (not (string-match-p
+                 "\\(?:/\\.\\.?\\(?:/\\|\\'\\)\\|//\\|/\\'\\)" path)))))
+
+(defun claude-code-ide-zmx--metadata-validate-record
+    (host directory kind common project worktree branch diagnostic)
+  "Validate one record's fields for DIRECTORY on HOST and return its plist.
+KIND, COMMON, PROJECT, WORKTREE, BRANCH, and DIAGNOSTIC are the raw
+decoded wire fields.  Signal a `user-error' for any forbidden,
+missing, or malformed field for KIND."
+  (pcase kind
+    ("git"
+     (unless (claude-code-ide-zmx--metadata-canonical-path-p common)
+       (user-error "Host %s Git record for %s has an invalid common directory"
+                   host directory))
+     (unless (claude-code-ide-zmx--metadata-canonical-path-p project)
+       (user-error "Host %s Git record for %s has an invalid project path"
+                   host directory))
+     (unless (or (string-empty-p worktree)
+                 (claude-code-ide-zmx--metadata-canonical-path-p worktree))
+       (user-error "Host %s Git record for %s has an invalid worktree path"
+                   host directory))
+     (unless (claude-code-ide-zmx--metadata-clean-p branch)
+       (user-error "Host %s Git record for %s has an invalid branch name"
+                   host directory))
+     (unless (string-empty-p diagnostic)
+       (user-error "Host %s Git record for %s carries a forbidden diagnostic"
+                   host directory))
+     (list :kind 'git :host host :directory directory :common-dir common
+           :project-path project
+           :worktree-path (unless (string-empty-p worktree) worktree)
+           :branch (unless (string-empty-p branch) branch)))
+    ("non-git"
+     (unless (and (string-empty-p common) (string-empty-p worktree)
+                  (string-empty-p branch) (string-empty-p diagnostic))
+       (user-error "Host %s non-Git record for %s carries a forbidden field"
+                   host directory))
+     (unless (equal project directory)
+       (user-error "Host %s non-Git record for %s has a mismatched project path"
+                   host directory))
+     (list :kind 'non-git :host host :directory directory :project-path project))
+    ("error"
+     (unless (and (string-empty-p common) (string-empty-p project)
+                  (string-empty-p worktree) (string-empty-p branch))
+       (user-error "Host %s error record for %s carries a forbidden field"
+                   host directory))
+     (unless (and (not (string-empty-p diagnostic))
+                  (claude-code-ide-zmx--metadata-clean-p diagnostic))
+       (user-error "Host %s error record for %s has an invalid diagnostic"
+                   host directory))
+     (list :kind 'error :host host :directory directory :diagnostic diagnostic))
+    (_ (user-error "Host %s metadata record for %s has an unknown kind: %s"
+                   host directory kind))))
+
+(defun claude-code-ide-zmx--parse-metadata (host directories stdout)
+  "Validate and parse STDOUT as HOST's Git metadata for DIRECTORIES.
+Return one plist per directory in DIRECTORIES' order.  Signal a
+`user-error' for any framing, encoding, count, index, kind, or field
+violation.  Never return a partial result."
+  (let* ((count (length directories))
+         (fields (claude-code-ide-zmx--metadata-fields host stdout)))
+    (unless (equal (nth 0 fields) claude-code-ide-zmx--metadata-version)
+      (user-error "Host %s metadata response has an unrecognized version" host))
+    (unless (equal (nth 1 fields) (number-to-string count))
+      (user-error "Host %s metadata response count does not match the request" host))
+    (unless (= (length fields) (+ 2 (* count 7)))
+      (user-error "Host %s metadata response has the wrong field count" host))
+    (let ((rest (nthcdr 2 fields)) (position 0) records)
+      (dolist (directory directories (nreverse records))
+        (let ((index (pop rest)) (kind (pop rest)) (common (pop rest))
+              (project (pop rest)) (worktree (pop rest)) (branch (pop rest))
+              (diagnostic (pop rest)))
+          (unless (equal index (number-to-string position))
+            (user-error "Host %s metadata record %d has index %s, expected %d"
+                        host position index position))
+          (push (claude-code-ide-zmx--metadata-validate-record
+                 host directory kind common project worktree branch diagnostic)
+                records)
+          (setq position (1+ position)))))))
+
+(defun claude-code-ide-zmx--metadata-failure (host outcome)
+  "Return a corrective error string for HOST's metadata OUTCOME."
+  (cond
+   ((plist-get outcome :overflow)
+    (format "Host %s metadata response exceeded %d bytes"
+            host claude-code-ide-zmx--metadata-max-stdout-bytes))
+   ((plist-get outcome :timeout) (format "Host %s timed out running the metadata probe" host))
+   ((plist-get outcome :cancelled) (format "Host %s cancelled the metadata probe" host))
+   (t (let ((detail (string-trim (or (plist-get outcome :stderr) ""))))
+        (format "Host %s metadata probe failed (status %s)%s" host (plist-get outcome :status)
+                (if (string-empty-p detail) "" (format ": %s" detail)))))))
+
+(defun claude-code-ide-zmx--query-remote-metadata (host directories callback &optional name)
+  "Query HOST for Git metadata of DIRECTORIES and return the owned process.
+Reject the request before dispatch, as a `user-error', when HOST is
+unsafe or unconfigured, DIRECTORIES has more than
+`claude-code-ide-zmx--metadata-max-directories' entries, any entry is
+not an absolute path without control characters, or the resulting
+command exceeds `claude-code-ide-zmx--metadata-max-command-bytes'.
+This adapter never filters or reindexes DIRECTORIES: a passing batch
+dispatches every entry together, and only the remote probe may
+report an individual directory as an `error' wire record.
+
+Call CALLBACK once with :host, :operation \"git-metadata\", :process,
+:status, :stdout, :stderr, :cancelled, :timeout, and either :records
+\(a list of plists from `claude-code-ide-zmx--parse-metadata', ordered
+like DIRECTORIES\) on success, or :error \(a string\) on failure.
+NAME optionally identifies this request."
+  (claude-code-ide-zmx--validate-host host)
+  (unless (<= (length directories) claude-code-ide-zmx--metadata-max-directories)
+    (user-error "Host %s metadata request has too many directories: %d"
+                host (length directories)))
+  (dolist (directory directories)
+    (unless (claude-code-ide-zmx--valid-directory-p directory)
+      (user-error "Host %s metadata request has an invalid directory: %S"
+                  host directory)))
+  (let ((command (claude-code-ide-zmx--metadata-command directories)))
+    (unless (<= (string-bytes command) claude-code-ide-zmx--metadata-max-command-bytes)
+      (user-error "Host %s metadata request command is too large: %d bytes"
+                  host (string-bytes command)))
+    (claude-code-ide-zmx--run-remote-command
+     host "git-metadata" command
+     (lambda (outcome)
+       (funcall
+        callback
+        (if (and (not (plist-get outcome :overflow))
+                 (claude-code-ide-zmx--remote-request-ok-p outcome))
+            (condition-case err
+                (append outcome
+                        (list :records (claude-code-ide-zmx--parse-metadata
+                                        host directories (plist-get outcome :stdout))))
+              (user-error (append outcome (list :error (error-message-string err)))))
+          (append outcome (list :error (claude-code-ide-zmx--metadata-failure host outcome))))))
+     name 'no-conversion claude-code-ide-zmx--metadata-max-stdout-bytes)))
 
 (defvar claude-code-ide-zmx--pending-name nil
   "zmx session name for the terminal being created, or nil.
@@ -511,7 +824,7 @@ thirty-second deadline, and cancel its process if the user quits."
                  host '("list" "--short")
                  (lambda (result) (setq outcome result)) request-name))
           (while (not outcome)
-            (accept-process-output process 0.1))
+            (accept-process-output nil 0.1))
           (unless (claude-code-ide-zmx--remote-request-ok-p outcome)
             (user-error "%s" (claude-code-ide-zmx--remote-request-failure
                               host "list --short" outcome)))
@@ -561,41 +874,41 @@ can recover that ownership token from either phase alone."
         kill-process)
     (cl-labels
         ((finish
-          (result)
-          (unless done
-            (setq done t)
-            (condition-case err
-                (funcall callback result)
-              (error (message "Remote Stop callback for %s on %s failed: %s"
-                              name host (error-message-string err))))))
+           (result)
+           (unless done
+             (setq done t)
+             (condition-case err
+                 (funcall callback result)
+               (error (message "Remote Stop callback for %s on %s failed: %s"
+                               name host (error-message-string err))))))
          (unconfirmed
-          (reason)
-          (finish (list :host host :name name :request kill-process
-                        :error (format (concat "Stop for %s on host %s is unconfirmed (%s). "
+           (reason)
+           (finish (list :host host :name name :request kill-process
+                         :error (format (concat "Stop for %s on host %s is unconfirmed (%s). "
                                                 "Check `zmx list' on %s. Retry Stop only if the target remains.")
-                                       name host reason host))))
+                                        name host reason host))))
          (phase2-callback
-          (list-outcome)
-          (condition-case err
-              (let ((check (claude-code-ide-zmx--stop-list-check host name list-outcome)))
-                (if (eq check t)
-                    (finish (list :host host :name name :request kill-process :verified t))
-                  (unconfirmed check)))
-            (error (unconfirmed (error-message-string err)))))
+           (list-outcome)
+           (condition-case err
+               (let ((check (claude-code-ide-zmx--stop-list-check host name list-outcome)))
+                 (if (eq check t)
+                     (finish (list :host host :name name :request kill-process :verified t))
+                   (unconfirmed check)))
+             (error (unconfirmed (error-message-string err)))))
          (phase1-callback
-          (outcome)
-          (condition-case err
-              (if (not (claude-code-ide-zmx--stop-kill-ack-p name outcome))
-                  (unconfirmed
-                   (if (claude-code-ide-zmx--remote-request-ok-p outcome)
-                       "zmx did not confirm killing the exact target"
-                     (claude-code-ide-zmx--remote-request-failure host "kill" outcome)))
-                (let ((list-process
-                       (claude-code-ide-zmx--call-remote
-                        host '("list" "--short") #'phase2-callback req-name)))
-                  (process-put list-process 'cci-operation 'stop)
-                  (process-put list-process 'cci-request kill-process)))
-            (error (unconfirmed (error-message-string err))))))
+           (outcome)
+           (condition-case err
+               (if (not (claude-code-ide-zmx--stop-kill-ack-p name outcome))
+                   (unconfirmed
+                    (if (claude-code-ide-zmx--remote-request-ok-p outcome)
+                        "zmx did not confirm killing the exact target"
+                      (claude-code-ide-zmx--remote-request-failure host "kill" outcome)))
+                 (let ((list-process
+                        (claude-code-ide-zmx--call-remote
+                         host '("list" "--short") #'phase2-callback req-name)))
+                   (process-put list-process 'cci-operation 'stop)
+                   (process-put list-process 'cci-request kill-process)))
+             (error (unconfirmed (error-message-string err))))))
       (condition-case err
           (setq kill-process
                 (claude-code-ide-zmx--call-remote

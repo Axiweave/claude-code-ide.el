@@ -234,9 +234,19 @@ The remote executable is =zmx= from the remote command environment's =PATH=. =cl
 
 Use =C-u M-x claude-code-ide-attach-all= for bulk attachment. Use =C-u M-x claude-code-ide-attach-select= for marked selection. Without a prefix, these commands keep their local behavior. Bulk attachment names entries that lack usable metadata. Individual attachment permits manual Agent identification and remote-directory text entry. Neither value becomes a remote launch command.
 
-Remote rows appear only in the global manager. Their names retain =[HOST] PROJECT= after rename. Matching paths and zmx names on different hosts remain separate targets.
+Remote rows appear only in the global manager. Flat labels retain =[HOST] PROJECT= after rename. Grouped headings retain the host and project. Matching paths and zmx names on different hosts remain separate targets.
 
 Selecting a connected row opens its terminal. Selecting a disconnected row does not contact its host. Press =c= to reattach explicitly with the same Session ID. Refresh, startup, and restored layouts never reconnect automatically.
+
+A successful attachment requests project metadata asynchronously. A metadata failure does not undo attachment.
+Press =? m= in the manager to refresh cached Git metadata for one configured host.
+The command uses known connected and disconnected rows. It does not discover or reattach Agents.
+Ordinary =G= refresh, startup, layout restore, view changes, and navigation never request remote metadata.
+
+Metadata requests reject control characters, including DEL and C1 controls.
+Git response paths must have canonical absolute syntax. Emacs does not resolve these paths on the local filesystem.
+A malformed response rejects the whole batch. Failure reports identify the host and affected directories.
+Metadata failures preserve the last valid cache and do not close terminals.
 
 Before reattaching a remembered remote row, Emacs checks the exact target with =zmx list --short=.
 A missing target or failed SSH check stops attachment before a terminal starts.
@@ -253,27 +263,31 @@ After Stop, Emacs removes the row only when zmx confirms the kill and a separate
 A timeout or ambiguous result leaves the row intact.
 Emacs never retries a kill.
 
-Remote attachment supports the Ghostel backend only; vterm and Eat are scheduled for deprecation. Remote layouts display the terminal without opening a local project. Remote project launch, Git, Magit, Dired, and Treemacs actions are unsupported. Remote file editing, text-transfer integration, MCP, and SSE setup are outside this feature.
+Remote attachment supports the Ghostel backend only. Future versions will deprecate vterm and Eat.
+Remote layouts show the terminal without opening a local project.
+Remote project launch, interactive Git, Magit, Dired, and Treemacs actions remain unsupported.
+Remote file editing, text-transfer integration, MCP, and SSE setup remain outside this mode.
 
 If attachment fails, inspect the host-qualified error. Check SSH authentication, trusted host keys, and remote =PATH=. A missing target remains disconnected. Emacs never replaces it with a new agent session. See the [[file:specs/003-attach-remote-agents/quickstart.md][validation guide]] for backend coverage and the live acceptance procedure.
 
 ** CC Manager
 
-=claude-code-ide-manager-toggle-sidebar= manages a dedicated left sidebar for live Claude sessions, similar to a Treemacs-style frame panel. The manager is additive: existing commands such as =claude-code-ide-list-sessions= still work as before.
+=claude-code-ide-manager-toggle-sidebar= opens a dedicated left sidebar for Sessions.
+Existing commands, including =claude-code-ide-list-sessions=, keep their behavior.
 
 CC Manager supports two scope families:
 
-- a global manager across all live sessions
+- a global manager across live Sessions and remembered remote rows
 - a repo-local manager keyed by the current Git root
 
 Generic commands such as =claude-code-ide-manager-toggle-sidebar= and =claude-code-ide-manager-focus= use =claude-code-ide-manager-default-target= to choose which scope to target. Explicit global and repo-local commands remain available when you want to bypass that policy.
 
 The manager can:
 
-- Show all live sessions with project basename in the sidebar
+- Show flat rows or host-qualified project groups in the global manager
 - Show repo-local sessions with branch-first labels by default, falling back to basename when detached
-- Pin sessions to keep them at the top
-- Preserve manual ordering within pinned and unpinned groups
+- Keep pinned Sessions above unpinned Sessions within each project in grouped view
+- Keep one manual order across flat and grouped global views
 - Edit and pin the complete session order for one manager scope
 - Restore per-session window layouts when you switch back
 
@@ -299,13 +313,18 @@ You can reach the manager in two ways:
   - =1..9= to switch to manager slots 1 through 9
   - =0= to switch to manager slot 10
   - =M= to focus the manager window
-  - =G= to refresh the live session list
+  - =G= to refresh the local Session list without network requests
+- Press =?= in the sidebar to open its manager menu.
+  - =v= toggles flat and grouped global views
+  - =C-j= and =C-k= move between project groups
+  - =m= refreshes cached project metadata for one configured remote host
 
 *** What The Sidebar Shows
 
-Each row in the sidebar represents one live Claude session derived from the existing session process table.
+The sidebar shows live Sessions. The global manager also retains disconnected remote rows.
 
-- Global manager rows show the project basename
+- Flat global rows show the project basename
+- Grouped global rows show a branch or directory label below a host-qualified project heading
 - Repo-local manager rows use =claude-code-ide-manager-repo-label-strategy=, which defaults to branch-first with basename fallback
 - The full project path is available via hover text and in the echo area when point moves onto the row
 - The currently active session row is highlighted
@@ -313,6 +332,38 @@ Each row in the sidebar represents one live Claude session derived from the exis
 - Visible rows are assigned quick slots =1..9, 0= from top to bottom
 
 Quick slots are derived from the current visible order. They are not stored separately, so pinning or reordering a row immediately changes which session each slot selects.
+
+*** Grouped Global View
+
+Press =v= to toggle the global manager between flat and grouped views.
+Repo-local managers keep their existing view.
+The manager saves the global view choice when persistence is enabled.
+
+Git worktrees share one project heading when their canonical Git common directories match.
+Separate Git directories stay separate, even when project paths match.
+The host remains part of every remote group identity.
+Remote non-Git and unresolved groups use exact directory text.
+Thus =/a/b= and =/a/b/= remain separate unresolved groups until metadata resolves them.
+For a separate Git directory, the heading uses that directory's basename.
+Matching heading names also show their paths. A remaining collision shows the group identity.
+Headings do not accept Session actions. There are no project-wide actions.
+Rows use cached branch names, with directory names when no branch is available.
+Custom names appear after that label.
+
+=C-j= and =C-k= choose the first row of the next or previous project group and wrap at the end.
+Selecting a disconnected row does not connect or change the active Session.
+Press =c= to reattach explicitly.
+
+Grouped moves and editor Apply reorder only positions already occupied by the affected group in the flat sequence.
+For example, moving =A2= above =A1= changes =A1 B1 A2 B2= to =A2 B1 A1 B2=.
+The first successful grouped move or Apply creates shared order keys when needed.
+Those keys also fix the fallback order of other rows in the shared flat sequence.
+Toggling views does not change the order.
+
+In grouped global view, =E= includes live and disconnected rows under fixed project headings.
+=M-p= and =M-n= move rows only within the same project.
+Apply rejects edited labels or headings, missing rows, and changed project membership.
+Failure leaves the editor, pins, and order unchanged.
 
 *** Session State Indicator
 
@@ -388,19 +439,27 @@ When point is in the manager buffer:
 - =K= confirms Stop for the exact selected target
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
-- =G= refreshes the sidebar from the current live session table
+- =v= toggles flat and grouped global views
+- =C-j= moves to the next project in grouped global view
+- =C-k= moves to the previous project in grouped global view
+- =? m= refreshes cached project metadata for one configured remote host
+- =G= refreshes the sidebar without network requests
 - =1..9= jump directly to the corresponding visible slot
 - =0= jumps to slot 10
 
 =g= and =C-u g= search only the selected manager window. Labels start at each session name's first character. =ESC= and =C-g= cancel selection.
 
-Pinned rows always stay above unpinned rows. Reordering only swaps items within the current bucket, so moving a pinned row never pushes it below unpinned rows.
+Pins stay above unpinned rows within each project in grouped view.
+Flat view keeps all pinned rows above unpinned rows.
+Row moves never cross a pin boundary.
 
 *** Pin Order Editor
 
 Press =E= in the sidebar or main transient to open the pin-order editor. You can also run =M-x claude-code-ide-manager-edit-pin-order=.
 
-The editor lists every session that was live in the selected scope when it opened. It uses one numbered row per session.
+The flat and repo-local editors list Sessions that were live when the editor opened.
+The grouped global editor also includes disconnected remote rows.
+Each Session has one numbered row.
 
 - =M-p= moves the current row up and renumbers all rows
 - =M-n= moves the current row down and renumbers all rows
@@ -443,6 +502,8 @@ When persistence is enabled, the manager remembers:
 - saved layout snapshots
 - last selected buffer for layout restore
 - remote host, exact zmx target, Agent identification, and custom name
+- flat or grouped global view
+- cached project identity and branch metadata
 
 After restart, remembered remote rows start disconnected. Their labels, pinning, ordering, selection, and saved layouts remain local metadata. Press =c= to reattach. A removed host stays visible in history, but Emacs requires current host configuration before remote access.
 

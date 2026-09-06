@@ -64,6 +64,12 @@
 (declare-function claude-code-ide-manager-switch-by-slot "claude-code-ide-manager" (slot))
 (declare-function claude-code-ide-manager-focus "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-refresh "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-toggle-grouped-view "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-refresh-remote-metadata
+                  "claude-code-ide-manager" (&optional host))
+(declare-function claude-code-ide-manager--view "claude-code-ide-manager" (scope))
+(declare-function claude-code-ide-manager-next-project-group "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-previous-project-group "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-edit-pin-order "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager--pin-order-resync "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager--clear-manual-order "claude-code-ide-manager" ())
@@ -666,7 +672,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("g" "Select row with Avy" claude-code-ide-manager-avy-switch)
     ("SPC" "Switch (keep focus)" claude-code-ide-manager-switch-at-point-preserve-focus)
     ("n" "Next session" claude-code-ide-manager-next-line)
-    ("p" "Previous session" claude-code-ide-manager-previous-line)]
+    ("p" "Previous session" claude-code-ide-manager-previous-line)
+    ("C-j" "Next project group" claude-code-ide-manager-next-project-group)
+    ("C-k" "Previous project group" claude-code-ide-manager-previous-project-group)]
    ["Sessions"
     ("s" "Start session at point" claude-code-ide-manager-start-session-at-point)
     ("S" "Start (skip permissions)" claude-code-ide-manager-start-session-at-point-skip-permissions)
@@ -680,11 +688,16 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("r" "Rename session" claude-code-ide-manager-rename-at-point)
     ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]
    ["Arrange"
+    ("v" claude-code-ide-manager-toggle-grouped-view
+     :description (lambda ()
+                    (format "Global view (%s)"
+                            (claude-code-ide-manager--view '(:type global)))))
     ("P" "Toggle pin" claude-code-ide-manager-toggle-pin)
     ("E" "Edit session order" claude-code-ide-manager-edit-pin-order)
     ("M-p" "Move row up" claude-code-ide-manager-move-up)
     ("M-n" "Move row down" claude-code-ide-manager-move-down)
     ("C-s" "Sort menu" claude-code-ide-manager-sort-menu)
+    ("m" "Refresh remote metadata" claude-code-ide-manager-refresh-remote-metadata)
     ("G" "Refresh" claude-code-ide-manager-refresh)]])
 
 ;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)

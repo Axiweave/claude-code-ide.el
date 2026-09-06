@@ -9,6 +9,30 @@ The Emacs-side object: keyed by session-id, holds the terminal buffer,
 window state, and idle tracking. Without zmx, it owns the agent process
 and dies with Emacs.
 
+### Worktree
+A working directory of a Git repository, including its main working directory
+and linked worktrees. Multiple Sessions can use the same Worktree.
+
+### Project group
+Sessions that belong to one Git repository and its Worktrees on one host.
+Independent clones and different hosts form separate groups.
+For non-Git Sessions, the project directory identifies the group.
+
+### Unresolved group
+Remote Sessions whose repository identity is unknown and whose exact host
+and Session directory match. A Session without a directory forms its own group.
+
+### Host section
+The Project groups and Unresolved groups for one Configured host in Grouped view.
+
+### Grouped view
+A global manager view that places Session rows under Project group headings.
+Each numbered row represents one Session, not one Worktree.
+Only Worktrees with manager Sessions appear.
+
+### Flat view
+A global manager view that lists Session rows without Project group headings.
+
 ### Zmx session
 A backend-owned persistent PTY managed by the external `zmx` program.
 It survives Emacs restarts and buffer kills. Emacs is one attach client

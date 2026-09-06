@@ -23,3 +23,22 @@ Tried (insufficient):
 - zero-width manager window fringes through buffer-local values and
   =set-window-fringes=; the live window reported zero-width fringes, but the
   visual result did not change
+
+
+* DONE global view with project + worktree
+Implemented: [[file:specs/004-grouped-global-view/quickstart.md][Grouped global view acceptance results]].
+Press =v= in the global manager to switch views.
+#+begin_example
+project-a
+  1. main
+  2. trunk
+project-b
+  3. main
+  4. trunk-b
+
+[ramhorn]
+project-remote
+  5. main
+  6. trunk-b
+#+end_example
+C-j C-k to jump between project-group

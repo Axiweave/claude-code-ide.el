@@ -30,6 +30,7 @@
 (declare-function claude-code-ide--get-session "claude-code-ide" (session-id))
 (declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory force-new))
 (declare-function claude-code-ide--set-session-custom-name "claude-code-ide" (session name))
+(declare-function claude-code-ide--set-session-group-metadata "claude-code-ide" (session metadata))
 (declare-function claude-code-ide--preferred-session "claude-code-ide" (directory))
 (declare-function claude-code-ide--touch-session "claude-code-ide" (session-id))
 (declare-function claude-code-ide-session-buffer "claude-code-ide" (session))
@@ -42,6 +43,7 @@
 (declare-function claude-code-ide-session-title "claude-code-ide" (session))
 (declare-function claude-code-ide-session-zmx-name "claude-code-ide" (session))
 (declare-function claude-code-ide-session-host "claude-code-ide" (session))
+(declare-function claude-code-ide-session-group-metadata "claude-code-ide" (session))
 (declare-function claude-code-ide-session-cli-type "claude-code-ide" (session))
 (declare-function claude-code-ide--show-session-buffer "claude-code-ide" (buffer))
 (declare-function claude-code-ide-attach "claude-code-ide" (&optional host))
@@ -57,9 +59,13 @@
 (declare-function claude-code-ide--transient-launch-flags "claude-code-ide-transient" (&optional bypass))
 (declare-function claude-code-ide-manager-sort-menu "claude-code-ide-transient" ())
 (declare-function claude-code-ide-manager-dispatch "claude-code-ide-transient" ())
+(declare-function claude-code-ide-log "claude-code-ide" (format-string &rest args))
+(declare-function claude-code-ide--remote-target-pending-reason "claude-code-ide" (session-id))
+(declare-function claude-code-ide--read-remote-host "claude-code-ide" ())
 
 (defvar claude-code-ide--session-cli-type)
 (defvar claude-code-ide-cli-path)
+(defvar claude-code-ide-remote-hosts)
 
 (defvar claude-code-ide-session-idle-hook nil)
 (defvar claude-code-ide-session-working-hook nil)
@@ -71,7 +77,7 @@
   :group 'tools
   :prefix "claude-code-ide-manager-")
 
-(defconst claude-code-ide-manager--state-version 3
+(defconst claude-code-ide-manager--state-version 4
   "Persisted cc-manager state schema version.")
 
 (defconst claude-code-ide-manager--empty-persisted-state
@@ -259,7 +265,8 @@ render two cells wide, which breaks gutter alignment.")
   live-p
   host
   zmx-name
-  cli-type)
+  cli-type
+  group-metadata)
 
 (defvar claude-code-ide-manager--items nil
   "Current manager items.")
@@ -325,6 +332,233 @@ render two cells wide, which breaks gutter alignment.")
       (or (plist-get (claude-code-ide-manager--scope-state-entry scope) :items)
           claude-code-ide-manager--items)
     (plist-get (claude-code-ide-manager--scope-state-entry scope) :items)))
+
+(defun claude-code-ide-manager--view (scope)
+  "Return the presentation for SCOPE."
+  (if (and (eq (plist-get scope :type) 'global)
+           (eq (plist-get (claude-code-ide-manager--scope-state-entry scope) :view)
+               'grouped))
+      'grouped
+    'flat))
+
+(defun claude-code-ide-manager--normalize-view (view)
+  "Return VIEW normalized to `flat' or `grouped'."
+  (if (eq view 'grouped) 'grouped 'flat))
+
+(defun claude-code-ide-manager--valid-group-metadata (metadata host directory)
+  "Return validated METADATA for exact HOST and DIRECTORY, or nil."
+  (when (and (proper-list-p metadata) (cl-evenp (length metadata)))
+    (let ((kind (plist-get metadata :kind))
+          (common (plist-get metadata :common-dir))
+          (project (plist-get metadata :project-path))
+          (worktree (plist-get metadata :worktree-path))
+          (branch (plist-get metadata :branch)))
+      (when (and (equal host (plist-get metadata :host))
+                 (equal directory (plist-get metadata :directory))
+                 (or (null host) (claude-code-ide-zmx--valid-host-p host))
+                 (claude-code-ide-zmx--valid-directory-p directory)
+                 (claude-code-ide-zmx--valid-directory-p project)
+                 (or (null branch)
+                     (and (stringp branch) (not (string-empty-p branch))
+                          (not (string-match-p "[[:cntrl:]]" branch))))
+                 (pcase kind
+                   ('git
+                    (and (claude-code-ide-zmx--valid-directory-p common)
+                         (or (null worktree)
+                             (claude-code-ide-zmx--valid-directory-p worktree))))
+                   ('non-git
+                    (and (null common) (null worktree) (null branch)
+                         (or (null host) (equal project directory))))))
+        (list :kind kind
+              :host (and host (substring-no-properties host))
+              :directory (substring-no-properties directory)
+              :common-dir (and common (substring-no-properties common))
+              :project-path (substring-no-properties project)
+              :worktree-path (and worktree (substring-no-properties worktree))
+              :branch (and branch (substring-no-properties branch)))))))
+
+(defun claude-code-ide-manager--group-key (item)
+  "Return the repository identity for ITEM without querying Git or SSH."
+  (let* ((host (claude-code-ide-manager-item-host item))
+         (directory (claude-code-ide-manager-item-directory item))
+         (metadata (claude-code-ide-manager-item-group-metadata item)))
+    (pcase (plist-get metadata :kind)
+      ('git (list 'git host (plist-get metadata :common-dir)))
+      ('non-git (list 'non-git host (plist-get metadata :project-path)))
+      (_ (if (and (stringp directory) (not (string-empty-p directory)))
+             (list 'unresolved host
+                   (if host directory
+                     (condition-case nil (directory-file-name (file-truename directory))
+                       (file-error directory))))
+           (list 'unresolved-session host
+                 (claude-code-ide-manager-item-session-key item)))))))
+
+(defun claude-code-ide-manager--local-group-metadata (directory)
+  "Read local repository metadata for DIRECTORY, or return nil on error."
+  (let ((stderr (make-temp-file "cci-git-stderr-"))
+        (process-environment (copy-sequence process-environment)))
+    (unwind-protect
+        (condition-case nil
+            (let ((default-directory (file-name-as-directory directory)))
+              (dolist (name '("GIT_DIR" "GIT_WORK_TREE" "GIT_COMMON_DIR"))
+                (setenv name nil))
+              (setenv "LC_ALL" "C")
+              (cl-labels
+                  ((query (&rest args)
+                     (with-temp-buffer
+                       (let ((status (apply #'process-file "git" nil
+                                            (list (current-buffer) stderr) nil args)))
+                         (list status (string-remove-suffix "\n" (buffer-string))
+                               (with-temp-buffer
+                                 (insert-file-contents stderr)
+                                 (buffer-string))))))
+                   (value (result)
+                     (unless (eq (car result) 0)
+                       (error "Git metadata query failed: %s" (nth 2 result)))
+                     (cadr result)))
+                (let ((common-result (query "rev-parse" "--git-common-dir")))
+                  (if (and (eq (car common-result) 128)
+                           (string-match-p
+                            (concat "\\`fatal: not a git repository (or any "
+                                    "\\(?:of the parent directories): \\.git\n"
+                                    "\\|parent up to mount point [^\n]+)\n"
+                                    "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)\\.\n\\)\\'")
+                            (nth 2 common-result)))
+                      (claude-code-ide-manager--valid-group-metadata
+                       (list :kind 'non-git :host nil :directory directory
+                             :project-path (directory-file-name (file-truename directory)))
+                       nil directory)
+                    (let* ((common (directory-file-name
+                                    (file-truename (expand-file-name
+                                                    (value common-result) directory))))
+                           (root-result (query "rev-parse" "--show-toplevel"))
+                           (root (if (eq (car root-result) 0)
+                                     (directory-file-name (file-truename (cadr root-result)))
+                                   (unless (equal (value (query "rev-parse" "--is-bare-repository")) "true")
+                                     (error "Cannot read the Worktree root"))
+                                   nil))
+                           (branch-result (query "symbolic-ref" "--quiet" "--short" "HEAD"))
+                           (branch (unless (eq (car branch-result) 1)
+                                     (value branch-result))))
+                      (claude-code-ide-manager--valid-group-metadata
+                       (list :kind 'git :host nil :directory directory :common-dir common
+                             :project-path (if (equal (file-name-nondirectory common) ".git")
+                                               (directory-file-name (file-name-directory common))
+                                             common)
+                             :worktree-path root :branch branch)
+                       nil directory))))))
+          (error nil))
+      (delete-file stderr))))
+
+(defun claude-code-ide-manager--refresh-local-group-metadata (items)
+  "Refresh local metadata once per unique directory in ITEMS."
+  (let ((queried (make-hash-table :test 'equal))
+        (missing (make-symbol "missing")))
+    (dolist (item items)
+      (unless (claude-code-ide-manager-item-host item)
+        (let* ((directory (claude-code-ide-manager-item-directory item))
+               (metadata (gethash directory queried missing)))
+          (when (eq metadata missing)
+            (setq metadata (and directory
+                                (claude-code-ide-manager--local-group-metadata directory)))
+            (puthash directory metadata queried))
+          (when metadata
+            (setf (claude-code-ide-manager-item-group-metadata item) metadata)
+            (when-let* ((session (claude-code-ide--get-session
+                                  (claude-code-ide-manager-item-session-key item))))
+              (claude-code-ide--set-session-group-metadata session metadata))))))))
+
+(defun claude-code-ide-manager--group-path (item)
+  "Return ITEM's cached project path without local path interpretation."
+  (or (plist-get (claude-code-ide-manager-item-group-metadata item) :project-path)
+      (claude-code-ide-manager-item-directory item) ""))
+
+(defun claude-code-ide-manager--group-headings (items)
+  "Return group identity to (HEADING . PATH) mappings for ITEMS."
+  (let ((groups (make-hash-table :test 'equal))
+        (names (make-hash-table :test 'equal)))
+    (dolist (item items)
+      (let ((key (claude-code-ide-manager--group-key item)))
+        (unless (gethash key groups)
+          (let* ((path (claude-code-ide-manager--group-path item))
+                 (base (or (car (last (split-string path "/" t))) "/"))
+                 (name (if (memq (car key) '(unresolved unresolved-session))
+                           (concat base " [unresolved]") base)))
+            (puthash key (cons name path) groups)
+            (push key (gethash (list (cadr key) name) names))))))
+    (maphash
+     (lambda (_ keys)
+       (when (cdr keys)
+         (dolist (key keys)
+           (let ((entry (gethash key groups)))
+             (setcar entry (format "%s (%s)" (car entry) (cdr entry)))))))
+     names)
+    (clrhash names)
+    (maphash (lambda (key entry) (push key (gethash (list (cadr key) (car entry)) names)))
+             groups)
+    (maphash
+     (lambda (_ keys)
+       (when (cdr keys)
+         (dolist (key keys)
+           (let ((entry (gethash key groups)))
+             (setcar entry (format "%s %S" (car entry) key))))))
+     names)
+    groups))
+
+(defun claude-code-ide-manager--grouped-labels (items)
+  "Return cached, unambiguous grouped row labels keyed by ITEM."
+  (let ((groups (make-hash-table :test 'equal))
+        (labels (make-hash-table :test 'eq)))
+    (dolist (item items)
+      (push item (gethash (claude-code-ide-manager--group-key item) groups)))
+    (maphash
+     (lambda (_ group)
+       (let ((counts (make-hash-table :test 'equal))
+             bases)
+         (dolist (item group)
+           (let* ((metadata (claude-code-ide-manager-item-group-metadata item))
+                  (branch (or (plist-get metadata :branch)
+                              (car (last (split-string
+                                          (or (plist-get metadata :worktree-path)
+                                              (claude-code-ide-manager-item-directory item) "")
+                                          "/" t)))
+                              "/"))
+                  (custom (claude-code-ide-manager-item-custom-name item))
+                  (base (if custom (concat branch " · " custom) branch)))
+             (setq base (replace-regexp-in-string
+                         "[[:cntrl:]]" " " (substring-no-properties base)))
+             (push base bases)
+             (puthash base (1+ (gethash base counts 0)) counts)))
+         (setq bases (nreverse bases))
+         (cl-mapc
+          (lambda (item name) (puthash item name labels))
+          group
+          (claude-code-ide-manager--disambiguate-display-names
+           group
+           (cl-mapcar
+            (lambda (item base)
+              (if (and (> (gethash base counts) 1)
+                       (null (claude-code-ide-manager-item-custom-name item)))
+                  (format "%s · %s" base (or (claude-code-ide-manager-item-order item)
+                                             (claude-code-ide-manager-item-session-key item)))
+                base))
+            group bases)))))
+     groups)
+    labels))
+
+(defun claude-code-ide-manager--group-less-p (left right headings)
+  "Compare LEFT and RIGHT group identities using HEADINGS."
+  (let ((left-host (cadr left)) (right-host (cadr right)))
+    (cond
+     ((not (equal left-host right-host))
+      (or (null left-host)
+          (and right-host (string-version-lessp left-host right-host))))
+     (t
+      (let ((left-name (car (gethash left headings)))
+            (right-name (car (gethash right headings))))
+        (if (equal left-name right-name)
+            (string< (prin1-to-string left) (prin1-to-string right))
+          (string-version-lessp left-name right-name)))))))
 
 (defun claude-code-ide-manager--scope-selected-session-key (scope)
   "Return the last selected session key stored for SCOPE."
@@ -418,9 +652,9 @@ render two cells wide, which breaks gutter alignment.")
               (cond
                ((bufferp process) (and (buffer-live-p process) process))
                ((processp process) (process-buffer process))))))
-    (when (and (not (claude-code-ide-manager--session-host session-key))
-               (stringp session-key)
-               (file-name-absolute-p session-key))
+    (when (and (stringp session-key)
+               (file-name-absolute-p session-key)
+               (not (claude-code-ide-manager--session-host session-key)))
       (claude-code-ide--get-session-buffer session-key))))
 
 (defun claude-code-ide-manager--session-git-root (session-or-key)
@@ -541,15 +775,17 @@ Append the current branch when SESSION-KEY is on a named branch."
                        claude-code-ide-manager-repo-label-strategy))))
           (_ (error "Unknown manager scope: %S" scope)))))))
 
-(defun claude-code-ide-manager--disambiguate-display-names (items)
-  "Return display names for ITEMS with duplicate labels disambiguated."
+(defun claude-code-ide-manager--disambiguate-display-names (items &optional names)
+  "Disambiguate ITEMS' labels, or supplied NAMES without path suffixes."
   (let ((groups (make-hash-table :test 'equal))
-        (labels (make-hash-table :test 'equal)))
+        (labels (make-hash-table :test 'eq))
+        (remaining names))
     (dolist (item items)
-      (let ((display-name (claude-code-ide-manager-item-display-name item)))
+      (let ((display-name (or (pop remaining)
+                              (claude-code-ide-manager-item-display-name item))))
         (push item (gethash display-name groups))
         (puthash item display-name labels)))
-    (dolist (display-name (hash-table-keys groups))
+    (dolist (display-name (unless names (hash-table-keys groups)))
       (let ((group (nreverse (gethash display-name groups))))
         (when (> (length group) 1)
           (let ((suffix-length 1)
@@ -641,6 +877,12 @@ Append the current branch when SESSION-KEY is on a named branch."
 
 (defvar-local claude-code-ide-manager--pin-order-snapshot nil
   "Opening pin-order snapshot as ordered (SESSION-KEY . NAME) pairs.")
+
+(defvar-local claude-code-ide-manager--pin-order-view 'flat
+  "View captured when the current order editor opened.")
+
+(defvar-local claude-code-ide-manager--pin-order-grouping nil
+  "Captured group identities, fixed headings, and baseline flat Session IDs.")
 
 (defvar-local claude-code-ide-manager--pin-order-return-window nil
   "Content window replaced by the current pin-order buffer.")
@@ -736,11 +978,14 @@ scope when it is visible; otherwise return the first visible scope."
 
 (define-key claude-code-ide-manager-mode-map (kbd "g") #'claude-code-ide-manager-avy-switch)
 (define-key claude-code-ide-manager-mode-map (kbd "G") #'claude-code-ide-manager-refresh)
+(define-key claude-code-ide-manager-mode-map (kbd "v") #'claude-code-ide-manager-toggle-grouped-view)
 (define-key claude-code-ide-manager-mode-map (kbd "RET") #'claude-code-ide-manager-switch-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "<mouse-1>") #'claude-code-ide-manager-switch-at-mouse)
 (define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)
 (define-key claude-code-ide-manager-mode-map (kbd "n") #'claude-code-ide-manager-next-line)
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
+(define-key claude-code-ide-manager-mode-map (kbd "C-j") #'claude-code-ide-manager-next-project-group)
+(define-key claude-code-ide-manager-mode-map (kbd "C-k") #'claude-code-ide-manager-previous-project-group)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
 (define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
@@ -840,7 +1085,11 @@ under the ESC prefix, so iterate that sub-keymap."
         :secondary-text (claude-code-ide-manager-item-secondary-text item)
         :pinned (claude-code-ide-manager-item-pinned item)
         :order-key (claude-code-ide-manager-item-order-key item)
-        :live-p (claude-code-ide-manager-item-live-p item)))
+        :live-p (claude-code-ide-manager-item-live-p item)
+        :group-metadata (claude-code-ide-manager--valid-group-metadata
+                         (claude-code-ide-manager-item-group-metadata item)
+                         (claude-code-ide-manager-item-host item)
+                         (claude-code-ide-manager-item-directory item))))
 
 (defun claude-code-ide-manager--deserialize-item (data)
   "Convert persisted DATA into an item, rejecting invalid remote metadata."
@@ -876,7 +1125,9 @@ under the ESC prefix, so iterate that sub-keymap."
        :secondary-text (if host directory (plist-get data :secondary-text))
        :pinned (plist-get data :pinned)
        :order-key (plist-get data :order-key)
-       :live-p (and (null host) (plist-get data :live-p))))))
+       :live-p (and (null host) (plist-get data :live-p))
+       :group-metadata (claude-code-ide-manager--valid-group-metadata
+                        (plist-get data :group-metadata) host directory)))))
 
 (defun claude-code-ide-manager--serialize-layouts ()
   "Return persisted layout data as an alist."
@@ -895,12 +1146,16 @@ under the ESC prefix, so iterate that sub-keymap."
     (maphash
      (lambda (scope-key state)
        (push (cons scope-key
-                   (list :items (mapcar #'claude-code-ide-manager--serialize-item
-                                        (plist-get state :items))
-                         :selected-session-key
-                         (plist-get state :selected-session-key)
-                         :active-session-key
-                         (plist-get state :active-session-key)))
+                   (append
+                    (list :items (mapcar #'claude-code-ide-manager--serialize-item
+                                         (plist-get state :items))
+                          :selected-session-key
+                          (plist-get state :selected-session-key)
+                          :active-session-key
+                          (plist-get state :active-session-key))
+                    (when (equal scope-key "global")
+                      (list :view (claude-code-ide-manager--normalize-view
+                                   (plist-get state :view))))))
              serialized))
      claude-code-ide-manager--scope-state)
     (nreverse serialized)))
@@ -910,12 +1165,16 @@ under the ESC prefix, so iterate that sub-keymap."
   (let ((table (make-hash-table :test 'equal)))
     (dolist (entry scopes)
       (puthash (car entry)
-               (list :items (delq nil (mapcar #'claude-code-ide-manager--deserialize-item
-                                              (plist-get (cdr entry) :items)))
-                     :selected-session-key
-                     (plist-get (cdr entry) :selected-session-key)
-                     :active-session-key
-                     (plist-get (cdr entry) :active-session-key))
+               (append
+                (list :items (delq nil (mapcar #'claude-code-ide-manager--deserialize-item
+                                               (plist-get (cdr entry) :items)))
+                      :selected-session-key
+                      (plist-get (cdr entry) :selected-session-key)
+                      :active-session-key
+                      (plist-get (cdr entry) :active-session-key))
+                (when (equal (car entry) "global")
+                  (list :view (claude-code-ide-manager--normalize-view
+                               (plist-get (cdr entry) :view)))))
                table))
     table))
 
@@ -940,7 +1199,8 @@ under the ESC prefix, so iterate that sub-keymap."
           (let ((table (make-hash-table :test 'equal)))
             (puthash "global"
                      (list :items (delq nil (mapcar #'claude-code-ide-manager--deserialize-item
-                                                    (plist-get data :items))))
+                                                    (plist-get data :items)))
+                           :view 'flat)
                      table)
             table)))
   (setq claude-code-ide-manager--items
@@ -972,7 +1232,7 @@ under the ESC prefix, so iterate that sub-keymap."
     (persist-load 'claude-code-ide-manager--persisted-state)
     (when (and (listp claude-code-ide-manager--persisted-state)
                (memq (or (plist-get claude-code-ide-manager--persisted-state :version) 0)
-                     '(1 2 3)))
+                     '(1 2 3 4)))
       (claude-code-ide-manager--restore-state
        claude-code-ide-manager--persisted-state))))
 
@@ -1124,10 +1384,18 @@ Return non-nil when any key was cleared."
                              (claude-code-ide-manager-item-custom-name item))
                        return (claude-code-ide-manager-item-custom-name item))))
          (order (claude-code-ide-session-order session))
-         (display-name (claude-code-ide-manager--scope-display-name scope session)))
+         (display-name (claude-code-ide-manager--scope-display-name scope session))
+         (group-metadata
+          (or (claude-code-ide-manager--valid-group-metadata
+               (claude-code-ide-session-group-metadata session) host directory)
+              (and existing
+                   (claude-code-ide-manager--valid-group-metadata
+                    (claude-code-ide-manager-item-group-metadata existing)
+                    host directory)))))
     (when (and persisted-name
                (null (claude-code-ide-session-custom-name session)))
       (claude-code-ide--set-session-custom-name session persisted-name))
+    (claude-code-ide--set-session-group-metadata session group-metadata)
     (when legacy
       (setq claude-code-ide-manager--legacy-adopted-p t)
       (let ((old-key (claude-code-ide-manager-item-session-key legacy))
@@ -1164,15 +1432,16 @@ Return non-nil when any key was cleared."
        :order-key (or (and existing
                            (claude-code-ide-manager-item-order-key existing))
                       most-positive-fixnum)
+       :group-metadata group-metadata
        :live-p t))))
 
 
 (defun claude-code-ide-manager--build-items (scope)
   "Merge live items with remembered remote targets in SCOPE."
   (let ((live (mapcar (lambda (session)
-                       (claude-code-ide-manager--make-item scope session))
-                     (claude-code-ide-manager--scope-sessions
-                      scope (claude-code-ide-manager--live-sessions))))
+                        (claude-code-ide-manager--make-item scope session))
+                      (claude-code-ide-manager--scope-sessions
+                       scope (claude-code-ide-manager--live-sessions))))
         remembered)
     (when (eq (plist-get scope :type) 'global)
       (dolist (item (claude-code-ide-manager--scope-items scope))
@@ -1206,19 +1475,26 @@ Return non-nil when any key was cleared."
       (claude-code-ide-manager--save-state)
       item)))
 
-(defun claude-code-ide-manager--sorted-items (items &optional ignore-pin-order)
-  "Return ITEMS sorted for sidebar display.
-With IGNORE-PIN-ORDER, sort purely by the configured sort key and
-direction, ignoring pin state and stored order keys."
-  (let* ((base-predicate
+(defun claude-code-ide-manager--sorted-items (items &optional ignore-pin-order scope view)
+  "Return ordered Session ITEMS for SCOPE and VIEW.
+IGNORE-PIN-ORDER bypasses pins and manual keys, not group boundaries."
+  (let* ((scope (or scope '(:type global)))
+         (grouped (and (eq (plist-get scope :type) 'global)
+                       (eq (or view (claude-code-ide-manager--view scope)) 'grouped)))
+         (labels (and grouped (claude-code-ide-manager--grouped-labels items)))
+         (headings (and grouped (claude-code-ide-manager--group-headings items)))
+         (keys (and grouped (make-hash-table :test 'eq)))
+         (base-predicate
           (pcase claude-code-ide-manager-sort-by
             ('name
              (lambda (left right)
                (let ((left-name
-                      (or (claude-code-ide-manager-item-display-name left)
+                      (or (and labels (gethash left labels))
+                          (claude-code-ide-manager-item-display-name left)
                           (claude-code-ide-manager-item-session-key left)))
                      (right-name
-                      (or (claude-code-ide-manager-item-display-name right)
+                      (or (and labels (gethash right labels))
+                          (claude-code-ide-manager-item-display-name right)
                           (claude-code-ide-manager-item-session-key right))))
                  (cond
                   ((string-version-lessp left-name right-name) t)
@@ -1244,33 +1520,39 @@ direction, ignoring pin state and stored order keys."
               (lambda (left right)
                 (funcall base-predicate right left))
             base-predicate)))
+    (when grouped
+      (dolist (item items)
+        (puthash item (claude-code-ide-manager--group-key item) keys)))
     (sort (copy-sequence items)
-          (if ignore-pin-order
-              fallback-predicate
-            (lambda (left right)
-              (cond
-               ((and (claude-code-ide-manager-item-pinned left)
-                     (not (claude-code-ide-manager-item-pinned right)))
-                t)
-               ((and (claude-code-ide-manager-item-pinned right)
-                     (not (claude-code-ide-manager-item-pinned left)))
-                nil)
-               ((/= (or (claude-code-ide-manager-item-order-key left)
-                        most-positive-fixnum)
-                    (or (claude-code-ide-manager-item-order-key right)
-                        most-positive-fixnum))
-                (< (or (claude-code-ide-manager-item-order-key left)
-                       most-positive-fixnum)
-                   (or (claude-code-ide-manager-item-order-key right)
-                       most-positive-fixnum)))
-               (t
-                (funcall fallback-predicate left right))))))))
+          (lambda (left right)
+            (cond
+             ((and grouped (not (equal (gethash left keys) (gethash right keys))))
+              (claude-code-ide-manager--group-less-p
+               (gethash left keys) (gethash right keys) headings))
+             (ignore-pin-order (funcall fallback-predicate left right))
+             ((and (claude-code-ide-manager-item-pinned left)
+                   (not (claude-code-ide-manager-item-pinned right)))
+              t)
+             ((and (claude-code-ide-manager-item-pinned right)
+                   (not (claude-code-ide-manager-item-pinned left)))
+              nil)
+             ((/= (or (claude-code-ide-manager-item-order-key left)
+                      most-positive-fixnum)
+                  (or (claude-code-ide-manager-item-order-key right)
+                      most-positive-fixnum))
+              (< (or (claude-code-ide-manager-item-order-key left)
+                     most-positive-fixnum)
+                 (or (claude-code-ide-manager-item-order-key right)
+                     most-positive-fixnum)))
+             (t
+              (funcall fallback-predicate left right)))))))
 
-(defun claude-code-ide-manager--slot-map (items)
-  "Return a hash table mapping visible ITEMS to quick slots."
+(defun claude-code-ide-manager--slot-map (items &optional sorted-p scope view)
+  "Return quick slots for ITEMS, using SCOPE and VIEW unless SORTED-P."
   (let ((slots (make-hash-table :test 'equal))
         (slot 1))
-    (dolist (item (claude-code-ide-manager--sorted-items items))
+    (dolist (item (if sorted-p items
+                    (claude-code-ide-manager--sorted-items items nil scope view)))
       (when (<= slot 10)
         (puthash (claude-code-ide-manager-item-session-key item) slot slots)
         (setq slot (1+ slot))))
@@ -1521,6 +1803,8 @@ When STATE-LOADED-P is non-nil, do not reload persisted state."
     (unless state-loaded-p
       (claude-code-ide-manager--load-state))
     (setq items (claude-code-ide-manager--build-items scope))
+    (when (eq (plist-get scope :type) 'global)
+      (claude-code-ide-manager--refresh-local-group-metadata items))
     (cl-mapc (lambda (item display-name)
                (setf (claude-code-ide-manager-item-display-name item)
                      display-name))
@@ -1569,33 +1853,39 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   "Return visible session keys for SCOPE in sidebar order."
   (mapcar #'claude-code-ide-manager-item-session-key
           (claude-code-ide-manager--sorted-items
-           (claude-code-ide-manager--scope-items scope))))
+           (claude-code-ide-manager--scope-items scope) nil scope)))
 
-(defun claude-code-ide-manager--item-visible-name (item)
-  "Return ITEM's visible name and explicit disconnected status."
+(defun claude-code-ide-manager--item-visible-name (item &optional grouped-label)
+  "Return ITEM's visible name, optionally GROUPED-LABEL, with disconnected status."
   (concat
-   (if (or claude-code-ide-manager-show-session-order
-           (claude-code-ide-manager-item-custom-name item))
-       (claude-code-ide-manager-item-display-name item)
-     (claude-code-ide-manager--replace-display-suffix
-      (claude-code-ide-manager-item-display-name item)
-      (format "%s" (claude-code-ide-manager-item-order item))
-      nil))
+   (or grouped-label
+       (if (or claude-code-ide-manager-show-session-order
+               (claude-code-ide-manager-item-custom-name item))
+           (claude-code-ide-manager-item-display-name item)
+         (claude-code-ide-manager--replace-display-suffix
+          (claude-code-ide-manager-item-display-name item)
+          (format "%s" (claude-code-ide-manager-item-order item))
+          nil)))
    (when (and (claude-code-ide-manager-item-host item)
               (not (claude-code-ide-manager-item-live-p item)))
      " [disconnected]")))
 
-(defun claude-code-ide-manager--pin-order-item-names (items)
-  "Return ordered (SESSION-KEY . NAME) rows for ITEMS in the pin-order editor."
-  (let ((bases (mapcar #'claude-code-ide-manager--item-visible-name items))
-        (counts (make-hash-table :test 'equal)))
+(defun claude-code-ide-manager--pin-order-item-names (items &optional view)
+  "Return ordered (SESSION-KEY . NAME) rows for ITEMS in VIEW."
+  (let* ((labels (and (eq view 'grouped)
+                      (claude-code-ide-manager--grouped-labels items)))
+         (bases (mapcar (lambda (item)
+                          (claude-code-ide-manager--item-visible-name
+                           item (and labels (gethash item labels))))
+                        items))
+         (counts (make-hash-table :test 'equal)))
     (dolist (base bases)
       (puthash base (1+ (gethash base counts 0)) counts))
     (cl-loop
      for item in items
      for base in bases
      for session-key = (claude-code-ide-manager-item-session-key item)
-     for session = (and claude-code-ide-manager-pin-order-show-titles
+     for session = (and (not labels) claude-code-ide-manager-pin-order-show-titles
                         (> (gethash base counts) 1)
                         (claude-code-ide-manager--session-record session-key))
      for title = (and session (claude-code-ide-session-title session))
@@ -1606,86 +1896,129 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                        (replace-regexp-in-string "[\r\n]+" " " title))
              base)))))
 
+(defun claude-code-ide-manager--pin-order-capture (items)
+  "Capture opening labels and grouping for the displayed ITEMS."
+  (setq claude-code-ide-manager--pin-order-snapshot
+        (claude-code-ide-manager--pin-order-item-names
+         items claude-code-ide-manager--pin-order-view)
+        claude-code-ide-manager--pin-order-grouping nil)
+  (when (eq claude-code-ide-manager--pin-order-view 'grouped)
+    (let ((groups (make-hash-table :test 'equal))
+          (names (claude-code-ide-manager--group-headings items))
+          headings previous-group previous-host)
+      (dolist (item items)
+        (let* ((key (claude-code-ide-manager--group-key item))
+               (host (claude-code-ide-manager-item-host item))
+               (heading (gethash key names)))
+          (puthash (claude-code-ide-manager-item-session-key item) key groups)
+          (unless (equal key previous-group)
+            (when (and host (not (equal host previous-host)))
+              (push (list (list 'host host) (format "[%s]" host) host) headings))
+            (push (list key (concat (if host "  " "") (car heading)) (cdr heading))
+                  headings)
+            (setq previous-group key previous-host host))))
+      (setq claude-code-ide-manager--pin-order-grouping
+            (list :groups groups :headings (nreverse headings)
+                  :flat-order
+                  (mapcar #'claude-code-ide-manager-item-session-key
+                          (claude-code-ide-manager--sorted-items
+                           items nil claude-code-ide-manager--pin-order-scope 'flat)))))))
+
 (defun claude-code-ide-manager--render-pin-order-editor (snapshot)
-  "Render ordered SNAPSHOT rows in the current pin-order buffer."
-  (erase-buffer)
-  (cl-loop for (session-key . name) in snapshot
-           for index from 1
-           do
-           (insert (format "%d. " index))
-           (let ((name-start (point)))
-             (insert name)
-             (add-text-properties
-              name-start (point)
-              (list 'claude-code-ide-manager-session-key session-key
-                    'rear-nonsticky
-                    '(claude-code-ide-manager-session-key))))
-           (insert "\n"))
-  (goto-char (point-min)))
+  "Render ordered SNAPSHOT rows with any captured fixed headings."
+  (let ((inhibit-read-only t)
+        (groups (plist-get claude-code-ide-manager--pin-order-grouping :groups))
+        (headings (plist-get claude-code-ide-manager--pin-order-grouping :headings)))
+    (erase-buffer)
+    (cl-loop for (session-key . name) in snapshot
+             for index from 1
+             for group = (and groups (gethash session-key groups))
+             do
+             (while (and headings
+                         (or (equal (caar headings) group)
+                             (and (eq (car (caar headings)) 'host)
+                                  (equal (car (cadr headings)) group))))
+               (let ((heading (pop headings))
+                     (start (point)))
+                 (claude-code-ide-manager--insert-group-heading
+                  (nth 1 heading) (nth 2 heading) (car heading))
+                 (put-text-property start (point) 'read-only t)))
+             (insert (format "%d. " index))
+             (let ((name-start (point)))
+               (insert name)
+               (add-text-properties
+                name-start (point)
+                (list 'claude-code-ide-manager-session-key session-key
+                      'rear-nonsticky '(claude-code-ide-manager-session-key))))
+             (insert "\n"))
+    (goto-char (or (text-property-not-all
+                    (point-min) (point-max) 'claude-code-ide-manager-session-key nil)
+                   (point-min)))
+    (beginning-of-line)))
 
 (defun claude-code-ide-manager--pin-order-resync ()
-  "Rebuild the current pin-order editor from its scope with current sorting."
+  "Rebuild the order editor with current sorting and its captured view."
   (let* ((scope claude-code-ide-manager--pin-order-scope)
          (items (claude-code-ide-manager--sorted-items
-                 (claude-code-ide-manager-refresh-items scope) t)))
+                 (claude-code-ide-manager-refresh-items scope) t scope
+                 claude-code-ide-manager--pin-order-view)))
     (unless items
-      (user-error "No live sessions in the selected manager scope"))
-    (let ((snapshot (claude-code-ide-manager--pin-order-item-names items)))
-      (setq-local claude-code-ide-manager--pin-order-snapshot snapshot)
-      (claude-code-ide-manager--render-pin-order-editor snapshot)
-      (message "Order rows reloaded; unsaved edits were replaced"))))
+      (user-error "No Sessions in the selected manager scope"))
+    (claude-code-ide-manager--pin-order-capture items)
+    (claude-code-ide-manager--render-pin-order-editor
+     claude-code-ide-manager--pin-order-snapshot)
+    (message "The editor reloaded rows and replaced unsaved edits.")))
 
 (defun claude-code-ide-manager--pin-order-renumber ()
-  "Renumber each pin-order row from top to bottom."
+  "Renumber Session rows without changing headings or empty lines."
   (save-excursion
     (goto-char (point-min))
     (let ((index 1))
       (while (< (point) (point-max))
-        (unless (looking-at "[0-9]+\\.")
-          (user-error "Cannot renumber malformed row %d" index))
-        (replace-match (format "%d." index) t t)
-        (setq index (1+ index))
+        (unless (or (looking-at-p "^$")
+                    (get-text-property (point) 'claude-code-ide-manager-group-heading))
+          (unless (looking-at "[0-9]+\\.")
+            (user-error "Cannot renumber malformed row %d" index))
+          (replace-match (format "%d." index) t t)
+          (setq index (1+ index)))
         (forward-line 1)))))
 
+(defun claude-code-ide-manager--pin-order-row-key ()
+  "Return the hidden Session ID on the current numbered editor row."
+  (save-excursion
+    (beginning-of-line)
+    (when (looking-at "[0-9]+\\. ")
+      (get-text-property (match-end 0) 'claude-code-ide-manager-session-key))))
+
 (defun claude-code-ide-manager--pin-order-move-row (direction)
-  "Move the current pin-order row in DIRECTION."
-  (let* ((current-start (line-beginning-position))
+  "Move the current Session row in DIRECTION within its opening group."
+  (let* ((key (claude-code-ide-manager--pin-order-row-key))
+         (current-start (line-beginning-position))
          (current-end (line-beginning-position 2))
+         (groups (plist-get claude-code-ide-manager--pin-order-grouping :groups))
          (neighbor-start
-          (if (< direction 0)
-              (line-beginning-position 0)
-            current-end))
-         (neighbor-end
-          (if (< direction 0)
-              current-start
-            (save-excursion
-              (goto-char neighbor-start)
-              (line-beginning-position 2)))))
-    (when (if (< direction 0)
-              (< neighbor-start current-start)
-            (< neighbor-start (point-max)))
-      (let* ((region-start (min current-start neighbor-start))
-             (region-end (max current-end neighbor-end))
-             (current-row
-              (buffer-substring current-start current-end))
-             (neighbor-row
-              (buffer-substring neighbor-start neighbor-end))
-             (moved-start
-              (if (< direction 0)
-                  region-start
-                (+ region-start (length neighbor-row))))
-             marker)
-        (atomic-change-group
-          (delete-region region-start region-end)
-          (goto-char region-start)
-          (if (< direction 0)
-              (insert current-row neighbor-row)
-            (insert neighbor-row current-row))
-          (setq marker (copy-marker moved-start))
-          (claude-code-ide-manager--pin-order-renumber))
-        (goto-char marker)
-        (set-marker marker nil)
-        (beginning-of-line)))))
+          (save-excursion
+            (while (and (zerop (forward-line direction))
+                        (looking-at-p "^$")))
+            (point)))
+         (neighbor-key (save-excursion
+                         (goto-char neighbor-start)
+                         (claude-code-ide-manager--pin-order-row-key))))
+    (when (and key neighbor-key (/= neighbor-start current-start)
+               (or (null groups)
+                   (equal (gethash key groups) (gethash neighbor-key groups))))
+      (let ((neighbor-end (save-excursion
+                            (goto-char neighbor-start)
+                            (line-beginning-position 2)))
+            (marker (copy-marker current-start)))
+        (unwind-protect
+            (progn
+              (atomic-change-group
+                (transpose-regions current-start current-end neighbor-start neighbor-end)
+                (claude-code-ide-manager--pin-order-renumber))
+              (goto-char marker)
+              (beginning-of-line))
+          (set-marker marker nil))))))
 
 (defun claude-code-ide-manager-pin-order-move-up ()
   "Move the current pin-order row up."
@@ -1698,99 +2031,115 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   (claude-code-ide-manager--pin-order-move-row 1))
 
 (defun claude-code-ide-manager--validate-pin-order-editor ()
-  "Validate the current pin-order buffer and return ordered session keys."
+  "Validate all editor rows and return their ordered Session IDs."
   (let* ((snapshot claude-code-ide-manager--pin-order-snapshot)
-         (expected-count (length snapshot))
-         (actual-count
-          (count-matches "^.+$" (point-min) (point-max)))
+         (groups (plist-get claude-code-ide-manager--pin-order-grouping :groups))
+         (headings (plist-get claude-code-ide-manager--pin-order-grouping :headings))
+         (opening (make-hash-table :test 'equal))
          (seen (make-hash-table :test 'equal))
-         keys)
-    (unless (= actual-count expected-count)
-      (user-error "Expected %d rows, found %d"
-                  expected-count actual-count))
+         (row-number 0)
+         current-group keys)
+    (dolist (row snapshot)
+      (puthash (car row) row opening))
     (save-excursion
       (goto-char (point-min))
-      (cl-loop for row-number from 1 to expected-count
-               do
-               (while (looking-at-p "^$")
-                 (forward-line 1))
-               (unless (looking-at "[0-9]+\\. \\(.+\\)$")
-                 (user-error "Malformed row %d" row-number))
-               (let* ((name (match-string-no-properties 1))
-                      (name-start (match-beginning 1))
-                      (name-end (match-end 1))
-                      (session-key
-                       (get-text-property
-                        name-start
-                        'claude-code-ide-manager-session-key))
-                      (snapshot-row (and session-key
-                                         (assoc session-key snapshot))))
-                 (unless
-                     (and session-key
-                          (equal
-                           (next-single-property-change
-                            name-start
-                            'claude-code-ide-manager-session-key
-                            nil name-end)
-                           name-end)
-                          (equal
-                           (get-text-property
-                            (1- name-end)
-                            'claude-code-ide-manager-session-key)
-                           session-key))
-                   (user-error "Row %d has no complete session identity"
-                               row-number))
-                 (unless snapshot-row
-                   (user-error "Row %d has a foreign session identity"
-                               row-number))
-                 (when (gethash session-key seen)
-                   (user-error "Session appears more than once"))
-                 (unless (equal name (cdr snapshot-row))
-                   (user-error "Row %d session name changed"
-                               row-number))
-                 (puthash session-key t seen)
-                 (push session-key keys))
-               (forward-line 1)))
-    (dolist (snapshot-row snapshot)
-      (unless (gethash (car snapshot-row) seen)
-        (user-error "A snapshot session is missing")))
-    (let ((live-visible-keys
-           (mapcar
-            #'claude-code-ide-session-id
-            (claude-code-ide-manager--scope-sessions
-             claude-code-ide-manager--pin-order-scope
-             (claude-code-ide-manager--live-sessions)))))
-      (dolist (snapshot-row snapshot)
-        (unless (member (car snapshot-row) live-visible-keys)
-          (user-error "A snapshot session is no longer live in this scope"))))
+      (while (< (point) (point-max))
+        (cond
+         ((looking-at-p "^$"))
+         ((and groups (get-text-property (point) 'claude-code-ide-manager-group-heading))
+          (let* ((identity (get-text-property (point) 'claude-code-ide-manager-group-heading))
+                 (heading (pop headings))
+                 (end (line-end-position)))
+            (unless (and heading
+                         (equal identity (car heading))
+                         (equal (buffer-substring-no-properties (point) end) (nth 1 heading))
+                         (not (text-property-not-all
+                               (point) end 'claude-code-ide-manager-group-heading identity))
+                         (not (text-property-not-all
+                               (point) end 'claude-code-ide-manager-session-key nil)))
+              (user-error "A fixed heading changed. Reopen the order editor"))
+            (setq current-group (unless (eq (car identity) 'host) identity))))
+         (t
+          (cl-incf row-number)
+          (unless (looking-at "[0-9]+\\. \\(.+\\)$")
+            (user-error "Malformed row %d" row-number))
+          (let* ((name (match-string-no-properties 1))
+                 (name-start (match-beginning 1))
+                 (name-end (match-end 1))
+                 (session-key (get-text-property name-start 'claude-code-ide-manager-session-key))
+                 (snapshot-row (and session-key (gethash session-key opening))))
+            (unless (and session-key
+                         (equal (next-single-property-change
+                                 name-start 'claude-code-ide-manager-session-key nil name-end)
+                                name-end)
+                         (equal (get-text-property
+                                 (1- name-end) 'claude-code-ide-manager-session-key)
+                                session-key))
+              (user-error "Row %d has no complete Session identity" row-number))
+            (unless snapshot-row
+              (user-error "Row %d has a foreign Session identity" row-number))
+            (when (gethash session-key seen)
+              (user-error "A Session appears more than once"))
+            (unless (equal name (cdr snapshot-row))
+              (user-error "Row %d has a changed Session name" row-number))
+            (when (and groups (not (equal (gethash session-key groups) current-group)))
+              (user-error "A Session moved to another project group"))
+            (puthash session-key t seen)
+            (push session-key keys))))
+        (forward-line 1)))
+    (when headings
+      (user-error "A fixed heading is missing. Reopen the order editor"))
+    (dolist (row snapshot)
+      (unless (gethash (car row) seen)
+        (user-error "A snapshot Session is missing")))
+    (if groups
+        (let ((current (make-hash-table :test 'equal)))
+          (dolist (item (claude-code-ide-manager--scope-items
+                         claude-code-ide-manager--pin-order-scope))
+            (puthash (claude-code-ide-manager-item-session-key item)
+                     (claude-code-ide-manager--group-key item) current))
+          (dolist (row snapshot)
+            (unless (gethash (car row) current)
+              (user-error "A Session vanished. Reopen the order editor"))
+            (unless (equal (gethash (car row) groups) (gethash (car row) current))
+              (user-error "A project group changed. Reopen the order editor"))))
+      (let ((live-visible-keys
+             (mapcar #'claude-code-ide-session-id
+                     (claude-code-ide-manager--scope-sessions
+                      claude-code-ide-manager--pin-order-scope
+                      (claude-code-ide-manager--live-sessions)))))
+        (dolist (row snapshot)
+          (unless (member (car row) live-visible-keys)
+            (user-error "A snapshot Session is no longer live in this scope")))))
     (nreverse keys)))
 
 (defun claude-code-ide-manager-pin-order-apply ()
-  "Validate and apply the complete session order.
-Applying clears every pin in the scope; pin again from the sidebar."
+  "Validate and apply the complete Session order, then clear scope pins."
   (interactive)
   (let* ((scope claude-code-ide-manager--pin-order-scope)
-         (session-keys
-          (claude-code-ide-manager--validate-pin-order-editor)))
-    (claude-code-ide-manager-refresh-items scope)
-    (let ((items
-           (mapcar
-            (lambda (session-key)
-              (claude-code-ide-manager--item-by-session-key
-               scope session-key))
-            session-keys)))
-      (unless (cl-every #'identity items)
-        (user-error "A snapshot session vanished before apply"))
-      (cl-loop for item in (claude-code-ide-manager--scope-items scope)
-               do (setf (claude-code-ide-manager-item-pinned item) nil))
-      (cl-loop for item in items
+         (grouping claude-code-ide-manager--pin-order-grouping)
+         (session-keys (claude-code-ide-manager--validate-pin-order-editor)))
+    (unless grouping
+      (claude-code-ide-manager-refresh-items scope))
+    (when grouping
+      (setq session-keys
+            (claude-code-ide-manager--merge-group-order
+             (plist-get grouping :flat-order) session-keys (plist-get grouping :groups))))
+    (let ((by-key (make-hash-table :test 'equal)))
+      (dolist (item (claude-code-ide-manager--scope-items scope))
+        (puthash (claude-code-ide-manager-item-session-key item) item by-key))
+      (unless (cl-every (lambda (key) (gethash key by-key)) session-keys)
+        (user-error "A snapshot Session vanished before apply"))
+      (dolist (item (claude-code-ide-manager--scope-items scope))
+        (setf (claude-code-ide-manager-item-pinned item) nil))
+      (cl-loop for key in session-keys
                for order-key from 1
-               do (setf (claude-code-ide-manager-item-order-key item) order-key))
+               do (setf (claude-code-ide-manager-item-order-key (gethash key by-key)) order-key))
       (claude-code-ide-manager--save-state)
       (claude-code-ide-manager--render scope)
       (set-buffer-modified-p nil)
       (claude-code-ide-manager--close-pin-order-editor)
-      (message "Session order applied; pins cleared"))))
+      (message "The manager saved the Session order and cleared all pins."))))
 
 (defun claude-code-ide-manager-pin-order-cancel ()
   "Discard pin-order edits and close the editor."
@@ -1811,32 +2160,33 @@ Applying clears every pin in the scope; pin again from the sidebar."
 
 ;;;###autoload
 (defun claude-code-ide-manager-edit-pin-order ()
-  "Edit the complete session order for the selected manager scope."
+  "Edit the complete Session order using the selected manager scope and view."
   (interactive)
   (let* ((scope (claude-code-ide-manager--scope-for-command))
+         (view (claude-code-ide-manager--view scope))
          (items (claude-code-ide-manager-refresh-items scope))
-         (items (claude-code-ide-manager--sorted-items items)))
+         (items (claude-code-ide-manager--sorted-items items nil scope view)))
     (unless items
-      (user-error "No live sessions in the selected manager scope"))
-    (let* ((snapshot
-            (claude-code-ide-manager--pin-order-item-names items))
-           (window (claude-code-ide-manager--content-window))
+      (user-error "No Sessions in the selected manager scope"))
+    (let* ((window (claude-code-ide-manager--content-window))
            (return-buffer (window-buffer window))
            (editor (generate-new-buffer "*claude-code-manager-pin-order*")))
       (with-current-buffer editor
         (claude-code-ide-manager-pin-order-mode)
         (setq-local claude-code-ide-manager--pin-order-scope scope
-                    claude-code-ide-manager--pin-order-snapshot snapshot
+                    claude-code-ide-manager--pin-order-view view
                     claude-code-ide-manager--pin-order-return-window window
                     claude-code-ide-manager--pin-order-return-buffer return-buffer)
-        (claude-code-ide-manager--render-pin-order-editor snapshot))
+        (claude-code-ide-manager--pin-order-capture items)
+        (claude-code-ide-manager--render-pin-order-editor
+         claude-code-ide-manager--pin-order-snapshot))
       (set-window-buffer window editor)
       (select-window window)
       (message
-       "C-c C-c applies; C-c C-k cancels; M-p/M-k and M-n/M-j move rows."))))
+       "C-c C-c applies. C-c C-k cancels. M-p/M-k and M-n/M-j move rows."))))
 
-(defun claude-code-ide-manager--insert-item (scope item slot)
-  "Insert ITEM into the current buffer using SLOT for SCOPE.
+(defun claude-code-ide-manager--insert-item (scope item slot &optional grouped-label)
+  "Insert ITEM with SLOT in SCOPE, optionally using GROUPED-LABEL.
 Reserve one active-marker cell and two status-marker cells before SLOT."
   (let* ((start (point))
          (session-key (claude-code-ide-manager-item-session-key item))
@@ -1855,7 +2205,7 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
     (insert (if (numberp slot) (format "%2d." slot) "  -"))
     (insert " ")
     (let ((name-start (point)))
-      (insert (claude-code-ide-manager--item-visible-name item) "\n")
+      (insert (claude-code-ide-manager--item-visible-name item grouped-label) "\n")
       (put-text-property name-start (min (1+ name-start) (1- (point)))
                          'claude-code-ide-manager-session-name-start t))
     (add-text-properties
@@ -1865,18 +2215,65 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
      start (point)
      (append
       (list 'claude-code-ide-manager-session-key session-key
-            'help-echo (claude-code-ide-manager--session-help-echo
-                        session-key
-                        (claude-code-ide-manager-item-secondary-text item)))
+            'help-echo
+            (if (eq (plist-get scope :type) 'global)
+                (let* ((branch (plist-get (claude-code-ide-manager-item-group-metadata item) :branch))
+                       (path (or (claude-code-ide-manager-item-secondary-text item)
+                                 (claude-code-ide-manager-item-directory item)))
+                       (details (if branch (format "%s [%s]" path branch) path)))
+                  (if (and (claude-code-ide-manager-item-host item)
+                           (not (claude-code-ide-manager-item-live-p item)))
+                      (format "%s. Session is disconnected. Press c to reattach." details)
+                    details))
+              (claude-code-ide-manager--session-help-echo
+               session-key (claude-code-ide-manager-item-secondary-text item))))
       (when-let* ((face (claude-code-ide-manager--row-face
                          scope session-key)))
         (list 'face face))))))
 
+(defun claude-code-ide-manager--insert-group-heading (text path &optional identity)
+  "Insert non-selectable heading TEXT with PATH and optional IDENTITY."
+  (let ((start (point)))
+    (insert text "\n")
+    (set-text-properties
+     start (point)
+     (list 'face 'font-lock-keyword-face 'help-echo path
+           'claude-code-ide-manager-group-heading identity 'rear-nonsticky t))))
+
+(defun claude-code-ide-manager-toggle-grouped-view ()
+  "Toggle global grouped view without switching or acknowledging a Session."
+  (interactive)
+  (let* ((scope '(:type global))
+         (buffer (get-buffer (claude-code-ide-manager--buffer-name-for-scope scope)))
+         (window (and buffer (get-buffer-window buffer t)))
+         (selected (or (and window
+                            (with-current-buffer buffer
+                              (get-text-property (window-point window)
+                                                 'claude-code-ide-manager-session-key)))
+                       (claude-code-ide-manager--scope-selected-session-key scope)))
+         (state (copy-sequence (or (claude-code-ide-manager--scope-state-entry scope)
+                                   (list :items claude-code-ide-manager--items)))))
+    (setq state (plist-put state :view
+                           (if (eq (claude-code-ide-manager--view scope) 'grouped)
+                               'flat 'grouped)))
+    (when selected (setq state (plist-put state :selected-session-key selected)))
+    (claude-code-ide-manager--set-scope-state-entry scope state)
+    (claude-code-ide-manager--save-state)
+    (when buffer
+      (claude-code-ide-manager--render scope)
+      (dolist (visible (get-buffer-window-list buffer nil t))
+        (set-window-point visible (with-current-buffer buffer (point)))))
+    (message "Global manager view: %s" (plist-get state :view))))
+
 (defun claude-code-ide-manager--render (&optional scope)
   "Render the manager sidebar for SCOPE."
   (let* ((scope (or scope (claude-code-ide-manager--scope-for-command)))
-         (items (claude-code-ide-manager--scope-items scope))
-         (visible-session-keys (claude-code-ide-manager--visible-session-keys scope))
+         (items (claude-code-ide-manager--sorted-items
+                 (claude-code-ide-manager--scope-items scope) nil scope))
+         (visible-session-keys (mapcar #'claude-code-ide-manager-item-session-key items))
+         (grouped (eq (claude-code-ide-manager--view scope) 'grouped))
+         (labels (and grouped (claude-code-ide-manager--grouped-labels items)))
+         (headings (and grouped (claude-code-ide-manager--group-headings items)))
          (active-session-key (claude-code-ide-manager--scope-active-session-key scope)))
     (with-current-buffer (claude-code-ide-manager--get-buffer scope)
       (let* ((selection-window
@@ -1892,13 +2289,24 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
                   stored-session-key
                   (get-text-property (point) 'claude-code-ide-manager-session-key)))
              (inhibit-read-only t)
-             (slots (claude-code-ide-manager--slot-map items)))
+             (slots (claude-code-ide-manager--slot-map items t))
+             previous-group previous-host)
         (erase-buffer)
-        (dolist (item (claude-code-ide-manager--sorted-items items))
+        (dolist (item items)
+          (when grouped
+            (let* ((key (claude-code-ide-manager--group-key item))
+                   (host (claude-code-ide-manager-item-host item))
+                   (heading (gethash key headings)))
+              (unless (equal key previous-group)
+                (when (and host (not (equal host previous-host)))
+                  (claude-code-ide-manager--insert-group-heading
+                   (format "[%s]" host) host (list 'host host)))
+                (claude-code-ide-manager--insert-group-heading
+                 (concat (if host "  " "") (car heading)) (cdr heading) key)
+                (setq previous-group key previous-host host))))
           (claude-code-ide-manager--insert-item
-           scope
-           item
-           (gethash (claude-code-ide-manager-item-session-key item) slots)))
+           scope item (gethash (claude-code-ide-manager-item-session-key item) slots)
+           (and labels (gethash item labels))))
         (goto-char (point-min))
         (when-let* ((target-session-key
                      (cond
@@ -2234,35 +2642,68 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
 DIRECTION should be -1 for up or 1 for down."
   (let* ((sorted (claude-code-ide-manager--sorted-items
-                  (claude-code-ide-manager--scope-items scope)))
+                  (claude-code-ide-manager--scope-items scope) nil scope))
          (index (cl-position session-key sorted
                              :key #'claude-code-ide-manager-item-session-key
                              :test #'equal)))
     (when index
       (let* ((current (nth index sorted))
              (target-index (+ index direction))
-             (candidate (nth target-index sorted)))
+             (candidate (and (>= target-index 0) (nth target-index sorted))))
         (when (and candidate
                    (eq (claude-code-ide-manager-item-pinned current)
-                       (claude-code-ide-manager-item-pinned candidate)))
+                       (claude-code-ide-manager-item-pinned candidate))
+                   (or (not (eq (claude-code-ide-manager--view scope) 'grouped))
+                       (equal (claude-code-ide-manager--group-key current)
+                              (claude-code-ide-manager--group-key candidate))))
           candidate)))))
+
+(defun claude-code-ide-manager--merge-group-order (baseline ordered groups)
+  "Fill each group's BASELINE positions from ORDERED using Session GROUPS.
+BASELINE and ORDERED contain Session IDs. GROUPS maps each ID to its group."
+  (let ((queues (make-hash-table :test 'equal)))
+    (dolist (key ordered)
+      (push key (gethash (gethash key groups) queues)))
+    (maphash (lambda (group keys) (puthash group (nreverse keys) queues)) queues)
+    (mapcar (lambda (key) (pop (gethash (gethash key groups) queues))) baseline)))
 
 (defun claude-code-ide-manager--materialize-order-keys (scope)
   "Assign explicit order keys matching SCOPE's current visible order."
   (cl-loop for item in (claude-code-ide-manager--sorted-items
-                        (claude-code-ide-manager--scope-items scope))
+                        (claude-code-ide-manager--scope-items scope) nil scope)
            for order-key from 1
            do (setf (claude-code-ide-manager-item-order-key item) order-key)))
 
 (defun claude-code-ide-manager--swap-order (scope left right)
   "Swap order keys for LEFT and RIGHT within SCOPE."
-  (claude-code-ide-manager--materialize-order-keys scope)
-  (let ((left-order (claude-code-ide-manager-item-order-key left))
-        (right-order (claude-code-ide-manager-item-order-key right)))
-    (setf (claude-code-ide-manager-item-order-key left) right-order)
-    (setf (claude-code-ide-manager-item-order-key right) left-order)
-    (claude-code-ide-manager--save-state)
-    (claude-code-ide-manager--render scope)))
+  (if (eq (claude-code-ide-manager--view scope) 'grouped)
+      (let* ((items (claude-code-ide-manager--scope-items scope))
+             (groups (make-hash-table :test 'equal))
+             (by-key (make-hash-table :test 'equal))
+             (baseline
+              (mapcar #'claude-code-ide-manager-item-session-key
+                      (claude-code-ide-manager--sorted-items items nil scope 'flat)))
+             (ordered
+              (mapcar (lambda (item)
+                        (claude-code-ide-manager-item-session-key
+                         (cond ((eq item left) right)
+                               ((eq item right) left)
+                               (t item))))
+                      (claude-code-ide-manager--sorted-items items nil scope 'grouped))))
+        (dolist (item items)
+          (let ((key (claude-code-ide-manager-item-session-key item)))
+            (puthash key (claude-code-ide-manager--group-key item) groups)
+            (puthash key item by-key)))
+        (cl-loop for key in (claude-code-ide-manager--merge-group-order baseline ordered groups)
+                 for order from 1
+                 do (setf (claude-code-ide-manager-item-order-key (gethash key by-key)) order)))
+    (claude-code-ide-manager--materialize-order-keys scope)
+    (let ((left-order (claude-code-ide-manager-item-order-key left))
+          (right-order (claude-code-ide-manager-item-order-key right)))
+      (setf (claude-code-ide-manager-item-order-key left) right-order)
+      (setf (claude-code-ide-manager-item-order-key right) left-order)))
+  (claude-code-ide-manager--save-state)
+  (claude-code-ide-manager--render scope))
 
 (defun claude-code-ide-manager-refresh (&optional scope)
   "Refresh live sessions and redraw the manager for SCOPE."
@@ -2589,6 +3030,58 @@ owned sidebar windows."
 (defun claude-code-ide-manager--sidebar-buffer-p ()
   "Return non-nil when the current buffer is the manager buffer."
   (not (null (derived-mode-p 'claude-code-ide-manager-mode))))
+
+(defun claude-code-ide-manager--navigate-project-group (step)
+  "Select the first Session in the group STEP groups from the current row."
+  (let ((scope (claude-code-ide-manager--scope-for-command)))
+    (unless (and (claude-code-ide-manager--sidebar-buffer-p)
+                 (eq (plist-get scope :type) 'global)
+                 (eq (claude-code-ide-manager--view scope) 'grouped))
+      (user-error "Grouped global view is required"))
+    (let* ((items (claude-code-ide-manager--sorted-items
+                   (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+           (origin
+            (cl-loop for key in
+                     (list (get-text-property (point) 'claude-code-ide-manager-session-key)
+                           (claude-code-ide-manager--scope-selected-session-key scope)
+                           (claude-code-ide-manager--scope-active-session-key scope))
+                     for item = (and key (claude-code-ide-manager--item-by-session-key scope key))
+                     when item return item))
+           groups previous)
+      (dolist (item items)
+        (let ((key (claude-code-ide-manager--group-key item)))
+          (unless (equal key previous)
+            (push (cons key item) groups)
+            (setq previous key))))
+      (setq groups (nreverse groups))
+      (unless groups
+        (user-error "No Sessions in this manager scope"))
+      (when (cdr groups)
+        (let* ((index (and origin
+                           (cl-position (claude-code-ide-manager--group-key origin)
+                                        groups :key #'car :test #'equal)))
+               (target (cdr (nth (if index
+                                     (mod (+ index step) (length groups))
+                                   (if (> step 0) 0 (1- (length groups))))
+                                 groups)))
+               (key (claude-code-ide-manager-item-session-key target)))
+          (if (and (claude-code-ide-manager-item-host target)
+                   (not (buffer-live-p (claude-code-ide-manager--session-buffer key))))
+              (progn
+                (claude-code-ide-manager--sync-point-to-session-key scope key)
+                (claude-code-ide-manager--save-state)
+                (message "Session is disconnected. Press c to reattach."))
+            (claude-code-ide-manager-switch-to-session key t scope)))))))
+
+(defun claude-code-ide-manager-next-project-group ()
+  "Select the first Session in the next displayed project group."
+  (interactive)
+  (claude-code-ide-manager--navigate-project-group 1))
+
+(defun claude-code-ide-manager-previous-project-group ()
+  "Select the first Session in the previous displayed project group."
+  (interactive)
+  (claude-code-ide-manager--navigate-project-group -1))
 
 (defun claude-code-ide-manager-next-line ()
   "Move point to the next manager row and switch to it."
@@ -3237,7 +3730,7 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
   (let* ((scope (claude-code-ide-manager--scope-for-command))
          (items (claude-code-ide-manager--scope-items scope)))
     (when-let* ((item (nth (1- slot)
-                           (cl-subseq (claude-code-ide-manager--sorted-items items)
+                           (cl-subseq (claude-code-ide-manager--sorted-items items nil scope)
                                       0
                                       (min 10 (length items)))))
                 (session-key (claude-code-ide-manager-item-session-key item)))
@@ -3250,14 +3743,225 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
   (let* ((scope (claude-code-ide-manager--scope-for-command))
          (items (claude-code-ide-manager--scope-items scope)))
     (when-let* ((item (nth (1- slot)
-                           (cl-subseq (claude-code-ide-manager--sorted-items items)
+                           (cl-subseq (claude-code-ide-manager--sorted-items items nil scope)
                                       0
                                       (min 10 (length items)))))
                 (session-key (claude-code-ide-manager-item-session-key item)))
       (claude-code-ide-manager--sync-point-to-session-key scope session-key)
       (claude-code-ide-manager-switch-to-session session-key nil scope))))
 
-(claude-code-ide-manager--initialize)
+;;; Remote grouping metadata
+
+(cl-defstruct (claude-code-ide-manager--remote-metadata-operation
+               (:constructor claude-code-ide-manager--remote-metadata-operation-create))
+  "In-flight remote Git metadata operation state for one host."
+  process pending known)
+
+(defvar claude-code-ide-manager--remote-metadata-operations (make-hash-table :test 'equal)
+  "Per-host `claude-code-ide-manager--remote-metadata-operation', keyed by host.")
+
+(defun claude-code-ide-manager--remote-metadata-live-snapshot (session)
+  "Capture a live-target metadata snapshot plist for SESSION.
+HOST is carried by the enclosing operation, not this snapshot: every
+snapshot queued together always shares that one host."
+  (list :session-key (claude-code-ide-session-id session)
+        :directory (claude-code-ide-session-directory session)
+        :zmx-name (claude-code-ide-session-zmx-name session)
+        :session session
+        :process (claude-code-ide-session-process session)))
+
+(defun claude-code-ide-manager--remote-metadata-item-snapshot (item)
+  "Capture a metadata snapshot plist for manager ITEM, live or remembered."
+  (if-let* ((session (claude-code-ide--get-session
+                      (claude-code-ide-manager-item-session-key item))))
+      (claude-code-ide-manager--remote-metadata-live-snapshot session)
+    (list :session-key (claude-code-ide-manager-item-session-key item)
+          :directory (claude-code-ide-manager-item-directory item)
+          :zmx-name (claude-code-ide-manager-item-zmx-name item)
+          :session nil :process nil)))
+
+(defun claude-code-ide-manager--apply-remote-metadata-record (host record snapshot)
+  "Apply RECORD to the live-or-remembered target in SNAPSHOT on HOST.
+Return non-nil if the update was applied. Refuse a stale SNAPSHOT: one
+whose session was removed, replaced, or whose process changed, or one
+whose target moved to a different host, directory, or zmx name, or one
+with a remote request currently in flight for its own session."
+  (let* ((session-key (plist-get snapshot :session-key))
+         (directory (plist-get snapshot :directory))
+         (zmx-name (plist-get snapshot :zmx-name))
+         (captured-session (plist-get snapshot :session))
+         (captured-process (plist-get snapshot :process))
+         (item (claude-code-ide-manager--item-by-session-key '(:type global) session-key))
+         (current-session (claude-code-ide--get-session session-key))
+         (valid (claude-code-ide-manager--valid-group-metadata record host directory)))
+    (when (and valid item
+               (equal (claude-code-ide-manager-item-host item) host)
+               (equal (claude-code-ide-manager-item-directory item) directory)
+               (equal (claude-code-ide-manager-item-zmx-name item) zmx-name)
+               (not (claude-code-ide--remote-target-pending-reason session-key))
+               (if captured-session
+                   (and (eq current-session captured-session)
+                        (eq (claude-code-ide-session-process current-session) captured-process)
+                        (process-live-p captured-process)
+                        (buffer-live-p (claude-code-ide-session-buffer current-session))
+                        (equal (claude-code-ide-session-host current-session) host)
+                        (equal (claude-code-ide-session-directory current-session) directory)
+                        (equal (claude-code-ide-session-zmx-name current-session) zmx-name))
+                 (not current-session)))
+      (setf (claude-code-ide-manager-item-group-metadata item) valid)
+      (when current-session
+        (claude-code-ide--set-session-group-metadata current-session valid))
+      t)))
+
+(defun claude-code-ide-manager--remote-metadata-callback (host operation batch)
+  "Return a callback for BATCH while HOST still owns OPERATION."
+  (lambda (outcome)
+    (when (and (eq operation (gethash host claude-code-ide-manager--remote-metadata-operations))
+               (eq (claude-code-ide-manager--remote-metadata-operation-process operation)
+                   (plist-get outcome :process)))
+      (setf (claude-code-ide-manager--remote-metadata-operation-process operation) nil)
+      (if (not (member host claude-code-ide-remote-hosts))
+          (remhash host claude-code-ide-manager--remote-metadata-operations)
+        (unwind-protect
+            (let (applied)
+              (if-let* ((failure (plist-get outcome :error)))
+                  (claude-code-ide-log
+                   "Remote metadata for %S on %s failed: %s"
+                   (mapcar #'car batch) host failure)
+                (cl-loop for (directory . snapshots) in batch
+                         for record in (plist-get outcome :records)
+                         do (if (eq (plist-get record :kind) 'error)
+                                (claude-code-ide-log
+                                 "Remote metadata for %s on %s failed: %s"
+                                 directory host (plist-get record :diagnostic))
+                              (dolist (snapshot snapshots)
+                                (when (claude-code-ide-manager--apply-remote-metadata-record
+                                       host record snapshot)
+                                  (setq applied t))))))
+              (when applied
+                (claude-code-ide-manager--save-state)
+                (when-let* ((buffer (get-buffer claude-code-ide-manager--buffer-name)))
+                  (claude-code-ide-manager--render '(:type global))
+                  (dolist (window (get-buffer-window-list buffer nil t))
+                    (set-window-point window (with-current-buffer buffer (point)))))))
+          (claude-code-ide-manager--dispatch-remote-metadata-batch host))))))
+
+(defun claude-code-ide-manager--dispatch-remote-metadata-batch (host)
+  "Dispatch HOST's next bounded batch and return its owned process.
+An SSH startup failure consumes that batch without blocking later targets."
+  (let ((operation (gethash host claude-code-ide-manager--remote-metadata-operations)))
+    (while (and operation
+                (eq operation (gethash host claude-code-ide-manager--remote-metadata-operations))
+                (not (claude-code-ide-manager--remote-metadata-operation-process operation)))
+      (if (or (not (member host claude-code-ide-remote-hosts))
+              (not (claude-code-ide-manager--remote-metadata-operation-pending operation)))
+          (progn
+            (remhash host claude-code-ide-manager--remote-metadata-operations)
+            (setq operation nil))
+        (let* ((remaining
+                (nreverse (claude-code-ide-manager--remote-metadata-operation-pending operation)))
+               (batch (list (pop remaining))))
+          (while (and remaining
+                      (< (length batch) claude-code-ide-zmx--metadata-max-directories)
+                      (<= (claude-code-ide-zmx--metadata-command-size
+                           (mapcar #'car (cons (car remaining) batch)))
+                          claude-code-ide-zmx--metadata-max-command-bytes))
+            (push (pop remaining) batch))
+          (setq batch (nreverse batch))
+          (setf (claude-code-ide-manager--remote-metadata-operation-pending operation)
+                (nreverse remaining))
+          (condition-case err
+              (setf (claude-code-ide-manager--remote-metadata-operation-process operation)
+                    (claude-code-ide-zmx--query-remote-metadata
+                     host (mapcar #'car batch)
+                     (claude-code-ide-manager--remote-metadata-callback host operation batch)))
+            (error
+             (claude-code-ide-log "Remote metadata for %s could not start: %s"
+                                  host (error-message-string err)))))))
+    (and operation (claude-code-ide-manager--remote-metadata-operation-process operation))))
+
+(defun claude-code-ide-manager--enqueue-remote-metadata-snapshots (host snapshots)
+  "Queue new SNAPSHOTS for HOST and dispatch while no request is active.
+Deduplicate exact directories while retaining distinct owners.
+A new owner can reuse a Session ID.
+Skip invalid or oversized directories without blocking valid targets.
+Never retry a target snapshot during the same operation."
+  (let* ((operation
+          (or (gethash host claude-code-ide-manager--remote-metadata-operations)
+              (puthash host
+                       (claude-code-ide-manager--remote-metadata-operation-create
+                        :known (make-hash-table :test 'equal))
+                       claude-code-ide-manager--remote-metadata-operations)))
+         (known (claude-code-ide-manager--remote-metadata-operation-known operation)))
+    (dolist (snapshot snapshots)
+      (let* ((directory (plist-get snapshot :directory))
+             (seen (gethash directory known))
+             (entry (assoc directory
+                           (claude-code-ide-manager--remote-metadata-operation-pending
+                            operation))))
+        (unless (cl-find-if
+                 (lambda (old)
+                   (and (eq (plist-get old :session) (plist-get snapshot :session))
+                        (equal old snapshot)))
+                 seen)
+          (puthash directory (cons snapshot seen) known)
+          (cond
+           ((not (claude-code-ide-zmx--valid-directory-p directory))
+            (claude-code-ide-log
+             "Skipped invalid remote metadata directory %S on %s" directory host))
+           (entry (setcdr entry (cons snapshot (cdr entry))))
+           ((> (claude-code-ide-zmx--metadata-command-size (list directory))
+               claude-code-ide-zmx--metadata-max-command-bytes)
+            (claude-code-ide-log
+             "Skipped oversized remote metadata target %s on %s" directory host))
+           (t (push (cons directory (list snapshot))
+                    (claude-code-ide-manager--remote-metadata-operation-pending
+                     operation)))))))
+    (unless (claude-code-ide-manager--remote-metadata-operation-process operation)
+      (claude-code-ide-manager--dispatch-remote-metadata-batch host))))
+
+(defun claude-code-ide-manager--enqueue-remote-metadata (session)
+  "Queue a post-attach remote Git metadata request for SESSION."
+  (when (claude-code-ide-session-host session)
+    (claude-code-ide-zmx--validate-host (claude-code-ide-session-host session))
+    (claude-code-ide-manager--enqueue-remote-metadata-snapshots
+     (claude-code-ide-session-host session)
+     (list (claude-code-ide-manager--remote-metadata-live-snapshot session)))))
+
+(defun claude-code-ide-manager--cancel-remote-metadata (host)
+  "Cancel HOST's in-flight remote metadata operation, if any.
+Kill only the control process this operation itself owns. Clear
+HOST's pending queue. Any callback already dispatched is stale by
+construction once the operation record is gone."
+  (when-let* ((operation (gethash host claude-code-ide-manager--remote-metadata-operations)))
+    (remhash host claude-code-ide-manager--remote-metadata-operations)
+    (let ((process (claude-code-ide-manager--remote-metadata-operation-process operation)))
+      (when (process-live-p process)
+        (delete-process process)))))
+
+;;;###autoload
+(defun claude-code-ide-manager-refresh-remote-metadata (&optional host)
+  "Refresh remote Git metadata for every known target on HOST.
+Prompt for one configured host when HOST is omitted. Snapshot HOST's
+current live and remembered global targets once, then queue them:
+later attaches or Stops are unaffected by this snapshot."
+  (interactive)
+  (let ((host (or host (claude-code-ide--read-remote-host))))
+    (claude-code-ide-zmx--validate-host host)
+    (when (gethash host claude-code-ide-manager--remote-metadata-operations)
+      (user-error "A metadata refresh for %s is already in progress" host))
+    (unless (claude-code-ide-manager--scope-state-entry '(:type global))
+      (claude-code-ide-manager--load-state))
+    (let ((snapshots
+           (mapcar #'claude-code-ide-manager--remote-metadata-item-snapshot
+                   (cl-remove-if-not
+                    (lambda (item) (equal (claude-code-ide-manager-item-host item) host))
+                    (claude-code-ide-manager--scope-items '(:type global))))))
+      (if snapshots
+          (claude-code-ide-manager--enqueue-remote-metadata-snapshots host snapshots)
+        (message "No known remote targets for %s" host)
+        nil))))
+
 
 (provide 'claude-code-ide-manager)
 ;;; claude-code-ide-manager.el ends here

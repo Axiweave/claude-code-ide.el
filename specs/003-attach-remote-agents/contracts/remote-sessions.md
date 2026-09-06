@@ -42,7 +42,8 @@ No remote entry point checks whether an Agent executable exists locally. Agent i
 | Reattach | `c`, `claude-code-ide-manager-reattach-at-point` | Explicitly reconnect the selected remembered remote target |
 | Stop | `K`, `claude-code-ide-manager-stop-at-point` | Confirm host and exact target before a remote Stop request |
 | Detach | Existing `D` and `X` | Close only the local attach client |
-| Refresh | Existing `G` | Refresh local presentation without remote discovery |
+| Refresh | Existing `G` | Refresh local presentation without any network request |
+| Refresh project metadata | Manager menu `m`, `claude-code-ide-manager-refresh-remote-metadata` | Query known live and remembered directories on one configured host without discovery or reattachment |
 | Select | Existing `RET`, `SPC`, and mouse selection | Open connected terminal or explain the disconnected state without connecting |
 | Rename and pin | Existing actions | Preserve host-qualified local presentation |
 | Reset layout | Existing `R` | Preserve its current key. Use terminal-only layout behavior for remote targets |
@@ -55,7 +56,10 @@ Remote project-open and new-session actions report that remote file access and l
 
 ## Display and Selection
 
-A remote row includes `[HOST] PROJECT`, followed by existing Agent, title, order, or custom-name information as applicable. The host remains visible after rename.
+Flat remote rows include `[HOST] PROJECT`, followed by existing Agent, title, order, or custom-name information.
+Grouped global headings show the host and project, while rows show cached branch or directory labels.
+The host remains visible after rename.
+See the [remote metadata contract](../../004-grouped-global-view/contracts/remote-metadata.md) for grouped identity and cache rules.
 
 A disconnected row explicitly says `disconnected`. It does not show output-idle, working, done, or failed as current Agent status.
 
@@ -117,6 +121,11 @@ Do not append an Agent command, login shell, MCP flags, local editor ports, or f
 
 The terminal backend must supply a local PTY. `-t` remains explicit even if SSH configuration already requests a terminal.
 
+After successful Session registration, display setup, and logging, attachment can request project metadata asynchronously.
+A metadata failure cannot undo attachment, reduce a bulk success count, or prevent reattachment selection.
+This optional request uses the same bounded SSH runner as zmx control requests.
+Ordinary refresh, restoration, view changes, and navigation remain network-free.
+
 ### Stop
 
 The confirmation must identify the host and exact zmx name and explain the effect on every attached client.
@@ -143,7 +152,7 @@ These are the planned responsibilities, not a new public extension framework.
 
 | Seam | Planned responsibility |
 |------|------------------------|
-| `claude-code-ide-zmx--call-remote` | Own one asynchronous control process, deadline, stdout, stderr, and completion callback |
+| `claude-code-ide-zmx--call-remote` | Adapt one zmx control request to the shared SSH runner without changing its result contract |
 | Shared `claude-code-ide-zmx-wrap-command` and remote command builder | Build guarded existing-session attachment for local and remote reattach through `claude-code-ide-zmx--attach-args` |
 | Existing `claude-code-ide--create-session` orchestration | Accept remote host and reusable Session ID, bypass local integrations, and reuse terminal setup |
 | Existing `claude-code-ide--attach-zmx-entry` | Route local or host-bearing entries without replaying remote command metadata |

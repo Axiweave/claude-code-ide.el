@@ -408,7 +408,7 @@ the target window is already visible."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name pid host)
+  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name pid host group-metadata)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -842,6 +842,11 @@ text that is metadata rather than a local filesystem instruction."
   (setf (claude-code-ide-session-custom-name session) name)
   session)
 
+(defun claude-code-ide--set-session-group-metadata (session metadata)
+  "Store METADATA plist on SESSION and return SESSION."
+  (setf (claude-code-ide-session-group-metadata session) metadata)
+  session)
+
 (defun claude-code-ide--session-for-buffer (&optional buffer)
   "Return the live session that owns BUFFER, or nil."
   (let ((buffer (or buffer (current-buffer)))
@@ -888,7 +893,7 @@ session's title stays local and never contacts either side's zmx."
     (let ((old (claude-code-ide-session-title session)))
       (setf (claude-code-ide-session-title session) ghostel-title)
       (when-let* ((zmx-name (and (not (claude-code-ide-session-host session))
-                                  (claude-code-ide-session-zmx-name session))))
+                                 (claude-code-ide-session-zmx-name session))))
         (unless (equal (claude-code-ide-zmx--title-value ghostel-title)
                        (claude-code-ide-zmx--title-value old))
           (claude-code-ide-zmx-set-title zmx-name ghostel-title))))))
@@ -1043,20 +1048,20 @@ If DIRECTORY is not provided, use the current working directory."
         (fallback-directory (or directory
                                 (claude-code-ide--get-working-directory))))
     (or (when-let* ((session (and (null directory)
-                                 (claude-code-ide--session-for-buffer))))
+                                  (claude-code-ide--session-for-buffer))))
           (or (and (buffer-live-p (claude-code-ide-session-buffer session))
                    (claude-code-ide-session-buffer session))
               (claude-code-ide--session-buffer-from-process
                (claude-code-ide-session-process session))))
         (when-let* ((session (and attached-directory
-                                 (claude-code-ide--preferred-session
-                                  attached-directory))))
+                                  (claude-code-ide--preferred-session
+                                   attached-directory))))
           (or (and (buffer-live-p (claude-code-ide-session-buffer session))
                    (claude-code-ide-session-buffer session))
               (claude-code-ide--session-buffer-from-process
                (claude-code-ide-session-process session))))
         (when-let* ((session (claude-code-ide--preferred-session
-                             fallback-directory)))
+                              fallback-directory)))
           (or (and (buffer-live-p (claude-code-ide-session-buffer session))
                    (claude-code-ide-session-buffer session))
               (claude-code-ide--session-buffer-from-process
@@ -1222,9 +1227,9 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
           (select-window window))
         window)
       (when-let* ((window (cl-loop for win in (window-list nil 'no-minibuffer)
-                                  for win-buffer = (window-buffer win)
-                                  when (claude-code-ide--session-buffer-p win-buffer)
-                                  return win)))
+                                   for win-buffer = (window-buffer win)
+                                   when (claude-code-ide--session-buffer-p win-buffer)
+                                   return win)))
         (set-window-buffer window buffer)
         (setq claude-code-ide--last-accessed-buffer buffer)
         (claude-code-ide--sync-terminal-dimensions buffer window)
@@ -2150,6 +2155,12 @@ none."
             (unless claude-code-ide--suppress-initial-display
               (claude-code-ide--display-buffer-in-side-window buffer))
             (claude-code-ide-log "Started attachment to %s on %s" zmx-attach-name host)
+            (condition-case metadata-error
+                (claude-code-ide-manager--enqueue-remote-metadata session)
+              (error
+               (claude-code-ide-log "Remote metadata request for %s on %s failed: %s"
+                                    zmx-attach-name host
+                                    (error-message-string metadata-error))))
             session))
       (error
        (if (claude-code-ide--get-session session-id)
@@ -2199,7 +2210,7 @@ sibling even when a session already exists for the directory."
                                nil nil #'equal)
                     #'switch-to-buffer))
             (with-editor
-              (claude-code-ide--create-session working-dir continue resume)))
+             (claude-code-ide--create-session working-dir continue resume)))
         (claude-code-ide--create-session working-dir continue resume)))))
 
 ;;;###autoload
@@ -2295,9 +2306,9 @@ process for every attached client; declining keeps it running."
         (zmx-name (claude-code-ide-session-zmx-name session))
         (directory (claude-code-ide-session-directory session)))
     (if (and zmx-name
-            (not (yes-or-no-p
-                  (format "Kill zmx session %s (killing stops the agent everywhere)? "
-                          zmx-name))))
+             (not (yes-or-no-p
+                   (format "Kill zmx session %s (killing stops the agent everywhere)? "
+                           zmx-name))))
         (claude-code-ide-log "Kept zmx session %s running" zmx-name)
       (when zmx-name
         (claude-code-ide-zmx-kill zmx-name))
@@ -2451,10 +2462,10 @@ or another request already owns this target."
          (zmx-name (plist-get entry :name))
          (live (and host (claude-code-ide--live-session-for-target host zmx-name)))
          (session-id (or session-id
-                        (and host
-                             (claude-code-ide--remembered-target-session-id host zmx-name))))
+                         (and host
+                              (claude-code-ide--remembered-target-session-id host zmx-name))))
          (pending (and host session-id
-                      (claude-code-ide--remote-target-pending-reason session-id))))
+                       (claude-code-ide--remote-target-pending-reason session-id))))
     (cond
      (live live)
      (pending
@@ -2484,9 +2495,9 @@ creation signals, and return the number of sessions attached."
              (directory (plist-get entry :start_dir))
              (candidate-error (plist-get entry :error))
              (cli-path (and (not candidate-error)
-                           (ignore-errors
-                             (claude-code-ide-zmx-infer-cli-command
-                              (plist-get entry :cmd))))))
+                            (ignore-errors
+                              (claude-code-ide-zmx-infer-cli-command
+                               (plist-get entry :cmd))))))
         (cond
          (candidate-error
           (push (format "%s (%s)" name candidate-error) skipped))
@@ -2866,7 +2877,7 @@ recent visible file-visiting buffer on the current frame."
           (or (claude-code-ide-mcp--get-current-session)
               (and (null owner)
                    (when-let* ((project-dir
-                               (claude-code-ide-mcp--get-buffer-project)))
+                                (claude-code-ide-mcp--get-buffer-project)))
                      (claude-code-ide-mcp--get-session-for-project project-dir))))))
     (if (and session (claude-code-ide-mcp-session-client session))
         (progn
@@ -3209,13 +3220,13 @@ With prefix ARG, append clipboard text as extra context."
     (unless ctx-buf
       (user-error "Current buffer is not visiting a file"))
     (when-let* ((prompt
-                (with-current-buffer ctx-buf
-                  (cl-block finalize
-                    (when (claude-code-ide--implement-todo--handle-done-line)
-                      (cl-return-from finalize nil))
-                    (when (claude-code-ide--implement-todo--handle-blank-line)
-                      (cl-return-from finalize nil))
-                    (claude-code-ide--implement-todo--build-prompt arg)))))
+                 (with-current-buffer ctx-buf
+                   (cl-block finalize
+                     (when (claude-code-ide--implement-todo--handle-done-line)
+                       (cl-return-from finalize nil))
+                     (when (claude-code-ide--implement-todo--handle-blank-line)
+                       (cl-return-from finalize nil))
+                     (claude-code-ide--implement-todo--build-prompt arg)))))
       (if target-buffer
           (with-current-buffer target-buffer
             (claude-code-ide-send-prompt prompt))
@@ -3402,6 +3413,8 @@ If no Claude windows are visible, show the most recently accessed one."
      ;; No recent session available
      (t
       (user-error "No recent Claude Code session to toggle")))))
+
+(claude-code-ide-manager--initialize)
 
 (provide 'claude-code-ide)
 

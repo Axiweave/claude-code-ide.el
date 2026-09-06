@@ -18,6 +18,8 @@ Remembered remote reattach first checks the exact name with `zmx list --short`.
 A missing name or failed request stops reattach before a terminal starts.
 Fresh attachments use discovery results without this extra request.
 The `false` guard still covers targets that disappear after discovery or the reconnect check.
+The synchronous reconnect check accepts output from all Emacs processes so SSH stderr delivery can finish.
+It retains the shared thirty-second deadline and does not retry.
 
 ## Required Behavior
 
@@ -25,11 +27,19 @@ The `false` guard still covers targets that disappear after discovery or the rec
 2. Unset `ZMX_SESSION` and `ZMX_SESSION_PREFIX` so the attach does not switch the calling client or prefix the name.
 3. Preserve ordinary local creation when a creation command is present: `zmx attach NAME CMD...` stays unchanged.
 4. Never append an Agent command, login shell, or discovered command text to an existing-session attach.
-5. Do not run a capability probe. Stock `zmx list` and `zmx attach` are the only remote operations discovery and attachment use.
+5. Do not run a capability probe. Discovery and attachment use stock `zmx list` and `zmx attach`.
+6. After attachment, permit a separate asynchronous, read-only Git metadata request.
+7. Keep attachment successful when that optional request fails.
 
 ## Discovery Rows
 
 Stock zmx 0.8 changed detailed `zmx list` rows: rows are indented and `start_dir=` became `cwd=file://HOST/PATH`. The shared parser `claude-code-ide-zmx--parse-list-line` trims the row and derives `:start_dir` from `:cwd`. Both local and remote discovery use it.
+
+Grouped global view places remote rows below host and project headings.
+Metadata identifies linked Worktrees without changing the zmx target or Session ID.
+The manager-menu `m` command refreshes known targets on one configured host.
+Ordinary refresh, startup, restoration, redraw, toggle, and navigation do not request remote metadata.
+Metadata requests never create, reattach, or Stop a remote Agent.
 
 ## Verified Evidence - 2026-09-05
 
