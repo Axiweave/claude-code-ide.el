@@ -8604,6 +8604,22 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
           (claude-code-ide--terminal-send-return)
           (should (equal ghostel-string-sent "\r")))))))
 
+(ert-deftest claude-code-ide-test-insert-newline-uses-session-cli ()
+  "Send LF to OMP without a submit key, even when Claude is configured."
+  (with-temp-buffer
+    (setq-local claude-code-ide--session-cli-type 'omp
+                claude-code-ide--terminal-backend 'ghostel)
+    (let ((buffer (current-buffer))
+          (claude-code-ide-cli-path "claude")
+          (sent ""))
+      (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                 (lambda (&optional _) buffer))
+                ((symbol-function 'ghostel--send-string)
+                 (lambda (string) (setq sent (concat sent string)))))
+        (with-temp-buffer
+          (claude-code-ide-insert-newline))
+        (should (equal sent "\n"))))))
+
 (ert-deftest claude-code-ide-test-set-omp-prompt-command ()
   "Test prompt command packets and input validation."
   (let ((buffer (generate-new-buffer "*test-omp-prompt-command*"))

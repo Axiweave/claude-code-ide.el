@@ -167,7 +167,7 @@ With a =C-u= prefix, launch suffixes =s/S=, =d/D=, =c/C=, and =r/R= prompt for =
 | =M-x claude-code-ide-check-status=        | Check if Claude Code CLI is installed and working |
 | =M-x claude-code-ide-insert-at-mentioned= | Send selected text to Claude prompt               |
 | =M-x claude-code-ide-send-escape=         | Send escape key to Claude terminal                |
-| =M-x claude-code-ide-insert-newline=      | Insert newline in Claude prompt (sends \ + Enter) |
+| =M-x claude-code-ide-insert-newline=      | Insert newline (LF for omp, \ + Enter otherwise) |
 | =M-x claude-code-ide-toggle=              | Toggle visibility of Claude Code window           |
 | =M-x claude-code-ide-toggle-recent=       | Toggle most recent Claude window globally         |
 | =M-x claude-code-ide-show-debug=          | Show the debug buffer with WebSocket messages     |

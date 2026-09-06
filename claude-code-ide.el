@@ -2931,15 +2931,17 @@ recent visible file-visiting buffer on the current frame."
 
 ;;;###autoload
 (defun claude-code-ide-insert-newline ()
-  "Send backslash + return to the Claude Code terminal for the current project.
-Claude Code interprets backslash followed by Enter as a newline."
+  "Insert a newline in the prompt for the current session.
+Send LF to Oh My Pi and backslash followed by Enter to other agents."
   (interactive)
   (if-let* ((buffer (claude-code-ide--get-session-buffer)))
       (with-current-buffer buffer
-        (claude-code-ide--terminal-send-string "\\")
-        ;; Small delay to ensure prompt text is processed before sending return
-        (sit-for 0.1)
-        (claude-code-ide--terminal-send-return))
+        (if (eq (claude-code-ide--current-cli-type) 'omp)
+            (claude-code-ide-session-send-string "\n")
+          (claude-code-ide--terminal-send-string "\\")
+          ;; Let the prompt process the backslash before Return.
+          (sit-for 0.1)
+          (claude-code-ide--terminal-send-return)))
     (user-error "No Claude Code session for this project")))
 
 ;;;###autoload
