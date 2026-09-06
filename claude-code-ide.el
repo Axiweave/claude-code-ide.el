@@ -2010,9 +2010,9 @@ running a freshly built CLI command."
                  (setq-local eat-kill-buffer-on-exit t))))
             (sleep-for claude-code-ide-terminal-initialization-delay)
             (unless claude-code-ide--suppress-initial-display
-              (if (cdr zmx-spec)
-                  ;; Reattaching to an existing zmx session: reveal it
-                  ;; in its managed layout instead of the current one.
+              (if (and (cdr zmx-spec)
+                       (claude-code-ide-manager--visible-sidebar-scopes))
+                  ;; Use the manager layout only when its sidebar is visible.
                   (claude-code-ide-manager-switch-to-session session-id)
                 (claude-code-ide--display-buffer-in-side-window buffer)))
             (claude-code-ide-log "%s %sstarted in %s%s%s"
