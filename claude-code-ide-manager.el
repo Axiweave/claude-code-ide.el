@@ -2202,7 +2202,7 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
               " "))
     (insert (claude-code-ide-manager--marker-gutter item))
     (insert (propertize " " 'display '(space :align-to 3)))
-    (insert (if (numberp slot) (format "%2d." slot) "  -"))
+    (insert (if (numberp slot) (format "%2d." slot) " - "))
     (insert " ")
     (let ((name-start (point)))
       (insert (claude-code-ide-manager--item-visible-name item grouped-label) "\n")

@@ -2222,8 +2222,8 @@ A `working' or `needs-input' state is left alone by the same clear."
               (goto-char (point-min))
               (search-forward (if slot (format "%d." slot) "-"))
               (should (= (car (window-text-pixel-size
-                               nil (point-min) (1- (point))))
-                         (* 5 (frame-char-width))))
+                               nil (point-min) (- (point) (if slot 2 1))))
+                         (* 4 (frame-char-width))))
               (let ((name-start
                      (text-property-any
                       (point-min) (point-max)
