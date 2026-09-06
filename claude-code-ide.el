@@ -3319,6 +3319,17 @@ Like `claude-code-ide-send-file' with prefix argument."
   (claude-code-ide-send-file t))
 
 ;;;###autoload
+(defun claude-code-ide-send-file-from-home ()
+  "Send an absolute file path with @ prefix, browsing from the home directory.
+Always sends the full absolute path, unlike `claude-code-ide-send-file'
+which relativizes the path to the session directory when possible."
+  (interactive)
+  (let* ((home (expand-file-name "~/"))
+         (selected (read-file-name "File: " home))
+         (reference-body (concat "@" (expand-file-name selected home))))
+    (claude-code-ide--send-reference-body reference-body)))
+
+;;;###autoload
 (defun claude-code-ide-send-current-file-line-reference ()
   "Send the current file's absolute path, with an optional selected line suffix.
 The reference format is /absolute/path or /absolute/path:LINE[-END]

@@ -94,6 +94,7 @@
 (declare-function claude-code-ide-send-current-file-line-reference "claude-code-ide" ())
 (declare-function claude-code-ide-send-file "claude-code-ide" (arg))
 (declare-function claude-code-ide-send-file-from-root "claude-code-ide" ())
+(declare-function claude-code-ide-send-file-from-home "claude-code-ide" ())
 (declare-function claude-code-ide-implement-todo "claude-code-ide" (arg))
 
 ;; Declare variables
@@ -741,6 +742,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("#" "Send current file path[:range]" claude-code-ide-send-current-file-line-reference)
     ("f" "Send file @path" claude-code-ide-send-file)
     ("F" "Send file @path (from root)" claude-code-ide-send-file-from-root)
+    ("h" "Send file @path (from home, full path)" claude-code-ide-send-file-from-home)
     ("e" "Send escape key" claude-code-ide-send-escape)
     ("x" "Clear (double escape)" claude-code-ide-send-double-escape)]
    ["Submenus"

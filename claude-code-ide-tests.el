@@ -11562,6 +11562,30 @@ connected sessions would silently break first-connect replay."
                (lambda (_prompt collection &rest _) (car collection))))
       (should-error (claude-code-ide-send-file nil) :type 'user-error))))
 
+(ert-deftest claude-code-ide-test-send-file-from-home ()
+  "Test send-file-from-home resolves a relative pick against home, not cwd."
+  (let ((sent-string nil)
+        (home (expand-file-name "~/")))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'read-file-name)
+               ;; Simulate a reader that hands back a relative name
+               ;; instead of joining it against DIR itself.
+               (lambda (_prompt _dir &rest _) "docs/notes.txt")))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        ;; A mismatched default-directory must not leak into the result.
+        (setq default-directory "/tmp/other-project/")
+        (claude-code-ide-send-file-from-home)
+        (should (equal sent-string
+                       (concat "@" home "docs/notes.txt" " ")))))))
+
 (ert-deftest claude-code-ide-test-send-file-adds-leading-space-when-needed ()
   "Test send-file prefixes a space when point follows a word."
   (let ((sent-string nil))
