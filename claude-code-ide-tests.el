@@ -16546,6 +16546,8 @@ Return a plist with :killed-zmx and :killed-buffer."
     (unwind-protect
         (cl-letf
             (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+             ((symbol-function 'claude-code-ide-zmx--call-remote)
+              (lambda (&rest _) (ert-fail "Fresh discovery caused another SSH request")))
              ((symbol-function 'completing-read)
               (lambda (_prompt candidates &rest _) (caar candidates)))
              ((symbol-function 'read-string)
@@ -17000,56 +17002,140 @@ default, so the default must not track the last saved value."
 (ert-deftest claude-code-ide-test-remote-failed-attach-retains-and-reattaches-same-id ()
   "Failed attachment retains one target and explicit reattach preserves it."
   (claude-code-ide-tests--with-remote-targets
-    (let ((other (add-target "b" "host-b"))
-          (claude-code-ide-terminal-initialization-delay 0)
-          (claude-code-ide-terminal-backend 'ghostel)
-          (available nil))
-      (cl-letf
-          (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
-           ((symbol-function 'claude-code-ide--register-session)
-            #'claude-code-ide--put-session)
-           ((symbol-function 'claude-code-ide--create-terminal-with-command)
-            (lambda (name _directory _command _environment)
-              (unless available (user-error "The terminal backend is unavailable"))
-              (let* ((buffer (generate-new-buffer name))
-                     (process (make-pipe-process
-                               :name "cci-reattached-client" :buffer buffer
-                               :noquery t :sentinel #'ignore)))
-                (push buffer buffers)
-                (push process clients)
-                (cons buffer process)))))
-        (should-error
-         (claude-code-ide--attach-zmx-entry
-          '(:host "host-a" :name "same")
-          "/tmp/shared/" "/missing/omp" "stable")
-         :type 'user-error)
-        (should-not (claude-code-ide--get-session "stable"))
-        (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
-          (should item)
-          (setf (claude-code-ide-manager-item-custom-name item) "Saved"
-                (claude-code-ide-manager-item-order item) 7
-                (claude-code-ide-manager-item-pinned item) t))
-        (should-error (claude-code-ide-manager--ensure-live-target "stable")
-                      :type 'user-error)
-        (let ((claude-code-ide-remote-hosts nil))
-          (should-error (claude-code-ide--reattach-remote-session "stable")
-                        :type 'user-error))
-        (should-not requests)
-        (should-error (claude-code-ide--reattach-remote-session "stable")
-                      :type 'user-error)
-        (should-not requests)
-        (should-not (claude-code-ide--get-session "stable"))
-        (should (claude-code-ide-manager--item-by-session-key "stable"))
-        (setq available t)
-        (claude-code-ide--reattach-remote-session "stable")
-        (let ((session (claude-code-ide--get-session "stable")))
-          (should (process-live-p (claude-code-ide-session-process session)))
-          (should (equal (claude-code-ide-session-custom-name session) "Saved"))
-          (should (= (claude-code-ide-session-order session) 7)))
-        (claude-code-ide-manager-refresh-items '(:type global))
-        (should (claude-code-ide-manager-item-pinned
-                 (claude-code-ide-manager--item-by-session-key "stable")))
-        (should (eq (claude-code-ide--get-session "b") other))))))
+   (let ((other (add-target "b" "host-b"))
+         (claude-code-ide-terminal-initialization-delay 0)
+         (claude-code-ide-terminal-backend 'ghostel)
+         (available nil))
+     (cl-letf
+         (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+          ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
+          ((symbol-function 'claude-code-ide--register-session)
+           #'claude-code-ide--put-session)
+          ((symbol-function 'claude-code-ide--create-terminal-with-command)
+           (lambda (name _directory _command _environment)
+             (unless available (user-error "The terminal backend is unavailable"))
+             (let* ((buffer (generate-new-buffer name))
+                    (process (make-pipe-process
+                              :name "cci-reattached-client" :buffer buffer
+                              :noquery t :sentinel #'ignore)))
+               (push buffer buffers)
+               (push process clients)
+               (cons buffer process)))))
+       (should-error
+        (claude-code-ide--attach-zmx-entry
+         '(:host "host-a" :name "same")
+         "/tmp/shared/" "/missing/omp" "stable")
+        :type 'user-error)
+       (should-not (claude-code-ide--get-session "stable"))
+       (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
+         (should item)
+         (setf (claude-code-ide-manager-item-custom-name item) "Saved"
+               (claude-code-ide-manager-item-order item) 7
+               (claude-code-ide-manager-item-pinned item) t))
+       (should-error (claude-code-ide-manager--ensure-live-target "stable")
+                     :type 'user-error)
+       (let ((claude-code-ide-remote-hosts nil))
+         (should-error (claude-code-ide--reattach-remote-session "stable")
+                       :type 'user-error))
+       (should-not requests)
+       (should-error (claude-code-ide--reattach-remote-session "stable")
+                     :type 'user-error)
+       (should-not requests)
+       (should-not (claude-code-ide--get-session "stable"))
+       (should (claude-code-ide-manager--item-by-session-key "stable"))
+       (setq available t)
+       (claude-code-ide--reattach-remote-session "stable")
+       (let ((session (claude-code-ide--get-session "stable")))
+         (should (process-live-p (claude-code-ide-session-process session)))
+         (should (equal (claude-code-ide-session-custom-name session) "Saved"))
+         (should (= (claude-code-ide-session-order session) 7)))
+       (claude-code-ide-manager-refresh-items '(:type global))
+       (should (claude-code-ide-manager-item-pinned
+                (claude-code-ide-manager--item-by-session-key "stable")))
+       (should (eq (claude-code-ide--get-session "b") other))))))
+
+(ert-deftest claude-code-ide-test-remote-reattach-rejects-missing-target ()
+  "A remembered target must still exist before a new terminal can attach."
+  (claude-code-ide-tests--with-remote-targets
+   (claude-code-ide--materialize-remote-target
+    "stable" "host-a" "same" "/tmp/shared/" 1 1)
+   (let ((claude-code-ide-terminal-backend 'ghostel))
+     (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+                (lambda (host _args callback &optional _name)
+                  (funcall callback (list :host host :status 0
+                                          :stdout "same-other\n" :stderr ""))
+                  nil))
+               ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+               ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                (lambda (&rest _) (ert-fail "A missing target started a terminal"))))
+       (should-error (claude-code-ide--reattach-remote-session "stable")
+                     :type 'user-error)
+       (should-not (claude-code-ide--get-session "stable"))
+       (should (claude-code-ide-manager--item-by-session-key "stable"))))))
+
+(ert-deftest claude-code-ide-test-remote-attach-exits-during-initialization ()
+  "An attach client that exits during setup must not report success."
+  (claude-code-ide-tests--with-remote-targets
+   (let ((claude-code-ide-terminal-backend 'ghostel)
+         client)
+     (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+                (lambda (host _args callback &optional _name)
+                  (funcall callback (list :host host :status 0
+                                          :stdout "same\n" :stderr ""))
+                  nil))
+               ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+               ((symbol-function 'claude-code-ide--register-session)
+                #'claude-code-ide--put-session)
+               ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                (lambda (name &rest _)
+                  (let ((buffer (generate-new-buffer name)))
+                    (setq client (make-pipe-process :name "cci-exiting-attach"
+                                                    :buffer buffer :noquery t))
+                    (push buffer buffers)
+                    (push client clients)
+                    (cons buffer client))))
+               ((symbol-function 'sleep-for)
+                (lambda (&rest _) (delete-process client)))
+               ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                (lambda (&rest _) (ert-fail "An exited attach client was selected"))))
+       (should-error
+        (claude-code-ide--attach-zmx-entry
+         '(:host "host-a" :name "same") "/tmp/shared/" "/missing/omp" "stable")
+        :type 'user-error)
+       (should-not (claude-code-ide--get-session "stable"))
+       (should (claude-code-ide-manager--item-by-session-key "stable"))))))
+
+(ert-deftest claude-code-ide-test-manager-detach-forgets-disconnected-remote ()
+  "Detach removes a disconnected row and its layout without contacting SSH."
+  (claude-code-ide-tests--with-remote-targets
+   (claude-code-ide--materialize-remote-target
+    "stable" "host-a" "same" "/tmp/shared/" 1 1)
+   (claude-code-ide--materialize-remote-target
+    "other" "host-b" "same" "/tmp/shared/" 1 1)
+   (puthash "stable" '(:saved-layout t) claude-code-ide-manager--layouts)
+   (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
+     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                (lambda () item))
+               ((symbol-function 'claude-code-ide-manager--scope-for-command)
+                (lambda () '(:type global))))
+       (claude-code-ide-manager-detach-at-point)
+       (claude-code-ide-manager-refresh-items '(:type global))
+       (should-not (claude-code-ide-manager--item-by-session-key "stable"))
+       (should-not (gethash "stable" claude-code-ide-manager--layouts))
+       (should (claude-code-ide-manager--item-by-session-key "other"))
+       (should-not requests)))))
+
+(ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
+  "Failed or timed-out SSH cannot validate a target from partial output."
+  (dolist (outcome '((:status 255 :stdout "same\n" :stderr "SSH failed")
+                     (:status 0 :stdout "same\n" :stderr "" :timeout t)))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+               (lambda (_host _args callback &optional _name)
+                 (funcall callback outcome)
+                 nil)))
+      (should-error
+       (claude-code-ide-zmx-require-remote-session "host-a" "same")
+       :type 'user-error))))
 
 (ert-deftest claude-code-ide-test-remote-stop-owns-real-verification-process ()
   "Retained exited processes must not allow a second Stop during verification."

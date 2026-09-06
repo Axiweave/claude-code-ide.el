@@ -131,7 +131,9 @@ Expected outcomes:
 - One explicit reattach restores the same Agent and row.
 - The manager does not add a duplicate or restart work.
 
-For the missing-target case, detach the disposable target and retain its row. Stop that exact test target from its setup terminal. Then request reattach in Emacs.
+For the missing-target case, close the disposable target's terminal buffer to retain its row.
+Stop that exact test target from its setup terminal.
+Then request reattach in Emacs.
 
 ```bash
 ssh -T -n -o BatchMode=yes -o RemoteCommand=none ramhorn 'env -u ZMX_SESSION -u ZMX_SESSION_PREFIX zmx kill cci-remote-validation'
@@ -190,7 +192,8 @@ If the Stop response is lost or verification fails, the manager must report an u
 
 - Remove a remembered host from the configured list. Verify that its row remains and new remote actions require configuration restoration.
 - Use an unreachable configured destination. Verify that its request fails without freezing local sessions or another host's terminal.
-- Attach to a name that no longer exists. Verify a nonzero client exit, a retained disconnected row, and no running session on the host.
+- Reattach a remembered target that no longer exists. Verify an error before terminal creation, a retained disconnected row, and no replacement.
+- For a target that disappears after discovery or the reconnect check, verify that the `false` guard leaves no running session.
 - Exercise valid session names containing spaces and shell punctuation through a disposable test session.
 - Verify that local reattach uses the guarded command without changing ordinary local Agent creation.
 - Verify that remote attachment works without a local zmx installation.

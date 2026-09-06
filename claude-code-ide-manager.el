@@ -2281,11 +2281,11 @@ DIRECTION should be -1 for up or 1 for down."
 
 (defun claude-code-ide-manager-session-ended (session-key &optional forget)
   "Retain a disconnected remote SESSION-KEY, or remove an ended local row.
-With FORGET, remove the remote row after verified Stop."
+With FORGET, remove the remote row after verified Stop or explicit detach."
   (let ((retain (and (not forget)
                      (claude-code-ide-manager--session-host session-key))))
     (when-let* ((item (and retain
-                          (claude-code-ide-manager--item-by-session-key session-key))))
+                           (claude-code-ide-manager--item-by-session-key session-key))))
       (setf (claude-code-ide-manager-item-live-p item) nil))
     (maphash
      (lambda (scope-key state)
@@ -3148,33 +3148,46 @@ default layout is rebuilt."
     (claude-code-ide-stop (claude-code-ide-manager-item-session-key item))))
 
 (defun claude-code-ide-manager-detach-at-point ()
-  "Detach the zmx-backed session at point from Emacs.
-The zmx session and its agent process keep running."
+  "Detach the zmx-backed session at point and remove its manager row.
+Remove disconnected remote rows without contacting the host.
+Leave the remote zmx session and its agent process unchanged."
   (interactive)
   (let* ((item (or (claude-code-ide-manager--item-at-point)
                    (user-error "No manager session at point")))
          (session-key (claude-code-ide-manager-item-session-key item))
-         (session (or (claude-code-ide--get-session session-key)
-                      (if-let* ((host (claude-code-ide-manager-item-host item)))
-                          (user-error "The target on %s is already disconnected" host)
-                        (user-error "Session no longer exists"))))
+         (session (claude-code-ide--get-session session-key))
+         (host (or (and session (claude-code-ide-session-host session))
+                   (claude-code-ide-manager-item-host item)))
          (buffer (claude-code-ide-manager--session-buffer session-key))
-         (zmx-name (claude-code-ide-session-zmx-name session))
+         (zmx-name (if session
+                       (claude-code-ide-session-zmx-name session)
+                     (claude-code-ide-manager-item-zmx-name item)))
          (scope (claude-code-ide-manager--scope-for-command))
          (keys (claude-code-ide-manager--visible-session-keys scope))
          (index (cl-position session-key keys :test #'equal))
          (survivor (and index
                         (or (nth (1+ index) keys)
                             (nth (1- index) keys)))))
+    (unless (or session host)
+      (user-error "Session no longer exists"))
+    (when-let* ((pending (and host
+                              (claude-code-ide--remote-target-pending-reason session-key))))
+      (user-error "Cannot detach %s on %s. %s is already in progress"
+                  zmx-name host pending))
     (unless zmx-name
       (user-error "Session is not zmx-backed"))
-    (unless (buffer-live-p buffer)
-      (user-error "Session buffer no longer exists"))
-    (kill-buffer buffer)
+    (cond
+     ((buffer-live-p buffer) (kill-buffer buffer))
+     (host
+      (when session
+        (claude-code-ide--cleanup-on-exit session-key)))
+     (t (user-error "Session buffer no longer exists")))
+    (when (and host (not (buffer-live-p buffer)))
+      (claude-code-ide-manager-session-ended session-key t))
     (when (member survivor
                   (claude-code-ide-manager--visible-session-keys scope))
       (claude-code-ide-manager--sync-point-to-session-key scope survivor))
-    (if-let* ((host (claude-code-ide-session-host session)))
+    (if host
         (message "Detached zmx session %s on %s" zmx-name host)
       (message "Detached zmx session %s" zmx-name))))
 

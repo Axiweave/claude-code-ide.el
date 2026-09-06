@@ -210,7 +210,12 @@ The zmx integration follows the design of [[https://github.com/ArthurHeymans/ema
 
 Remote attachment connects to an existing zmx session through SSH. It never starts an Agent or creates a remote zmx session.
 
-Reattachment works with stock zmx. Emacs runs =zmx attach <name> false=: an existing session is adopted, and a vanished one yields a short-lived session that runs =false= and exits, so no shell or agent starts by accident. This applies to local adoption and remote reattachment. Ordinary local session creation stays unchanged. See the [[file:specs/003-attach-remote-agents/contracts/zmx-attach-guard.md][attach guard contract]] for the verified versions.
+Reattachment works with stock zmx. Emacs runs =zmx attach <name> false= to adopt an existing session.
+If a target disappears after discovery or a reconnect check, the =false= guard ends the replacement session immediately.
+No shell, Agent, or persistent replacement remains.
+This guard applies to local adoption and remote reattachment.
+Ordinary local session creation stays unchanged.
+See the [[file:specs/003-attach-remote-agents/contracts/zmx-attach-guard.md][attach guard contract]] for the verified versions.
 
 Configure exact SSH destinations:
 
@@ -232,7 +237,20 @@ Remote rows appear only in the global manager. Their names retain =[HOST] PROJEC
 
 Selecting a connected row opens its terminal. Selecting a disconnected row does not contact its host. Press =c= to reattach explicitly with the same Session ID. Refresh, startup, and restored layouts never reconnect automatically.
 
-Press =D= or =X= to detach the local client. Press =K= to Stop the exact selected target. Stop asks for confirmation and names the host, target, and effect on all clients. Emacs removes the row only after zmx confirms the kill and a separate request confirms absence. A timeout or ambiguous result leaves the row intact. Emacs never retries a kill.
+Before reattaching a remembered remote row, Emacs checks the exact target with =zmx list --short=.
+A missing target or failed SSH check stops attachment before a terminal starts.
+Fresh attachments use discovery results without another SSH check.
+If the attach client exits during setup, Emacs reports an error instead of success.
+
+Press =D= or =X= to detach the local client and remove its manager row.
+For a disconnected remote row, these commands remove only local history and the saved layout without contacting the host.
+Neither command stops the remote agent.
+
+Press =K= to Stop the exact selected target.
+Stop asks for confirmation and names the host, target, and effect on all clients.
+After Stop, Emacs removes the row only when zmx confirms the kill and a separate request confirms absence.
+A timeout or ambiguous result leaves the row intact.
+Emacs never retries a kill.
 
 Remote attachment supports the Ghostel backend only; vterm and Eat are scheduled for deprecation. Remote layouts display the terminal without opening a local project. Remote project launch, Git, Magit, Dired, and Treemacs actions are unsupported. Remote file editing, text-transfer integration, MCP, and SSE setup are outside this feature.
 
@@ -364,7 +382,7 @@ When point is in the manager buffer:
 - =s= starts a sibling session with the current CLI; =S= starts one with explicit permissions bypass
 - =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
 - =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
-- =D= or =X= detaches the selected zmx-backed session from Emacs and keeps its agent process running
+- =D= or =X= detaches the selected zmx-backed session and removes its row without stopping the agent, even when disconnected
 - =c= explicitly reattaches the selected disconnected remote target
 - =K= confirms Stop for the exact selected target
 - =M-p= moves the selected row up within its current pinned or unpinned group

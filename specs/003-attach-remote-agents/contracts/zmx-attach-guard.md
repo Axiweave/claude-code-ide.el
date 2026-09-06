@@ -14,6 +14,11 @@ Stock `zmx attach NAME [COMMAND...]` ignores COMMAND when NAME exists and only u
 
 The Emacs constant `claude-code-ide-zmx--attach-guard` holds the guard word. `claude-code-ide-zmx--attach-args` builds the argument list for both the local wrapper and the remote SSH command.
 
+Remembered remote reattach first checks the exact name with `zmx list --short`.
+A missing name or failed request stops reattach before a terminal starts.
+Fresh attachments use discovery results without this extra request.
+The `false` guard still covers targets that disappear after discovery or the reconnect check.
+
 ## Required Behavior
 
 1. Validate the session name before dispatch. Reject empty names, option-like names, path separators, control characters, and `*`.

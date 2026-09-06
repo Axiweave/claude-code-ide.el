@@ -498,6 +498,31 @@ diagnostic (see `claude-code-ide-zmx--no-sessions-line-p')."
           nil
         (user-error "zmx list --short failed: %s" (string-trim stderr)))))
 
+(defun claude-code-ide-zmx-require-remote-session (host name &optional request-name)
+  "Require existing session NAME on HOST before starting an attach client.
+REQUEST-NAME identifies the pending request.  Use the control transport's
+thirty-second deadline, and cancel its process if the user quits."
+  (claude-code-ide-zmx--validate-name name)
+  (let (outcome process)
+    (unwind-protect
+        (progn
+          (setq process
+                (claude-code-ide-zmx--call-remote
+                 host '("list" "--short")
+                 (lambda (result) (setq outcome result)) request-name))
+          (while (not outcome)
+            (accept-process-output process 0.1))
+          (unless (claude-code-ide-zmx--remote-request-ok-p outcome)
+            (user-error "%s" (claude-code-ide-zmx--remote-request-failure
+                              host "list --short" outcome)))
+          (unless (member name (claude-code-ide-zmx--short-list-names
+                                (plist-get outcome :stdout)
+                                (plist-get outcome :stderr)))
+            (user-error "Cannot attach %s on %s. The remote session no longer exists"
+                        name host)))
+      (when (process-live-p process)
+        (delete-process process)))))
+
 (defun claude-code-ide-zmx--stop-list-check (host name outcome)
   "Return t when NAME is confirmed absent from HOST's short-list OUTCOME.
 Return a failure string describing what went wrong otherwise."

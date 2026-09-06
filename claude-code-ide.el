@@ -2103,6 +2103,10 @@ none."
     (condition-case err
         (progn
           (claude-code-ide--terminal-ensure-backend)
+          (when reusable-session-id
+            (claude-code-ide-zmx-require-remote-session
+             host zmx-attach-name
+             (claude-code-ide--remote-target-process-name session-id)))
           (let* ((claude-code-ide--pending-remote-host host)
                  (buffer-and-process
                   (claude-code-ide--create-terminal-with-command
@@ -2138,9 +2142,14 @@ none."
                           (claude-code-ide--cleanup-on-exit session-id t process))
                         nil t))
             (sleep-for claude-code-ide-terminal-initialization-delay)
+            (unless (and (process-live-p process)
+                         (buffer-live-p buffer)
+                         (eq session (claude-code-ide--get-session session-id)))
+              (user-error "Cannot attach %s on %s. The attachment process exited"
+                          zmx-attach-name host))
             (unless claude-code-ide--suppress-initial-display
               (claude-code-ide--display-buffer-in-side-window buffer))
-            (claude-code-ide-log "Remote agent %s attached on %s" zmx-attach-name host)
+            (claude-code-ide-log "Started attachment to %s on %s" zmx-attach-name host)
             session))
       (error
        (if (claude-code-ide--get-session session-id)
