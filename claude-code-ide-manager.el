@@ -24,6 +24,7 @@
 (require 'subr-x)
 (require 'persist)
 (require 'vc-git)
+(require 'claude-code-ide-zmx)
 
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--get-session "claude-code-ide" (session-id))
@@ -40,8 +41,14 @@
 (declare-function claude-code-ide-session-process "claude-code-ide" (session))
 (declare-function claude-code-ide-session-title "claude-code-ide" (session))
 (declare-function claude-code-ide-session-zmx-name "claude-code-ide" (session))
-(declare-function claude-code-ide-attach "claude-code-ide" ())
-(declare-function claude-code-ide-attach-select "claude-code-ide" ())
+(declare-function claude-code-ide-session-host "claude-code-ide" (session))
+(declare-function claude-code-ide-session-cli-type "claude-code-ide" (session))
+(declare-function claude-code-ide--show-session-buffer "claude-code-ide" (buffer))
+(declare-function claude-code-ide-attach "claude-code-ide" (&optional host))
+(declare-function claude-code-ide-attach-select "claude-code-ide" (&optional host))
+(declare-function claude-code-ide-stop "claude-code-ide" (&optional session-id))
+(declare-function claude-code-ide--reattach-remote-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide--project-key "claude-code-ide" (directory &optional host))
 (declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" (&optional acknowledged))
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
 (declare-function claude-code-ide-session-idle-reset-timer "claude-code-ide-session-idle" ())
@@ -64,21 +71,30 @@
   :group 'tools
   :prefix "claude-code-ide-manager-")
 
-(defconst claude-code-ide-manager--state-version 2
+(defconst claude-code-ide-manager--state-version 3
   "Persisted cc-manager state schema version.")
 
+(defconst claude-code-ide-manager--empty-persisted-state
+  `(:version ,claude-code-ide-manager--state-version :scopes nil :layouts nil)
+  "Persisted-state value that means \"nothing remembered\".")
+
 (defvar claude-code-ide-manager--persisted-state
-  `(:version ,claude-code-ide-manager--state-version
-             :scopes nil
-             :layouts nil)
+  (copy-tree claude-code-ide-manager--empty-persisted-state)
   "Serialized manager state stored through `persist'.")
+
+(defun claude-code-ide-manager--persist-register ()
+  "Register the persisted state symbol with a fixed empty default.
+`persist-save' deletes the file when the value equals the registered
+default, so the default must stay the empty state rather than track
+the last saved value."
+  (persist-symbol 'claude-code-ide-manager--persisted-state
+                  claude-code-ide-manager--empty-persisted-state))
 
 (defun claude-code-ide-manager--set-persist-state (symbol value)
   "Custom setter for persistence option SYMBOL with VALUE."
   (set-default symbol value)
   (if value
-      (persist-symbol 'claude-code-ide-manager--persisted-state
-                      claude-code-ide-manager--persisted-state)
+      (claude-code-ide-manager--persist-register)
     (persist-unpersist 'claude-code-ide-manager--persisted-state)))
 
 (defcustom claude-code-ide-manager-persist-state t
@@ -240,7 +256,10 @@ render two cells wide, which breaks gutter alignment.")
   secondary-text
   pinned
   order-key
-  live-p)
+  live-p
+  host
+  zmx-name
+  cli-type)
 
 (defvar claude-code-ide-manager--items nil
   "Current manager items.")
@@ -370,6 +389,13 @@ render two cells wide, which breaks gutter alignment.")
       session-or-key
     (claude-code-ide--get-session session-or-key)))
 
+(defun claude-code-ide-manager--session-host (session-or-key)
+  "Return the remote host of SESSION-OR-KEY, including remembered targets."
+  (if-let* ((session (claude-code-ide-manager--session-record session-or-key)))
+      (claude-code-ide-session-host session)
+    (when-let* ((item (claude-code-ide-manager--item-by-session-key session-or-key)))
+      (claude-code-ide-manager-item-host item))))
+
 (defun claude-code-ide-manager--session-directory (session-or-key)
   "Return the directory represented by SESSION-OR-KEY."
   (or (when-let* ((session
@@ -382,30 +408,35 @@ render two cells wide, which breaks gutter alignment.")
       session-or-key))
 
 (defun claude-code-ide-manager--session-buffer (session-key)
-  "Return SESSION-KEY's exact live buffer, or its legacy directory buffer."
+  "Return SESSION-KEY's owned buffer, or its local legacy directory buffer."
   (if-let* ((session (claude-code-ide--get-session session-key)))
-      (or (and (buffer-live-p (claude-code-ide-session-buffer session))
-               (claude-code-ide-session-buffer session))
-          (let ((process (claude-code-ide-session-process session)))
-            (cond
-             ((bufferp process) (and (buffer-live-p process) process))
-             ((processp process) (process-buffer process)))))
-    (when (and (stringp session-key)
+      (when (or (null (claude-code-ide-session-host session))
+                (process-live-p (claude-code-ide-session-process session)))
+        (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+                 (claude-code-ide-session-buffer session))
+            (let ((process (claude-code-ide-session-process session)))
+              (cond
+               ((bufferp process) (and (buffer-live-p process) process))
+               ((processp process) (process-buffer process))))))
+    (when (and (not (claude-code-ide-manager--session-host session-key))
+               (stringp session-key)
                (file-name-absolute-p session-key))
       (claude-code-ide--get-session-buffer session-key))))
 
 (defun claude-code-ide-manager--session-git-root (session-or-key)
-  "Return the Git root for SESSION-OR-KEY when available."
-  (let ((default-directory
-         (claude-code-ide-manager--session-directory session-or-key)))
-    (claude-code-ide-manager--current-git-root)))
+  "Return the local Git root for SESSION-OR-KEY when available."
+  (unless (claude-code-ide-manager--session-host session-or-key)
+    (let ((default-directory
+           (claude-code-ide-manager--session-directory session-or-key)))
+      (claude-code-ide-manager--current-git-root))))
 
 (defun claude-code-ide-manager--session-branch-name (session-or-key)
-  "Return the current branch name for SESSION-OR-KEY when available."
-  (car (ignore-errors
-         (process-lines "git" "-C"
-                        (claude-code-ide-manager--session-directory session-or-key)
-                        "branch" "--show-current"))))
+  "Return the local branch name for SESSION-OR-KEY when available."
+  (unless (claude-code-ide-manager--session-host session-or-key)
+    (car (ignore-errors
+           (process-lines "git" "-C"
+                          (claude-code-ide-manager--session-directory session-or-key)
+                          "branch" "--show-current")))))
 
 (defun claude-code-ide-manager--session-help-echo (session-key path)
   "Return help text for SESSION-KEY using PATH.
@@ -452,45 +483,63 @@ Append the current branch when SESSION-KEY is on a named branch."
       session-keys))
     (_ (error "Unknown manager scope: %S" scope))))
 
+(defun claude-code-ide-manager--remote-label (host directory order &optional custom-name)
+  "Return a host-qualified label without local interpretation of DIRECTORY."
+  (format "[%s] %s · %s" host
+          (or (car (last (split-string directory "/" t))) "/")
+          (or custom-name order)))
+
 (defun claude-code-ide-manager--default-session-label (session)
-  "Return SESSION's stable directory-local fallback label."
-  (format "%s · %d"
-          (file-name-nondirectory
-           (directory-file-name (claude-code-ide-session-directory session)))
-          (claude-code-ide-session-order session)))
+  "Return SESSION's stable project label."
+  (if-let* ((host (claude-code-ide-session-host session)))
+      (claude-code-ide-manager--remote-label
+       host (claude-code-ide-session-directory session)
+       (claude-code-ide-session-order session))
+    (format "%s · %d"
+            (file-name-nondirectory
+             (directory-file-name (claude-code-ide-session-directory session)))
+            (claude-code-ide-session-order session))))
 
 (defun claude-code-ide-manager--scope-display-name (scope session-or-key)
   "Return the display name for SESSION-OR-KEY within SCOPE."
-  (if-let* ((session (claude-code-ide-manager--session-record session-or-key)))
-      (pcase (plist-get scope :type)
-        ('global (claude-code-ide-manager--default-session-label session))
-        ('repo
-         (let* ((directory (claude-code-ide-session-directory session))
-                (basename (file-name-nondirectory
-                           (directory-file-name directory)))
-                (base
-                 (pcase claude-code-ide-manager-repo-label-strategy
-                   ('basename basename)
-                   ((or 'branch 'branch-or-basename)
-                    (or (claude-code-ide-manager--session-branch-name session)
-                        basename))
-                   (_ (error "Unknown repo label strategy: %S"
-                             claude-code-ide-manager-repo-label-strategy)))))
-           (format "%s · %d" base (claude-code-ide-session-order session))))
-        (_ (error "Unknown manager scope: %S" scope)))
-    ;; Directory-key compatibility for callers that do not yet have a live record.
-    (let ((directory (claude-code-ide-manager--session-directory session-or-key)))
-      (pcase (plist-get scope :type)
-        ('global (file-name-nondirectory (directory-file-name directory)))
-        ('repo
-         (pcase claude-code-ide-manager-repo-label-strategy
-           ('basename (file-name-nondirectory (directory-file-name directory)))
-           ((or 'branch 'branch-or-basename)
-            (or (claude-code-ide-manager--session-branch-name session-or-key)
-                (file-name-nondirectory (directory-file-name directory))))
-           (_ (error "Unknown repo label strategy: %S"
-                     claude-code-ide-manager-repo-label-strategy))))
-        (_ (error "Unknown manager scope: %S" scope))))))
+  (if-let* ((host (claude-code-ide-manager--session-host session-or-key)))
+      (let* ((session (claude-code-ide-manager--session-record session-or-key))
+             (item (unless session
+                     (claude-code-ide-manager--item-by-session-key session-or-key))))
+        (claude-code-ide-manager--remote-label
+         host (claude-code-ide-manager--session-directory session-or-key)
+         (if session (claude-code-ide-session-order session)
+           (claude-code-ide-manager-item-order item))))
+    (if-let* ((session (claude-code-ide-manager--session-record session-or-key)))
+        (pcase (plist-get scope :type)
+          ('global (claude-code-ide-manager--default-session-label session))
+          ('repo
+           (let* ((directory (claude-code-ide-session-directory session))
+                  (basename (file-name-nondirectory
+                             (directory-file-name directory)))
+                  (base
+                   (pcase claude-code-ide-manager-repo-label-strategy
+                     ('basename basename)
+                     ((or 'branch 'branch-or-basename)
+                      (or (claude-code-ide-manager--session-branch-name session)
+                          basename))
+                     (_ (error "Unknown repo label strategy: %S"
+                               claude-code-ide-manager-repo-label-strategy)))))
+             (format "%s · %d" base (claude-code-ide-session-order session))))
+          (_ (error "Unknown manager scope: %S" scope)))
+      ;; Directory-key compatibility for callers without a live record.
+      (let ((directory (claude-code-ide-manager--session-directory session-or-key)))
+        (pcase (plist-get scope :type)
+          ('global (file-name-nondirectory (directory-file-name directory)))
+          ('repo
+           (pcase claude-code-ide-manager-repo-label-strategy
+             ('basename (file-name-nondirectory (directory-file-name directory)))
+             ((or 'branch 'branch-or-basename)
+              (or (claude-code-ide-manager--session-branch-name session-or-key)
+                  (file-name-nondirectory (directory-file-name directory))))
+             (_ (error "Unknown repo label strategy: %S"
+                       claude-code-ide-manager-repo-label-strategy))))
+          (_ (error "Unknown manager scope: %S" scope)))))))
 
 (defun claude-code-ide-manager--disambiguate-display-names (items)
   "Return display names for ITEMS with duplicate labels disambiguated."
@@ -703,6 +752,8 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "E") #'claude-code-ide-manager-edit-pin-order)
 (define-key claude-code-ide-manager-mode-map (kbd "r") #'claude-code-ide-manager-rename-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "R") #'claude-code-ide-manager-reset-layout-at-point)
+(define-key claude-code-ide-manager-mode-map (kbd "c") #'claude-code-ide-manager-reattach-at-point)
+(define-key claude-code-ide-manager-mode-map (kbd "K") #'claude-code-ide-manager-stop-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "M-p") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
 (define-key claude-code-ide-manager-mode-map (kbd "M-k") #'claude-code-ide-manager-move-up)
@@ -779,6 +830,9 @@ under the ESC prefix, so iterate that sub-keymap."
   "Convert manager ITEM to a persistable plist."
   (list :session-key (claude-code-ide-manager-item-session-key item)
         :directory (claude-code-ide-manager-item-directory item)
+        :host (claude-code-ide-manager-item-host item)
+        :zmx-name (claude-code-ide-manager-item-zmx-name item)
+        :cli-type (claude-code-ide-manager-item-cli-type item)
         :custom-name (claude-code-ide-manager-item-custom-name item)
         :order (claude-code-ide-manager-item-order item)
         :created-at (claude-code-ide-manager-item-created-at item)
@@ -789,18 +843,40 @@ under the ESC prefix, so iterate that sub-keymap."
         :live-p (claude-code-ide-manager-item-live-p item)))
 
 (defun claude-code-ide-manager--deserialize-item (data)
-  "Convert persisted DATA into a manager item."
-  (make-claude-code-ide-manager-item
-   :session-key (plist-get data :session-key)
-   :directory (plist-get data :directory)
-   :custom-name (plist-get data :custom-name)
-   :order (plist-get data :order)
-   :created-at (plist-get data :created-at)
-   :display-name (plist-get data :display-name)
-   :secondary-text (plist-get data :secondary-text)
-   :pinned (plist-get data :pinned)
-   :order-key (plist-get data :order-key)
-   :live-p (plist-get data :live-p)))
+  "Convert persisted DATA into an item, rejecting invalid remote metadata."
+  (let* ((host (plist-get data :host))
+         (directory (plist-get data :directory))
+         (order (plist-get data :order))
+         (custom-name (plist-get data :custom-name)))
+    (if (and host
+             (not (and (claude-code-ide-zmx--valid-host-p host)
+                       (claude-code-ide-zmx--valid-name-p (plist-get data :zmx-name))
+                       (claude-code-ide-zmx--valid-directory-p directory)
+                       (memq (plist-get data :cli-type) '(claude codex opencode pi omp))
+                       (stringp (plist-get data :session-key))
+                       (not (string-empty-p (plist-get data :session-key)))
+                       (or (null order) (and (integerp order) (> order 0)))
+                       (or (null custom-name) (stringp custom-name)))))
+        (progn
+          (message "Ignored invalid remote history for %S. Discover the target again." host)
+          nil)
+      (make-claude-code-ide-manager-item
+       :session-key (plist-get data :session-key)
+       :directory directory
+       :host host
+       :zmx-name (plist-get data :zmx-name)
+       :cli-type (plist-get data :cli-type)
+       :custom-name custom-name
+       :order (if host (or order 1) order)
+       :created-at (plist-get data :created-at)
+       :display-name (if host
+                         (claude-code-ide-manager--remote-label
+                          host directory (or order 1) custom-name)
+                       (plist-get data :display-name))
+       :secondary-text (if host directory (plist-get data :secondary-text))
+       :pinned (plist-get data :pinned)
+       :order-key (plist-get data :order-key)
+       :live-p (and (null host) (plist-get data :live-p))))))
 
 (defun claude-code-ide-manager--serialize-layouts ()
   "Return persisted layout data as an alist."
@@ -834,8 +910,8 @@ under the ESC prefix, so iterate that sub-keymap."
   (let ((table (make-hash-table :test 'equal)))
     (dolist (entry scopes)
       (puthash (car entry)
-               (list :items (mapcar #'claude-code-ide-manager--deserialize-item
-                                    (plist-get (cdr entry) :items))
+               (list :items (delq nil (mapcar #'claude-code-ide-manager--deserialize-item
+                                              (plist-get (cdr entry) :items)))
                      :selected-session-key
                      (plist-get (cdr entry) :selected-session-key)
                      :active-session-key
@@ -863,33 +939,47 @@ under the ESC prefix, so iterate that sub-keymap."
             (claude-code-ide-manager--deserialize-scope-state scopes)
           (let ((table (make-hash-table :test 'equal)))
             (puthash "global"
-                     (list :items (mapcar #'claude-code-ide-manager--deserialize-item
-                                          (plist-get data :items)))
+                     (list :items (delq nil (mapcar #'claude-code-ide-manager--deserialize-item
+                                                    (plist-get data :items))))
                      table)
             table)))
   (setq claude-code-ide-manager--items
         (claude-code-ide-manager--scope-items '(:type global)))
   (setq claude-code-ide-manager--layouts
         (claude-code-ide-manager--deserialize-layouts
-         (plist-get data :layouts))))
+         (plist-get data :layouts)))
+  (maphash
+   (lambda (scope-key state)
+     (let ((active (plist-get state :active-session-key)))
+       (when (and active
+                  (claude-code-ide-manager--session-host active)
+                  (not (buffer-live-p (claude-code-ide-manager--session-buffer active))))
+         (puthash scope-key (plist-put state :active-session-key nil)
+                  claude-code-ide-manager--scope-state))))
+   claude-code-ide-manager--scope-state)
+  (when (and claude-code-ide-manager--current-session-key
+             (claude-code-ide-manager--session-host
+              claude-code-ide-manager--current-session-key)
+             (not (buffer-live-p
+                   (claude-code-ide-manager--session-buffer
+                    claude-code-ide-manager--current-session-key))))
+    (setq claude-code-ide-manager--current-session-key nil)))
 
 (defun claude-code-ide-manager--load-state ()
   "Load persisted manager state when enabled."
   (when claude-code-ide-manager-persist-state
-    (persist-symbol 'claude-code-ide-manager--persisted-state
-                    claude-code-ide-manager--persisted-state)
+    (claude-code-ide-manager--persist-register)
     (persist-load 'claude-code-ide-manager--persisted-state)
     (when (and (listp claude-code-ide-manager--persisted-state)
                (memq (or (plist-get claude-code-ide-manager--persisted-state :version) 0)
-                     '(1 2)))
+                     '(1 2 3)))
       (claude-code-ide-manager--restore-state
        claude-code-ide-manager--persisted-state))))
 
 (defun claude-code-ide-manager--save-state ()
   "Persist current manager state when enabled."
   (when claude-code-ide-manager-persist-state
-    (persist-symbol 'claude-code-ide-manager--persisted-state
-                    claude-code-ide-manager--persisted-state)
+    (claude-code-ide-manager--persist-register)
     (setq claude-code-ide-manager--persisted-state
           (claude-code-ide-manager--serialize-state))
     (persist-save 'claude-code-ide-manager--persisted-state)))
@@ -1007,9 +1097,10 @@ Return non-nil when any key was cleared."
   "Build a manager item for SESSION within SCOPE."
   (let* ((session-key (claude-code-ide-session-id session))
          (directory (claude-code-ide-session-directory session))
+         (host (claude-code-ide-session-host session))
          (existing (claude-code-ide-manager--item-by-session-key scope session-key))
          (legacy
-          (and (null existing)
+          (and (null host) (null existing)
                (cl-find-if
                 (lambda (item)
                   (let ((old-key
@@ -1058,6 +1149,9 @@ Return non-nil when any key was cleared."
       (make-claude-code-ide-manager-item
        :session-key session-key
        :directory directory
+       :host host
+       :zmx-name (claude-code-ide-session-zmx-name session)
+       :cli-type (claude-code-ide-session-cli-type session)
        :custom-name custom-name
        :order order
        :created-at (claude-code-ide-session-created-at session)
@@ -1065,8 +1159,7 @@ Return non-nil when any key was cleared."
                          (claude-code-ide-manager--replace-display-suffix
                           display-name order custom-name)
                        display-name)
-       :secondary-text (abbreviate-file-name
-                        directory)
+       :secondary-text (if host directory (abbreviate-file-name directory))
        :pinned (and existing (claude-code-ide-manager-item-pinned existing))
        :order-key (or (and existing
                            (claude-code-ide-manager-item-order-key existing))
@@ -1075,11 +1168,43 @@ Return non-nil when any key was cleared."
 
 
 (defun claude-code-ide-manager--build-items (scope)
-  "Build manager items for the live sessions visible within SCOPE."
-  (mapcar (lambda (session)
-            (claude-code-ide-manager--make-item scope session))
-          (claude-code-ide-manager--scope-sessions
-           scope (claude-code-ide-manager--live-sessions))))
+  "Merge live items with remembered remote targets in SCOPE."
+  (let ((live (mapcar (lambda (session)
+                       (claude-code-ide-manager--make-item scope session))
+                     (claude-code-ide-manager--scope-sessions
+                      scope (claude-code-ide-manager--live-sessions))))
+        remembered)
+    (when (eq (plist-get scope :type) 'global)
+      (dolist (item (claude-code-ide-manager--scope-items scope))
+        (when (and (claude-code-ide-manager-item-host item)
+                   (not (cl-find (claude-code-ide-manager-item-session-key item) live
+                                 :key #'claude-code-ide-manager-item-session-key
+                                 :test #'equal)))
+          (setf (claude-code-ide-manager-item-live-p item) nil)
+          (push item remembered))))
+    (append live (nreverse remembered))))
+
+(defun claude-code-ide-manager--remember-remote-session (session)
+  "Remember SESSION as disconnected without refresh or network requests."
+  (when (claude-code-ide-session-host session)
+    (let* ((scope '(:type global))
+           (session-id (claude-code-ide-session-id session))
+           (item (claude-code-ide-manager--make-item scope session)))
+      (setf (claude-code-ide-manager-item-live-p item) nil)
+      (claude-code-ide-manager--set-scope-items
+       scope
+       (cons item (cl-remove session-id (claude-code-ide-manager--scope-items scope)
+                             :key #'claude-code-ide-manager-item-session-key :test #'equal)))
+      (maphash
+       (lambda (scope-key state)
+         (when (equal session-id (plist-get state :active-session-key))
+           (puthash scope-key (plist-put state :active-session-key nil)
+                    claude-code-ide-manager--scope-state)))
+       claude-code-ide-manager--scope-state)
+      (when (equal session-id claude-code-ide-manager--current-session-key)
+        (setq claude-code-ide-manager--current-session-key nil))
+      (claude-code-ide-manager--save-state)
+      item)))
 
 (defun claude-code-ide-manager--sorted-items (items &optional ignore-pin-order)
   "Return ITEMS sorted for sidebar display.
@@ -1447,14 +1572,18 @@ This mirrors mouse hover text for keyboard navigation in the manager."
            (claude-code-ide-manager--scope-items scope))))
 
 (defun claude-code-ide-manager--item-visible-name (item)
-  "Return ITEM's visible name in the manager."
-  (if (or claude-code-ide-manager-show-session-order
-          (claude-code-ide-manager-item-custom-name item))
+  "Return ITEM's visible name and explicit disconnected status."
+  (concat
+   (if (or claude-code-ide-manager-show-session-order
+           (claude-code-ide-manager-item-custom-name item))
+       (claude-code-ide-manager-item-display-name item)
+     (claude-code-ide-manager--replace-display-suffix
       (claude-code-ide-manager-item-display-name item)
-    (claude-code-ide-manager--replace-display-suffix
-     (claude-code-ide-manager-item-display-name item)
-     (format "%s" (claude-code-ide-manager-item-order item))
-     nil)))
+      (format "%s" (claude-code-ide-manager-item-order item))
+      nil))
+   (when (and (claude-code-ide-manager-item-host item)
+              (not (claude-code-ide-manager-item-live-p item)))
+     " [disconnected]")))
 
 (defun claude-code-ide-manager--pin-order-item-names (items)
   "Return ordered (SESSION-KEY . NAME) rows for ITEMS in the pin-order editor."
@@ -2143,36 +2272,47 @@ DIRECTION should be -1 for up or 1 for down."
     (claude-code-ide-manager--render scope)))
 
 (defun claude-code-ide-manager-refresh-all ()
-  "Redraw all visible manager sidebars."
+  "Refresh live records and redraw visible manager sidebars."
   (claude-code-ide-manager--load-state)
   (dolist (buffer (claude-code-ide-manager--manager-buffers))
     (let ((scope (claude-code-ide-manager--scope-from-buffer buffer)))
       (claude-code-ide-manager-refresh-items scope t)
       (claude-code-ide-manager--render scope))))
 
-(defun claude-code-ide-manager-session-ended (session-key)
-  "Remove SESSION-KEY from manager rows, layouts, and scope references."
-  (maphash
-   (lambda (scope-key state)
-     (setq state
-           (plist-put
-            state :items
-            (cl-remove session-key (plist-get state :items)
-                       :key #'claude-code-ide-manager-item-session-key
-                       :test #'equal)))
-     (when (equal session-key (plist-get state :selected-session-key))
-       (setq state (plist-put state :selected-session-key nil)))
-     (when (equal session-key (plist-get state :active-session-key))
-       (setq state (plist-put state :active-session-key nil)))
-     (puthash scope-key state claude-code-ide-manager--scope-state)
-     (when (equal scope-key "global")
-       (setq claude-code-ide-manager--items (plist-get state :items))))
-   claude-code-ide-manager--scope-state)
-  (remhash session-key claude-code-ide-manager--layouts)
-  (when (equal session-key claude-code-ide-manager--current-session-key)
-    (setq claude-code-ide-manager--current-session-key nil))
-  (claude-code-ide-manager--save-state)
-  (claude-code-ide-manager-refresh-all))
+(defun claude-code-ide-manager-session-ended (session-key &optional forget)
+  "Retain a disconnected remote SESSION-KEY, or remove an ended local row.
+With FORGET, remove the remote row after verified Stop."
+  (let ((retain (and (not forget)
+                     (claude-code-ide-manager--session-host session-key))))
+    (when-let* ((item (and retain
+                          (claude-code-ide-manager--item-by-session-key session-key))))
+      (setf (claude-code-ide-manager-item-live-p item) nil))
+    (maphash
+     (lambda (scope-key state)
+       (unless retain
+         (setq state
+               (plist-put
+                state :items
+                (cl-remove session-key (plist-get state :items)
+                           :key #'claude-code-ide-manager-item-session-key
+                           :test #'equal)))
+         (when (equal session-key (plist-get state :selected-session-key))
+           (setq state (plist-put state :selected-session-key nil))))
+       (when (equal session-key (plist-get state :active-session-key))
+         (setq state (plist-put state :active-session-key nil)))
+       (puthash scope-key state claude-code-ide-manager--scope-state)
+       (when (equal scope-key "global")
+         (setq claude-code-ide-manager--items (plist-get state :items))))
+     claude-code-ide-manager--scope-state)
+    (unless retain
+      (setq claude-code-ide-manager--items
+            (cl-remove session-key claude-code-ide-manager--items
+                       :key #'claude-code-ide-manager-item-session-key :test #'equal))
+      (remhash session-key claude-code-ide-manager--layouts))
+    (when (equal session-key claude-code-ide-manager--current-session-key)
+      (setq claude-code-ide-manager--current-session-key nil))
+    (claude-code-ide-manager--save-state)
+    (claude-code-ide-manager-refresh-all)))
 
 (defun claude-code-ide-manager--show-sidebar (&optional scope)
   "Show the manager sidebar for SCOPE.
@@ -2563,6 +2703,10 @@ Keep a separate pass from
 (defun claude-code-ide-manager-open ()
   "Open a project or worktree relevant to the current manager scope."
   (interactive)
+  (when-let* ((item (claude-code-ide-manager--item-at-point))
+              (host (claude-code-ide-manager--session-host
+                     (claude-code-ide-manager-item-session-key item))))
+    (user-error "Remote project access on %s is not available in attach mode" host))
   (let* ((scope (claude-code-ide-manager--scope-for-command))
          (target (claude-code-ide-manager--open-target-for-scope scope))
          (session (claude-code-ide--preferred-session target)))
@@ -2584,9 +2728,9 @@ Keep a separate pass from
     (unless target
       (user-error "No manager session %s" session-key))
     (when name
-      (let ((directory (file-name-as-directory
-                        (expand-file-name
-                         (claude-code-ide-manager-item-directory target)))))
+      (let ((directory (claude-code-ide--project-key
+                        (claude-code-ide-manager-item-directory target)
+                        (claude-code-ide-manager-item-host target))))
         (when (cl-find-if
                (lambda (item)
                  (and (not (equal session-key
@@ -2596,8 +2740,8 @@ Keep a separate pass from
                       (when-let* ((other-directory
                                    (claude-code-ide-manager-item-directory item)))
                         (equal directory
-                               (file-name-as-directory
-                                (expand-file-name other-directory))))))
+                               (claude-code-ide--project-key
+                                other-directory (claude-code-ide-manager-item-host item))))))
                items)
           (user-error "Session name already used in %s" directory))))
     (when-let* ((session (claude-code-ide--get-session session-key)))
@@ -2687,9 +2831,16 @@ Keep a separate pass from
 
 (defun claude-code-ide-manager--capture-layout (session-key)
   "Capture current frame layout for SESSION-KEY."
-  (list :session-key session-key
-        :window-state (window-state-get (frame-root-window) t)
-        :selected-buffer-name (buffer-name (window-buffer (selected-window)))))
+  (let ((layout (list :session-key session-key
+                      :window-state (window-state-get (frame-root-window) t)
+                      :selected-buffer-name
+                      (buffer-name (window-buffer (selected-window))))))
+    (when (claude-code-ide-manager--session-host session-key)
+      (setq layout
+            (plist-put layout :terminal-buffer-name
+                       (when-let* ((buffer (claude-code-ide-manager--session-buffer session-key)))
+                         (buffer-name buffer)))))
+    layout))
 
 (defun claude-code-ide-manager-magit-status-buffer (directory)
   "Return the magit status buffer for DIRECTORY, or a Dired buffer without magit."
@@ -2710,68 +2861,77 @@ Dired when it fails or returns a non-buffer."
       (dired-noselect directory))))
 
 (defun claude-code-ide-manager--restore-layout (session-key)
-  "Restore saved layout for SESSION-KEY.
-Return the selected window when successful."
-  (when-let* ((layout (gethash session-key claude-code-ide-manager--layouts))
-              (window-state (plist-get layout :window-state)))
-    (window-state-put window-state (frame-root-window) 'safe)
-    (setq claude-code-ide-manager--current-session-key session-key)
-    (let* ((selected-buffer-name (plist-get layout :selected-buffer-name))
-           (selected-buffer
-            (and selected-buffer-name
-                 (when-let* ((buffer (get-buffer selected-buffer-name)))
-                   (unless (claude-code-ide-manager--manager-buffer-p buffer)
-                     buffer))))
-           (session-buffer (claude-code-ide-manager--session-buffer session-key))
-           (target-window (or (and selected-buffer
-                                   (get-buffer-window selected-buffer))
-                              (and session-buffer
-                                   (get-buffer-window session-buffer)))))
-      (when target-window
-        (select-window target-window))
-      target-window)))
+  "Restore SESSION-KEY's layout with its current owned terminal buffer."
+  (let* ((layout (gethash session-key claude-code-ide-manager--layouts))
+         (window-state (plist-get layout :window-state))
+         (remote (claude-code-ide-manager--session-host session-key))
+         (session-buffer (claude-code-ide-manager--session-buffer session-key)))
+    (when (and window-state (or (not remote) (buffer-live-p session-buffer)))
+      (when-let* ((remote)
+                  (old-name (plist-get layout :terminal-buffer-name)))
+        (setq window-state (cl-subst (buffer-name session-buffer) old-name
+                                     window-state :test #'equal)))
+      (window-state-put window-state (frame-root-window) 'safe)
+      (setq claude-code-ide-manager--current-session-key session-key)
+      (let* ((selected-buffer-name (plist-get layout :selected-buffer-name))
+             (selected-buffer
+              (and selected-buffer-name
+                   (when-let* ((buffer (get-buffer selected-buffer-name)))
+                     (unless (claude-code-ide-manager--manager-buffer-p buffer)
+                       buffer))))
+             (target-window
+              (if remote
+                  (or (get-buffer-window session-buffer)
+                      (claude-code-ide--show-session-buffer session-buffer))
+                (or (and selected-buffer (get-buffer-window selected-buffer))
+                    (and session-buffer (get-buffer-window session-buffer))))))
+        (when target-window
+          (select-window target-window))
+        target-window))))
 
 (defun claude-code-ide-manager--session-active-file (session-key)
-  "Return the active file for SESSION-KEY when the selected window visits one."
-  (let* ((project-root
-          (file-name-as-directory
-           (expand-file-name
-            (claude-code-ide-manager--session-directory session-key))))
-         (buffer (window-buffer (selected-window)))
-         (file (buffer-local-value 'buffer-file-name buffer)))
-    (when (and (stringp file)
-               (ignore-errors
-                 (file-in-directory-p (expand-file-name file) project-root)))
-      (expand-file-name file))))
+  "Return the selected active file for a local SESSION-KEY."
+  (unless (claude-code-ide-manager--session-host session-key)
+    (let* ((project-root
+            (file-name-as-directory
+             (expand-file-name
+              (claude-code-ide-manager--session-directory session-key))))
+           (buffer (window-buffer (selected-window)))
+           (file (buffer-local-value 'buffer-file-name buffer)))
+      (when (and (stringp file)
+                 (ignore-errors
+                   (file-in-directory-p (expand-file-name file) project-root)))
+        (expand-file-name file)))))
 
 (defun claude-code-ide-manager--sync-treemacs-to-session (session-key)
-  "Sync visible Treemacs state to SESSION-KEY."
-  (let ((project-root
-         (file-name-as-directory
-          (expand-file-name
-           (claude-code-ide-manager--session-directory session-key))))
-        (active-file (claude-code-ide-manager--session-active-file session-key)))
-    (let ((default-directory project-root))
-      (cond
-       ((fboundp 'treemacs-add-and-display-current-project-exclusively)
-        (ignore-errors
-          (treemacs-add-and-display-current-project-exclusively)))
-       ((fboundp 'treemacs-display-current-project-exclusively)
-        (ignore-errors
-          (treemacs-display-current-project-exclusively)))
-       ((fboundp 'treemacs-add-and-display-current-project)
-        (ignore-errors
-          (treemacs-add-and-display-current-project)))))
-    (when (and active-file
-               (fboundp 'treemacs-find-file))
-      (condition-case nil
-          (treemacs-find-file active-file)
-        (wrong-number-of-arguments
-         (ignore-errors
-           (with-current-buffer (or (get-file-buffer active-file)
-                                    (find-file-noselect active-file))
-             (treemacs-find-file))))
-        (error nil)))))
+  "Sync visible Treemacs state to a local SESSION-KEY."
+  (unless (claude-code-ide-manager--session-host session-key)
+    (let ((project-root
+           (file-name-as-directory
+            (expand-file-name
+             (claude-code-ide-manager--session-directory session-key))))
+          (active-file (claude-code-ide-manager--session-active-file session-key)))
+      (let ((default-directory project-root))
+        (cond
+         ((fboundp 'treemacs-add-and-display-current-project-exclusively)
+          (ignore-errors
+            (treemacs-add-and-display-current-project-exclusively)))
+         ((fboundp 'treemacs-display-current-project-exclusively)
+          (ignore-errors
+            (treemacs-display-current-project-exclusively)))
+         ((fboundp 'treemacs-add-and-display-current-project)
+          (ignore-errors
+            (treemacs-add-and-display-current-project)))))
+      (when (and active-file
+                 (fboundp 'treemacs-find-file))
+        (condition-case nil
+            (treemacs-find-file active-file)
+          (wrong-number-of-arguments
+           (ignore-errors
+             (with-current-buffer (or (get-file-buffer active-file)
+                                      (find-file-noselect active-file))
+               (treemacs-find-file))))
+          (error nil))))))
 
 (defun claude-code-ide-manager--build-default-layout (session-key &optional scope)
   "Build the default layout for SESSION-KEY in SCOPE and return the session window."
@@ -2781,30 +2941,41 @@ Return the selected window when successful."
     (unless (buffer-live-p session-buffer)
       (claude-code-ide-manager-refresh)
       (user-error "No live session buffer for %s" session-key))
-    (let ((status-buffer (claude-code-ide-manager--open-status-buffer directory)))
-      (select-window (claude-code-ide-manager--content-window))
-      (delete-other-windows)
-      (let ((status-window (selected-window))
-            (session-window nil))
-        (set-window-buffer status-window status-buffer)
-        (setq session-window
-              (split-window status-window nil
-                            claude-code-ide-manager-session-window-side))
-        (set-window-buffer session-window session-buffer)
-        (setq claude-code-ide-manager--current-session-key session-key)
-        (claude-code-ide-manager--set-scope-active-session-key scope session-key)
-        (claude-code-ide-manager--save-state)
-        (claude-code-ide-manager--show-sidebar scope)
-        (select-window session-window)
-        session-window))))
+    (if (claude-code-ide-manager--session-host session-key)
+        (let ((window (claude-code-ide--show-session-buffer session-buffer)))
+          (setq claude-code-ide-manager--current-session-key session-key)
+          (claude-code-ide-manager--set-scope-active-session-key scope session-key)
+          (claude-code-ide-manager--save-state)
+          (claude-code-ide-manager--show-sidebar scope)
+          window)
+      (let ((status-buffer (claude-code-ide-manager--open-status-buffer directory)))
+        (select-window (claude-code-ide-manager--content-window))
+        (delete-other-windows)
+        (let ((status-window (selected-window))
+              (session-window nil))
+          (set-window-buffer status-window status-buffer)
+          (setq session-window
+                (split-window status-window nil
+                              claude-code-ide-manager-session-window-side))
+          (set-window-buffer session-window session-buffer)
+          (setq claude-code-ide-manager--current-session-key session-key)
+          (claude-code-ide-manager--set-scope-active-session-key scope session-key)
+          (claude-code-ide-manager--save-state)
+          (claude-code-ide-manager--show-sidebar scope)
+          (select-window session-window)
+          session-window)))))
 
 (defun claude-code-ide-manager--ensure-live-target (session-key &optional _scope)
-  "Return non-nil when SESSION-KEY still has a live session."
+  "Return non-nil for a live SESSION-KEY, with guidance for disconnected targets."
   (if (or (member session-key (claude-code-ide-manager--live-session-keys))
           (buffer-live-p (claude-code-ide-manager--session-buffer session-key)))
       t
-    (claude-code-ide-manager-refresh)
-    nil))
+    (if-let* ((host (claude-code-ide-manager--session-host session-key)))
+        (if (member host claude-code-ide-remote-hosts)
+            (user-error "Remote target on %s is disconnected. Press c to reattach" host)
+          (user-error "Host %s is disconnected. Restore it in `claude-code-ide-remote-hosts' before reattach" host))
+      (claude-code-ide-manager-refresh)
+      nil)))
 
 (defun claude-code-ide-manager--reset-session-idle-state (session-key)
   "Clear idle state and acknowledge results for SESSION-KEY.
@@ -2829,6 +3000,10 @@ Return the number of sessions cleared."
 When KEEP-MANAGER-FOCUS is non-nil, reselect the manager window after the
 session layout is updated."
   (interactive)
+  (when (claude-code-ide-manager--session-host session-key)
+    (setq scope '(:type global))
+    (claude-code-ide-manager--set-scope-selected-session-key scope session-key)
+    (claude-code-ide-manager--save-state))
   (unless (claude-code-ide-manager--ensure-live-target session-key scope)
     (user-error "No live session buffer for %s" session-key))
   (claude-code-ide--touch-session session-key)
@@ -2876,6 +3051,8 @@ session layout is updated."
 When KEEP-MANAGER-FOCUS is non-nil, reselect the manager window after the
 default layout is rebuilt."
   (interactive)
+  (when (claude-code-ide-manager--session-host session-key)
+    (setq scope '(:type global)))
   (unless (claude-code-ide-manager--ensure-live-target session-key scope)
     (user-error "No live session buffer for %s" session-key))
   (claude-code-ide--touch-session session-key)
@@ -2953,6 +3130,23 @@ default layout is rebuilt."
      (claude-code-ide-manager-item-session-key item)
      t)))
 
+(defun claude-code-ide-manager-reattach-at-point ()
+  "Explicitly reattach the selected remembered remote target."
+  (interactive)
+  (let ((item (or (claude-code-ide-manager--item-at-point)
+                  (user-error "No manager session at point"))))
+    (unless (claude-code-ide-manager-item-host item)
+      (user-error "Use the attach commands for local zmx sessions"))
+    (claude-code-ide--reattach-remote-session
+     (claude-code-ide-manager-item-session-key item))))
+
+(defun claude-code-ide-manager-stop-at-point ()
+  "Request confirmed Stop for the exact selected Session ID."
+  (interactive)
+  (let ((item (or (claude-code-ide-manager--item-at-point)
+                  (user-error "No manager session at point"))))
+    (claude-code-ide-stop (claude-code-ide-manager-item-session-key item))))
+
 (defun claude-code-ide-manager-detach-at-point ()
   "Detach the zmx-backed session at point from Emacs.
 The zmx session and its agent process keep running."
@@ -2961,7 +3155,9 @@ The zmx session and its agent process keep running."
                    (user-error "No manager session at point")))
          (session-key (claude-code-ide-manager-item-session-key item))
          (session (or (claude-code-ide--get-session session-key)
-                      (user-error "Session no longer exists")))
+                      (if-let* ((host (claude-code-ide-manager-item-host item)))
+                          (user-error "The target on %s is already disconnected" host)
+                        (user-error "Session no longer exists"))))
          (buffer (claude-code-ide-manager--session-buffer session-key))
          (zmx-name (claude-code-ide-session-zmx-name session))
          (scope (claude-code-ide-manager--scope-for-command))
@@ -2978,7 +3174,9 @@ The zmx session and its agent process keep running."
     (when (member survivor
                   (claude-code-ide-manager--visible-session-keys scope))
       (claude-code-ide-manager--sync-point-to-session-key scope survivor))
-    (message "Detached zmx session %s" zmx-name)))
+    (if-let* ((host (claude-code-ide-session-host session)))
+        (message "Detached zmx session %s on %s" zmx-name host)
+      (message "Detached zmx session %s" zmx-name))))
 
 (defun claude-code-ide-manager-start-session-at-point (&optional dangerous arg)
   "Start and switch to a session for the row or repo scope at point.
@@ -2992,6 +3190,10 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
                         (and (eq (plist-get scope :type) 'repo)
                              (plist-get scope :git-root))
                         (user-error "No manager session at point"))))
+    (when (and item
+               (claude-code-ide-manager--session-host
+                (claude-code-ide-manager-item-session-key item)))
+      (user-error "Remote session creation is not available in attach mode"))
     (let* ((directory (file-name-as-directory (expand-file-name directory)))
            (claude-code-ide--suppress-initial-display t)
            (claude-code-ide--session-cli-type

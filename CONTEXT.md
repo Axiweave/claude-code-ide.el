@@ -22,12 +22,24 @@ existing zmx session. The agent process does not restart.
 Closing an attach client while the zmx session and its agent process
 keep running.
 
+### Disconnected session
+A Session whose connection to its zmx session has ended.
+This does not establish whether the Agent has stopped or still runs.
+
 ### Adoption
 Creating a Session for a zmx session that was launched outside Emacs,
 so it gains a buffer, idle tracking, and manager visibility.
 
 ### Agent
 One of the supported CLIs: Claude Code, Codex, OpenCode, Pi, Oh My Pi.
+
+### Remote agent
+An Agent that runs inside a zmx session on another machine owned by the user.
+The user accesses it through an attached terminal in local Emacs.
+
+### Configured host
+A user-approved SSH destination for remote Agent access.
+Its name identifies the host in the manager.
 
 ### Agent state
 The lifecycle of a turn as the Agent itself reports it: idle, working,

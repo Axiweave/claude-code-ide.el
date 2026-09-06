@@ -234,8 +234,11 @@
   symbol)
 
 (defun persist-save (symbol)
-  "Mock `persist-save' for testing."
-  (puthash symbol (copy-tree (symbol-value symbol) t) persist--test-store))
+  "Mock `persist-save' for testing.
+Like the real one, drop the stored value when it equals the default."
+  (if (equal (symbol-value symbol) (gethash symbol persist--test-defaults))
+      (remhash symbol persist--test-store)
+    (puthash symbol (copy-tree (symbol-value symbol) t) persist--test-store)))
 
 (defun persist-load (symbol)
   "Mock `persist-load' for testing."
@@ -15720,13 +15723,19 @@ The resync ignores pin state and stored order keys."
   (cl-letf (((symbol-function 'executable-find) (lambda (_) nil)))
     (should-error (claude-code-ide-zmx--ensure) :type 'user-error)))
 
-(ert-deftest claude-code-ide-test-zmx-wrap-command ()
-  "Wrapping preserves agent flags; nil command attaches only."
-  (let ((claude-code-ide-zmx-program "zmx"))
-    (should (equal (claude-code-ide-zmx-wrap-command "cci-omp-p-x" "omp --continue")
-                   "env -u ZMX_SESSION zmx attach cci-omp-p-x omp --continue"))
-    (should (equal (claude-code-ide-zmx-wrap-command "cci-omp-p-x")
-                   "env -u ZMX_SESSION zmx attach cci-omp-p-x"))))
+(ert-deftest claude-code-ide-test-zmx-wrap-existing-uses-exit-guard ()
+  "Existing-only wrap validates the name and appends the no-op guard command."
+  (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore))
+    (let ((claude-code-ide-remote-hosts '("host")))
+      (should (equal (claude-code-ide-zmx--remote-attach-command "host" "target")
+                     (mapconcat #'claude-code-ide-zmx--quote
+                                (append '("ssh" "-t") claude-code-ide-zmx--ssh-options
+                                        (list "host" (claude-code-ide-zmx--remote-command
+                                                      '("attach" "target" "false"))))
+                                " "))))
+    (should (equal (claude-code-ide-zmx-wrap-command "target")
+                   "'env' '-u' 'ZMX_SESSION' '-u' 'ZMX_SESSION_PREFIX' 'zmx' 'attach' 'target' 'false'"))
+    (should-error (claude-code-ide-zmx-wrap-command "a/b") :type 'user-error)))
 
 (ert-deftest claude-code-ide-test-zmx-wrap-at-shared-seam-per-cli ()
   "Every CLI type gets wrapped through the shared terminal seam."
@@ -15749,28 +15758,28 @@ The resync ignores pin state and stored order keys."
       (should (equal captured-cmd
                      (format "env -u ZMX_SESSION zmx attach cci-test-name %s --continue" cli-path))))))
 
-(ert-deftest claude-code-ide-test-zmx-attach-clears-nested-session-in-ghostel ()
-  "Ghostel attach commands clear the inherited zmx session marker."
-  (let ((claude-code-ide-cli-path "omp")
-        (claude-code-ide-zmx--pending-name "cci-test-name")
-        (claude-code-ide-zmx--pending-attach-only t)
-        captured-args)
+(ert-deftest claude-code-ide-test-zmx-existing-wrapper-isolates-environment ()
+  "Existing-only attachment clears inherited routing and quotes the name."
+  (let ((program (make-temp-file "cci-zmx-"))
+        (name "a' $HOME ; exit 9")
+        (process-environment (copy-sequence process-environment)))
     (unwind-protect
         (progn
-          (cl-letf (((symbol-function 'claude-code-ide--resolve-terminal-backend)
-                     (lambda (&optional _) 'ghostel))
-                    ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
-                    ((symbol-function 'ghostel-exec)
-                     (lambda (_buffer _program args)
-                       (setq captured-args args)
-                       (error "Stop after capture"))))
-            (ignore-errors
-              (claude-code-ide--create-terminal-with-command
-               "*zmx-ghostel-test*" temporary-file-directory "omp" nil)))
-          (should (equal captured-args
-                         '("-lc" "env -u ZMX_SESSION zmx attach cci-test-name"))))
-      (when-let* ((buffer (get-buffer "*zmx-ghostel-test*")))
-        (kill-buffer buffer)))))
+          (with-temp-file program
+            (insert "#!/bin/sh\n"
+                    "test \"$1\" = attach && test \"$3\" = false && test \"$#\" = 3 || exit 2\n"
+                    "test \"${ZMX_SESSION+x}\" != x && test \"${ZMX_SESSION_PREFIX+x}\" != x || exit 3\n"
+                    "test \"$2\" = \"$EXPECTED_NAME\" || exit 4\n"))
+          (set-file-modes program #o700)
+          (setenv "ZMX_SESSION" "unrelated")
+          (setenv "ZMX_SESSION_PREFIX" "unrelated-")
+          (setenv "EXPECTED_NAME" name)
+          (let ((claude-code-ide-zmx-program program))
+            (should
+             (eq 0 (call-process
+                    "sh" nil nil nil "-c"
+                    (claude-code-ide-zmx-wrap-command name))))))
+      (delete-file program))))
 
 (ert-deftest claude-code-ide-test-zmx-no-wrap-without-pending-name ()
   "Nil pending name leaves the command untouched (use-zmx off path)."
@@ -16265,6 +16274,821 @@ Return a plist with :killed-zmx and :killed-buffer."
         (claude-code-ide--record-ghostel-title))
       (should (equal pushes
                      '("π ⠇ Analyze CPU usage in emacs profiler report"))))))
+
+(ert-deftest claude-code-ide-test-remote-project-identity ()
+  "Remote project identity must neither merge hosts nor access files."
+  (let ((file-name-handler-alist
+         (list (cons "\\`/ssh:"
+                     (lambda (&rest _) (ert-fail "Remote filesystem access"))))))
+    (should (equal (claude-code-ide--project-key "/ssh:metadata:/p" "a")
+                   '("a" . "/ssh:metadata:/p")))
+    (should-not (equal (claude-code-ide--project-key "/p" "a")
+                       (claude-code-ide--project-key "/p" "b")))
+    (should-not (equal (claude-code-ide--project-key "/p" "a")
+                       (claude-code-ide--project-key "/p")))
+    (should (equal (claude-code-ide--project-key "/tmp/p") "/tmp/p/"))))
+
+(ert-deftest claude-code-ide-test-remote-rejects-unsafe-targets-before-dispatch ()
+  "Reject unconfigured hosts and zmx wildcard or option targets."
+  (let ((claude-code-ide-remote-hosts '("host")))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _) (ert-fail "Unsafe request dispatched"))))
+      (dolist (host '("" "-host" "host name" "host\n" "other"))
+        (should-error
+         (claude-code-ide-zmx--call-remote host '("list") #'ignore)
+         :type 'user-error))
+      (dolist (name '("" "." "-x" "all*" "a/b" "a\nb"))
+        (should-error
+         (claude-code-ide-zmx--call-remote "host" (list "kill" name) #'ignore)
+         :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-remote-quoting-prevents-shell-expansion ()
+  "Shell punctuation remains one literal argument across both shells."
+  (let ((name "a' \" $HOME `id` ; echo unsafe & *"))
+    (with-temp-buffer
+      (should
+       (eq 0 (call-process
+              "sh" nil t nil "-c"
+              (concat "sh -c "
+                      (claude-code-ide-zmx--quote
+                       (concat "printf '%s' " (claude-code-ide-zmx--quote name)))))))
+      (should (equal (buffer-string) name)))))
+
+(ert-deftest claude-code-ide-test-remote-control-output-and-callback-once ()
+  "Control completion preserves separate streams and completes once."
+  (let ((claude-code-ide-remote-hosts '("host"))
+        (original (symbol-function 'make-process))
+        outcomes process sentinel)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'make-process)
+                     (lambda (&rest options)
+                       (funcall original
+                                :name (plist-get options :name)
+                                :buffer (plist-get options :buffer)
+                                :stderr (plist-get options :stderr)
+                                :noquery t :connection-type 'pipe
+                                :sentinel (plist-get options :sentinel)
+                                :command '("sh" "-c"
+                                           "printf output; printf diagnostic >&2; exit 7")))))
+            (setq process (claude-code-ide-zmx--call-remote
+                           "host" '("help") (lambda (outcome) (push outcome outcomes)))
+                  sentinel (process-sentinel process)))
+          (let ((deadline (+ (float-time) 5)))
+            (while (and (null outcomes) (< (float-time) deadline))
+              (accept-process-output nil 0.02)))
+          (should (equal (plist-get (car outcomes) :stdout) "output"))
+          (should (equal (plist-get (car outcomes) :stderr) "diagnostic"))
+          (should (eq (plist-get (car outcomes) :status) 7))
+          (funcall sentinel process "finished\n")
+          (should (= (length outcomes) 1)))
+      (when (process-live-p process) (delete-process process)))))
+
+(ert-deftest claude-code-ide-test-remote-control-deadline-owns-only-request ()
+  "A deadline cancels its request without touching another client."
+  (let ((claude-code-ide-remote-hosts '("host"))
+        (original (symbol-function 'make-process))
+        process unrelated deadline outcomes)
+    (unwind-protect
+        (progn
+          (setq unrelated (make-process :name "cci-unrelated" :command '("cat")
+                                        :connection-type 'pipe :noquery t))
+          (cl-letf (((symbol-function 'make-process)
+                     (lambda (&rest options)
+                       (funcall original :name (plist-get options :name)
+                                :buffer (plist-get options :buffer)
+                                :stderr (plist-get options :stderr)
+                                :connection-type 'pipe :noquery t
+                                :sentinel (plist-get options :sentinel)
+                                :command '("cat"))))
+                    ((symbol-function 'run-at-time)
+                     (lambda (_seconds _repeat function)
+                       (setq deadline function) nil)))
+            (setq process (claude-code-ide-zmx--call-remote
+                           "host" '("help") (lambda (outcome) (push outcome outcomes)))))
+          (funcall deadline)
+          (should-not (process-live-p process))
+          (should (process-live-p unrelated))
+          (should (plist-get (car outcomes) :timeout))
+          (funcall deadline)
+          (should (= (length outcomes) 1)))
+      (when (process-live-p process) (delete-process process))
+      (when (process-live-p unrelated) (delete-process unrelated)))))
+
+(ert-deftest claude-code-ide-test-remote-discovery-distinguishes-protocol-errors ()
+  "Empty hosts differ from malformed responses and candidate errors."
+  (should-not
+   (claude-code-ide-zmx--parse-remote-list "host" "no sessions found\n" ""))
+  (dolist (output '("" "unexpected response\n" "name=ok\tcmd=omp\nbad line"
+                    "name=ok\tmalformed field" "no sessions found but listing failed"))
+    (should-error
+     (claude-code-ide-zmx--parse-remote-list "host" output "")
+     :type 'user-error))
+  (let ((entries (claude-code-ide-zmx--parse-remote-list
+                 "host" "name=one\tcmd=unknown\nname=two\terror=stale\n" "")))
+    (should (equal (mapcar (lambda (entry) (plist-get entry :name)) entries)
+                   '("one" "two")))
+    (should-not (plist-get (car entries) :start_dir))
+    (should (equal (plist-get (cadr entries) :error) "stale"))
+    (should (equal (plist-get (car entries) :host) "host"))))
+
+(ert-deftest claude-code-ide-test-remote-discovery-accepts-zmx-0-8-rows ()
+  "Indented zmx 0.8 rows with cwd=file://HOST/PATH yield :start_dir."
+  (let ((entries (claude-code-ide-zmx--parse-remote-list
+                  "host" "  name=one\tpid=4\tcwd=file://host/home/u/proj\tcmd=omp\n" "")))
+    (should (equal (plist-get (car entries) :start_dir) "/home/u/proj"))
+    (should (equal (plist-get (car entries) :cmd) "omp"))))
+
+(ert-deftest claude-code-ide-test-remote-discovery-reports-failed-hosts ()
+  "Failed hosts never look like empty discovery."
+  (let ((claude-code-ide-remote-hosts '("host")) requests outcome)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+               (lambda (host args callback &optional _name)
+                 (push (list host args callback) requests)
+                 'request)))
+      (claude-code-ide-zmx-discover-remote
+       "host" (lambda (result) (setq outcome result)))
+      (should (equal (cadar requests) '("list")))
+      (funcall (nth 2 (car requests))
+               '(:host "host" :status 255 :stdout "" :stderr "Permission denied"))
+      (should (plist-get outcome :error))
+      (should (= (length requests) 1)))))
+
+(ert-deftest claude-code-ide-test-remote-local-agent-association-excludes-both-routes ()
+  "Neither a shared name nor a buffer name associates remote MCP state."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (remote (generate-new-buffer " *cci-remote-association*"))
+        (local (generate-new-buffer " *cci-local-association*")))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "remote" :host "host" :zmx-name "same" :buffer remote))
+          (should-not (claude-code-ide--session-buffer-for-agent "same" nil))
+          (should-not
+           (claude-code-ide--session-buffer-for-agent nil (buffer-name remote)))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create :id "local" :zmx-name "same" :buffer local))
+          (should (eq (claude-code-ide--session-buffer-for-agent "same" nil) local)))
+      (kill-buffer remote)
+      (kill-buffer local))))
+
+(ert-deftest claude-code-ide-test-remote-title-and-pid-never-contact-local-zmx ()
+  "Remote titles stay local and a remote Agent never supplies a local PID."
+  (defvar ghostel-title)
+  (let ((session (claude-code-ide-session-create
+                  :id "remote" :host "host" :zmx-name "same" :pid 42))
+        (ghostel-title "Remote title"))
+    (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+               (lambda (&optional _) session))
+              ((symbol-function 'claude-code-ide-zmx-set-title)
+               (lambda (&rest _) (ert-fail "Remote title reached local zmx")))
+              ((symbol-function 'claude-code-ide-zmx-session-pid)
+               (lambda (&rest _) (ert-fail "Remote PID reached local zmx"))))
+      (should-not (claude-code-ide-session-agent-pid session))
+      (claude-code-ide--record-ghostel-title)
+      (should (equal (claude-code-ide-session-title session) "Remote title")))))
+
+(ert-deftest claude-code-ide-test-remote-manager-rejects-local-project-actions ()
+  "Remote rows cannot trigger Git, project selection, or local launch."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (session (claude-code-ide-session-create
+                   :id "remote" :host "host" :directory "/tmp/shared/"
+                   :zmx-name "agent" :cli-type 'omp :order 1))
+         (item (make-claude-code-ide-manager-item
+                :session-key "remote" :host "host" :directory "/tmp/shared/")))
+    (claude-code-ide--put-session session)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+               (lambda () item))
+              ((symbol-function 'claude-code-ide-manager--scope-for-command)
+               (lambda () '(:type global)))
+              ((symbol-function 'claude-code-ide-manager--current-git-root)
+               (lambda () (ert-fail "Remote Git lookup")))
+              ((symbol-function 'process-lines)
+               (lambda (&rest _) (ert-fail "Remote metadata spawned a local process")))
+              ((symbol-function 'claude-code-ide-manager--open-target-for-scope)
+               (lambda (&rest _) (ert-fail "Remote row opened a project picker")))
+              ((symbol-function 'claude-code-ide-manager--session-active-file)
+               (lambda (&rest _) (ert-fail "Remote metadata reached Treemacs")))
+              ((symbol-function 'claude-code-ide--start-session)
+               (lambda (&rest _) (ert-fail "Remote row launched a local Agent"))))
+      (should-not (claude-code-ide-manager--session-git-root "remote"))
+      (should-not (claude-code-ide-manager--session-branch-name "remote"))
+      (should-not (claude-code-ide-manager--sync-treemacs-to-session "remote"))
+      (should-error (claude-code-ide-manager-open) :type 'user-error)
+      (should-error (claude-code-ide-manager-start-session-at-point) :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-remote-manager-layout-keeps-local-windows ()
+  "The first remote layout displays its terminal without a project layout."
+  (save-window-excursion
+    (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+           (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+           (claude-code-ide-manager--items nil)
+           (claude-code-ide-manager-persist-state nil)
+           (claude-code-ide-manager--current-session-key nil)
+           (claude-code-ide-use-side-window t)
+           (claude-code-ide-window-side 'right)
+           (buffer (generate-new-buffer " *cci-remote-layout*"))
+           (process (make-pipe-process :name "cci-layout-client" :buffer buffer
+                                       :noquery t :sentinel #'ignore))
+           (original-window (selected-window))
+           (original-buffer (window-buffer original-window)))
+      (unwind-protect
+          (progn
+            (claude-code-ide--put-session
+             (claude-code-ide-session-create
+              :id "remote" :host "host" :directory "/remote/project/"
+              :buffer buffer :process process :zmx-name "agent" :cli-type 'omp :order 1))
+            (cl-letf (((symbol-function 'claude-code-ide-manager--show-sidebar) #'ignore)
+                      ((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                       (lambda (&rest _) (ert-fail "Remote project status opened"))))
+              (let ((window (claude-code-ide-manager--build-default-layout "remote")))
+                (should (eq (window-buffer window) buffer))
+                (should (window-live-p original-window))
+                (should (eq (window-buffer original-window) original-buffer)))))
+        (delete-process process)
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-remote-attach-rejects-non-ghostel-backend ()
+  "A vterm or eat backend is refused before any row, buffer, or process exists."
+  (dolist (backend '(vterm eat))
+    (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+          (claude-code-ide-manager--items nil)
+          (claude-code-ide-manager-persist-state nil)
+          (claude-code-ide-remote-hosts '("host"))
+          (claude-code-ide-terminal-backend backend)
+          (claude-code-ide-cli-terminal-backends nil)
+          (buffers-before (buffer-list)))
+      (cl-letf (((symbol-function 'claude-code-ide--create-terminal-with-command)
+                 (lambda (&rest _) (ert-fail "Terminal created on unsupported backend"))))
+        (let ((err (should-error
+                    (claude-code-ide--create-remote-session "/remote/project" "cci-omp-x" "host" nil)
+                    :type 'user-error)))
+          (should (string-match-p (symbol-name backend) (cadr err)))))
+      (should (= (hash-table-count claude-code-ide--sessions) 0))
+      (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "x"))
+      (should-not claude-code-ide-manager--items)
+      (should (equal (buffer-list) buffers-before)))))
+
+(ert-deftest claude-code-ide-test-remote-attachment-bypasses-local-agent-startup ()
+  "Remote attachment needs only a terminal and keeps remote paths as text."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts '("host"))
+        (claude-code-ide-cli-path "/missing/omp")
+        (claude-code-ide-zmx-program "/missing/zmx")
+        (claude-code-ide-terminal-initialization-delay 0)
+        (claude-code-ide-terminal-backend 'ghostel)
+        (claude-code-ide-manager-persist-state nil)
+        (file-name-handler-alist
+         (list (cons "\\`/ssh:" (lambda (&rest _) (ert-fail "Remote filesystem access")))))
+        buffer process working-directory terminal-command selected-id)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+             ((symbol-function 'completing-read)
+              (lambda (_prompt candidates &rest _) (caar candidates)))
+             ((symbol-function 'read-string)
+              (lambda (&rest _) "/ssh:metadata:/remote-project"))
+             ((symbol-function 'read-directory-name)
+              (lambda (&rest _) (ert-fail "Remote attach requested local completion")))
+             ((symbol-function 'claude-code-ide--read-agent)
+              (lambda (&rest _) "/missing/omp"))
+             ((symbol-function 'claude-code-ide-manager-switch-to-session)
+              (lambda (session-id) (setq selected-id session-id)))
+             ((symbol-function 'claude-code-ide--register-session)
+              #'claude-code-ide--put-session)
+             ((symbol-function 'claude-code-ide--create-terminal-with-command)
+              (lambda (name directory command _environment)
+                (setq terminal-command command
+                      working-directory directory
+                      buffer (generate-new-buffer name)
+                      process (make-process :name "cci-remote-fixture"
+                                            :buffer buffer :command '("cat")
+                                            :connection-type 'pipe :noquery t))
+                (cons buffer process)))
+             ((symbol-function 'claude-code-ide--create-terminal-session)
+              (lambda (&rest _) (ert-fail "Remote attach entered an Agent builder")))
+             ((symbol-function 'claude-code-ide-mcp-start)
+              (lambda (&rest _) (ert-fail "Remote attach started MCP")))
+             ((symbol-function 'claude-code-ide-mcp-sse-ensure-server)
+              (lambda (&rest _) (ert-fail "Remote attach started MCP SSE")))
+             ((symbol-function 'executable-find)
+              (lambda (&rest _) (ert-fail "Remote attach probed a local executable"))))
+          (claude-code-ide--attach-one-of
+           '((:host "host" :name "existing" :cmd "unknown --do-not-launch")))
+          (let ((session (claude-code-ide--get-session selected-id)))
+            (should (process-live-p (claude-code-ide-session-process session)))
+            (should-not (string-match-p "--do-not-launch" terminal-command))
+            (should (equal (claude-code-ide-session-host session) "host"))
+            (should (equal (claude-code-ide-session-directory session)
+                           "/ssh:metadata:/remote-project"))
+            (should (equal working-directory temporary-file-directory))))
+      (when (processp process)
+        (set-process-sentinel process #'ignore)
+        (when (process-live-p process) (delete-process process)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (let ((kill-buffer-hook nil)) (kill-buffer buffer)))))))
+
+(ert-deftest claude-code-ide-test-remote-host-collision-isolates-directory-and-order ()
+  "Identical remote directories must not change local or other-host lookup."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide--session-order-counters (make-hash-table :test #'equal)))
+    (dolist (host '(nil "a" "b"))
+      (claude-code-ide--put-session
+       (claude-code-ide-session-create
+        :id (or host "local") :host host :zmx-name "same"
+        :directory "/tmp/shared/" :order (if (equal host "a") 7 1))))
+    (should (equal (mapcar #'claude-code-ide-session-id
+                          (claude-code-ide--sessions-for-directory "/tmp/shared/"))
+                   '("local")))
+    (should (equal (mapcar #'claude-code-ide-session-id
+                          (claude-code-ide--sessions-for-directory "/tmp/shared/" "a"))
+                   '("a")))
+    (should (= (claude-code-ide--next-session-order "/tmp/shared/" "a") 8))
+    (should (= (claude-code-ide--next-session-order "/tmp/shared/" "b") 2))
+    (should (= (claude-code-ide--next-session-order "/tmp/shared/") 2))))
+
+(ert-deftest claude-code-ide-test-remote-manager-host-label-survives-rename ()
+  "Renaming one target preserves its host and every other target."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+        (claude-code-ide-manager--items nil)
+        (claude-code-ide-manager-persist-state nil))
+    (dolist (host '("host-a" "host-b"))
+      (let ((session (claude-code-ide-session-create
+                      :id host :host host :zmx-name "same" :directory "/tmp/shared/"
+                      :order 1 :cli-type 'omp)))
+        (claude-code-ide--put-session session)
+        (push (claude-code-ide-manager--make-item '(:type global) session)
+              claude-code-ide-manager--items)))
+    (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore))
+      (claude-code-ide-manager-rename-session "host-a" "Renamed"))
+    (let ((label (claude-code-ide-manager-item-display-name
+                  (claude-code-ide-manager--item-by-session-key "host-a"))))
+      (should (string-match-p "host-a" label))
+      (should (string-match-p "shared" label))
+      (should (string-match-p "Renamed" label)))
+    (should (string-match-p
+             "host-b"
+             (claude-code-ide-manager-item-display-name
+              (claude-code-ide-manager--item-by-session-key "host-b"))))
+    (should-not (claude-code-ide-session-custom-name
+                 (claude-code-ide--get-session "host-b")))
+    (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore))
+      (claude-code-ide-manager-rename-session "host-b" "Renamed"))
+    (should (equal (claude-code-ide-session-custom-name
+                    (claude-code-ide--get-session "host-b")) "Renamed"))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--current-git-root)
+               (lambda () (ert-fail "Remote scope made a Git query"))))
+      (should-not
+       (claude-code-ide-manager--scope-sessions
+        '(:type repo :git-root "/tmp/shared/")
+        (hash-table-values claude-code-ide--sessions))))))
+
+(ert-deftest claude-code-ide-test-remote-disconnect-survives-passive-refresh ()
+  "Disconnected rows survive without persistence or automatic requests."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+         (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+         (claude-code-ide-manager--items nil)
+         (claude-code-ide-manager-persist-state nil)
+         (claude-code-ide-manager--current-session-key "stable")
+         (session (claude-code-ide-session-create
+                   :id "stable" :host "removed-host" :zmx-name "agent"
+                   :directory "/remote/project" :cli-type 'omp :order 1
+                   :custom-name "Remember me" :created-at 42))
+         (scope '(:type global)))
+    (claude-code-ide-manager--set-scope-selected-session-key scope "stable")
+    (claude-code-ide-manager--set-scope-active-session-key scope "stable")
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+               (lambda (&rest _) (ert-fail "Passive refresh contacted a host"))))
+      (claude-code-ide-manager--remember-remote-session session)
+      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager-session-ended "stable")
+      (claude-code-ide-manager-refresh-items scope)
+      (let ((items (claude-code-ide-manager--scope-items scope)))
+        (should (= (length items) 1))
+        (should-not (claude-code-ide-manager-item-live-p (car items)))
+        (should (equal (claude-code-ide-manager-item-host (car items)) "removed-host"))
+        (should (equal (claude-code-ide-manager-item-custom-name (car items)) "Remember me")))
+      (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "stable"))
+      (should-not (claude-code-ide-manager--scope-active-session-key scope))
+      (should-not claude-code-ide-manager--current-session-key))))
+
+(ert-deftest claude-code-ide-test-remote-remembered-row-survives-repeated-saves ()
+  "A remembered row still loads after unchanged repeated saves.
+`persist-save' deletes the file when the value equals the registered
+default, so the default must not track the last saved value."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+         (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+         (claude-code-ide-manager--items nil)
+         (claude-code-ide-manager-persist-state t)
+         (claude-code-ide-manager--persisted-state
+          (copy-tree claude-code-ide-manager--empty-persisted-state))
+         (persist--test-store (make-hash-table :test 'eq))
+         (persist--test-defaults (make-hash-table :test 'eq))
+         (session (claude-code-ide-session-create
+                   :id "kept" :host "host" :zmx-name "agent"
+                   :directory "/remote/project" :cli-type 'omp :order 1)))
+    (claude-code-ide-manager--remember-remote-session session)
+    (claude-code-ide-manager--save-state)
+    (claude-code-ide-manager--save-state)
+    (claude-code-ide-manager--reset-state)
+    (claude-code-ide-manager--load-state)
+    (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) "kept")))
+      (should item)
+      (should (equal (claude-code-ide-manager-item-host item) "host"))
+      (should-not (claude-code-ide-manager-item-live-p item)))))
+
+(ert-deftest claude-code-ide-test-remote-stale-cleanup-cannot-remove-new-owner ()
+  "An old sentinel or buffer hook cannot remove a later attachment."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (old-process (make-pipe-process :name "cci-old-owner" :noquery t))
+         (new-process (make-pipe-process :name "cci-new-owner" :noquery t))
+         (session (claude-code-ide-session-create
+                   :id "stable" :host "host" :zmx-name "agent"
+                   :directory "/remote/project" :process new-process)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session session)
+          (cl-letf (((symbol-function 'claude-code-ide--cleanup-session-resources)
+                     (lambda (&rest _) (ert-fail "Stale owner released resources")))
+                    ((symbol-function 'claude-code-ide-manager--remember-remote-session)
+                     (lambda (&rest _) (ert-fail "Stale owner remembered a row"))))
+            (claude-code-ide--cleanup-on-exit "stable" nil old-process)
+            (claude-code-ide--cleanup-on-exit "stable" t old-process)
+            (should (eq (claude-code-ide--get-session "stable") session))
+            (should (process-live-p new-process))))
+      (delete-process old-process)
+      (delete-process new-process))))
+
+(ert-deftest claude-code-ide-test-remote-restart-restores-metadata-without-connection ()
+  "Version 3 restores disconnected targets even when a host was removed."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+        (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+        (claude-code-ide-manager--items nil)
+        (claude-code-ide-remote-hosts nil)
+        (claude-code-ide-manager--current-session-key nil)
+        (claude-code-ide-manager-persist-state nil))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+               (lambda (&rest _) (ert-fail "Restoration contacted a host"))))
+      (claude-code-ide-manager--restore-state
+       '(:version 3
+         :scopes (("global" :selected-session-key "saved" :active-session-key "saved"
+                   :items ((:session-key "saved" :host "removed-host"
+                            :zmx-name "agent" :cli-type omp :directory "/remote/project"
+                            :custom-name "Saved" :display-name "[removed-host] project · Saved"
+                            :order 2 :pinned t :order-key 3 :live-p t)
+                           (:session-key "invalid" :host "-unsafe"
+                            :zmx-name "agent" :cli-type omp :directory "/remote/project"))))
+         :layouts (("saved" :session-key "saved" :selected-buffer-name "dead-terminal"))))
+      (let ((item (claude-code-ide-manager--item-by-session-key "saved")))
+        (should item)
+        (should-not (claude-code-ide-manager-item-live-p item))
+        (should (equal (claude-code-ide-manager-item-host item) "removed-host"))
+        (should (claude-code-ide-manager-item-pinned item))
+        (should (= (claude-code-ide-manager-item-order-key item) 3)))
+      (should-not (claude-code-ide-manager--item-by-session-key "invalid"))
+      (should (equal (claude-code-ide-manager--scope-selected-session-key '(:type global)) "saved"))
+      (should-not (claude-code-ide-manager--scope-active-session-key '(:type global)))
+      (should (gethash "saved" claude-code-ide-manager--layouts)))))
+
+(ert-deftest claude-code-ide-test-remote-stop-rejects-misleading-acknowledgment ()
+  "A zero exit with another target's acknowledgment does not confirm Stop."
+  (let ((claude-code-ide-remote-hosts '("host")) requests outcome)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+                   (lambda (_host args callback &optional _name)
+                     (let ((process (make-pipe-process :name "cci-stop-test" :noquery t
+                                                       :sentinel #'ignore)))
+                       (push (list args callback process) requests)
+                       process))))
+          (claude-code-ide-zmx-stop-remote
+           "host" "target" (lambda (result) (setq outcome result)))
+          (should (equal (caar requests) '("kill" "target")))
+          (delete-process (nth 2 (car requests)))
+          (funcall (nth 1 (car requests))
+                   '(:host "host" :status 0 :stdout "killed session other\n" :stderr ""))
+          (should (plist-get outcome :error))
+          (should-not (plist-get outcome :verified))
+          (should (= (length requests) 1)))
+      (dolist (request requests)
+        (when (process-live-p (nth 2 request)) (delete-process (nth 2 request)))))))
+
+(ert-deftest claude-code-ide-test-remote-stop-verifies-exact-name-with-whitespace ()
+  "Verification must preserve name whitespace, accept a blank last-target list, and never repeat the kill."
+  (dolist (reply '(present "other\n" ""))
+    (let* ((claude-code-ide-remote-hosts '("host"))
+           (target " agent' ")
+           (still-present (eq reply 'present))
+           requests outcome)
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+                     (lambda (_host args callback &optional _name)
+                       (let ((process (make-pipe-process :name "cci-stop-test" :noquery t
+                                                         :sentinel #'ignore)))
+                         (push (list args callback process) requests)
+                         process))))
+            (claude-code-ide-zmx-stop-remote
+             "host" target (lambda (result) (setq outcome result)))
+            (delete-process (nth 2 (car requests)))
+            (funcall (nth 1 (car requests))
+                     (list :host "host" :status 0
+                           :stdout (concat "killed session " target "\n") :stderr ""))
+            (should (equal (caar requests) '("list" "--short")))
+            (delete-process (nth 2 (car requests)))
+            (funcall (nth 1 (car requests))
+                     (list :host "host" :status 0
+                           :stdout (if still-present (concat target "\n") reply)
+                           :stderr ""))
+            (if still-present
+                (progn
+                  (should (plist-get outcome :error))
+                  (should-not (plist-get outcome :verified)))
+              (should (plist-get outcome :verified)))
+            (should (= (length requests) 2)))
+        (dolist (request requests)
+          (when (process-live-p (nth 2 request)) (delete-process (nth 2 request))))))))
+
+(ert-deftest claude-code-ide-test-remote-bulk-names-skips-and-continues ()
+  "Bulk attachment reports bad candidates and continues after target loss."
+  (let (attached messages)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-infer-cli-command)
+               (lambda (command) (and (equal command "omp") "omp")))
+              ((symbol-function 'claude-code-ide--attach-zmx-entry)
+               (lambda (entry _directory _cli)
+                 (if (equal (plist-get entry :name) "gone")
+                     (error "The existing target disappeared")
+                   (push (plist-get entry :name) attached))))
+              ((symbol-function 'claude-code-ide-log)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages)))
+              ((symbol-function 'read-string)
+               (lambda (&rest _) (ert-fail "Bulk attachment prompted"))))
+      (should
+       (= 1
+          (claude-code-ide--attach-zmx-entries
+           '((:host "host" :name "bad" :error "Unavailable metadata")
+             (:host "host" :name "no-directory" :cmd "omp")
+             (:host "host" :name "unknown" :start_dir "/project" :cmd "other")
+             (:host "host" :name "gone" :start_dir "/project" :cmd "omp")
+             (:host "host" :name "ready" :start_dir "/project" :cmd "omp")))))
+      (should (equal attached '("ready")))
+      (dolist (name '("bad" "no-directory" "unknown" "gone"))
+        (should (string-match-p (regexp-quote name) (car messages)))))))
+
+(defmacro claude-code-ide-tests--with-remote-targets (&rest body)
+  "Run BODY with isolated targets, request replies, and confirmation control."
+  (declare (indent 0))
+  `(let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
+         (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+         (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+         (claude-code-ide-manager--items nil)
+         (claude-code-ide-manager--current-session-key nil)
+         (claude-code-ide-manager-persist-state nil)
+         (claude-code-ide-remote-hosts '("host-a" "host-b"))
+         (claude-code-ide-cli-path "/missing/omp")
+         (confirmation t)
+         requests prompts buffers clients)
+     (unwind-protect
+         (cl-labels
+             ((add-target
+               (id host)
+               (let* ((buffer (generate-new-buffer "*claude-code[remote-test]*"))
+                      (process (make-pipe-process
+                                :name "cci-remote-client" :buffer buffer
+                                :noquery t :sentinel #'ignore))
+                      (session (claude-code-ide-session-create
+                                :id id :host host :zmx-name "same"
+                                :directory "/tmp/shared/" :buffer buffer
+                                :process process :cli-type 'omp :order 1)))
+                 (push buffer buffers)
+                 (push process clients)
+                 (claude-code-ide--put-session session)
+                 session))
+              (reply
+               (stdout &optional status timeout)
+               (let* ((request (car requests))
+                      (process (nth 3 request)))
+                 (delete-process process)
+                 (funcall (nth 2 request)
+                          (list :host (car request) :process process
+                                :status (or status 0) :stdout stdout
+                                :stderr "" :timeout timeout)))))
+           (cl-letf
+               (((symbol-function 'claude-code-ide-zmx--call-remote)
+                 (lambda (host args callback &optional name)
+                   (let ((process (make-pipe-process
+                                   :name (or name "cci-remote-request")
+                                   :noquery t :sentinel #'ignore)))
+                     (push (list host args callback process) requests)
+                     process)))
+                ((symbol-function 'yes-or-no-p)
+                 (lambda (prompt) (push prompt prompts) confirmation))
+                ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore)
+                ((symbol-function 'claude-code-ide-manager-switch-to-session) #'ignore))
+             ,@body))
+       (dolist (process (append clients (mapcar (lambda (request) (nth 3 request)) requests)))
+         (when (process-live-p process) (delete-process process)))
+       (dolist (buffer buffers)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (let ((kill-buffer-hook nil)) (kill-buffer buffer))))))))
+
+(ert-deftest claude-code-ide-test-remote-stop-cancellation-and-pending-isolation ()
+  "Cancel without dispatch, then keep Stop scoped to one host and target."
+  (claude-code-ide-tests--with-remote-targets
+    (let* ((session (add-target "a" "host-a"))
+           (other (add-target "b" "host-b"))
+           (local (add-target "local" nil)))
+      (setq confirmation nil)
+      (claude-code-ide-stop "a")
+      (should-not requests)
+      (should (process-live-p (claude-code-ide-session-process session)))
+      (setq confirmation t)
+      (claude-code-ide-stop "a")
+      (should (equal (caar requests) "host-a"))
+      (should (equal (cadar requests) '("kill" "same")))
+      (should (string-match-p "host-a" (car prompts)))
+      (should (string-match-p "same" (car prompts)))
+      (should-error (claude-code-ide-stop "a") :type 'user-error)
+      (should-error (claude-code-ide--reattach-remote-session "a") :type 'user-error)
+      (should (= (length requests) 1))
+      (reply "killed session same\n")
+      (should-error (claude-code-ide-stop "a") :type 'user-error)
+      (should (= (length requests) 2))
+      (reply "" 255 t)
+      (should (eq (claude-code-ide--get-session "a") session))
+      (should (process-live-p (claude-code-ide-session-process other)))
+      (should (process-live-p (claude-code-ide-session-process local))))))
+
+(ert-deftest claude-code-ide-test-remote-stop-finalizes-both-callback-orders ()
+  "Verified Stop removes one target before or after its client exits."
+  (dolist (sentinel-first '(t nil))
+    (claude-code-ide-tests--with-remote-targets
+      (let* ((session (add-target "a" "host-a"))
+             (process (claude-code-ide-session-process session))
+             (other (add-target "b" "host-b")))
+        (claude-code-ide-stop "a")
+        (reply "killed session same\n")
+        (when sentinel-first
+          (claude-code-ide--cleanup-on-exit "a" nil process)
+          (should (claude-code-ide-manager--item-by-session-key "a")))
+        (reply "another-target\n")
+        (unless sentinel-first
+          (claude-code-ide--cleanup-on-exit "a" nil process))
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should-not (claude-code-ide--get-session "a"))
+        (should-not (claude-code-ide-manager--item-by-session-key "a"))
+        (should-not (process-live-p process))
+        (should (process-live-p (claude-code-ide-session-process other)))))))
+
+(ert-deftest claude-code-ide-test-remote-stop-late-result-preserves-new-owner ()
+  "A delayed Stop result cannot remove a newer attachment with the same ID."
+  (dolist (disconnected '(nil t))
+    (claude-code-ide-tests--with-remote-targets
+      (let* ((old (add-target "a" "host-a"))
+             (old-process (claude-code-ide-session-process old)))
+        (when disconnected
+          (claude-code-ide--cleanup-on-exit "a" nil old-process))
+        (claude-code-ide-stop "a")
+        (reply "killed session same\n")
+        (let ((new (add-target "a" "host-a")))
+          (reply "another-target\n")
+          (claude-code-ide--cleanup-on-exit "a" nil old-process)
+          (should (eq (claude-code-ide--get-session "a") new))
+          (should (process-live-p (claude-code-ide-session-process new))))))))
+
+(ert-deftest claude-code-ide-test-remote-detach-clears-activity-without-stop ()
+  "Detach clears activity and retains metadata without a remote request."
+  (claude-code-ide-tests--with-remote-targets
+    (let* ((session (add-target "a" "host-a"))
+           (buffer (claude-code-ide-session-buffer session))
+           (process (claude-code-ide-session-process session)))
+      (with-current-buffer buffer
+        (setq claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t
+              claude-code-ide-session-working-p t))
+      (claude-code-ide--cleanup-on-exit "a" t process)
+      (should-not requests)
+      (should-not (claude-code-ide--get-session "a"))
+      (should (claude-code-ide-manager--item-by-session-key "a"))
+      (with-current-buffer buffer
+        (should-not claude-code-ide-session-idle-enabled)
+        (should-not claude-code-ide-session-idle-p)
+        (should-not claude-code-ide-session-working-p)))))
+
+(ert-deftest claude-code-ide-test-remote-disabled-persistence-does-not-restore ()
+  "Disabled persistence starts without saved remote targets or requests."
+  (claude-code-ide-tests--with-remote-targets
+    (let ((claude-code-ide-manager--persisted-state
+           '(:version 3 :scopes
+             (("global" :items
+               ((:session-key "saved" :host "host-a" :zmx-name "same"
+                 :cli-type omp :directory "/remote/project")))))))
+      (cl-letf (((symbol-function 'persist-load) #'ignore))
+        (claude-code-ide-manager--initialize)
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should-not (claude-code-ide-manager--item-by-session-key "saved"))
+        (should-not requests)))))
+
+(ert-deftest claude-code-ide-test-remote-failed-attach-retains-and-reattaches-same-id ()
+  "Failed attachment retains one target and explicit reattach preserves it."
+  (claude-code-ide-tests--with-remote-targets
+    (let ((other (add-target "b" "host-b"))
+          (claude-code-ide-terminal-initialization-delay 0)
+          (claude-code-ide-terminal-backend 'ghostel)
+          (available nil))
+      (cl-letf
+          (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+           ((symbol-function 'claude-code-ide--register-session)
+            #'claude-code-ide--put-session)
+           ((symbol-function 'claude-code-ide--create-terminal-with-command)
+            (lambda (name _directory _command _environment)
+              (unless available (user-error "The terminal backend is unavailable"))
+              (let* ((buffer (generate-new-buffer name))
+                     (process (make-pipe-process
+                               :name "cci-reattached-client" :buffer buffer
+                               :noquery t :sentinel #'ignore)))
+                (push buffer buffers)
+                (push process clients)
+                (cons buffer process)))))
+        (should-error
+         (claude-code-ide--attach-zmx-entry
+          '(:host "host-a" :name "same")
+          "/tmp/shared/" "/missing/omp" "stable")
+         :type 'user-error)
+        (should-not (claude-code-ide--get-session "stable"))
+        (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
+          (should item)
+          (setf (claude-code-ide-manager-item-custom-name item) "Saved"
+                (claude-code-ide-manager-item-order item) 7
+                (claude-code-ide-manager-item-pinned item) t))
+        (should-error (claude-code-ide-manager--ensure-live-target "stable")
+                      :type 'user-error)
+        (let ((claude-code-ide-remote-hosts nil))
+          (should-error (claude-code-ide--reattach-remote-session "stable")
+                        :type 'user-error))
+        (should-not requests)
+        (should-error (claude-code-ide--reattach-remote-session "stable")
+                      :type 'user-error)
+        (should-not requests)
+        (should-not (claude-code-ide--get-session "stable"))
+        (should (claude-code-ide-manager--item-by-session-key "stable"))
+        (setq available t)
+        (claude-code-ide--reattach-remote-session "stable")
+        (let ((session (claude-code-ide--get-session "stable")))
+          (should (process-live-p (claude-code-ide-session-process session)))
+          (should (equal (claude-code-ide-session-custom-name session) "Saved"))
+          (should (= (claude-code-ide-session-order session) 7)))
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should (claude-code-ide-manager-item-pinned
+                 (claude-code-ide-manager--item-by-session-key "stable")))
+        (should (eq (claude-code-ide--get-session "b") other))))))
+
+(ert-deftest claude-code-ide-test-remote-stop-owns-real-verification-process ()
+  "Retained exited processes must not allow a second Stop during verification."
+  (let ((control (symbol-function 'claude-code-ide-zmx--call-remote))
+        (spawn (symbol-function 'make-process))
+        (delete-exited-processes nil)
+        verification
+        (kills 0))
+    (claude-code-ide-tests--with-remote-targets
+      (add-target "a" "host-a")
+      (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote) control)
+                ((symbol-function 'make-process)
+                 (lambda (&rest args)
+                   (if (string-match-p "'kill'" (car (last (plist-get args :command))))
+                       (progn
+                         (setq kills (1+ kills))
+                         (apply spawn
+                                (plist-put args :command
+                                           '("printf" "killed session same\n"))))
+                     (setq verification
+                           (apply spawn (plist-put args :command '("cat"))))))))
+        (unwind-protect
+            (progn
+              (claude-code-ide-stop "a")
+              (let ((deadline (+ (float-time) 2)))
+                (while (and (not verification) (< (float-time) deadline))
+                  (accept-process-output nil 0.01)))
+              (should (process-live-p verification))
+              (should-error (claude-code-ide-stop "a") :type 'user-error)
+              (should (= kills 1))
+              (process-send-string verification "another-target\n")
+              (process-send-eof verification)
+              (let ((deadline (+ (float-time) 2)))
+                (while (and (claude-code-ide--get-session "a")
+                            (< (float-time) deadline))
+                  (accept-process-output nil 0.01)))
+              (should-not (claude-code-ide--get-session "a"))
+              (should-not (claude-code-ide-manager--item-by-session-key "a")))
+          (when (process-live-p verification) (delete-process verification)))))))
 
 (provide 'claude-code-ide-tests)
 

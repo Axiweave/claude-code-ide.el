@@ -408,7 +408,7 @@ the target window is already visible."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name pid)
+  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name pid host)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -815,6 +815,18 @@ Signal a `user-error' when the current buffer is not in a project."
   (when directory
     (file-name-as-directory (expand-file-name directory))))
 
+(defun claude-code-ide--project-key (directory &optional host)
+  "Return the project identity for DIRECTORY on HOST.
+Keep remote directory text unchanged.  Normalize local directories."
+  (if host (cons host directory)
+    (claude-code-ide--normalize-directory directory)))
+
+(defun claude-code-ide--path-basename (path)
+  "Return PATH's final slash-separated component as plain text.
+Never consults `file-name-handler-alist'; safe for remote directory
+text that is metadata rather than a local filesystem instruction."
+  (car (last (split-string path "/" t))))
+
 (defun claude-code-ide--put-session (session)
   "Store SESSION by its generated ID and return it."
   (puthash (claude-code-ide-session-id session) session
@@ -848,29 +860,35 @@ Signal a `user-error' when the current buffer is not in a project."
 (defun claude-code-ide--session-buffer-for-agent (zmx-name buffer-name)
   "Return the live session buffer identified by ZMX-NAME or BUFFER-NAME.
 ZMX-NAME wins because it survives Emacs restarts.  BUFFER-NAME covers
-sessions that run without zmx.  Return nil when neither matches."
+sessions that run without zmx.  A remote session's zmx name or buffer
+name never associates local MCP state.  Return nil when neither
+matches."
   (let (found)
     (when zmx-name
       (maphash (lambda (_id session)
                  (when (and (not found)
+                            (not (claude-code-ide-session-host session))
                             (equal (claude-code-ide-session-zmx-name session) zmx-name))
                    (setq found (claude-code-ide-session-buffer session))))
                claude-code-ide--sessions))
     (unless found
-      (let ((buffer (and buffer-name (get-buffer buffer-name))))
-        (when (and buffer (claude-code-ide--session-for-buffer buffer))
+      (let* ((buffer (and buffer-name (get-buffer buffer-name)))
+             (session (and buffer (claude-code-ide--session-for-buffer buffer))))
+        (when (and session (not (claude-code-ide-session-host session)))
           (setq found buffer))))
     (and (buffer-live-p found) found)))
 
 
 (defun claude-code-ide--record-ghostel-title (&rest _args)
   "Store the current Ghostel title on its live session.
-For a zmx-backed session, mirror a changed title to a zmx `title'
-label so `zmx list' shows it in terminals."
+For a local zmx-backed session, mirror a changed title to a zmx
+`title' label so `zmx list' shows it in terminals.  A remote
+session's title stays local and never contacts either side's zmx."
   (when-let* ((session (claude-code-ide--session-for-buffer)))
     (let ((old (claude-code-ide-session-title session)))
       (setf (claude-code-ide-session-title session) ghostel-title)
-      (when-let* ((zmx-name (claude-code-ide-session-zmx-name session)))
+      (when-let* ((zmx-name (and (not (claude-code-ide-session-host session))
+                                  (claude-code-ide-session-zmx-name session))))
         (unless (equal (claude-code-ide-zmx--title-value ghostel-title)
                        (claude-code-ide-zmx--title-value old))
           (claude-code-ide-zmx-set-title zmx-name ghostel-title))))))
@@ -890,29 +908,35 @@ label so `zmx list' shows it in terminals."
   (when-let* ((session (claude-code-ide--session-for-buffer buffer)))
     (claude-code-ide--touch-session (claude-code-ide-session-id session))))
 
-(defun claude-code-ide--next-session-order (directory)
-  "Return the next never-reused positive session order for DIRECTORY."
-  (let* ((directory (claude-code-ide--normalize-directory directory))
-         (last-order (gethash directory claude-code-ide--session-order-counters 0))
+(defun claude-code-ide--next-session-order (directory &optional host)
+  "Return the next never-reused positive session order for DIRECTORY.
+HOST distinguishes a remote project from a local one with the same
+directory text; see `claude-code-ide--project-key'."
+  (let* ((key (claude-code-ide--project-key directory host))
+         (last-order (gethash key claude-code-ide--session-order-counters 0))
          (live-order
           (cl-loop for session being the hash-values of claude-code-ide--sessions
-                   when (equal directory
-                               (claude-code-ide--normalize-directory
-                                (claude-code-ide-session-directory session)))
+                   when (equal key
+                               (claude-code-ide--project-key
+                                (claude-code-ide-session-directory session)
+                                (claude-code-ide-session-host session)))
                    maximize (or (claude-code-ide-session-order session) 0) into maximum
                    finally return (or maximum 0)))
          (next-order (1+ (max last-order live-order))))
-    (puthash directory next-order claude-code-ide--session-order-counters)
+    (puthash key next-order claude-code-ide--session-order-counters)
     next-order))
 
-(defun claude-code-ide--sessions-for-directory (directory)
-  "Return live sessions for DIRECTORY, most recently accessed first."
-  (let ((directory (claude-code-ide--normalize-directory directory)) sessions)
+(defun claude-code-ide--sessions-for-directory (directory &optional host)
+  "Return live sessions for DIRECTORY on HOST, most recently accessed first.
+HOST distinguishes a remote project from a local one with the same
+directory text; see `claude-code-ide--project-key'."
+  (let ((key (claude-code-ide--project-key directory host)) sessions)
     (maphash (lambda (session-id _)
                (let ((session (claude-code-ide--get-session session-id)))
-                 (when (equal directory
-                              (claude-code-ide--normalize-directory
-                               (claude-code-ide-session-directory session)))
+                 (when (equal key
+                              (claude-code-ide--project-key
+                               (claude-code-ide-session-directory session)
+                               (claude-code-ide-session-host session)))
                    (push session sessions))))
              claude-code-ide--sessions)
     (sort sessions (lambda (a b)
@@ -949,31 +973,36 @@ label so `zmx list' shows it in terminals."
              (length (claude-code-ide--normalize-directory right))))))
 
 (defun claude-code-ide--get-related-session-directories (&optional directory)
-  "Return active session directories related to DIRECTORY or the current dir."
+  "Return active local session directories related to DIRECTORY or the current dir.
+A remote session is excluded: its directory is opaque host metadata,
+never a local path to compare against another directory."
   (let ((directory (claude-code-ide--normalize-directory
                     (or directory (claude-code-ide--get-current-directory))))
         (matches '()))
     (when directory
       (maphash (lambda (session-id _)
-                 (let* ((session (claude-code-ide--get-session session-id))
-                        (session-directory
-                         (claude-code-ide-session-directory session)))
-                   (when (claude-code-ide--directory-related-p
-                          directory session-directory)
-                     (push session-directory matches))))
+                 (let ((session (claude-code-ide--get-session session-id)))
+                   (unless (claude-code-ide-session-host session)
+                     (let ((session-directory (claude-code-ide-session-directory session)))
+                       (when (claude-code-ide--directory-related-p
+                              directory session-directory)
+                         (push session-directory matches))))))
                claude-code-ide--sessions)
       (claude-code-ide--sort-directories-by-specificity
        (delete-dups matches)))))
 
 (defun claude-code-ide--get-related-sessions (&optional directory)
-  "Return live sessions related to DIRECTORY or the current directory."
+  "Return live local sessions related to DIRECTORY or the current directory.
+A remote session is excluded; see
+`claude-code-ide--get-related-session-directories'."
   (let ((directory (claude-code-ide--normalize-directory
                     (or directory (claude-code-ide--get-current-directory))))
         matches)
     (when directory
       (maphash
        (lambda (_session-id session)
-         (when (and (buffer-live-p (claude-code-ide-session-buffer session))
+         (when (and (not (claude-code-ide-session-host session))
+                    (buffer-live-p (claude-code-ide-session-buffer session))
                     (claude-code-ide--directory-related-p
                      directory (claude-code-ide-session-directory session)))
            (push session matches)))
@@ -1214,14 +1243,19 @@ keeps whatever buffer the following kill puts in it."
     (when (window-live-p window)
       (ignore-errors (delete-window window)))))
 
-(defun claude-code-ide--cleanup-session-resources (session &optional keep-buffer)
+(defun claude-code-ide--cleanup-session-resources (session &optional keep-buffer disposition)
   "Clean up resources owned by SESSION after it leaves the live-session table.
-When KEEP-BUFFER is non-nil, let the active buffer kill finish."
+When KEEP-BUFFER is non-nil, let the active buffer kill finish.
+DISPOSITION `verified-stop' means a Stop transport already confirmed
+the remote target is gone: skip remembering a disconnected manager row
+and leave the manager row's own finalization to the caller instead of
+notifying it here."
   (let* ((session-id (claude-code-ide-session-id session))
          (directory (claude-code-ide-session-directory session))
          (process (claude-code-ide-session-process session))
          (buffer (claude-code-ide-session-buffer session))
          (cli-type (claude-code-ide-session-cli-type session))
+         (host (claude-code-ide-session-host session))
          (backend (claude-code-ide--backend-for-process process)))
     (when (= (hash-table-count claude-code-ide--sessions) 0)
       (claude-code-ide--remove-terminal-resize-observer backend)
@@ -1233,27 +1267,43 @@ When KEEP-BUFFER is non-nil, let the active buffer kill finish."
                (= (hash-table-count claude-code-ide--sessions) 0))
       (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer)
       (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))
-    (when (eq cli-type 'claude)
+    (when (and (eq cli-type 'claude) (not host))
       (claude-code-ide-mcp-stop-session session-id)
       (claude-code-ide-mcp-server-session-ended session-id))
-    (claude-code-ide-manager-session-ended session-id)
+    (unless (eq disposition 'verified-stop)
+      (claude-code-ide-manager-session-ended session-id))
     (when (buffer-live-p buffer)
+      (when (claude-code-ide-session-buffer-p buffer)
+        (with-current-buffer buffer
+          (claude-code-ide-session-idle-disable)
+          (claude-code-ide-session-tracking--clear-timer)))
       (claude-code-ide--close-session-windows buffer)
       (unless keep-buffer
         (let ((kill-buffer-query-functions nil))
           (kill-buffer buffer))))
     (claude-code-ide-debug "Cleaned up Claude Code session for %s"
-                           (file-name-nondirectory
-                            (directory-file-name directory)))))
+                           (claude-code-ide--path-basename directory))))
 
-(defun claude-code-ide--cleanup-on-exit (session-id &optional keep-buffer)
+(defun claude-code-ide--cleanup-on-exit (session-id &optional keep-buffer expected-process disposition)
   "Remove SESSION-ID and clean up only the resources it owns.
-The buffer kill hook passes KEEP-BUFFER to prevent a recursive buffer kill."
+The buffer kill hook passes KEEP-BUFFER to prevent a recursive buffer
+kill.  EXPECTED-PROCESS is the process a sentinel or kill hook
+captured when it was installed; when given, cleanup runs only if it
+still matches SESSION-ID's current process, so a stale callback from a
+replaced or already-finished attach process cannot tear down a session
+it no longer owns.  DISPOSITION reaches
+`claude-code-ide--cleanup-session-resources'."
   (save-current-buffer
     (when-let* ((session (claude-code-ide--get-session session-id)))
-      ;; Removing first is the ID-scoped recursion guard for sentinel/hook races.
-      (remhash session-id claude-code-ide--sessions)
-      (claude-code-ide--cleanup-session-resources session keep-buffer))))
+      (when (or (null expected-process)
+                (eq expected-process (claude-code-ide-session-process session)))
+        (when (and (claude-code-ide-session-host session)
+                   (not (eq disposition 'verified-stop)))
+          (claude-code-ide-manager--remember-remote-session session))
+        ;; Removing first is the ID-scoped recursion guard for sentinel/hook races.
+        (remhash session-id claude-code-ide--sessions)
+        (apply #'claude-code-ide--cleanup-session-resources session keep-buffer
+               (and disposition (list disposition)))))))
 
 ;;; CLI Detection
 
@@ -1591,6 +1641,12 @@ and args is a list of arguments."
     (cons (car parts) (cdr parts))))
 
 
+(defvar claude-code-ide--pending-remote-host nil
+  "Host for the remote session buffer being created, or nil for local.
+Let-bound around terminal creation so setup hooks running during
+buffer configuration can see the pending host before the new Session
+is registered.")
+
 (defun claude-code-ide--create-terminal-with-command (buffer-name working-dir cmd env-vars)
   "Create a terminal buffer running CMD with ENV-VARS.
 BUFFER-NAME is the name for the terminal buffer.
@@ -1600,7 +1656,8 @@ ENV-VARS is a list of \"KEY=VALUE\" environment variable strings.
 
 Returns a cons cell of (buffer . process) on success.
 Signals an error if terminal fails to initialize."
-  (when claude-code-ide-zmx--pending-name
+  (when (and claude-code-ide-zmx--pending-name
+             (not claude-code-ide--pending-remote-host))
     (setq cmd (claude-code-ide-zmx-wrap-command
                claude-code-ide-zmx--pending-name
                (unless claude-code-ide-zmx--pending-attach-only cmd))))
@@ -1776,33 +1833,75 @@ Returns a cons cell of (buffer . process) on success."
      (claude-code-ide-session-directory session))))
 
 (defun claude-code-ide--zmx-live-names ()
-  "Return zmx names attached by live sessions in this Emacs instance."
+  "Return local zmx names attached by live sessions in this Emacs instance.
+A remote session's name lives in a separate namespace on another host
+and must never hide or match a local zmx name."
   (let (names)
     (maphash (lambda (_id session)
-               (when-let* ((name (claude-code-ide-session-zmx-name session)))
-                 (push name names)))
+               (when (and (not (claude-code-ide-session-host session))
+                          (claude-code-ide-session-zmx-name session))
+                 (push (claude-code-ide-session-zmx-name session) names)))
              claude-code-ide--sessions)
     names))
+
+(defun claude-code-ide--live-session-for-target (host zmx-name)
+  "Return the live session already attached to HOST and ZMX-NAME, or nil."
+  (when host
+    (let (found)
+      (maphash (lambda (_id session)
+                 (when (and (not found)
+                            (equal (claude-code-ide-session-host session) host)
+                            (equal (claude-code-ide-session-zmx-name session) zmx-name))
+                   (setq found session)))
+               claude-code-ide--sessions)
+      found)))
+
+(defun claude-code-ide--remembered-target-session-id (host zmx-name)
+  "Return the Session ID of the remembered item for HOST and ZMX-NAME, or nil."
+  (when-let* ((item (cl-find-if
+                     (lambda (item)
+                       (and (equal (claude-code-ide-manager-item-host item) host)
+                            (equal (claude-code-ide-manager-item-zmx-name item) zmx-name)))
+                     (claude-code-ide-manager--all-items))))
+    (claude-code-ide-manager-item-session-key item)))
+
+(defun claude-code-ide--remote-target-process-name (session-id)
+  "Return the stable request process name owning SESSION-ID's remote target.
+A pending reattach and a pending Stop share this exact name, so either
+can detect and refuse to race the other; see
+`claude-code-ide--remote-target-pending-reason'."
+  (format "claude-code-ide-remote-target-%s" session-id))
+
+(defun claude-code-ide--remote-target-pending-reason (session-id)
+  "Return a description of SESSION-ID's in-flight remote request, or nil."
+  (let ((process (get-process (claude-code-ide--remote-target-process-name session-id))))
+    (when (process-live-p process)
+      (if (eq (process-get process 'cci-operation) 'stop)
+          "a Stop request"
+        "an attach request"))))
 
 (defun claude-code-ide-session-agent-pid (session)
   "Return the agent process pid for SESSION, or nil.
 The first successful lookup is cached in the session's `pid' slot.
-A zmx-backed session asks zmx, since the agent runs under the zmx
-server rather than under Emacs.  Otherwise use the terminal process
-pid, descending one level when that process is a shell wrapper
-\(vterm and ghostel run the command through `sh -c')."
-  (or (claude-code-ide-session-pid session)
-      (setf (claude-code-ide-session-pid session)
-            (if-let* ((name (claude-code-ide-session-zmx-name session)))
-                (claude-code-ide-zmx-session-pid name)
-              (when-let* ((process (claude-code-ide-session-process session))
-                          (pid (and (process-live-p process) (process-id process))))
-                (if (member (alist-get 'comm (process-attributes pid))
-                            '("sh" "bash" "zsh" "fish" "dash"))
-                    (seq-find (lambda (child)
-                                (eql (alist-get 'ppid (process-attributes child)) pid))
-                              (list-system-processes))
-                  pid))))))
+A remote SESSION always returns nil: its Agent runs on another
+machine, so no local process table lookup applies, cached or not.
+Otherwise a zmx-backed session asks zmx, since the agent runs under
+the zmx server rather than under Emacs.  Otherwise use the terminal
+process pid, descending one level when that process is a shell
+wrapper \(vterm and ghostel run the command through `sh -c')."
+  (unless (claude-code-ide-session-host session)
+    (or (claude-code-ide-session-pid session)
+        (setf (claude-code-ide-session-pid session)
+              (if-let* ((name (claude-code-ide-session-zmx-name session)))
+                  (claude-code-ide-zmx-session-pid name)
+                (when-let* ((process (claude-code-ide-session-process session))
+                            (pid (and (process-live-p process) (process-id process))))
+                  (if (member (alist-get 'comm (process-attributes pid))
+                              '("sh" "bash" "zsh" "fish" "dash"))
+                      (seq-find (lambda (child)
+                                  (eql (alist-get 'ppid (process-attributes child)) pid))
+                                (list-system-processes))
+                    pid)))))))
 
 (defun claude-code-ide--zmx-launch-spec (working-dir continue resume session-id attach-name)
   "Return (ZMX-NAME . ATTACH-ONLY) for the session being created, or nil.
@@ -1830,8 +1929,8 @@ continue/resume starts offer only sessions with zero attached clients."
               (cons new-name nil)
             (cons choice t))))))))
 
-(defun claude-code-ide--create-session (working-dir continue resume &optional zmx-attach-name)
-  "Create a terminal session in WORKING-DIR.
+(defun claude-code-ide--create-local-session (working-dir continue resume &optional zmx-attach-name)
+  "Create a local terminal session in WORKING-DIR.
 CONTINUE and RESUME select the CLI conversation mode.
 ZMX-ATTACH-NAME reattaches to that existing zmx session instead of
 running a freshly built CLI command."
@@ -1886,7 +1985,7 @@ running a freshly built CLI command."
             (claude-code-ide--register-session session)
             (set-process-sentinel
              process
-             (lambda (_proc event)
+             (lambda (proc event)
                (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
                  (let ((exit-code (match-string 1 event)))
                    (claude-code-ide-debug
@@ -1894,11 +1993,11 @@ running a freshly built CLI command."
                     exit-code event)
                    (message "Claude exited with error code %s" exit-code)))
                (when (string-match-p "finished\\|exited\\|killed\\|terminated" event)
-                 (claude-code-ide--cleanup-on-exit session-id))))
+                 (claude-code-ide--cleanup-on-exit session-id nil proc))))
             (with-current-buffer buffer
               (add-hook 'kill-buffer-hook
                         (lambda ()
-                          (claude-code-ide--cleanup-on-exit session-id t))
+                          (claude-code-ide--cleanup-on-exit session-id t process))
                         nil t)
               (pcase (claude-code-ide--current-terminal-backend)
                 ('vterm
@@ -1945,6 +2044,133 @@ running a freshly built CLI command."
          (when mcp-started-p
            (claude-code-ide-mcp-stop-session session-id)))
        (signal (car err) (cdr err))))))
+
+(defun claude-code-ide--materialize-remote-target (session-id host zmx-name directory order created-at)
+  "Remember a disconnected manager row for a remote target before attaching.
+Build a minimal Session with no buffer or process yet, carrying only
+identity and presentation fields, and hand it to
+`claude-code-ide-manager--remember-remote-session', so a first-attach
+failure still leaves exactly one disconnected row instead of none."
+  (claude-code-ide-manager--remember-remote-session
+   (claude-code-ide-session-create
+    :id session-id
+    :directory directory
+    :cli-type (claude-code-ide--current-cli-type)
+    :order order
+    :created-at created-at
+    :last-accessed-at created-at
+    :zmx-name zmx-name
+    :host host)))
+
+(defun claude-code-ide--create-remote-session
+    (working-dir zmx-attach-name host reusable-session-id)
+  "Attach a terminal session to an existing remote zmx target.
+WORKING-DIR is the remote project directory, kept as opaque metadata:
+never passed through a local file-name function.  ZMX-ATTACH-NAME is
+the existing zmx session name on HOST.  REUSABLE-SESSION-ID reuses that Session ID instead of
+minting a new one, so a remembered item keeps its identity, order,
+and creation time across a reattach.  Bypasses Agent builders, MCP
+startup, and local zmx wrapping; shared terminal setup, Session
+registration, and cleanup orchestration still run, matching the local
+path.  Materializes a disconnected manager row before the terminal
+exists, so a failed first attach still leaves one row instead of
+none."
+  (unless zmx-attach-name
+    (user-error "Remote attachment needs an existing zmx session name"))
+  (unless (claude-code-ide-zmx--valid-directory-p working-dir)
+    (user-error "Remote project directory must be absolute path text"))
+  (let ((backend (claude-code-ide--current-terminal-backend)))
+    (unless (eq backend 'ghostel)
+      (user-error "Remote attachment supports the ghostel backend only, not %s" backend)))
+  (let* ((session-id
+          (or reusable-session-id
+              (make-temp-name (format "claude-remote-%s-" host))))
+         (existing-item (claude-code-ide-manager--item-by-session-key session-id))
+         (order (if existing-item
+                    (claude-code-ide-manager-item-order existing-item)
+                  (claude-code-ide--next-session-order working-dir host)))
+         (created-at (if existing-item
+                         (claude-code-ide-manager-item-created-at existing-item)
+                       (float-time)))
+         (cmd (claude-code-ide-zmx--remote-attach-command host zmx-attach-name))
+         (buffer-name
+          (generate-new-buffer-name
+           (format "*claude-code[%s@%s]*"
+                   (claude-code-ide--path-basename working-dir) host)))
+         buffer process session)
+    (claude-code-ide--materialize-remote-target
+     session-id host zmx-attach-name working-dir order created-at)
+    (condition-case err
+        (progn
+          (claude-code-ide--terminal-ensure-backend)
+          (let* ((claude-code-ide--pending-remote-host host)
+                 (buffer-and-process
+                  (claude-code-ide--create-terminal-with-command
+                   buffer-name temporary-file-directory cmd nil)))
+            (setq buffer (car buffer-and-process)
+                  process (cdr buffer-and-process))
+            (setq session
+                  (claude-code-ide-session-create
+                   :id session-id
+                   :directory working-dir
+                   :process process
+                   :buffer buffer
+                   :cli-type (claude-code-ide--current-cli-type)
+                   :order order
+                   :created-at created-at
+                   :custom-name (and existing-item
+                                     (claude-code-ide-manager-item-custom-name existing-item))
+                   :last-accessed-at (float-time)
+                   :zmx-name zmx-attach-name
+                   :host host))
+            (claude-code-ide--register-session session)
+            (set-process-sentinel
+             process
+             (lambda (proc event)
+               (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
+                 (claude-code-ide-log "Remote agent %s on %s exited abnormally (code %s)"
+                                      zmx-attach-name host (match-string 1 event)))
+               (when (string-match-p "finished\\|exited\\|killed\\|terminated" event)
+                 (claude-code-ide--cleanup-on-exit session-id nil proc))))
+            (with-current-buffer buffer
+              (add-hook 'kill-buffer-hook
+                        (lambda ()
+                          (claude-code-ide--cleanup-on-exit session-id t process))
+                        nil t))
+            (sleep-for claude-code-ide-terminal-initialization-delay)
+            (unless claude-code-ide--suppress-initial-display
+              (claude-code-ide--display-buffer-in-side-window buffer))
+            (claude-code-ide-log "Remote agent %s attached on %s" zmx-attach-name host)
+            session))
+      (error
+       (if (claude-code-ide--get-session session-id)
+           (claude-code-ide--cleanup-on-exit session-id)
+         (when (process-live-p process)
+           (delete-process process))
+         (when (buffer-live-p buffer)
+           (let ((kill-buffer-hook nil)
+                 (kill-buffer-query-functions nil))
+             (kill-buffer buffer))))
+       (signal (car err) (cdr err))))))
+
+(defun claude-code-ide--create-session
+    (working-dir continue resume &optional zmx-attach-name host reusable-session-id)
+  "Create a terminal session in WORKING-DIR, locally or on HOST.
+CONTINUE and RESUME select the CLI conversation mode; a non-nil HOST
+requires both nil, since a remote session always reattaches to an
+existing target instead of starting a conversation.  ZMX-ATTACH-NAME
+reattaches to that existing zmx session instead of running a freshly
+built CLI command; it is required when HOST is non-nil.
+REUSABLE-SESSION-ID only applies to a remote HOST; see
+`claude-code-ide--create-remote-session'."
+  (if host
+      (progn
+        (when (or continue resume)
+          (user-error "Remote attachment does not support continue or resume"))
+        (claude-code-ide--create-remote-session
+         working-dir zmx-attach-name host reusable-session-id))
+    (claude-code-ide--create-local-session
+     working-dir continue resume zmx-attach-name)))
 
 (defun claude-code-ide--start-session (&optional continue resume directory force-new)
   "Start or toggle a session in DIRECTORY.
@@ -2015,30 +2241,154 @@ conversation in the current directory."
     (claude-code-ide-log "Claude Code is not installed.")))
 
 ;;;###autoload
-(defun claude-code-ide-stop ()
-  "Stop the Claude Code session for the current project or directory.
-For a zmx-backed session, ask before killing the zmx session; killing
-it stops the agent process for every attached client."
+(defun claude-code-ide-stop (&optional session-id)
+  "Stop the Claude Code session identified by SESSION-ID.
+Without SESSION-ID, resolve the exact session attached to the current
+buffer before falling back to the session for the current project or
+directory.  For a zmx-backed local session, ask before killing the
+zmx session; killing it stops the agent process for every attached
+client.  For a remote session, confirm the host, exact zmx name, and
+impact on every attached client, then run a verified remote Stop
+instead of a local kill."
   (interactive)
-  (let* ((working-dir (claude-code-ide--get-attached-working-directory))
-         (buffer (claude-code-ide--get-session-buffer))
-         (session (and buffer (claude-code-ide--session-for-buffer buffer)))
-         (zmx-name (and session (claude-code-ide-session-zmx-name session))))
+  (let* ((current (unless session-id (claude-code-ide--session-for-buffer)))
+         (directory (unless (or session-id current)
+                      (claude-code-ide--get-attached-working-directory)))
+         (buffer (unless (or session-id current)
+                   (claude-code-ide--get-session-buffer directory)))
+         (session
+          (if session-id
+              (or (claude-code-ide--get-session session-id)
+                  (when-let* ((item (claude-code-ide-manager--item-by-session-key session-id))
+                              (host (claude-code-ide-manager-item-host item)))
+                    (claude-code-ide-session-create
+                     :id session-id :host host
+                     :zmx-name (claude-code-ide-manager-item-zmx-name item)
+                     :directory (claude-code-ide-manager-item-directory item)))
+                  (user-error "No session with ID %s" session-id))
+            (or current
+                (and buffer (claude-code-ide--session-for-buffer buffer))
+                (when (buffer-live-p buffer)
+                  (claude-code-ide-session-create :directory directory :buffer buffer))))))
     (cond
-     ((null buffer)
+     ((null session)
       (claude-code-ide-log "No Claude Code session is running in this directory"))
-     ((and zmx-name
-           (not (yes-or-no-p (format "Kill zmx session %s (killing stops the agent everywhere)? "
-                                     zmx-name))))
-      (claude-code-ide-log "Kept zmx session %s running" zmx-name))
+     ((claude-code-ide-session-host session)
+      (claude-code-ide--stop-remote-session session))
      (t
+      (claude-code-ide--stop-local-session session)))))
+
+(defun claude-code-ide--stop-local-session (session)
+  "Confirm and kill SESSION's local zmx-backed or plain terminal.
+A zmx-backed SESSION asks first, since killing it stops the agent
+process for every attached client; declining keeps it running."
+  (let ((buffer (claude-code-ide-session-buffer session))
+        (zmx-name (claude-code-ide-session-zmx-name session))
+        (directory (claude-code-ide-session-directory session)))
+    (if (and zmx-name
+            (not (yes-or-no-p
+                  (format "Kill zmx session %s (killing stops the agent everywhere)? "
+                          zmx-name))))
+        (claude-code-ide-log "Kept zmx session %s running" zmx-name)
       (when zmx-name
         (claude-code-ide-zmx-kill zmx-name))
       ;; Kill the buffer (cleanup will be handled by hooks)
       ;; The process sentinel will handle cleanup when the process dies
       (kill-buffer buffer)
       (claude-code-ide-log "Stopping Claude Code in %s..."
-                           (file-name-nondirectory (directory-file-name working-dir)))))))
+                           (file-name-nondirectory (directory-file-name directory))))))
+
+(defun claude-code-ide--stop-remote-session (session)
+  "Confirm and dispatch a verified remote Stop for SESSION.
+Name SESSION's host and zmx name and warn that stopping affects every
+attached client.  Canceling sends no request.  A confirmed Stop
+refuses while a request already owns this Session ID, revalidates the
+destination, then keeps the initial kill process as the ownership
+token until the host verifies the target is gone.  On verified
+success, invalidate the captured live Session before releasing its
+resources and let the manager forget the row; an unconfirmed result
+retains the row and is never retried."
+  (let* ((session-id (claude-code-ide-session-id session))
+         (host (claude-code-ide-session-host session))
+         (zmx-name (claude-code-ide-session-zmx-name session))
+         (pending (claude-code-ide--remote-target-pending-reason session-id)))
+    (cond
+     (pending
+      (user-error "Cannot stop %s on %s. %s is already in progress"
+                  zmx-name host pending))
+     ((not (yes-or-no-p
+            (format "Stop %s on %s?  This stops the agent for every attached client. "
+                    zmx-name host)))
+      (claude-code-ide-log "Kept %s on %s running" zmx-name host))
+     (t
+      (claude-code-ide-zmx--validate-host host)
+      (claude-code-ide-zmx--validate-name zmx-name)
+      (when-let* ((owner (claude-code-ide--remote-target-pending-reason session-id)))
+        (user-error "Cannot stop %s on %s. %s is already in progress"
+                    zmx-name host owner))
+      (let ((attach-process (claude-code-ide-session-process session))
+            (request-name (claude-code-ide--remote-target-process-name session-id)))
+        (claude-code-ide-log "Stopping %s on %s..." zmx-name host)
+        (claude-code-ide-zmx-stop-remote
+         host zmx-name
+         (lambda (outcome)
+           (if (plist-get outcome :verified)
+               (let ((current (claude-code-ide--get-session session-id)))
+                 (when (or (null current)
+                           (and attach-process
+                                (eq attach-process
+                                    (claude-code-ide-session-process current))))
+                   (when current
+                     (claude-code-ide--cleanup-on-exit
+                      session-id nil attach-process 'verified-stop))
+                   (claude-code-ide-manager-session-ended session-id t)
+                   (claude-code-ide-log "Stopped %s on %s" zmx-name host)))
+             (claude-code-ide-log "%s" (plist-get outcome :error))))
+         request-name))))))
+
+(defun claude-code-ide--reattach-cli-path (item)
+  "Return the CLI path to reattach ITEM's remote target with.
+Reuse ITEM's remembered CLI type when set; otherwise fall back to
+manual Agent identification, matching individual attach's fallback."
+  (if-let* ((cli-type (claude-code-ide-manager-item-cli-type item)))
+      (symbol-name cli-type)
+    (claude-code-ide--read-agent
+     (format "Agent running in %s: " (claude-code-ide-manager-item-zmx-name item)))))
+
+(defun claude-code-ide--reattach-remote-session (session-id)
+  "Explicitly reattach the remembered remote target for SESSION-ID.
+Startup, selection, and refresh never call this; only an explicit
+command does.  Revalidate the configured host, exact zmx name, and
+directory metadata, reject while a Stop or another attach already
+owns this target, and
+reuse the shared terminal path under the same SESSION-ID so its
+identity, names, order, and pin state survive.  A failure retains the
+disconnected row and reports the host and target."
+  (let* ((item (or (claude-code-ide-manager--item-by-session-key session-id)
+                   (user-error "No remembered session %s" session-id)))
+         (host (or (claude-code-ide-manager-item-host item)
+                   (user-error "Session %s is not a remote target" session-id)))
+         (zmx-name (claude-code-ide-manager-item-zmx-name item))
+         (directory (claude-code-ide-manager-item-directory item))
+         (pending (claude-code-ide--remote-target-pending-reason session-id)))
+    (cond
+     (pending
+      (user-error "Cannot reattach %s on %s. %s is already in progress"
+                  zmx-name host pending))
+     ((claude-code-ide--get-session session-id)
+      (claude-code-ide-manager-switch-to-session session-id))
+     (t
+      (claude-code-ide-zmx--validate-host host)
+      (claude-code-ide-zmx--validate-name zmx-name)
+      (unless (claude-code-ide-zmx--valid-directory-p directory)
+        (user-error "Session %s has invalid remembered directory metadata" session-id))
+      (let ((cli-path (claude-code-ide--reattach-cli-path item)))
+        (claude-code-ide-log "Reattaching %s on %s..." zmx-name host)
+        (when-let* ((session (claude-code-ide--attach-zmx-entry
+                              (list :host host :name zmx-name)
+                              directory cli-path session-id)))
+          (claude-code-ide-manager-switch-to-session
+           (claude-code-ide-session-id session))))))))
 
 ;;;###autoload
 (defun claude-code-ide-copy-zmx-name ()
@@ -2064,42 +2414,87 @@ Use it to run `zmx attach <name>' from a plain terminal."
                 (claude-code-ide-zmx-list-sessions))))
 
 (defun claude-code-ide--zmx-entry-label (entry)
-  "Return \"PROJECT  TITLE  CMD\" for zmx ENTRY; TITLE is omitted when absent."
+  "Return \"PROJECT  TITLE  CMD\" for zmx ENTRY; TITLE is omitted when absent.
+A :host-bearing ENTRY is prefixed \"HOST: \" ahead of PROJECT."
   (let ((project (if-let* ((dir (plist-get entry :start_dir)))
-                     (file-name-nondirectory (directory-file-name dir))
+                     (claude-code-ide--path-basename dir)
                    "?"))
-        (title (plist-get entry :title)))
-    (concat project
+        (title (plist-get entry :title))
+        (host (plist-get entry :host)))
+    (concat (and host (concat host ": "))
+            project
             (when title (concat "  " (subst-char-in-string ?_ ?\s title)))
             "  " (or (plist-get entry :cmd) ""))))
 
-(defun claude-code-ide--attach-zmx-entry (entry directory cli-path)
+(defun claude-code-ide--attach-zmx-entry (entry directory cli-path &optional session-id)
   "Adopt zmx ENTRY as a session in DIRECTORY running CLI-PATH.
-Return the new session, or nil when creation returns nil."
-  (let ((claude-code-ide-cli-path cli-path)
-        (claude-code-ide--suppress-initial-display t))
-    (claude-code-ide--create-session (file-name-as-directory directory)
-                                     nil nil (plist-get entry :name))))
+ENTRY's :host routes the attachment to that remote
+target instead of the local zmx server; DIRECTORY then stays opaque
+remote metadata instead of a local directory.  SESSION-ID reuses that
+Session ID when reattaching a remembered item.  Deduplicates by
+\(:host . :name\): an already-connected target is returned unchanged
+instead of opening a second client, and an otherwise-unspecified
+SESSION-ID falls back to a remembered target's own Session ID so a
+fresh attach reuses its identity rather than creating a duplicate row.
+Return the new or existing session, or nil when creation returns nil
+or another request already owns this target."
+  (let* ((host (plist-get entry :host))
+         (zmx-name (plist-get entry :name))
+         (live (and host (claude-code-ide--live-session-for-target host zmx-name)))
+         (session-id (or session-id
+                        (and host
+                             (claude-code-ide--remembered-target-session-id host zmx-name))))
+         (pending (and host session-id
+                      (claude-code-ide--remote-target-pending-reason session-id))))
+    (cond
+     (live live)
+     (pending
+      (claude-code-ide-log "%s on %s: %s already in progress" zmx-name host pending)
+      nil)
+     (t
+      (let ((claude-code-ide-cli-path cli-path)
+            (claude-code-ide--suppress-initial-display t))
+        (if host
+            (claude-code-ide--create-session
+             directory nil nil zmx-name host session-id)
+          (claude-code-ide--create-session (file-name-as-directory directory)
+                                           nil nil zmx-name)))))))
 
 (defun claude-code-ide--attach-zmx-entries (entries)
   "Adopt every zmx entry in ENTRIES without prompting.
-Skip entries whose `:start_dir' is missing or whose `:cmd' does not map
-to a known agent (`claude-code-ide-zmx-infer-cli-command'), log entries
-whose creation signals, and return the number of sessions attached."
+Skip an entry carrying its own `:error', one whose `:start_dir' is
+missing or, for a :host-bearing entry, not absolute remote path
+metadata, or one whose `:cmd' does not map to a known agent
+(`claude-code-ide-zmx-infer-cli-command'); a malformed `:cmd' is
+caught rather than aborting the rest of ENTRIES.  Log entries whose
+creation signals, and return the number of sessions attached."
   (let ((attached 0) skipped)
     (dolist (entry entries)
       (let* ((name (plist-get entry :name))
+             (host (plist-get entry :host))
              (directory (plist-get entry :start_dir))
-             (cli-path (claude-code-ide-zmx-infer-cli-command (plist-get entry :cmd))))
-        (if (not (and directory cli-path))
-            (push name skipped)
+             (candidate-error (plist-get entry :error))
+             (cli-path (and (not candidate-error)
+                           (ignore-errors
+                             (claude-code-ide-zmx-infer-cli-command
+                              (plist-get entry :cmd))))))
+        (cond
+         (candidate-error
+          (push (format "%s (%s)" name candidate-error) skipped))
+         ((not cli-path)
+          (push name skipped))
+         ((and host (not (claude-code-ide-zmx--valid-directory-p directory)))
+          (push (format "%s (invalid remote directory)" name) skipped))
+         ((not directory)
+          (push name skipped))
+         (t
           (condition-case err
               (when (claude-code-ide--attach-zmx-entry entry directory cli-path)
                 (setq attached (1+ attached)))
             (error
              (claude-code-ide-log "Failed to attach %s: %s"
                                   name (error-message-string err))
-             (push name skipped))))))
+             (push name skipped)))))))
     (claude-code-ide-log "Attached %d zmx session%s%s"
                          attached
                          (if (= attached 1) "" "s")
@@ -2108,28 +2503,75 @@ whose creation signals, and return the number of sessions attached."
                            ""))
     attached))
 
+(defun claude-code-ide--read-remote-host ()
+  "Prompt for one destination from `claude-code-ide-remote-hosts'."
+  (unless claude-code-ide-remote-hosts
+    (user-error "No hosts configured in `claude-code-ide-remote-hosts'"))
+  (completing-read "Host: " claude-code-ide-remote-hosts nil t))
+
+(defun claude-code-ide--remote-discovery-callback (continuation)
+  "Return a `claude-code-ide-zmx-discover-remote' callback wrapping CONTINUATION.
+On success, call CONTINUATION with the possibly empty candidate list
+from the discovery outcome.  On failure, report the error with
+`claude-code-ide-log' instead of signaling: the callback runs
+asynchronously, outside any interactive command's call stack, so a
+raw signal here cannot reach the command that requested discovery."
+  (lambda (outcome)
+    (if-let* ((failure (plist-get outcome :error)))
+        (claude-code-ide-log "%s" failure)
+      (funcall continuation (plist-get outcome :sessions)))))
+
+(defun claude-code-ide--attach-discovered-entries (sessions)
+  "Attach every entry in SESSIONS without prompting, or log if none."
+  (if (null sessions)
+      (claude-code-ide-log "No zmx sessions to adopt")
+    (claude-code-ide--attach-zmx-entries sessions)))
+
 ;;;###autoload
-(defun claude-code-ide-attach-all ()
+(defun claude-code-ide-attach-all (&optional host)
   "Adopt every zmx session not already attached in this Emacs instance.
 Sessions without a start directory or with an unrecognized command are
 skipped and named in the summary message; adopt those with
-`claude-code-ide-attach'."
-  (interactive)
-  (let ((sessions (claude-code-ide--zmx-adoptable-sessions)))
-    (if (null sessions)
-        (claude-code-ide-log "No zmx sessions to adopt")
-      (claude-code-ide--attach-zmx-entries sessions))))
+`claude-code-ide-attach'.  With a prefix argument, or when HOST names a
+configured destination, adopt every existing session on that remote
+host instead."
+  (interactive (list (when current-prefix-arg (claude-code-ide--read-remote-host))))
+  (if host
+      (claude-code-ide-zmx-discover-remote
+       host (claude-code-ide--remote-discovery-callback
+             #'claude-code-ide--attach-discovered-entries))
+    (claude-code-ide--attach-discovered-entries
+     (claude-code-ide--zmx-adoptable-sessions))))
 
-;;;###autoload
-(defun claude-code-ide-attach ()
-  "Adopt a zmx session into a Claude Code IDE session.
-List zmx sessions (including ones launched outside Emacs), excluding
-ones already attached in this Emacs instance, infer the agent CLI from
-the session's command, and open an attached terminal buffer with full
-session integration."
-  (interactive)
-  (let ((sessions (claude-code-ide--zmx-adoptable-sessions)))
-    (if (null sessions)
+(defun claude-code-ide--resolve-attach-directory (entry)
+  "Return ENTRY's start directory, prompting when it is missing or invalid.
+A :host-bearing ENTRY must resolve to absolute remote path metadata
+(`claude-code-ide-zmx--valid-directory-p'); prompt with `read-string'
+for typed absolute text instead of completing against a local path,
+reprompting on invalid input."
+  (if (plist-get entry :host)
+      (let ((directory (plist-get entry :start_dir)))
+        (while (not (claude-code-ide-zmx--valid-directory-p directory))
+          (setq directory (read-string "Remote project directory (absolute path): ")))
+        directory)
+    (or (plist-get entry :start_dir)
+        (read-directory-name "Project directory for session: "))))
+
+(defun claude-code-ide--attach-one-of (sessions)
+  "Prompt for one zmx entry among SESSIONS and attach it.
+An entry carrying its own `:error' is named in a message and excluded
+from the prompt instead of being offered as a choice."
+  (let ((errored (seq-filter (lambda (entry) (plist-get entry :error)) sessions))
+        (usable (seq-remove (lambda (entry) (plist-get entry :error)) sessions)))
+    (when errored
+      (claude-code-ide-log
+       "Skipped %s"
+       (string-join
+        (mapcar (lambda (entry)
+                  (format "%s (%s)" (plist-get entry :name) (plist-get entry :error)))
+                errored)
+        ", ")))
+    (if (null usable)
         (claude-code-ide-log "No zmx sessions to adopt")
       (let* ((candidates
               (mapcar (lambda (entry)
@@ -2140,17 +2582,31 @@ session integration."
                                (propertize (concat "  " (plist-get entry :name))
                                            'invisible t))
                               entry))
-                      sessions))
+                      usable))
              (choice (completing-read "Attach to zmx session: " candidates nil t))
              (entry (cdr (assoc choice candidates)))
-             (directory (or (plist-get entry :start_dir)
-                            (read-directory-name "Project directory for session: ")))
+             (directory (claude-code-ide--resolve-attach-directory entry))
              (cli-path (or (claude-code-ide-zmx-infer-cli-command (plist-get entry :cmd))
                            (claude-code-ide--read-agent
                             (format "Agent running in %s: " (plist-get entry :name))))))
         (when-let* ((session (claude-code-ide--attach-zmx-entry entry directory cli-path)))
           (claude-code-ide-manager-switch-to-session
            (claude-code-ide-session-id session)))))))
+
+;;;###autoload
+(defun claude-code-ide-attach (&optional host)
+  "Adopt a zmx session into a Claude Code IDE session.
+List zmx sessions (including ones launched outside Emacs), excluding
+ones already attached in this Emacs instance, infer the agent CLI from
+the session's command, and open an attached terminal buffer with full
+session integration.  With a prefix argument, or when HOST names a
+configured destination, list an existing session on that remote host
+instead; picking one attaches to it without creating anything."
+  (interactive (list (when current-prefix-arg (claude-code-ide--read-remote-host))))
+  (if host
+      (claude-code-ide-zmx-discover-remote
+       host (claude-code-ide--remote-discovery-callback #'claude-code-ide--attach-one-of))
+    (claude-code-ide--attach-one-of (claude-code-ide--zmx-adoptable-sessions))))
 
 (defcustom claude-code-ide-attach-select-premark t
   "When non-nil, `claude-code-ide-attach-select' starts with every row marked."
@@ -2252,15 +2708,20 @@ session integration."
   (interactive)
   (claude-code-ide--attach-select-close))
 
-;;;###autoload
-(defun claude-code-ide-attach-select ()
-  "Choose zmx sessions to adopt in a buffer, then attach the marked ones.
-`m' and `u' mark and unmark the row at point, `SPC' toggles it, `t'
-inverts every mark, \\`C-c C-c' attaches the marked rows, \\`C-c C-k'
-cancels.  `claude-code-ide-attach-select-premark' decides whether rows
-start marked."
-  (interactive)
-  (let ((sessions (claude-code-ide--zmx-adoptable-sessions)))
+(defun claude-code-ide--open-attach-select-buffer (sessions)
+  "Open a buffer listing SESSIONS for marking and bulk attach.
+An entry carrying its own `:error' is named in a message and excluded
+from the buffer instead of being listed as a choice."
+  (let ((errored (seq-filter (lambda (entry) (plist-get entry :error)) sessions))
+        (sessions (seq-remove (lambda (entry) (plist-get entry :error)) sessions)))
+    (when errored
+      (claude-code-ide-log
+       "Skipped %s"
+       (string-join
+        (mapcar (lambda (entry)
+                  (format "%s (%s)" (plist-get entry :name) (plist-get entry :error)))
+                errored)
+        ", ")))
     (if (null sessions)
         (claude-code-ide-log "No zmx sessions to adopt")
       (let* ((window (claude-code-ide-manager--content-window))
@@ -2282,6 +2743,21 @@ start marked."
         (set-window-buffer window buffer)
         (select-window window)
         (message "m/u/SPC mark, unmark, toggle rows; t inverts all; C-c C-c attaches marked, C-c C-k cancels")))))
+
+;;;###autoload
+(defun claude-code-ide-attach-select (&optional host)
+  "Choose zmx sessions to adopt in a buffer, then attach the marked ones.
+`m' and `u' mark and unmark the row at point, `SPC' toggles it, `t'
+inverts every mark, \\`C-c C-c' attaches the marked rows, \\`C-c C-k'
+cancels.  `claude-code-ide-attach-select-premark' decides whether rows
+start marked.  With a prefix argument, or when HOST names a configured
+destination, list zmx sessions on that remote host instead."
+  (interactive (list (when current-prefix-arg (claude-code-ide--read-remote-host))))
+  (if host
+      (claude-code-ide-zmx-discover-remote
+       host (claude-code-ide--remote-discovery-callback
+             #'claude-code-ide--open-attach-select-buffer))
+    (claude-code-ide--open-attach-select-buffer (claude-code-ide--zmx-adoptable-sessions))))
 
 
 ;;;###autoload

@@ -200,11 +200,43 @@ How it works:
 - New sessions run as =zmx attach <name> <agent-command>=. Names follow =cci-<agent>-<project>-<id>= (see =claude-code-ide-zmx-session-prefix=).
 - On session start, matching detached zmx sessions for the project and agent are offered for reattach, with a "Create new session" option. Starts with =--continue= or =--resume= skip the offer and create a new session.
 - =M-x claude-code-ide-attach= lists all zmx sessions, including ones started outside Emacs, and adopts the selection into a full session with idle tracking and manager visibility.
-- Killing the buffer or closing the window detaches only. =M-x claude-code-ide-stop= asks before it kills the zmx session, because that stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
+- Killing the terminal buffer detaches only. Closing its window only hides the terminal. =M-x claude-code-ide-stop= asks before it kills the zmx session. That stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
 
 Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, or after an Emacs restart, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected. Exception: Oh My Pi rediscovers the Emacs SSE endpoint and reconnects on its own, so selection sync and session state resume after an Emacs restart.
 
 The zmx integration follows the design of [[https://github.com/ArthurHeymans/emacs-term-sessions][emacs-term-sessions]] (GPL-3+), which provides general-purpose persistent terminals on top of zmx. This package implements only the small agent-session subset itself, so there is no dependency. Use emacs-term-sessions when you want persistent shells beyond coding agents.
+
+** Existing Remote Agents
+
+Remote attachment connects to an existing zmx session through SSH. It never starts an Agent or creates a remote zmx session.
+
+Reattachment works with stock zmx. Emacs runs =zmx attach <name> false=: an existing session is adopted, and a vanished one yields a short-lived session that runs =false= and exits, so no shell or agent starts by accident. This applies to local adoption and remote reattachment. Ordinary local session creation stays unchanged. See the [[file:specs/003-attach-remote-agents/contracts/zmx-attach-guard.md][attach guard contract]] for the verified versions.
+
+Configure exact SSH destinations:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-remote-hosts '("my-agent-host" "user@another-host"))
+#+end_src
+
+The default list is empty. Your SSH configuration owns authentication, ports, jump hosts, and trusted host keys. Prepare these outside Emacs. Remote control requests cannot prompt for passwords or accept new host keys. Each control request has a 30-second deadline.
+
+The remote executable is =zmx= from the remote command environment's =PATH=. =claude-code-ide-zmx-program= controls only local zmx. Remote attachment does not require a local zmx or Agent executable.
+
+1. Run =C-u M-x claude-code-ide-attach=.
+2. Select a configured host.
+3. Select an existing Agent.
+
+Use =C-u M-x claude-code-ide-attach-all= for bulk attachment. Use =C-u M-x claude-code-ide-attach-select= for marked selection. Without a prefix, these commands keep their local behavior. Bulk attachment names entries that lack usable metadata. Individual attachment permits manual Agent identification and remote-directory text entry. Neither value becomes a remote launch command.
+
+Remote rows appear only in the global manager. Their names retain =[HOST] PROJECT= after rename. Matching paths and zmx names on different hosts remain separate targets.
+
+Selecting a connected row opens its terminal. Selecting a disconnected row does not contact its host. Press =c= to reattach explicitly with the same Session ID. Refresh, startup, and restored layouts never reconnect automatically.
+
+Press =D= or =X= to detach the local client. Press =K= to Stop the exact selected target. Stop asks for confirmation and names the host, target, and effect on all clients. Emacs removes the row only after zmx confirms the kill and a separate request confirms absence. A timeout or ambiguous result leaves the row intact. Emacs never retries a kill.
+
+Remote attachment supports the Ghostel backend only; vterm and Eat are scheduled for deprecation. Remote layouts display the terminal without opening a local project. Remote project launch, Git, Magit, Dired, and Treemacs actions are unsupported. Remote file editing, text-transfer integration, MCP, and SSE setup are outside this feature.
+
+If attachment fails, inspect the host-qualified error. Check SSH authentication, trusted host keys, and remote =PATH=. A missing target remains disconnected. Emacs never replaces it with a new agent session. See the [[file:specs/003-attach-remote-agents/quickstart.md][validation guide]] for backend coverage and the live acceptance procedure.
 
 ** CC Manager
 
@@ -333,6 +365,8 @@ When point is in the manager buffer:
 - =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
 - =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
 - =D= or =X= detaches the selected zmx-backed session from Emacs and keeps its agent process running
+- =c= explicitly reattaches the selected disconnected remote target
+- =K= confirms Stop for the exact selected target
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
 - =G= refreshes the sidebar from the current live session table
@@ -389,8 +423,12 @@ When persistence is enabled, the manager remembers:
 - manual ordering
 - saved layout snapshots
 - last selected buffer for layout restore
+- remote host, exact zmx target, Agent identification, and custom name
 
-When persistence is disabled, the same manager behavior still works for the current Emacs session, but no previous manager state is reloaded after restart.
+After restart, remembered remote rows start disconnected. Their labels, pinning, ordering, selection, and saved layouts remain local metadata. Press =c= to reattach. A removed host stays visible in history, but Emacs requires current host configuration before remote access.
+
+With persistence disabled, disconnected rows remain available during the current Emacs session. A later Emacs session does not restore them. Each computer has independent history. Another Emacs can discover the same remote Agent without access to this history.
+
 
 *** Configuration
 

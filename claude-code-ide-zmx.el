@@ -29,6 +29,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
 
@@ -58,6 +59,133 @@ integrations break after such a switch."
   "Leading component of generated zmx session names."
   :type 'string
   :group 'claude-code-ide)
+
+(defcustom claude-code-ide-remote-hosts nil
+  "SSH destinations available for explicit remote Agent attachment.
+SSH configuration supplies authentication, ports, and jump hosts.
+The package never discovers destinations or connects automatically."
+  :type '(repeat string)
+  :group 'claude-code-ide)
+
+(defconst claude-code-ide-zmx--ssh-options
+  '("-o" "BatchMode=yes" "-o" "StrictHostKeyChecking=yes"
+    "-o" "ConnectTimeout=10" "-o" "ConnectionAttempts=1"
+    "-o" "RemoteCommand=none")
+  "SSH options shared by control requests and terminal attachment.")
+
+(defun claude-code-ide-zmx--valid-host-p (host)
+  "Return non-nil if HOST is a safe SSH destination string."
+  (and (stringp host) (not (string-empty-p host))
+       (not (string-prefix-p "-" host))
+       (not (string-match-p "[[:space:][:cntrl:]]" host))))
+
+(defun claude-code-ide-zmx--validate-host (host)
+  "Reject unsafe or unconfigured HOST before dispatch."
+  (unless (claude-code-ide-zmx--valid-host-p host)
+    (user-error "Invalid SSH destination: %S" host))
+  (unless (member host claude-code-ide-remote-hosts)
+    (user-error "Host %s is not configured in `claude-code-ide-remote-hosts'" host))
+  host)
+
+(defun claude-code-ide-zmx--valid-name-p (name)
+  "Return non-nil if NAME identifies one exact zmx target."
+  (and (stringp name) (not (string-empty-p name))
+       (not (string-prefix-p "-" name)) (not (equal name "."))
+       (not (string-suffix-p "*" name))
+       (not (string-match-p "[/[:cntrl:]]" name))))
+
+(defun claude-code-ide-zmx--validate-name (name)
+  "Reject NAME if zmx could interpret it as anything but one target."
+  (unless (claude-code-ide-zmx--valid-name-p name)
+    (user-error "Unsupported zmx session name: %S" name))
+  name)
+
+(defun claude-code-ide-zmx--valid-directory-p (directory)
+  "Return non-nil if DIRECTORY is absolute remote path metadata."
+  (and (stringp directory) (string-prefix-p "/" directory)
+       (not (string-match-p "[[:cntrl:]]" directory))))
+
+(defun claude-code-ide-zmx--quote (argument)
+  "Quote ARGUMENT for a POSIX shell without expansion."
+  (concat "'" (replace-regexp-in-string "'" "'\\''" argument t t) "'"))
+
+(defun claude-code-ide-zmx--remote-command (args)
+  "Return a POSIX command for remote zmx ARGS."
+  (concat "exec "
+          (mapconcat #'claude-code-ide-zmx--quote
+                     (append '("env" "-u" "ZMX_SESSION"
+                               "-u" "ZMX_SESSION_PREFIX" "zmx") args)
+                     " ")))
+
+(defun claude-code-ide-zmx--call-remote (host args callback &optional name)
+  "Run remote zmx ARGS on HOST and return the owned SSH process.
+Call CALLBACK once with :host, :operation, :status, :stdout, :stderr,
+:cancelled, and :timeout.  NAME optionally identifies this request.
+The total deadline is thirty seconds.  No request retries."
+  (claude-code-ide-zmx--validate-host host)
+  (when (member (car args) '("attach" "kill"))
+    (claude-code-ide-zmx--validate-name (car (last args))))
+  (let ((stdout (generate-new-buffer " *cci-remote-output*"))
+        (stderr (generate-new-buffer " *cci-remote-error*"))
+        (default-directory temporary-file-directory)
+        process stderr-process timer completed)
+    (cl-labels
+        ((finish
+          (proc)
+          (unless completed
+            (setq completed t)
+            (when timer (cancel-timer timer))
+            (while (accept-process-output stderr-process 0 nil t))
+            (let* ((timeout (process-get proc 'cci-timeout))
+                   (outcome
+                    (list :host host :operation (car args) :process proc
+                          :status (process-exit-status proc)
+                          :stdout (with-current-buffer stdout (buffer-string))
+                          :stderr (with-current-buffer stderr (buffer-string))
+                          :cancelled (and (eq (process-status proc) 'signal)
+                                          (not timeout))
+                          :timeout timeout)))
+              (delete-process proc)
+              (when (process-live-p stderr-process) (delete-process stderr-process))
+              (kill-buffer stdout)
+              (kill-buffer stderr)
+              (condition-case err
+                  (funcall callback outcome)
+                (error (message "Remote request for %s failed: %s"
+                                host (error-message-string err))))))))
+      (condition-case err
+          (progn
+            (setq stderr-process
+                  (make-pipe-process :name "cci-remote-stderr" :buffer stderr
+                                     :noquery t :sentinel #'ignore))
+            (setq process
+                  (make-process
+                   :name (or name "claude-code-ide-remote")
+                   :buffer stdout :stderr stderr-process :noquery t
+                   :connection-type 'pipe
+                   :command (append '("ssh" "-T" "-n")
+                                    claude-code-ide-zmx--ssh-options
+                                    (list host (claude-code-ide-zmx--remote-command args)))
+                   :sentinel
+                   (lambda (proc _event)
+                     (when (memq (process-status proc) '(exit signal failed))
+                       (finish proc)))))
+            (setq timer
+                  (run-at-time
+                   30 nil
+                   (lambda ()
+                     (unless completed
+                       (process-put process 'cci-timeout t)
+                       (delete-process process)
+                       (finish process)))))
+            process)
+        (error
+         (when timer (cancel-timer timer))
+         (when (process-live-p process) (delete-process process))
+         (when (process-live-p stderr-process) (delete-process stderr-process))
+         (when (buffer-live-p stdout) (kill-buffer stdout))
+         (when (buffer-live-p stderr) (kill-buffer stderr))
+         (user-error "Cannot start SSH for %s: %s" host (error-message-string err)))))))
 
 (defvar claude-code-ide-zmx--pending-name nil
   "zmx session name for the terminal being created, or nil.
@@ -103,6 +231,11 @@ Return nil for lines without a name field."
         (setq plist (plist-put plist
                                (intern (concat ":" (match-string 1 field)))
                                (match-string 2 field)))))
+    ;; zmx 0.8 replaced start_dir with cwd=file://HOST/PATH.
+    (when-let* ((cwd (and (not (plist-get plist :start_dir)) (plist-get plist :cwd)))
+                (path (and (string-match "\\`file://[^/]*\\(/.*\\)\\'" cwd)
+                           (match-string 1 cwd))))
+      (setq plist (plist-put plist :start_dir path)))
     (and (plist-get plist :name) plist)))
 
 (defun claude-code-ide-zmx-list-sessions ()
@@ -181,13 +314,140 @@ dropped."
 
 ;;; Command wrapping
 
+(defconst claude-code-ide-zmx--attach-guard "false"
+  "Command given to stock `zmx attach' when adopting an existing session.
+Stock zmx ignores the command when the session exists and only uses
+it when creating one.  If the target vanished between discovery and
+attach, zmx creates a session running `false', which exits at once,
+so no shell or Agent is left behind and the client exits nonzero.")
+
+(defun claude-code-ide-zmx--attach-args (name)
+  "Return stock zmx arguments adopting existing session NAME without creation."
+  (list "attach" name claude-code-ide-zmx--attach-guard))
+
+(defun claude-code-ide-zmx--remote-attach-command (host name)
+  "Build an interactive SSH command adopting existing session NAME on HOST."
+  (claude-code-ide-zmx--validate-host host)
+  (claude-code-ide-zmx--validate-name name)
+  (mapconcat #'claude-code-ide-zmx--quote
+             (append '("ssh" "-t") claude-code-ide-zmx--ssh-options
+                     (list host (claude-code-ide-zmx--remote-command
+                                 (claude-code-ide-zmx--attach-args name))))
+             " "))
+
 (defun claude-code-ide-zmx-wrap-command (name &optional cmd)
   "Return a shell command attaching to zmx session NAME.
-With CMD (a shell command string), the session runs CMD when it does
-not exist yet; without CMD the result only reattaches."
-  (combine-and-quote-strings
-   (append (list "env" "-u" "ZMX_SESSION" claude-code-ide-zmx-program "attach" name)
-           (and cmd (split-string-and-unquote cmd)))))
+With CMD, preserve ordinary local creation.  Without CMD, adopt the
+existing session only; see `claude-code-ide-zmx--attach-guard'."
+  (if cmd
+      (combine-and-quote-strings
+       (append (list "env" "-u" "ZMX_SESSION" claude-code-ide-zmx-program "attach" name)
+               (split-string-and-unquote cmd)))
+    (claude-code-ide-zmx--validate-name name)
+    (claude-code-ide-zmx--ensure)
+    (mapconcat #'claude-code-ide-zmx--quote
+               (append (list "env" "-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
+                             claude-code-ide-zmx-program)
+                       (claude-code-ide-zmx--attach-args name))
+               " ")))
+
+;;; Remote discovery
+
+(defconst claude-code-ide-zmx--no-sessions-diagnostic "no sessions found"
+  "Prefix zmx prints on `list' when the destination has no sessions.")
+
+(defun claude-code-ide-zmx--no-sessions-line-p (text)
+  "Return non-nil if TEXT is the known empty-list diagnostic."
+  (string-match-p "\\`no sessions found\\(?: in [^\n\r]+\\)?\\'"
+                  (string-trim (or text ""))))
+
+(defun claude-code-ide-zmx--parse-remote-list (host stdout stderr)
+  "Parse HOST's detailed `zmx list' STDOUT into named candidate plists.
+Reuse `claude-code-ide-zmx--parse-list-line' for each line and add
+:host to every
+candidate.  STDERR supplies the known empty-list diagnostic when
+STDOUT itself carries no rows.  Signal a `user-error' when STDOUT is
+empty without that diagnostic, or when a line does not fit the shared
+parser.  An unsupported candidate name becomes that row's own :error
+instead of invalidating the rest of the response."
+  (let ((lines (split-string (or stdout "") "\n" t)))
+    (cond
+     ((and (= (length lines) 1) (claude-code-ide-zmx--no-sessions-line-p (car lines)))
+      nil)
+     ((and (null lines) (claude-code-ide-zmx--no-sessions-line-p stderr))
+      nil)
+     ((null lines)
+      (user-error "Host %s `zmx list' returned no output" host))
+     (t
+      (mapcar
+       (lambda (line)
+         (let* ((fields (split-string (string-remove-prefix "→ " (string-trim line)) "\t"))
+                (name-fields (seq-filter (lambda (field) (string-prefix-p "name=" field))
+                                         fields))
+                (entry (and (= (length name-fields) 1)
+                            (seq-every-p
+                             (lambda (field) (string-match-p "\\`[^=\t]+=[^\t]*\\'" field))
+                             fields)
+                            (claude-code-ide-zmx--parse-list-line line))))
+           (unless entry
+             (user-error "Host %s `zmx list' returned an unsupported response: %s"
+                         host (string-trim line)))
+           (setq entry (plist-put entry :name (substring (car name-fields) 5)))
+           (setq entry (plist-put entry :host host))
+           (if (or (plist-get entry :error)
+                   (claude-code-ide-zmx--valid-name-p (plist-get entry :name)))
+               entry
+             (plist-put entry :error "unsupported session name"))))
+       lines)))))
+
+(defun claude-code-ide-zmx--remote-request-ok-p (outcome)
+  "Return non-nil when OUTCOME is a clean, uncancelled zero exit."
+  (and (eql (plist-get outcome :status) 0)
+       (not (plist-get outcome :cancelled))
+       (not (plist-get outcome :timeout))))
+
+(defun claude-code-ide-zmx--remote-request-failure (host what outcome)
+  "Return a corrective error string for HOST's WHAT request from OUTCOME."
+  (cond
+   ((plist-get outcome :timeout) (format "Host %s timed out running zmx %s" host what))
+   ((plist-get outcome :cancelled) (format "Host %s cancelled zmx %s" host what))
+   (t (let ((detail (string-trim (or (plist-get outcome :stderr) ""))))
+        (format "Host %s zmx %s failed (status %s)%s" host what (plist-get outcome :status)
+                (if (string-empty-p detail) "" (format ": %s" detail)))))))
+
+(defun claude-code-ide-zmx--discovery-outcome (outcome &rest extra)
+  "Return a discovery-facing plist copying host/status/stdout/stderr from OUTCOME.
+Append EXTRA properties, such as :sessions or :error."
+  (append (list :host (plist-get outcome :host) :status (plist-get outcome :status)
+                :stdout (plist-get outcome :stdout) :stderr (plist-get outcome :stderr))
+          extra))
+
+(defun claude-code-ide-zmx--discovery-list-result (host list-outcome)
+  "Resolve HOST's LIST-OUTCOME into a discovery result plist."
+  (if (not (claude-code-ide-zmx--remote-request-ok-p list-outcome))
+      (claude-code-ide-zmx--discovery-outcome
+       list-outcome
+       :error (claude-code-ide-zmx--remote-request-failure host "list" list-outcome))
+    (condition-case err
+        (claude-code-ide-zmx--discovery-outcome
+         list-outcome
+         :sessions (claude-code-ide-zmx--parse-remote-list
+                    host (plist-get list-outcome :stdout)
+                    (plist-get list-outcome :stderr)))
+      (user-error
+       (claude-code-ide-zmx--discovery-outcome
+        list-outcome :error (error-message-string err))))))
+
+(defun claude-code-ide-zmx-discover-remote (host callback)
+  "Discover HOST's existing zmx sessions and call CALLBACK once.
+Run a detailed `zmx list' with control semantics and return the
+control process.  CALLBACK receives a plist with :host, :status,
+:stdout, :stderr, and either :sessions or :error."
+  (claude-code-ide-zmx--call-remote
+   host '("list")
+   (lambda (list-outcome)
+     (funcall callback (claude-code-ide-zmx--discovery-list-result host list-outcome)))
+   (format "claude-code-ide-remote-list-%s" host)))
 
 ;;; Adoption support
 
@@ -214,6 +474,112 @@ assignments, then matches the base name of the first real word against
   "Kill zmx session NAME."
   (claude-code-ide-zmx--ensure)
   (claude-code-ide-zmx--call "kill" name))
+
+(defun claude-code-ide-zmx--strip-one-trailing-newline (text)
+  "Return TEXT with at most one trailing newline removed, verbatim otherwise."
+  (if (string-suffix-p "\n" text) (substring text 0 -1) text))
+
+(defun claude-code-ide-zmx--stop-kill-ack-p (name outcome)
+  "Return non-nil when OUTCOME is the exact `killed session NAME' reply."
+  (and (claude-code-ide-zmx--remote-request-ok-p outcome)
+       (equal (claude-code-ide-zmx--strip-one-trailing-newline
+               (or (plist-get outcome :stdout) ""))
+              (format "killed session %s" name))))
+
+(defun claude-code-ide-zmx--short-list-names (stdout stderr)
+  "Return session names from a `zmx list --short' STDOUT.
+Preserve exact leading and trailing whitespace in each name.  Stock
+zmx prints nothing for an empty list, so blank STDOUT is an empty
+result unless STDERR carries text other than the known empty-list
+diagnostic (see `claude-code-ide-zmx--no-sessions-line-p')."
+  (or (split-string (or stdout "") "\n" t)
+      (if (or (string-empty-p (string-trim (or stderr "")))
+              (claude-code-ide-zmx--no-sessions-line-p stderr))
+          nil
+        (user-error "zmx list --short failed: %s" (string-trim stderr)))))
+
+(defun claude-code-ide-zmx--stop-list-check (host name outcome)
+  "Return t when NAME is confirmed absent from HOST's short-list OUTCOME.
+Return a failure string describing what went wrong otherwise."
+  (if (not (claude-code-ide-zmx--remote-request-ok-p outcome))
+      (claude-code-ide-zmx--remote-request-failure host "list --short" outcome)
+    (condition-case err
+        (if (member name (claude-code-ide-zmx--short-list-names
+                          (plist-get outcome :stdout) (plist-get outcome :stderr)))
+            (format "%s is still listed on host %s" name host)
+          t)
+      (user-error (error-message-string err)))))
+
+(defun claude-code-ide-zmx-stop-remote (host name callback &optional request-name)
+  "Kill zmx session NAME on HOST and verify it is gone before confirming.
+Validate HOST and NAME, then send one `kill NAME' without `--force'.
+Require the exact `killed session NAME' acknowledgment, preserving
+every character of NAME, before issuing one `list --short'
+verification; never retry the kill.  Return the initial kill process.
+
+Call CALLBACK exactly once, even if a stale reply repeats or a
+callback in the chain throws, with :host, :name, :request (the
+initial kill process), and either :verified t or :error a string
+explaining why Stop is unconfirmed and what to do about it.
+
+REQUEST-NAME names both requests; it defaults to a host-scoped name.
+The kill process releases that name on exit, so the later
+verification process can reuse it exactly, letting a caller find
+whichever phase is currently pending under one stable process name.
+Both processes carry a `cci-operation' property of `stop' and a
+`cci-request' property naming the initial kill process, so a caller
+can recover that ownership token from either phase alone."
+  (claude-code-ide-zmx--validate-host host)
+  (claude-code-ide-zmx--validate-name name)
+  (let ((req-name (or request-name (format "claude-code-ide-remote-stop-%s" host)))
+        (done nil)
+        kill-process)
+    (cl-labels
+        ((finish
+          (result)
+          (unless done
+            (setq done t)
+            (condition-case err
+                (funcall callback result)
+              (error (message "Remote Stop callback for %s on %s failed: %s"
+                              name host (error-message-string err))))))
+         (unconfirmed
+          (reason)
+          (finish (list :host host :name name :request kill-process
+                        :error (format (concat "Stop for %s on host %s is unconfirmed (%s). "
+                                                "Check `zmx list' on %s. Retry Stop only if the target remains.")
+                                       name host reason host))))
+         (phase2-callback
+          (list-outcome)
+          (condition-case err
+              (let ((check (claude-code-ide-zmx--stop-list-check host name list-outcome)))
+                (if (eq check t)
+                    (finish (list :host host :name name :request kill-process :verified t))
+                  (unconfirmed check)))
+            (error (unconfirmed (error-message-string err)))))
+         (phase1-callback
+          (outcome)
+          (condition-case err
+              (if (not (claude-code-ide-zmx--stop-kill-ack-p name outcome))
+                  (unconfirmed
+                   (if (claude-code-ide-zmx--remote-request-ok-p outcome)
+                       "zmx did not confirm killing the exact target"
+                     (claude-code-ide-zmx--remote-request-failure host "kill" outcome)))
+                (let ((list-process
+                       (claude-code-ide-zmx--call-remote
+                        host '("list" "--short") #'phase2-callback req-name)))
+                  (process-put list-process 'cci-operation 'stop)
+                  (process-put list-process 'cci-request kill-process)))
+            (error (unconfirmed (error-message-string err))))))
+      (condition-case err
+          (setq kill-process
+                (claude-code-ide-zmx--call-remote
+                 host (list "kill" name) #'phase1-callback req-name))
+        (error (unconfirmed (format "cannot start kill: %s" (error-message-string err)))))
+      (when kill-process
+        (process-put kill-process 'cci-operation 'stop)
+        (process-put kill-process 'cci-request kill-process))
+      kill-process)))
 
 (defun claude-code-ide-zmx--title-value (title)
   "Return TITLE encoded as a zmx-safe label value, or nil."
