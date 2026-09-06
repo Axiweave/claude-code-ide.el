@@ -1707,7 +1707,8 @@ Applying clears every pin in the scope; pin again from the sidebar."
        "C-c C-c applies; C-c C-k cancels; M-p/M-k and M-n/M-j move rows."))))
 
 (defun claude-code-ide-manager--insert-item (scope item slot)
-  "Insert ITEM into the current buffer using SLOT for SCOPE."
+  "Insert ITEM into the current buffer using SLOT for SCOPE.
+Reserve one active-marker cell and two status-marker cells before SLOT."
   (let* ((start (point))
          (session-key (claude-code-ide-manager-item-session-key item))
          (current-p
@@ -1721,7 +1722,7 @@ Applying clears every pin in the scope; pin again from the sidebar."
                              'claude-code-ide-manager-current-marker-face))
               " "))
     (insert (claude-code-ide-manager--marker-gutter item))
-    (insert " ")
+    (insert (propertize " " 'display '(space :align-to 3)))
     (insert (if (numberp slot) (format "%2d." slot) "  -"))
     (insert " ")
     (let ((name-start (point)))

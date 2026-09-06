@@ -1491,6 +1491,57 @@ A `working' or `needs-input' state is left alone by the same clear."
       (when (buffer-live-p session-buffer)
         (kill-buffer session-buffer)))))
 
+(ert-deftest claude-code-ide-test-manager-marker-and-number-columns ()
+  "Keep all status markers and two-digit slots within a seven-cell prefix."
+  (save-window-excursion
+    (with-temp-buffer
+      (set-window-buffer (selected-window) (current-buffer))
+      (dolist (case '((nil nil nil nil "")
+                      (idle nil nil nil "")
+                      (nil nil nil t "📌")
+                      (nil t nil t "🔔")
+                      (nil nil t t "⚙︎")
+                      (working t t t "⚙︎")
+                      (needs-input t t t "?")
+                      (done t t t "✓")
+                      (failed t t t "✗")))
+        (dolist (active '(nil t))
+          (dolist (slot '(1 9 10 99 nil))
+            (let ((claude-code-ide-manager--current-session-key
+                   (and active "sample")))
+              (erase-buffer)
+              (cl-letf (((symbol-function 'claude-code-ide-manager--session-agent-state)
+                         (lambda (_) (nth 0 case)))
+                        ((symbol-function 'claude-code-ide-manager--session-idle-p)
+                         (lambda (_) (nth 1 case)))
+                        ((symbol-function 'claude-code-ide-manager--session-working-p)
+                         (lambda (_) (nth 2 case)))
+                        ((symbol-function 'claude-code-ide-manager--scope-active-session-key)
+                         (lambda (_) nil))
+                        ((symbol-function 'claude-code-ide-manager--session-help-echo)
+                         (lambda (&rest _) nil)))
+                (claude-code-ide-manager--insert-item
+                 '(:type global)
+                 (make-claude-code-ide-manager-item
+                  :session-key "sample" :display-name "sample" :custom-name "sample"
+                  :pinned (nth 3 case))
+                 slot))
+              (should (string-prefix-p
+                       (concat (if active "▌" " ") (nth 4 case))
+                       (buffer-string)))
+              (goto-char (point-min))
+              (search-forward (if slot (format "%d." slot) "-"))
+              (should (= (car (window-text-pixel-size
+                               nil (point-min) (1- (point))))
+                         (* 5 (frame-char-width))))
+              (let ((name-start
+                     (text-property-any
+                      (point-min) (point-max)
+                      'claude-code-ide-manager-session-name-start t)))
+                (should (= (car (window-text-pixel-size
+                                 nil (point-min) name-start))
+                           (* 7 (frame-char-width))))))))))))
+
 (ert-deftest claude-code-ide-test-manager-start-session-at-point-requires-row ()
   "Sibling launch reports when point is not on a manager row."
   (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
