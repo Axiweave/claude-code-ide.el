@@ -17581,6 +17581,28 @@ Return a plist with :killed-zmx and :killed-buffer."
         '(:type repo :git-root "/tmp/shared/")
         (hash-table-values claude-code-ide--sessions))))))
 
+(ert-deftest claude-code-ide-test-remote-attach-loads-remembered-target-before-lookup ()
+  "Remote attach should load persisted targets before choosing a Session ID."
+  (let ((claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+        (claude-code-ide-manager--items nil)
+        loaded)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--load-state)
+               (lambda ()
+                 (setq loaded t)
+                 (claude-code-ide-manager--set-scope-items
+                  '(:type global)
+                  (list
+                   (make-claude-code-ide-manager-item
+                    :session-key "stable"
+                    :host "ramhorn"
+                    :zmx-name "cci-omp-repo"))))))
+      (should
+       (equal
+        (claude-code-ide--remembered-target-session-id
+         "ramhorn" "cci-omp-repo")
+        "stable"))
+      (should loaded))))
+
 (ert-deftest claude-code-ide-test-remote-disconnect-survives-passive-refresh ()
   "Disconnected rows survive without persistence or automatic requests."
   (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))

@@ -1893,7 +1893,9 @@ and must never hide or match a local zmx name."
       found)))
 
 (defun claude-code-ide--remembered-target-session-id (host zmx-name)
-  "Return the Session ID of the remembered item for HOST and ZMX-NAME, or nil."
+  "Return the Session ID of the remembered item for HOST and ZMX-NAME."
+  (unless (claude-code-ide-manager--scope-state-entry '(:type global))
+    (claude-code-ide-manager--load-state))
   (when-let* ((item (cl-find-if
                      (lambda (item)
                        (and (equal (claude-code-ide-manager-item-host item) host)
