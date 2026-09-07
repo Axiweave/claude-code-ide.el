@@ -1160,6 +1160,8 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)
 (define-key claude-code-ide-manager-mode-map (kbd "n") #'claude-code-ide-manager-next-line)
 (define-key claude-code-ide-manager-mode-map (kbd "p") #'claude-code-ide-manager-previous-line)
+(define-key claude-code-ide-manager-mode-map (kbd "j") #'claude-code-ide-manager-next-line)
+(define-key claude-code-ide-manager-mode-map (kbd "k") #'claude-code-ide-manager-previous-line)
 (define-key claude-code-ide-manager-mode-map (kbd "C-j") #'claude-code-ide-manager-next-project-group)
 (define-key claude-code-ide-manager-mode-map (kbd "C-k") #'claude-code-ide-manager-previous-project-group)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)

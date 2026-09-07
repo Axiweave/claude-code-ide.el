@@ -1681,6 +1681,13 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "r"))
               #'claude-code-ide-manager-rename-at-point)))
 
+(ert-deftest claude-code-ide-test-manager-mode-binds-j-and-k-to-row-navigation ()
+  "Manager mode exposes row navigation on `j' and `k'."
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "j"))
+              #'claude-code-ide-manager-next-line))
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "k"))
+              #'claude-code-ide-manager-previous-line)))
+
 (ert-deftest claude-code-ide-test-manager-mode-binds-bang-to-clear-idle-state ()
   "Manager mode exposes idle-state cleanup on `!'."
   (should
