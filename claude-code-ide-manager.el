@@ -2070,18 +2070,19 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 
 (defun claude-code-ide-manager--item-visible-name (item &optional grouped-label)
   "Return ITEM's visible name, optionally GROUPED-LABEL, with disconnected status."
-  (concat
-   (or grouped-label
-       (if (or claude-code-ide-manager-show-session-order
-               (claude-code-ide-manager-item-custom-name item))
-           (claude-code-ide-manager-item-display-name item)
-         (claude-code-ide-manager--replace-display-suffix
-          (claude-code-ide-manager-item-display-name item)
-          (format "%s" (claude-code-ide-manager-item-order item))
-          nil)))
-   (when (and (claude-code-ide-manager-item-host item)
-              (not (claude-code-ide-manager-item-live-p item)))
-     " [disconnected]")))
+  (let ((name (or grouped-label
+                  (claude-code-ide-manager-item-display-name item))))
+    (concat
+     (if (or claude-code-ide-manager-show-session-order
+             (claude-code-ide-manager-item-custom-name item))
+         name
+       (claude-code-ide-manager--replace-display-suffix
+        name
+        (format "%s" (claude-code-ide-manager-item-order item))
+        nil))
+     (when (and (claude-code-ide-manager-item-host item)
+                (not (claude-code-ide-manager-item-live-p item)))
+       " [disconnected]"))))
 
 (defun claude-code-ide-manager--pin-order-item-names (items &optional view)
   "Return ordered (SESSION-KEY . NAME) rows for ITEMS in VIEW."

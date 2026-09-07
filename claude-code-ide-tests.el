@@ -1632,6 +1632,22 @@ have completed before cleanup.  Waits up to 5 seconds."
                                             (claude-code-ide-tests--manager-row-text))))
                        '("1. main" "2. main")))))))
 
+(ert-deftest claude-code-ide-test-manager-grouped-render-hides-generated-order-by-default ()
+  "Grouped rows hide generated order suffixes like flat rows."
+  (let ((claude-code-ide-manager-show-session-order nil)
+        (scope '(:type global)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-manager--marker-gutter)
+                 (lambda (_) "  "))
+                ((symbol-function 'claude-code-ide-manager--row-face)
+                 (lambda (&rest _) nil)))
+        (claude-code-ide-manager--insert-item
+         scope
+         (make-claude-code-ide-manager-item
+          :session-key "two" :order 2 :display-name "main · 2")
+         2 "main · 2")
+        (should (equal (string-trim-left (buffer-string)) "2. main\n"))))))
+
 (ert-deftest claude-code-ide-test-manager-render-shows-order-when-enabled ()
   "Generated order suffixes remain visible when explicitly enabled."
   (let ((claude-code-ide-manager-show-session-order t)
