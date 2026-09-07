@@ -347,3 +347,9 @@ User Story 1 is the safety MVP. User Story 2 is the first user-visible Project-v
 ## Phase 12: Convergence
 
 - [X] T047 Use each target frame's stored managed Session and attachment token for completion and dismissal admission, remove global current-Session checks from those frame-local decisions, and add multi-frame ERT coverage in `claude-code-ide-manager.el` and `claude-code-ide-tests.el` per FR-033 and T022 (partial)
+
+## Phase 13: Convergence
+
+- [ ] T048 Run and record authorized real-host delayed-health, health-deadline, denied-authentication, incompatible-response, and delayed-provider cancellation cases while proving terminal interaction and independent RPC use remain available in `specs/005-remote-rpc-magit/quickstart.md` per plan: Responsive and safe cancellation and US4/US5 (partial)
+- [ ] T049 Run and record authorized real-host multi-Session bulk attachment, same-Worktree sharing, Session switching, manual dismissal, reattach, and `R` recovery in `specs/005-remote-rpc-magit/quickstart.md` per US3, SC-007, and SC-008 (partial)
+- [ ] T050 Run and record authorized real-host explicit-detach cleanup across owned, reused, modified, shared, source-file, custom, newer-attachment, and perspective-enabled cases while proving zero saves, prompts, remote queries, or RPC disconnects in `specs/005-remote-rpc-magit/quickstart.md` per US6 and plan: Conservative explicit-detach cleanup (partial)
