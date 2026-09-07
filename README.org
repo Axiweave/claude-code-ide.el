@@ -694,6 +694,15 @@ You can also override the terminal backend per CLI while keeping a global defaul
 If a CLI is not listed in =claude-code-ide-cli-terminal-backends=, Claude Code IDE falls back to =claude-code-ide-terminal-backend=.
 The bypass flags are =--dangerously-skip-permissions= for Claude Code, =--dangerously-bypass-approvals-and-sandbox= for Codex, =--auto= for OpenCode, none for Pi, and =--auto-approve= for Oh My Pi.
 
+For new local =omp= and =omp-dev= processes in Ghostel, the launch frame selects the image protocol:
+
+- Graphical Emacs sets =PI_FORCE_IMAGE_PROTOCOL=kitty=.
+- Terminal Emacs sets =PI_FORCE_IMAGE_PROTOCOL=off= for readable image descriptions, including inside iTerm2 or tmux.
+
+This policy does not change Pi, Eat, vterm, standalone omp, or the parent Emacs environment.
+Moving a buffer, redrawing, or reattaching zmx does not change a running process's protocol.
+Start a fresh omp process to use the current frame's policy.
+
 **** vterm Rendering Optimization
 
 Claude Code IDE includes intelligent flicker reduction for vterm terminals to provide smoother visual output:

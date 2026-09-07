@@ -13267,24 +13267,50 @@ inside the target session's directory."
         (should (bufferp (car result)))))))
 
 (ert-deftest claude-code-ide-test-create-pi-terminal-session ()
-  "Test creating a Pi terminal session without MCP env vars."
-  (let ((claude-code-ide-cli-path "pi")
-        (claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide--cli-available t)
-        (claude-code-ide-cli-extra-flags "")
-        (pi-builder-called nil))
-    (cl-letf (((symbol-function 'claude-code-ide--build-pi-command)
-               (lambda (&rest _)
-                 (setq pi-builder-called t)
-                 "pi"))
-              ((symbol-function 'claude-code-ide--build-claude-command)
-               (lambda (&rest _)
-                 (error "should not use claude command builder for pi"))))
-      (let ((result (claude-code-ide--create-terminal-session
-                     "*test-pi*" "/tmp" 12345 nil nil "test-session")))
-        (should (consp result))
-        (should pi-builder-called)
-        (should (bufferp (car result)))))))
+  "Select child image support by launch frame without changing the parent."
+  (with-temp-buffer
+    (let ((process-environment (copy-sequence process-environment))
+          (claude-code-ide--session-cli-type nil)
+          ;; A calling buffer's cached backend must not select the new backend.
+          (claude-code-ide--terminal-backend 'eat)
+          (claude-code-ide-cli-extra-flags ""))
+      (setenv "PI_FORCE_IMAGE_PROTOCOL" nil)
+      (setenv "ITERM_SESSION_ID" "probe")
+      (setenv "TMUX" "probe")
+      (setenv "TERM_PROGRAM" "tmux")
+      (dolist (case '(("omp" t eat ghostel nil "kitty")
+                      ("omp" nil eat ghostel nil "off")
+                      ("omp" t eat ghostel nil "kitty")
+                      ("omp-dev" t eat ghostel nil "kitty")
+                      ("omp" t ghostel eat nil "unset")
+                      ("omp" t ghostel vterm nil "unset")
+                      ("pi" t ghostel ghostel nil "unset")
+                      ("omp" nil eat ghostel "kitty" "off")))
+        (pcase-let* ((`(,cli ,graphic ,backend ,override ,inherited ,expected) case)
+                     (claude-code-ide-cli-path cli)
+                     (claude-code-ide-terminal-backend backend)
+                     (claude-code-ide-cli-terminal-backends
+                      `((omp . ,override) (pi . ,override))))
+          (setenv "PI_FORCE_IMAGE_PROTOCOL" inherited)
+          (let ((parent-environment (copy-sequence process-environment)))
+            (cl-letf (((symbol-function 'display-graphic-p)
+                       (lambda (&optional _frame) graphic))
+                      ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                       (lambda (_buffer _directory _command env-vars)
+                         (let ((process-environment
+                                (append env-vars process-environment)))
+                           (with-temp-buffer
+                             (should (zerop
+                                      (call-process
+                                       "/bin/sh" nil t nil "-c"
+                                       "printf %s \"${PI_FORCE_IMAGE_PROTOCOL-unset}\"")))
+                             (buffer-string))))))
+              (ert-info ((format "Launch case: %S" case))
+                (should (equal
+                         (claude-code-ide--create-terminal-session
+                          "*test-pi*" temporary-file-directory nil nil nil "test-session")
+                         expected))
+                (should (equal process-environment parent-environment))))))))))
 
 (ert-deftest claude-code-ide-test-create-pi-terminal-session-uses-cli-backend-override ()
   "Test Pi terminal session creation respects per-CLI backend overrides."

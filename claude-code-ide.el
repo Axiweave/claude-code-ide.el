@@ -1807,6 +1807,13 @@ Returns a cons cell of (buffer . process) on success."
   "Create a new terminal session for Pi or Oh My Pi."
   (let ((cmd (claude-code-ide--build-pi-command continue resume session-id))
         (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name))))
+    (when (and (eq (claude-code-ide--current-cli-type) 'omp)
+               (eq (claude-code-ide--resolve-terminal-backend 'omp) 'ghostel))
+      ;; Outer terminal identifiers do not describe Emacs image support.
+      (push (if (display-graphic-p)
+                "PI_FORCE_IMAGE_PROTOCOL=kitty"
+              "PI_FORCE_IMAGE_PROTOCOL=off")
+            env-vars))
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
 
