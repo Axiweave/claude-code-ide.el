@@ -11,3 +11,9 @@ docs/superpowers/
 refs/
 ref-docs/
 /.omp/
+*.eln
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
