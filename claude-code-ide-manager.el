@@ -4025,6 +4025,9 @@ default layout is rebuilt."
        (claude-code-ide-manager--session-buffer session-key)
        (selected-frame)
        'reset)
+      (when-let* ((host (claude-code-ide-manager--session-host session-key)))
+        (claude-code-ide-manager--cancel-remote-metadata host)
+        (claude-code-ide-manager-refresh-remote-metadata host))
       target-window)))
 
 (defun claude-code-ide-manager-switch-at-point ()

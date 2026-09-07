@@ -20504,12 +20504,22 @@ result arrives never has that result applied to the row now at its key."
   "Remote `R' rebuilds the layout and starts one reset attempt."
   (let ((terminal
          (generate-new-buffer " *remote-reset-terminal*"))
-        call)
+        call
+        cancelled-host
+        refreshed-host)
     (unwind-protect
         (cl-letf
             (((symbol-function
                'claude-code-ide-manager--session-host)
               (lambda (_session-id) "host-a"))
+             ((symbol-function
+               'claude-code-ide-manager--cancel-remote-metadata)
+              (lambda (host)
+                (setq cancelled-host host)))
+             ((symbol-function
+               'claude-code-ide-manager-refresh-remote-metadata)
+              (lambda (host)
+                (setq refreshed-host host)))
              ((symbol-function
                'claude-code-ide-manager--session-buffer)
               (lambda (_session-id) terminal))
@@ -20557,7 +20567,9 @@ result arrives never has that result applied to the row now at its key."
             (should
              (equal call
                     (list "session-a" terminal
-                          (selected-frame) 'reset)))))
+                          (selected-frame) 'reset)))
+            (should (equal cancelled-host "host-a"))
+            (should (equal refreshed-host "host-a"))))
       (kill-buffer terminal))))
 
 (ert-deftest claude-code-ide-test-remote-project-command-dismissal-matrix ()
