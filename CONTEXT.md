@@ -9,6 +9,11 @@ The Emacs-side object: keyed by session-id, holds the terminal buffer,
 window state, and idle tracking. Without zmx, it owns the agent process
 and dies with Emacs.
 
+### Session directory
+The directory a Session's Agent runs in, as a path on that Session's host.
+It is plain metadata text, never a TRAMP file name, and never given to a
+local file predicate.
+
 ### Worktree
 A working directory of a Git repository, including its main working directory
 and linked worktrees. Multiple Sessions can use the same Worktree.
@@ -64,6 +69,11 @@ The user accesses it through an attached terminal in local Emacs.
 ### Configured host
 A user-approved SSH destination for remote Agent access.
 Its name identifies the host in the manager.
+
+### RPC file name
+A local file name of the form `/rpc:host:/path` that routes an ordinary
+Emacs file or process call to one Configured host. It is built only where a
+real remote filesystem or process call happens.
 
 ### Agent state
 The lifecycle of a turn as the Agent itself reports it: idle, working,
