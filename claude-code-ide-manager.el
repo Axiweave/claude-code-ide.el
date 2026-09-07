@@ -275,10 +275,10 @@ render two cells wide, which breaks gutter alignment.")
   "Per-scope manager view state keyed by scope key.")
 
 (defvar claude-code-ide-manager--priority-visits (make-hash-table :test 'equal)
-  "Visited-session sets for each manager scope's current priority pass.")
+  "Per-scope priority passes with :visited entries and a :resume session key.")
 
 (defvar claude-code-ide-manager--uncleared-visits (make-hash-table :test 'equal)
-  "Visited-session sets for each manager scope's uncleared priority pass.")
+  "Per-scope uncleared passes with :visited entries and a :resume session key.")
 
 (defvar claude-code-ide-manager--layouts (make-hash-table :test 'equal)
   "Saved layouts keyed by session key.")
@@ -1735,9 +1735,24 @@ markers, which take precedence over the pin marker."
   "Refresh the sidebar when ORIG-FN changes manager-visible session status."
   (let ((before (claude-code-ide-manager--session-status-snapshot)))
     (prog1 (apply orig-fn args)
-      (unless (equal before
-                     (claude-code-ide-manager--session-status-snapshot))
-        (claude-code-ide-manager--refresh-on-idle-transition)))))
+      (let ((after (claude-code-ide-manager--session-status-snapshot)))
+        (unless (eq (nth 3 before) (nth 3 after))
+          (when-let* ((key (claude-code-ide-manager--session-key-for-buffer
+                           (current-buffer))))
+            (dolist (passes (list claude-code-ide-manager--priority-visits
+                                  claude-code-ide-manager--uncleared-visits))
+              (maphash
+               (lambda (_scope record)
+                 (let ((visited (plist-get record :visited)))
+                   (when (gethash key visited)
+                     (puthash key
+                              (if (memq (nth 3 after) '(needs-input failed done))
+                                  'attention
+                                t)
+                              visited))))
+               passes))))
+        (unless (equal before after)
+          (claude-code-ide-manager--refresh-on-idle-transition))))))
 
 (defun claude-code-ide-manager--install-idle-refresh-hooks ()
   "Refresh the manager sidebar when session idle state changes."
@@ -3104,7 +3119,9 @@ When UNCLEARED-ONLY is non-nil, exclude cleared and unmarked sessions."
                (buffer-live-p (claude-code-ide-manager--session-buffer key)))
              (claude-code-ide-manager--visible-session-keys scope)))
            (scope-key (claude-code-ide-manager--scope-key scope))
-           (visited (gethash scope-key visits))
+           (record (gethash scope-key visits))
+           (visited (plist-get record :visited))
+           (resume (plist-get record :resume))
            (current
             (cl-loop for key in
                      (list (claude-code-ide-manager--session-key-for-buffer
@@ -3115,7 +3132,8 @@ When UNCLEARED-ONLY is non-nil, exclude cleared and unmarked sessions."
                      when (member key eligible) return key))
            (others (remove current eligible))
            (unvisited (if visited
-                          (cl-remove-if (lambda (key) (gethash key visited)) others)
+                          (cl-remove-if
+                           (lambda (key) (eq (gethash key visited) t)) others)
                         others))
            new-pass target)
       (unless eligible
@@ -3130,7 +3148,11 @@ When UNCLEARED-ONLY is non-nil, exclude cleared and unmarked sessions."
                         (when (< rank best-rank)
                           (setq best key
                                 best-rank rank)))))))
+        (unless (and (member resume others) (pick (list resume)))
+          (setq resume nil))
         (setq target (pick unvisited))
+        (unless target
+          (setq target resume))
         (unless target
           (setq new-pass t
                 target (pick (cl-remove-if-not
@@ -3138,6 +3160,10 @@ When UNCLEARED-ONLY is non-nil, exclude cleared and unmarked sessions."
                               others)))))
       (unless target
         (user-error "No other uncleared session in this manager scope"))
+      (cond
+       ((or new-pass (equal target resume)) (setq resume nil))
+       ((and visited (eq (gethash target visited) 'attention) (not resume))
+        (setq resume current)))
       (let ((window (claude-code-ide-manager-switch-to-session target nil scope))
             (updated (make-hash-table :test 'equal)))
         ;; Saved layouts can restore editor focus.  This command visits the agent.
@@ -3146,11 +3172,12 @@ When UNCLEARED-ONLY is non-nil, exclude cleared and unmarked sessions."
                       (claude-code-ide-manager--session-buffer target))))
           (select-window session-window))
         (dolist (key eligible)
-          (when (or (equal key target)
-                    (equal key current)
-                    (and (not new-pass) visited (gethash key visited)))
-            (puthash key t updated)))
-        (puthash scope-key updated visits)
+          (cond
+           ((or (equal key target) (equal key current))
+            (puthash key t updated))
+           ((and (not new-pass) visited (gethash key visited))
+            (puthash key (gethash key visited) updated))))
+        (puthash scope-key (list :visited updated :resume resume) visits)
         window))))
 
 (defun claude-code-ide-manager-next-priority-session ()

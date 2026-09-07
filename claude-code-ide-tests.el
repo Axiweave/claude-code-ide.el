@@ -6226,6 +6226,99 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
      (claude-code-ide-manager-previous-line)
      (should (equal claude-code-ide-manager--current-session-key (session-key "a-topic"))))))
 
+(ert-deftest claude-code-ide-test-manager-priority-next-interrupts-and-resumes ()
+  "New requests interrupt either pass without losing its remaining visits."
+  (dolist (command '(claude-code-ide-manager-next-priority-session
+                     claude-code-ide-manager-next-uncleared-session))
+    (claude-code-ide-tests--with-priority-sessions
+     '(("01" working) ("02" working) ("03" working))
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (jump "02" command)
+     (with-current-buffer (session-buffer "01")
+       (claude-code-ide-session-idle-set-agent-state 'needs-input))
+     (jump "01" command)
+     (jump "03" command)
+     (with-current-buffer (session-buffer "01")
+       (claude-code-ide-session-idle-set-agent-state 'needs-input))
+     (jump "02" command)
+     (jump "01" command))))
+
+(ert-deftest claude-code-ide-test-manager-uncleared-next-interrupts-completion ()
+  "Completion interrupts once, and acknowledgment prevents replay."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" working) ("02" working) ("03" working))
+   (let ((command #'claude-code-ide-manager-next-uncleared-session))
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (jump "02" command)
+     (with-current-buffer (session-buffer "01")
+       (claude-code-ide-session-idle-set-agent-state 'done))
+     (jump "01" command)
+     (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                     (session-buffer "01"))
+                 'idle))
+     (jump "03" command)
+     (with-current-buffer (session-buffer "01")
+       (claude-code-ide-session-idle-set-agent-state 'done))
+     (jump "02" command))))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-detects-new-attention ()
+  "Transitions between commands renew requests and cancel stale requests."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" needs-input) ("02" working) ("03" working))
+   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+   (jump "02")
+   (with-current-buffer (session-buffer "01")
+     (claude-code-ide-session-idle-set-agent-state 'working)
+     (claude-code-ide-session-idle-set-agent-state 'needs-input))
+   (jump "01")
+   (jump "03")
+   (with-current-buffer (session-buffer "01")
+     (claude-code-ide-session-idle-set-agent-state 'working)
+     (claude-code-ide-session-idle-set-agent-state 'needs-input)
+     (claude-code-ide-session-idle-set-agent-state 'working))
+   (jump "02")))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-keeps-first-return-target ()
+  "Multiple attention visits retain the first interrupted session."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" working) ("02" working) ("03" working)
+     ("04" working) ("05" working))
+   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+   (jump "02")
+   (jump "03")
+   (with-current-buffer (session-buffer "01")
+     (claude-code-ide-session-idle-set-agent-state 'done))
+   (with-current-buffer (session-buffer "02")
+     (claude-code-ide-session-idle-set-agent-state 'needs-input))
+   (dolist (name '("02" "01" "04" "05" "03"))
+     (jump name))))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-retries-interruption-and-return ()
+  "Failed switches preserve both the attention visit and the return target."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" working) ("02" working) ("03" working))
+   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+   (jump "02")
+   (with-current-buffer (session-buffer "01")
+     (claude-code-ide-session-idle-set-agent-state 'needs-input))
+   (let ((switch (symbol-function 'claude-code-ide-manager-switch-to-session))
+         (fail-key (session-key "01")))
+     (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+                (lambda (key &rest args)
+                  (if (equal key fail-key)
+                      (progn (setq fail-key nil) (error "Switch failed"))
+                    (apply switch key args)))))
+       (should-error (claude-code-ide-manager-next-priority-session))
+       (should (equal claude-code-ide-manager--current-session-key (session-key "02")))
+       (should (eq (window-buffer (selected-window)) (session-buffer "02")))
+       (jump "01")
+       (jump "03")
+       (setq fail-key (session-key "02"))
+       (should-error (claude-code-ide-manager-next-priority-session))
+       (should (equal claude-code-ide-manager--current-session-key (session-key "03")))
+       (should (eq (window-buffer (selected-window)) (session-buffer "03")))
+       (jump "02")))))
+
 (ert-deftest claude-code-ide-test-manager-priority-next-completes-pass ()
   "A priority pass visits every session despite persistent requests and acknowledgements."
   (claude-code-ide-tests--with-priority-sessions
