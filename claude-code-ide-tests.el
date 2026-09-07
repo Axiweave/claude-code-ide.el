@@ -21716,6 +21716,44 @@ project' error from the set/clear project-agent suffixes."
                   :type 'user-error)))
         (should (string-match-p "Not in a project" (error-message-string err)))))))
 
+(ert-deftest claude-code-ide-test-recent-session-picks-the-newest-access ()
+  "The public recent-Session accessor reads the access time the manager
+sorts by, so it names the Session used last, not the buffer that was
+displayed last."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide--last-accessed-buffer nil)
+        (older-buffer (generate-new-buffer "*cc-recent-older*"))
+        (newer-buffer (generate-new-buffer "*cc-recent-newer*")))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "older" :directory "/work/older/" :host "alpha"
+            :buffer older-buffer :last-accessed-at 10))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "newer" :directory "/work/newer/" :host "beta"
+            :buffer newer-buffer :last-accessed-at 20))
+          (should (equal "newer"
+                         (claude-code-ide-session-id (claude-code-ide-recent-session))))
+          ;; Touching the older Session moves it ahead.
+          (setf (claude-code-ide-session-last-accessed-at
+                 (claude-code-ide--get-session "older"))
+                30)
+          (should (equal "older"
+                         (claude-code-ide-session-id (claude-code-ide-recent-session))))
+          ;; A Session whose buffer died is not live.
+          (kill-buffer older-buffer)
+          (should (equal "newer"
+                         (claude-code-ide-session-id (claude-code-ide-recent-session)))))
+      (when (buffer-live-p older-buffer) (kill-buffer older-buffer))
+      (kill-buffer newer-buffer))))
+
+(ert-deftest claude-code-ide-test-recent-session-without-sessions-is-nil ()
+  "With no Session the accessor returns nil and makes no remote call."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (should-not (claude-code-ide-recent-session))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

@@ -869,6 +869,23 @@ point for code outside this package; it wraps
 `claude-code-ide--session-for-buffer' and makes no remote call."
   (claude-code-ide--session-for-buffer buffer))
 
+(defun claude-code-ide-recent-session ()
+  "Return the live Session with the newest access time, or nil.
+This is the supported entry point for code outside this package when
+no buffer or window identifies a Session, for example a temporary
+prompt buffer that an Agent opened.  It reads the same
+`last-accessed-at' the manager sorts by and makes no remote call."
+  (let (recent)
+    (maphash
+     (lambda (_session-id session)
+       (when (and (buffer-live-p (claude-code-ide-session-buffer session))
+                  (or (null recent)
+                      (> (or (claude-code-ide-session-last-accessed-at session) 0)
+                         (or (claude-code-ide-session-last-accessed-at recent) 0))))
+         (setq recent session)))
+     claude-code-ide--sessions)
+    recent))
+
 (defun claude-code-ide--session-buffer-for-agent (zmx-name buffer-name)
   "Return the live session buffer identified by ZMX-NAME or BUFFER-NAME.
 ZMX-NAME wins because it survives Emacs restarts.  BUFFER-NAME covers
