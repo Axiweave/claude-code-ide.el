@@ -17219,20 +17219,26 @@ Return a plist with :killed-zmx and :killed-buffer."
 (ert-deftest claude-code-ide-test-remote-control-output-and-callback-once ()
   "Control completion preserves separate streams and completes once."
   (let ((claude-code-ide-remote-hosts '("host"))
-        (original (symbol-function 'make-process))
+        (original-make-process (symbol-function 'make-process))
+        (original-accept-process-output (symbol-function 'accept-process-output))
         outcomes process sentinel)
     (unwind-protect
         (progn
           (cl-letf (((symbol-function 'make-process)
                      (lambda (&rest options)
-                       (funcall original
+                       (funcall original-make-process
                                 :name (plist-get options :name)
                                 :buffer (plist-get options :buffer)
                                 :stderr (plist-get options :stderr)
                                 :noquery t :connection-type 'pipe
                                 :sentinel (plist-get options :sentinel)
                                 :command '("sh" "-c"
-                                           "printf output; printf diagnostic >&2; exit 7")))))
+                                           "printf output; printf diagnostic >&2; exit 7"))))
+                    ((symbol-function 'accept-process-output)
+                     (lambda (&rest args)
+                       (when (car args)
+                         (ert-fail "Completion must not accept stderr recursively"))
+                       (apply original-accept-process-output args))))
             (setq process (claude-code-ide-zmx--call-remote
                            "host" '("help") (lambda (outcome) (push outcome outcomes)))
                   sentinel (process-sentinel process)))

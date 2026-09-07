@@ -149,7 +149,6 @@ bytes and ends the process as soon as it is exceeded, reporting
            (unless completed
              (setq completed t)
              (when timer (cancel-timer timer))
-             (while (accept-process-output stderr-process 0 nil t))
              (let* ((timeout (process-get proc 'cci-timeout))
                     (outcome
                      (list :host host :operation operation :process proc
