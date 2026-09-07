@@ -42,3 +42,9 @@ project-remote
   6. trunk-b
 #+end_example
 C-j C-k to jump between project-group
+
+* TODO git-less view
+simplified git status without magit
+
+* TODO tramp if needed
+close related buffers when detached

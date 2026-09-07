@@ -1,3 +1,15 @@
+<!--
+Sync Impact Report
+Version change: 1.0.0 -> 1.1.0 (new principle)
+Modified principles: none
+Added section: VI. Local and Remote Workflow Parity
+Removed sections: none
+Dependent templates and commands: unchanged, read constitution at runtime
+Deferred feature work: apply confirmed interview decisions to 005-remote-rpc-magit
+after the user confirms shared understanding. Keep the active feature unchanged.
+Deferred placeholders: none
+-->
+
 # claude-code-ide.el Constitution
 
 Governing principles for changes to this Emacs package. It provides
@@ -52,6 +64,25 @@ written justification in the plan's Complexity Tracking table. Prefer the
 smallest working change; delete code the change obsoletes in the same
 change. No model or agent self-references in source code or commit messages.
 
+### VI. Local and Remote Workflow Parity
+
+For enabled capabilities, remote attachment and managed views MUST match
+the corresponding local workflow unless a concrete remote constraint requires
+a difference. Use local behavior as the reference for commands, layout,
+focus, view reuse, and navigation. This avoids a separate workflow merely
+because an Agent runs on another host.
+
+Feature specifications and plans MUST identify each required difference and
+its remote constraint. Preserve existing local behavior and disabled remote
+behavior when adding optional capabilities. Preserve the local distinction
+between initial project-view preparation and later layout restoration.
+
+Parity MUST preserve explicit host approval, optional dependencies, and safe
+session ownership. Remote project-access failures MUST leave terminal
+attachment independent and usable. Report unavailable capabilities explicitly
+instead of silently changing security, installing software, or replacing the
+requested operation.
+
 ## Elisp Standards
 
 - Every file uses `lexical-binding: t` and the GPL-3+ header block.
@@ -87,4 +118,4 @@ below (semver: principle removals or reversals are MAJOR, new principles or
 sections MINOR, wording fixes PATCH), and update AGENTS.md if the two
 diverge.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-28 | **Last Amended**: 2026-08-28
+**Version**: 1.1.0 | **Ratified**: 2026-08-28 | **Last Amended**: 2026-09-06
