@@ -400,15 +400,21 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
                     (file-name-as-directory
                      (or project-root (claude-code-ide--get-project-root)))))
 
+(defun claude-code-ide--refuse-remote-project-cli-path ()
+  "Refuse the project-local CLI path when the Session owning the current
+buffer has a host: a project-local CLI path names a local filesystem
+location, which has no meaning for a remote Agent (FR-013)."
+  (when-let* ((session (claude-code-ide-session-for-buffer))
+              (host (claude-code-ide-session-host session)))
+    (user-error "Project-local CLI path is a local-only setting; refusing for remote host %s" host)))
+
 (defun claude-code-ide--save-project-dir-local-cli-path (operation &optional cli-path project-root)
   "Persist a project-local CLI path using OPERATION at PROJECT-ROOT.
 OPERATION is either `set' or `clear'.  CLI-PATH is used when OPERATION is `set'.
 Refuse when the Session owning the current buffer has a host: a
 project-local CLI path names a local filesystem location, which has
 no meaning for a remote Agent (FR-013)."
-  (when-let* ((session (claude-code-ide-session-for-buffer))
-              (host (claude-code-ide-session-host session)))
-    (user-error "Project-local CLI path is a local-only setting; refusing for remote host %s" host))
+  (claude-code-ide--refuse-remote-project-cli-path)
   (let* ((root (file-name-as-directory
                 (or project-root (claude-code-ide--get-project-root))))
          (file (claude-code-ide--project-dir-locals-file root))
@@ -533,6 +539,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
           (and (member claude-code-ide-cli-path
                        (mapcar #'cdr claude-code-ide-agent-definitions))
                claude-code-ide-cli-path))))
+  (claude-code-ide--refuse-remote-project-cli-path)
   (let ((project-root (claude-code-ide--get-project-root)))
     (claude-code-ide--save-project-dir-local-cli-path 'set agent project-root)
     (setq-local claude-code-ide-cli-path agent)
@@ -542,6 +549,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
   "Clear the project-local agent override from .dir-locals.el."
   :description "Clear project agent"
   (interactive)
+  (claude-code-ide--refuse-remote-project-cli-path)
   (let ((project-root (claude-code-ide--get-project-root)))
     (claude-code-ide--save-project-dir-local-cli-path 'clear nil project-root)
     (kill-local-variable 'claude-code-ide-cli-path)

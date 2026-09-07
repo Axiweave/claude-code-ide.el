@@ -21633,6 +21633,48 @@ write, for both operations."
                                                 (read (current-buffer))))))))
          (kill-buffer buffer))))))
 
+(ert-deftest claude-code-ide-test-remote-awareness-project-agent-suffixes-refuse-remote-host-before-project-lookup ()
+  "The set/clear project-agent suffixes should refuse and name the host
+for a remote Session, before they resolve a project root or touch
+dir-locals."
+  (let* ((buffer (generate-new-buffer "*claude-code[remote-awareness-agent-guard]*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "remote-awareness-agent-guard" :host "alpha" :directory "/work/topic"
+            :buffer buffer))
+          (cl-letf (((symbol-function 'claude-code-ide--get-project-root)
+                     (lambda () (ert-fail "Resolved a project root for a remote Session")))
+                    ((symbol-function 'add-dir-local-variable)
+                     (lambda (&rest _) (ert-fail "Wrote a dir-local for a remote Session")))
+                    ((symbol-function 'delete-dir-local-variable)
+                     (lambda (&rest _) (ert-fail "Wrote a dir-local for a remote Session"))))
+            (let ((err (should-error
+                        (claude-code-ide--set-project-agent "codex")
+                        :type 'user-error)))
+              (should (string-match-p "alpha" (error-message-string err))))
+            (let ((err (should-error
+                        (claude-code-ide--clear-project-agent)
+                        :type 'user-error)))
+              (should (string-match-p "alpha" (error-message-string err))))))
+      (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-remote-awareness-project-agent-suffixes-local-outside-project-unchanged ()
+  "A local buffer outside a project still gets today's `Not in a
+project' error from the set/clear project-agent suffixes."
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil)))
+      (let ((err (should-error
+                  (claude-code-ide--set-project-agent "codex")
+                  :type 'user-error)))
+        (should (string-match-p "Not in a project" (error-message-string err))))
+      (let ((err (should-error
+                  (claude-code-ide--clear-project-agent)
+                  :type 'user-error)))
+        (should (string-match-p "Not in a project" (error-message-string err)))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:
