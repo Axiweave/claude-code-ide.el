@@ -1,0 +1,266 @@
+#+title: Remote Agents and Project Views
+#+options: toc:2 num:nil
+
+* Purpose
+
+Remote mode connects Emacs to an existing zmx Session through SSH.
+It never starts an Agent or creates a persistent remote zmx Session.
+
+The terminal path and the optional Project-view path are separate.
+A Project-view failure does not detach or block the terminal.
+
+For local persistent Sessions, see [[file:zmx.org][Persistent Sessions with zmx]].
+
+* Requirements
+
+Prepare these items outside Emacs:
+
+- Install stock zmx on each remote host.
+- Start the Agent inside an existing zmx Session.
+- Configure SSH authentication, ports, jump hosts, and trusted host keys.
+- Install and select the Ghostel terminal backend.
+- Add each exact SSH destination to =claude-code-ide-remote-hosts=.
+
+Remote attachment supports Ghostel only.
+The remote host does not need the Claude Code IDE Emacs package.
+The local machine does not need a local zmx or Agent executable for remote attachment.
+
+Select Ghostel globally when no per-Agent override applies:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-terminal-backend 'ghostel)
+#+end_src
+
+A per-Agent entry in =claude-code-ide-cli-terminal-backends= overrides the global setting.
+Set that entry to =ghostel= for an Agent that you attach remotely.
+
+* Configure Hosts
+
+List exact SSH destinations:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-remote-hosts
+      '("my-agent-host" "user@another-host"))
+#+end_src
+
+The package never scans for hosts.
+Remote discovery and control contact only the host that an explicit action selects.
+An enabled Project view can connect only to an exact approved host when its attached Session first enters a managed layout.
+
+The configured string can name an SSH configuration alias or =user@host= destination.
+SSH configuration owns nondefault ports and jump hosts.
+The package rejects blank, option-like, whitespace-containing, and control-character host values.
+
+Remote control requests use batch authentication and strict host-key checking.
+They cannot ask for passwords or accept a new host key.
+Each control request has a 30-second total deadline and no automatic retry.
+
+* Attach Existing Agents
+
+Attach one remote Agent:
+
+1. Run =C-u M-x claude-code-ide-attach=.
+2. Select a Configured host.
+3. Select an existing zmx Session.
+4. Supply the Agent or remote directory if discovery cannot identify it.
+
+The remote directory is metadata.
+It does not need a matching local checkout.
+The package never adds discovered commands or directory text to a remote launch command.
+
+Use these commands for more Sessions:
+
+- =C-u M-x claude-code-ide-attach-all= attaches every usable target on one host.
+- =C-u M-x claude-code-ide-attach-select= opens a marked-selection buffer for one host.
+
+Bulk attachment skips a target with an unknown Agent command or unusable directory metadata.
+The result names each skipped target.
+Individual attachment permits manual Agent selection and absolute remote-directory input.
+
+Fresh attachment uses the discovery result.
+Remembered reattachment first checks the exact target with =zmx list --short=.
+Both paths use =zmx attach NAME false= as the final disappearance guard.
+
+* Manager Lifecycle
+
+Remote rows appear only in the global manager.
+Each row identity includes the host and exact zmx name.
+Matching project paths or zmx names on different hosts remain separate.
+
+The manager uses these remote lifecycle keys:
+
+| Key | Action |
+|-----+--------|
+| =RET= | Open a connected Session terminal. |
+| =c= | Reattach a disconnected row explicitly. |
+| =D= or =X= | Detach and remove the local row without stopping the Agent. |
+| =K= | Confirm and Stop the exact remote zmx target. |
+| =R= | Reset the Session layout and retry an enabled Project view. |
+| =? C= | Cancel the pending Project-view attempt. |
+| =? m= | Refresh cached Git metadata for one Configured host. |
+
+Selecting or refreshing a disconnected row never contacts its host.
+Startup and layout restoration never reconnect automatically.
+A successful reattach keeps the Session ID, title, order, pin state, and saved layout.
+
+Closing a remote terminal buffer detaches the local client.
+The manager retains the row as disconnected.
+Output silence alone does not prove disconnection or Agent completion.
+
+Stop sends one remote kill request after confirmation.
+The package requires the exact zmx acknowledgment and a separate absence check.
+An ambiguous result keeps the row and does not retry the kill.
+
+* Remote Git Metadata
+
+Attachment can request read-only Git metadata asynchronously.
+A metadata failure does not undo attachment.
+
+The metadata request uses only =cd=, =git rev-parse=, and =git symbolic-ref=.
+It creates no remote files.
+It rejects control characters and malformed response paths.
+A malformed response rejects the complete batch and preserves the last valid cache.
+
+Manager =? m= refreshes metadata for known rows on one selected host.
+It does not discover, attach, reconnect, or Stop an Agent.
+Ordinary manager =G=, startup, restoration, navigation, and redraw make no metadata request.
+
+* Optional Project Views
+
+Remote Project views add Magit or Dired beside a managed remote terminal.
+They use the installed =tramp-rpc= client and its configured remote server.
+The optional client currently requires Emacs 30.1 or later.
+
+Install and configure the client and server separately.
+This package never downloads, builds, installs, transfers, deploys, or updates either component.
+It preserves the client's global and saved configuration.
+
+Enable Project views for exact hosts:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-remote-hosts '("my-agent-host")
+      claude-code-ide-remote-project-view-hosts '("my-agent-host")
+      claude-code-ide-remote-project-cleanup-hosts nil)
+#+end_src
+
+A host must occur in both the access list and the Project-view list.
+The Project-view list does not grant remote access by itself.
+Changing either option starts no connection or window change.
+
+** Preparation
+
+The first managed display shows the terminal before it starts Project-view preparation.
+Preparation runs in a worker and keeps the terminal interactive.
+
+Each fresh attempt requires a current RPC health response.
+The health phase has a 30-second feature deadline.
+A failure reports the host, phase, and corrective action while it retains the terminal.
+
+The default provider opens Magit for a Git Worktree.
+It falls back to Dired for a non-Git directory or unavailable Magit.
+The existing =claude-code-ide-manager-status-buffer-function= remains authoritative.
+
+** Identity and Reuse
+
+One exact host and remote Git Worktree share one Project-view buffer.
+Different hosts and different Worktrees use different buffers.
+Non-Git views use the exact host and directory identity.
+
+The feature reuses a surviving matching buffer without refreshing it.
+Use the view's native =g= command when you want fresh contents.
+
+Bulk attachment does not prepare every project.
+Each Session starts preparation only when its managed layout first appears.
+
+** Dismissal, Reset, and Cancellation
+
+Closing a Project-view window suppresses automatic display for that Session.
+The suppression survives navigation and remote reattachment during the current Emacs process.
+Other Sessions that share the buffer keep their own display intent.
+
+Press manager =R= to clear that Session's suppression.
+This command resets the full default layout and starts a fresh health-gated attempt.
+It does not restart the Agent.
+
+Open the manager menu with =?= and press =C= to cancel a pending attempt.
+Cancellation blocks stale results from changing a newer Session or attachment.
+It does not detach the terminal or close a shared RPC connection.
+
+** Optional Cleanup
+
+Enable cleanup independently for exact hosts:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-remote-project-cleanup-hosts
+      '("my-agent-host"))
+#+end_src
+
+Cleanup runs only after a successful manager =D= or =X= detach.
+It can close only an unmodified Magit or Dired buffer that this feature created for that detached Session.
+
+Cleanup retains reused, custom, modified, shared, source-file, process, temporary, replaced, and uncertain buffers.
+It also retains buffers with unknown local kill or query hooks.
+Cleanup never saves, prompts, makes a remote request, or closes an RPC connection.
+
+Terminal close, network loss, Stop, and Emacs exit do not run Project-view cleanup.
+
+* Scope Limits
+
+Remote mode does not provide these features:
+
+- Remote Agent launch.
+- Automatic reconnect.
+- Remote host discovery.
+- Remote Treemacs actions or project launch commands.
+- Text transfer to the remote Agent.
+- MCP or SSE setup for the remote Agent.
+- Structured Agent state from the remote process.
+
+Remote Sessions use terminal-output activity and output-idle detection.
+Output idle does not mean that the Agent completed successfully.
+
+* Troubleshooting
+
+** Authentication fails without a prompt
+
+Test the same SSH destination outside Emacs.
+Configure noninteractive credentials and accept the host key before you use remote mode.
+
+** The host reports that zmx is missing
+
+Make =zmx= available in the remote command environment's =PATH=.
+The local =claude-code-ide-zmx-program= option does not control the remote executable.
+
+** Remote attachment reports an unsupported terminal backend
+
+Select Ghostel globally or for the target Agent.
+The check happens before Emacs starts a terminal or SSH attach process.
+
+** A disconnected target cannot reattach
+
+Run =zmx list --short= on the selected host.
+Restore the exact target or remove its local history with manager =D= or =X=.
+The package never creates a replacement Agent.
+
+** The terminal works but the Project view fails
+
+Read the phase in the host-qualified error.
+Check the installed client, noninteractive authentication, remote server path, remote directory, or provider for that phase.
+Then press manager =R=.
+
+** A Project view does not return after navigation
+
+You probably dismissed that Session's view.
+Press manager =R= to clear suppression and rebuild the default layout.
+
+* Validation Status
+
+The implementation and local byte-compilation and ERT gates are complete.
+Real-host Project-view acceptance is not complete.
+
+Tasks T048 through T050 remain open.
+They cover failure injection, delayed cancellation, multi-Session workflows, and the full explicit-detach cleanup matrix.
+See [[file:../specs/005-remote-rpc-magit/tasks.md][the task list]] and [[file:../specs/005-remote-rpc-magit/quickstart.md][the acceptance guide]].
+
+The stock zmx remote attachment lifecycle has separate completed evidence.
+See [[file:../specs/003-attach-remote-agents/contracts/zmx-attach-guard.md][the attach guard contract]].

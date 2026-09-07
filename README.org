@@ -188,6 +188,7 @@ You can run multiple Claude Code instances simultaneously for different projects
 ** Persistent Sessions with zmx
 
 Agent processes normally die with Emacs. With [[https://github.com/neurosnap/zmx][zmx]] installed, the package can run each agent CLI inside a zmx session. The process then survives Emacs restarts, buffer kills, and dropped connections. You can detach in Emacs and reattach from a plain terminal, or the reverse.
+See [[file:docs/zmx.org][the zmx guide]] for setup, attachment, lifecycle, and troubleshooting details.
 
 Enable it globally:
 
@@ -198,7 +199,7 @@ Enable it globally:
 How it works:
 
 - New sessions run as =zmx attach <name> <agent-command>=. Names follow =cci-<agent>-<project>-<id>= (see =claude-code-ide-zmx-session-prefix=).
-- On session start, matching detached zmx sessions for the project and agent are offered for reattach, with a "Create new session" option. Starts with =--continue= or =--resume= skip the offer and create a new session.
+- On session start, matching zmx sessions for the project and agent are offered for reattach, with a "Create new session" option. Continue and resume offer only matching sessions with zero attached clients.
 - When cc-manager is hidden, reattachment from Start keeps it hidden and preserves the editor windows. The terminal opens in the configured side window. When cc-manager is visible, reattachment uses its managed layout.
 - =M-x claude-code-ide-attach= lists all zmx sessions, including ones started outside Emacs, and adopts the selection into a full session with idle tracking and manager visibility.
 - Killing the terminal buffer detaches only. Closing its window only hides the terminal. =M-x claude-code-ide-stop= asks before it kills the zmx session. That stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
@@ -210,6 +211,7 @@ The zmx integration follows the design of [[https://github.com/ArthurHeymans/ema
 ** Existing Remote Agents
 
 Remote attachment connects to an existing zmx session through SSH. It never starts an Agent or creates a remote zmx session.
+See [[file:docs/remote.org][the remote guide]] for host setup, attachment, Project views, cleanup, and troubleshooting details.
 
 Reattachment works with stock zmx. Emacs runs =zmx attach <name> false= to adopt an existing session.
 If a target disappears after discovery or a reconnect check, the =false= guard ends the replacement session immediately.

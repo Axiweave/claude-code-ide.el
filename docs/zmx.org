@@ -1,0 +1,159 @@
+#+title: Persistent Sessions with zmx
+#+options: toc:2 num:nil
+
+* Purpose
+
+The optional zmx integration makes zmx the owner of each local Agent process.
+Emacs becomes one attach client, so the Agent can survive buffer kills, connection loss, and Emacs restarts.
+
+Use this guide for local persistent Sessions.
+For Sessions on another host, see [[file:remote.org][Remote Agents and Project Views]].
+
+* Requirements
+
+Install [[https://github.com/neurosnap/zmx][zmx]] and make its executable available to Emacs.
+This package has verified stock zmx 0.7.1 and 0.8.0.
+It does not require a patched zmx.
+
+Enable persistent Sessions:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-use-zmx t)
+#+end_src
+
+Set these options only when the defaults do not match your system:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-zmx-program "/path/to/zmx"
+      claude-code-ide-zmx-session-prefix "cci-")
+#+end_src
+
+The integration remains disabled by default.
+A missing executable produces a user error only when a zmx operation starts.
+
+* Start and Reattach
+
+Start an Agent with the normal Claude Code IDE command.
+The package wraps the Agent command as =zmx attach NAME COMMAND...=.
+Generated names use =PREFIX-AGENT-PROJECT-ID= components, with =cci-= as the default prefix.
+
+A normal start offers matching zmx Sessions not already attached in this Emacs.
+You can select an existing Session or select =Create new session=.
+Continue and resume offer only matching Sessions with zero attached clients.
+They create a new Session when no such Session exists.
+
+The package also adopts Sessions that another terminal or Emacs created:
+
+- =M-x claude-code-ide-attach= selects one Session.
+- =M-x claude-code-ide-attach-all= adopts all usable Sessions.
+- =M-x claude-code-ide-attach-select= opens a marked-selection buffer.
+
+The marked-selection buffer uses these keys:
+
+| Key | Action |
+|-----+--------|
+| =m= | Mark the current row. |
+| =u= | Unmark the current row. |
+| =SPC= | Toggle the current row. |
+| =t= | Invert all marks. |
+| =C-c C-c= | Attach marked rows. |
+| =C-c C-k= or =q= | Cancel. |
+
+Bulk attachment skips Sessions without a start directory or a recognized Agent command.
+The result message names skipped Sessions.
+Use individual attachment to supply missing information interactively.
+
+* Use Another Terminal
+
+Run =M-x claude-code-ide-copy-zmx-name= to copy the current zmx name.
+Then attach from a terminal:
+
+#+begin_src sh
+env -u ZMX_SESSION -u ZMX_SESSION_PREFIX zmx attach NAME false
+#+end_src
+
+Multiple clients can attach to one zmx Session.
+Input and output belong to the same Agent process.
+
+* Detach and Stop
+
+These actions do not mean the same thing:
+
+| Action | Result |
+|--------+--------|
+| Close the terminal window | Hide the terminal. The client and Agent continue. |
+| Kill the terminal buffer | Detach the Emacs client. The Agent continues. |
+| Manager =D= or =X= | Detach the client and remove its manager row. The Agent continues. |
+| =M-x claude-code-ide-stop= | Ask for confirmation, then kill the zmx Session and Agent for all clients. |
+| =zmx kill NAME= | Kill the zmx Session and Agent outside Emacs. |
+
+Use Stop only when every attached client can lose the Agent.
+
+* Existing-Session Safety
+
+Adoption uses this stock zmx command:
+
+#+begin_src text
+env -u ZMX_SESSION -u ZMX_SESSION_PREFIX zmx attach NAME false
+#+end_src
+
+Stock zmx ignores =false= when =NAME= exists.
+If the target disappears before attachment, zmx runs =false= and ends the replacement immediately.
+No shell or Agent remains.
+
+The guard can leave one short-lived log file in the zmx log directory.
+It does not leave a running process.
+
+* Session Names and Titles
+
+The package uses the Session ID suffix to keep generated names unique.
+It sanitizes Agent and project components for zmx names.
+
+Renaming a local zmx-backed Session also updates its zmx =title= label.
+The label accepts letters, numbers, periods, underscores, and hyphens.
+Other character runs become underscores.
+
+* Environment Limitation
+
+zmx freezes the Agent environment when it creates the Session.
+A later client cannot replace MCP or SSE port values in that running process.
+
+After an Emacs restart, port-based integrations can refer to the old Emacs instance.
+The terminal remains usable.
+Oh My Pi can rediscover the Emacs SSE endpoint and reconnect its selection and state integration.
+
+Start a new zmx Session when another Agent cannot refresh its editor endpoint.
+
+* Troubleshooting
+
+** Emacs cannot find zmx
+
+Check =executable-find= from Emacs.
+Set =claude-code-ide-zmx-program= to an absolute executable path when Emacs has a different =PATH=.
+
+** A Session does not appear in an attachment list
+
+Run =zmx list= outside Emacs.
+The package excludes a target already attached in the same Emacs instance.
+Continue and resume also exclude targets that have clients or lack a client count.
+
+** Bulk attachment skips a Session
+
+Check that =zmx list= reports its start directory and Agent command.
+Use =M-x claude-code-ide-attach= when you must supply either value.
+
+** The terminal works but editor integration does not
+
+The running Agent probably has environment values from an older Emacs instance.
+Start a new Session unless the Agent supports endpoint rediscovery.
+
+** Stop affects another terminal
+
+This is expected.
+Stop kills the zmx Session, not one attach client.
+Kill the Emacs terminal buffer when you only want to detach.
+
+* Design Reference
+
+See [[file:adr/0001-zmx-backed-agent-sessions.md][ADR 0001]] for the process-ownership decision.
+See [[file:../specs/003-attach-remote-agents/contracts/zmx-attach-guard.md][the attach guard contract]] for compatibility evidence.
