@@ -771,6 +771,12 @@
                directory
              (concat "/" directory)))))
 
+(defun claude-code-ide-remote-project-rpc-directory (host directory)
+  "Return an RPC file name for DIRECTORY on HOST.
+Callers outside this package must use this name instead of building
+the transport encoding themselves."
+  (claude-code-ide-remote-project--rpc-directory host directory))
+
 
 (defun claude-code-ide-remote-project--registered-view (key)
   "Return KEY's live registered view, or remove its dead buffer record."

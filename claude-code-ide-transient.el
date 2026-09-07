@@ -51,6 +51,8 @@
 (declare-function claude-code-ide--get-project-root "claude-code-ide" ())
 (declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory force-new))
 (declare-function claude-code-ide-session-id "claude-code-ide" (session))
+(declare-function claude-code-ide-session-for-buffer "claude-code-ide" (&optional buffer))
+(declare-function claude-code-ide-session-host "claude-code-ide" (session))
 (declare-function claude-code-ide-manager-switch-to-session "claude-code-ide-manager" (session-key &optional keep-manager-focus scope))
 (declare-function claude-code-ide-manager--visible-sidebar-scope-for-frame "claude-code-ide-manager" (&optional frame))
 (declare-function claude-code-ide-manager--refresh-sidebar-state "claude-code-ide-manager" (&optional scope reassert))
@@ -400,7 +402,13 @@ When DANGEROUS is non-nil, append the agent-specific dangerous flag."
 
 (defun claude-code-ide--save-project-dir-local-cli-path (operation &optional cli-path project-root)
   "Persist a project-local CLI path using OPERATION at PROJECT-ROOT.
-OPERATION is either `set' or `clear'.  CLI-PATH is used when OPERATION is `set'."
+OPERATION is either `set' or `clear'.  CLI-PATH is used when OPERATION is `set'.
+Refuse when the Session owning the current buffer has a host: a
+project-local CLI path names a local filesystem location, which has
+no meaning for a remote Agent (FR-013)."
+  (when-let* ((session (claude-code-ide-session-for-buffer))
+              (host (claude-code-ide-session-host session)))
+    (user-error "Project-local CLI path is a local-only setting; refusing for remote host %s" host))
   (let* ((root (file-name-as-directory
                 (or project-root (claude-code-ide--get-project-root))))
          (file (claude-code-ide--project-dir-locals-file root))

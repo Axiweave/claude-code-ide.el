@@ -21548,6 +21548,91 @@ result arrives never has that result applied to the row now at its key."
         (nreverse events)
         '(capture cleanup forget))))))
 
+;;; Remote Session Host Awareness prerequisites
+
+(ert-deftest claude-code-ide-test-remote-awareness-session-for-buffer-matches-private ()
+  "The public buffer-to-Session accessor matches the private lookup,
+and returns nil for a buffer that owns no Session."
+  (let* ((buffer (generate-new-buffer "*claude-code[remote-awareness-buf]*"))
+         (other-buffer (generate-new-buffer "*claude-code[remote-awareness-none]*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "remote-awareness" :host "alpha" :directory "/work/topic"
+            :buffer buffer))
+          (with-current-buffer buffer
+            (should (eq (claude-code-ide-session-for-buffer)
+                       (claude-code-ide--session-for-buffer))))
+          (should (eq (claude-code-ide-session-for-buffer buffer)
+                     (claude-code-ide--session-for-buffer buffer)))
+          (should-not (claude-code-ide-session-for-buffer other-buffer)))
+      (kill-buffer buffer)
+      (kill-buffer other-buffer))))
+
+(ert-deftest claude-code-ide-test-remote-awareness-rpc-directory-matches-private ()
+  "The public RPC directory helper returns the same string as the
+private qualification function."
+  (should (equal (claude-code-ide-remote-project-rpc-directory "alpha" "/work/topic")
+                 (claude-code-ide-remote-project--rpc-directory "alpha" "/work/topic"))))
+
+(ert-deftest claude-code-ide-test-remote-awareness-cli-path-guard-refuses-host ()
+  "The project-local CLI path write refuses and names the host for a
+Session with a host, for both operations, before it resolves a
+project root or touches dir-locals."
+  (let* ((buffer (generate-new-buffer "*claude-code[remote-awareness-guard]*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "remote-awareness-guard" :host "alpha" :directory "/work/topic"
+            :buffer buffer))
+          (cl-letf (((symbol-function 'claude-code-ide--get-project-root)
+                     (lambda () (ert-fail "Resolved a project root for a remote Session")))
+                    ((symbol-function 'add-dir-local-variable)
+                     (lambda (&rest _) (ert-fail "Wrote a dir-local for a remote Session")))
+                    ((symbol-function 'delete-dir-local-variable)
+                     (lambda (&rest _) (ert-fail "Wrote a dir-local for a remote Session"))))
+            (let ((err (should-error
+                        (claude-code-ide--save-project-dir-local-cli-path 'set "codex")
+                        :type 'user-error)))
+              (should (string-match-p "alpha" (error-message-string err))))
+            (let ((err (should-error
+                        (claude-code-ide--save-project-dir-local-cli-path 'clear)
+                        :type 'user-error)))
+              (should (string-match-p "alpha" (error-message-string err))))))
+      (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-remote-awareness-cli-path-guard-local-write-unchanged ()
+  "A Session with no host still performs today's local dir-locals
+write, for both operations."
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let* ((root default-directory)
+            (buffer (generate-new-buffer "*claude-code[remote-awareness-local]*"))
+            (claude-code-ide--sessions (make-hash-table :test #'equal))
+            (file (claude-code-ide--project-dir-locals-file root)))
+       (unwind-protect
+           (with-current-buffer buffer
+             (claude-code-ide--put-session
+              (claude-code-ide-session-create
+               :id "remote-awareness-local" :directory root :buffer buffer))
+             (claude-code-ide--save-project-dir-local-cli-path 'set "codex" root)
+             (should (file-exists-p file))
+             (should (equal (cdr (assq 'claude-code-ide-cli-path
+                                       (cdr (assq nil (with-temp-buffer
+                                                        (insert-file-contents file)
+                                                        (read (current-buffer)))))))
+                            "codex"))
+             (claude-code-ide--save-project-dir-local-cli-path 'clear nil root)
+             (should-not (assq 'claude-code-ide-cli-path
+                               (cdr (assq nil (with-temp-buffer
+                                                (insert-file-contents file)
+                                                (read (current-buffer))))))))
+         (kill-buffer buffer))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

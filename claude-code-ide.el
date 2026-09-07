@@ -862,6 +862,13 @@ text that is metadata rather than a local filesystem instruction."
      claude-code-ide--sessions)
     found))
 
+(defun claude-code-ide-session-for-buffer (&optional buffer)
+  "Return the Session that owns BUFFER, or nil.
+BUFFER defaults to the current buffer.  This is the supported entry
+point for code outside this package; it wraps
+`claude-code-ide--session-for-buffer' and makes no remote call."
+  (claude-code-ide--session-for-buffer buffer))
+
 (defun claude-code-ide--session-buffer-for-agent (zmx-name buffer-name)
   "Return the live session buffer identified by ZMX-NAME or BUFFER-NAME.
 ZMX-NAME wins because it survives Emacs restarts.  BUFFER-NAME covers
