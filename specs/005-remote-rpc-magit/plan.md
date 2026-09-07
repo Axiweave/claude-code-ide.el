@@ -13,6 +13,8 @@ First managed display starts background preparation after the terminal appears. 
 
 Use the installed `tramp-rpc` client, standard remote file operations, and the existing local status provider. Share one buffer per exact host and Worktree. Keep layout intent and manual-close suppression per Session.
 
+After fresh health, reuse any surviving matching view without calling the provider or refreshing its contents. Create only missing views. Native `g` remains user-directed.
+
 Use one feature module for remote preparation, attempt ownership, view identity, and conservative cleanup. Keep manager layout decisions in the manager. Do not add a new transport, provider framework, persistence format, or upstream package fork.
 
 ## Technical Context
@@ -35,7 +37,7 @@ Use one feature module for remote preparation, attempt ownership, view identity,
 | Principle | Decision | Result |
 |-----------|----------|--------|
 | I. Shared core, thin adapters | Reuse the existing status provider and layout commands. Add one remote lifecycle module. | PASS |
-| II. Test-first correctness and full suite | Keep observable ERT coverage for cancellation, stale completion, closure, sharing, and cleanup. Run the required script during implementation. | PASS for planning |
+| II. Batch-verifiable quality gate | Keep observable ERT coverage for cancellation, stale completion, closure, sharing, and cleanup. Run the required script during implementation. | PASS for planning |
 | III. Optional integrations | Load RPC only on a permitted enabled-host attempt. Missing dependencies retain the terminal. | PASS |
 | IV. Backend neutrality | Do not branch on Agent CLI type or change terminal dispatch. Keep the existing Ghostel remote boundary. | PASS |
 | V. Compatibility and dependency justification | The user requested RPC. Dired still needs a remote file backend, so it cannot replace this optional dependency. Keep Emacs 28.1 paths unchanged. | PASS |
@@ -52,12 +54,19 @@ Use one feature module for remote preparation, attempt ownership, view identity,
 | Cancellation and late-result ownership checks | Network results can arrive after detach, reset, or a Session switch. |
 | Exact-host Worktree sharing and conservative cleanup | Equal-looking paths on different hosts do not establish common ownership. |
 | Per-Session suppression survives reattach in memory | A remote terminal buffer can disappear while its remembered Session remains. |
+| Reuse surviving views without automatic refresh, including `R` and reattach | Emacs threads share buffer text and point. The user approved this simplification instead of unsafe in-place background refresh. |
 
 ### Post-design gate
 
-No exception or baseline increase is requested. The post-design gate remains open because experiment E6 found incomplete client initialization after startup abandonment.
+No exception or baseline increase is requested. The user-approved reuse-only rule replaces the rejected shared-buffer refresh design.
 
-The technical review must resolve that startup path before this plan can authorize task generation. [research.md](research.md) records the evidence and its limits.
+**Result: PASS for planning.** Both independent reviews accepted the final reuse-only design. No blocking design question remains.
+
+The lifecycle review covers layout, exact-buffer restore, closure, and cleanup. The RPC review covers acquisition, cancellation, initialization, and provider concurrency. [research.md](research.md) records the experiments.
+
+Guarded native initialization resolves E6. Authentication admission and worker-local timers resolve the later retry and timeout findings. Research records the proofs and their limits.
+
+Only missing views have a feature writer. Per-view admission prevents duplicate feature creation. User-directed provider commands during initial creation retain their native concurrency limitation.
 
 Implementation must not treat these planning experiments as an authorized remote smoke test. The full suite, real-host behavior, and live manager surface remain release gates.
 
@@ -109,8 +118,8 @@ Update the existing host-option docstring to describe the enabled first-managed-
 5. Start the health deadline before connection acquisition.
 6. Run an uncached public `process-file` request for `true` in the intended `/rpc:` directory.
 7. Resolve the view identity through remote file operations after successful health.
-8. Serialize feature status preparation for that view identity.
-9. Call the existing local status provider with no-window preparation bindings.
+8. Serialize missing-view creation for that identity, then check again for a surviving matching buffer.
+9. Reuse that buffer unchanged, or call the existing provider to create an undisplayed missing-view candidate.
 10. Publish the buffer only if the attempt still owns its attachment and view result.
 11. Display it only if the frame still requests that Session beside its visible terminal.
 
@@ -186,7 +195,7 @@ Keep ownership conservative. An existing or uncertain custom buffer never become
 | Disabled hosts do nothing | ERT: startup, render, restore, preference changes, and bulk attach make no new RPC/provider calls. |
 | Current health and no provisioning | ERT at the dependency boundary, then a real-host request with acquisition entry points observed. Test missing server and reconnect. |
 | Responsive and safe cancellation | ERT with a delayed transport, then terminal interaction during real delayed health/status. Verify another RPC consumer remains usable. |
-| Correct provider and view sharing | ERT plus Magit, non-Git Dired, custom provider, and different-subdirectory smoke cases. |
+| Correct provider and view sharing | Verify fresh health plus unchanged buffer reuse for Magit and Dired. Test missing-view creation and same-root creation races. |
 | No stale display or focus theft | ERT for reset/detach/host removal races. Live checks with terminal, manager, and another window selected. |
 | Manual closure is per Session | ERT for real command-loop window dismissal and buffer killing. Include never-displayed results and ordinary switches. |
 | Conservative explicit-detach cleanup | ERT for created, reused, modified, shared, source-file, and unknown-ownership buffers. Assert no remote query or connection cleanup. |
@@ -202,5 +211,5 @@ No constitutional violation needs an exception.
 |----------------------|------------------|-----------------------------|
 | One remote lifecycle module | Attempts outlive individual terminal displays and share view buffers. | More conditionals inside rendering would mix network ownership with layout state. |
 | Scoped installed-client connection adapter | `auto-deploy=nil` still permits artifact acquisition. Buffer-local settings can override an outer dynamic binding. | Global deployment changes would affect unrelated RPC users. |
-| Per-view feature writer serialization | Two Sessions may prepare the same shared buffer. | A global worker lock would delay unrelated views. |
+| Per-view creation admission | Two Sessions may create the same missing view. A second feature attempt must wait for the first creator. | Refreshing live buffers requires unsafe shared mutation or a new provider framework. |
 | Command snapshot plus layout epoch | An absent window alone does not prove user dismissal. | Buffer-local suppression would disappear on reattach and affect the wrong shared Session. |

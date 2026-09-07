@@ -19489,6 +19489,2065 @@ result arrives never has that result applied to the row now at its key."
            (should (equal (claude-code-ide-session-group-metadata replacement)
                           (claude-code-ide-session-group-metadata first)))))))))
 
+
+(require 'claude-code-ide-remote-project)
+(defvar tramp-rpc-deploy-never-deploy)
+(defvar tramp-rpc-deploy-remote-binary-path)
+(defvar tramp-rpc-deploy-binary-name)
+(defvar tramp-rpc-ssh-args)
+(defvar claude-code-ide-remote-project-view-hosts)
+(defvar claude-code-ide-remote-project-cleanup-hosts)
+
+
+
+;;; Remote Project view foundation
+
+(ert-deftest claude-code-ide-test-remote-project-intents-use-session-identity ()
+  "Intent state is isolated by Session ID and survives attachment replacement."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((old-attachment (generate-new-buffer " *remote-project-old*"))
+         (new-attachment (generate-new-buffer " *remote-project-new*"))
+         (first (claude-code-ide-remote-project--intent-for
+                 "session-a" "host-a" old-attachment))
+         (second (claude-code-ide-remote-project--intent-for
+                  "session-b" "host-a" old-attachment)))
+    (unwind-protect
+        (progn
+          (setf (claude-code-ide-remote-project--intent-suppressed first) t)
+          (should-not (eq first second))
+          (should (eq first
+                      (claude-code-ide-remote-project--intent-for
+                       "session-a" "host-a" new-attachment)))
+          (should
+           (eq new-attachment
+               (claude-code-ide-remote-project--intent-attachment first)))
+          (should
+           (claude-code-ide-remote-project--intent-suppressed first)))
+      (kill-buffer old-attachment)
+      (kill-buffer new-attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-attempt-freshness-and-admission ()
+  "Only the current attempt can own one feature creation slot."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *remote-project-attempt*"))
+         (intent (claude-code-ide-remote-project--intent-for
+                  "session-a" "host-a" attachment))
+         (old (claude-code-ide-remote-project--begin-attempt
+               intent "/rpc:host-a:/work/" nil 'first-display))
+         (current (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/work/" nil 'reset))
+         (other-intent (claude-code-ide-remote-project--intent-for
+                        "session-b" "host-a" attachment))
+         (other (claude-code-ide-remote-project--begin-attempt
+                 other-intent "/rpc:host-a:/work/" nil 'first-display))
+         (key '("host-a" git "/work")))
+    (unwind-protect
+        (progn
+          (should-not
+           (claude-code-ide-remote-project--attempt-current-p old))
+          (should
+           (claude-code-ide-remote-project--attempt-current-p current))
+          (should (claude-code-ide-remote-project--claim-view current key))
+          (should-not
+           (claude-code-ide-remote-project--claim-view other key))
+          (claude-code-ide-remote-project--release-view current)
+          (should (claude-code-ide-remote-project--claim-view other key)))
+      (kill-buffer attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-abandonment-is-private ()
+  "Feature abandonment inherits from neither `error' nor `quit'."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (let ((conditions
+         (get 'claude-code-ide-remote-project-abandoned 'error-conditions)))
+    (should
+     (memq 'claude-code-ide-remote-project-abandoned conditions))
+    (should-not (memq 'error conditions))
+    (should-not (memq 'quit conditions))))
+
+(ert-deftest claude-code-ide-test-remote-project-connect-guard-disables-provision ()
+  "The owned connection uses the selected server and strict SSH arguments."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *remote-project-connect*"))
+         (intent (claude-code-ide-remote-project--intent-for
+                  "session-a" "host-a" attachment))
+         (attempt (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-remote-project--worker-attempt attempt)
+         (tramp-rpc-deploy-never-deploy nil)
+         (tramp-rpc-deploy-remote-binary-path nil)
+         (tramp-rpc-deploy-binary-name "tramp-rpc-server")
+         (tramp-rpc-ssh-args '("-F" "config"))
+         observed)
+    (setf (claude-code-ide-remote-project--attempt-route-key attempt)
+          'route-a)
+    (unwind-protect
+        (cl-letf (((symbol-function 'tramp-rpc--connection-key)
+                   (lambda (_vec) 'route-a))
+                  ((symbol-function 'tramp-rpc--get-connection)
+                   (lambda (_vec) nil))
+                  ((symbol-function 'tramp-rpc-deploy-expected-binary-localname)
+                   (lambda () "/selected/tramp-rpc-server")))
+          (claude-code-ide-remote-project--call-connect
+           (lambda (_vec)
+             (setq observed
+                   (list tramp-rpc-deploy-never-deploy
+                         tramp-rpc-deploy-remote-binary-path
+                         tramp-rpc-ssh-args))
+             'connected)
+           'vec)
+          (should
+           (equal observed
+                  '(t "/selected/tramp-rpc-server"
+                      ("-o" "BatchMode=yes"
+                       "-o" "StrictHostKeyChecking=yes"
+                       "-F" "config")))))
+      (kill-buffer attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-unlocks-only-owned-transport ()
+  "Startup unlocks only transport processes owned by the feature worker."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (let* ((stdout (make-pipe-process
+                  :name "remote-project-stdout" :noquery t))
+         (stderr (make-pipe-process
+                  :name "remote-project-stderr" :noquery t))
+         (stderr-buffer
+          (generate-new-buffer " *remote-project-stderr*"))
+         unlocked)
+    (unwind-protect
+        (cl-letf (((symbol-function 'tramp-rpc--get-connection)
+                   (lambda (_vec) 'connection))
+                  ((symbol-function 'tramp-rpc-connection-process)
+                   (lambda (_connection) stdout))
+                  ((symbol-function
+                    'tramp-rpc-connection-stderr-buffer)
+                   (lambda (_connection) stderr-buffer))
+                  ((symbol-function 'get-buffer-process)
+                   (lambda (_buffer) stderr))
+                  ((symbol-function 'process-thread)
+                   (lambda (process)
+                     (if (eq process stdout)
+                         (current-thread)
+                       'foreign-thread)))
+                  ((symbol-function 'set-process-thread)
+                   (lambda (process thread)
+                     (push (list process thread) unlocked))))
+          (claude-code-ide-remote-project--unlock-transport 'vec)
+          (should (equal unlocked (list (list stdout nil)))))
+      (delete-process stdout)
+      (delete-process stderr)
+      (kill-buffer stderr-buffer))))
+
+(ert-deftest claude-code-ide-test-remote-project-reclaims-unlocked-transport-for-worker-rpc ()
+  "Worker RPC calls temporarily reclaim and then release an unlocked transport."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((stdout
+          (make-pipe-process
+           :name "remote-project-reclaim-stdout" :noquery t))
+         (stderr-buffer
+          (generate-new-buffer " *remote-project-reclaim-stderr*"))
+         (stderr
+          (make-pipe-process
+           :name "remote-project-reclaim-stderr"
+           :buffer stderr-buffer
+           :noquery t))
+         (attachment
+          (generate-new-buffer " *remote-project-reclaim-attachment*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" attachment))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         result)
+    (setf
+     (claude-code-ide-remote-project--attempt-route-key attempt)
+     'route-a)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'tramp-rpc--connection-key)
+              (lambda (_vec) 'route-a))
+             ((symbol-function 'tramp-rpc--get-connection)
+              (lambda (_vec) 'connection))
+             ((symbol-function 'tramp-rpc-connection-process)
+              (lambda (_connection) stdout))
+             ((symbol-function
+               'tramp-rpc-connection-stderr-buffer)
+              (lambda (_connection) stderr-buffer)))
+          (set-process-thread stdout nil)
+          (set-process-thread stderr nil)
+          (thread-join
+           (make-thread
+            (lambda ()
+              (setf
+               (claude-code-ide-remote-project--attempt-worker attempt)
+               (current-thread))
+              (let
+                  ((claude-code-ide-remote-project--worker-attempt
+                    attempt))
+                (setq
+                 result
+                 (claude-code-ide-remote-project--call-rpc
+                  (lambda (&rest _arguments)
+                    (list
+                     (eq (process-thread stdout) (current-thread))
+                     (eq (process-thread stderr) (current-thread))))
+                  'vec "process.run" nil 60 0.01))))
+            "remote-project-reclaim-test"))
+          (should (equal result '(t t)))
+          (should-not (process-thread stdout))
+          (should-not (process-thread stderr)))
+      (delete-process stdout)
+      (delete-process stderr)
+      (kill-buffer stderr-buffer)
+      (kill-buffer attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-auth-checks-each-native-entry ()
+  "Authentication owns worker timers and rejects a stale retry."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *remote-project-auth*"))
+         (intent (claude-code-ide-remote-project--intent-for
+                  "session-a" "host-a" attachment))
+         (attempt (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-remote-project--worker-attempt attempt)
+         (timer-list '(main-timer))
+         (timer-idle-list '(main-idle-timer))
+         inside)
+    (setf (claude-code-ide-remote-project--attempt-route-key attempt)
+          'route-a)
+    (unwind-protect
+        (cl-letf (((symbol-function 'tramp-rpc--connection-key)
+                   (lambda (_vec) 'route-a)))
+          (should
+           (eq 'authenticated
+               (claude-code-ide-remote-project--call-auth
+                (lambda (_vec)
+                  (setq inside (list timer-list timer-idle-list))
+                  'authenticated)
+                'vec)))
+          (should (equal inside '(nil nil)))
+          (setf (claude-code-ide-remote-project--intent-attempt intent) nil)
+          (let (abandoned)
+            (condition-case nil
+                (claude-code-ide-remote-project--call-auth #'ignore 'vec)
+              (claude-code-ide-remote-project-abandoned
+               (setq abandoned t)))
+            (should abandoned)))
+      (kill-buffer attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-health-uses-current-response ()
+  "Health succeeds only from a current uncached `true' response."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *remote-project-health*"))
+         (intent (claude-code-ide-remote-project--intent-for
+                  "session-a" "host-a" attachment))
+         (attempt (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/work/" nil 'first-display))
+         call)
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-file)
+                   (lambda (&rest args)
+                     (setq call
+                           (list default-directory
+                                 process-file-side-effects
+                                 args))
+                     0)))
+          (should (claude-code-ide-remote-project--health-check attempt))
+          (should
+           (equal call
+                  '("/rpc:host-a:/work/" nil
+                    ("true" nil nil nil)))))
+      (kill-buffer attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+;;; Remote Project view admission
+
+(ert-deftest claude-code-ide-test-remote-project-host-options-default-disabled ()
+  "Both exact-host preferences default to disabled."
+  (should (boundp 'claude-code-ide-remote-project-view-hosts))
+  (should (boundp 'claude-code-ide-remote-project-cleanup-hosts))
+  (should-not (default-value
+               'claude-code-ide-remote-project-view-hosts))
+  (should-not (default-value
+               'claude-code-ide-remote-project-cleanup-hosts)))
+
+(ert-deftest claude-code-ide-test-remote-project-admission-is-exact-and-lazy ()
+  "Only an approved enabled remote host loads the feature."
+  (let ((claude-code-ide-remote-hosts '("host-a"))
+        (claude-code-ide-remote-project-view-hosts nil)
+        (claude-code-ide-remote-project-cleanup-hosts '("host-a"))
+        loads prepares)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--session-host)
+               (lambda (session-id)
+                 (pcase session-id
+                   ("enabled" "host-a")
+                   ("unapproved" "host-b")
+                   (_ nil))))
+              ((symbol-function 'featurep)
+               (lambda (feature)
+                 (not (eq feature
+                          'claude-code-ide-remote-project))))
+              ((symbol-function 'require)
+               (lambda (feature &optional _filename _noerror)
+                 (push feature loads)
+                 t))
+              ((symbol-function 'claude-code-ide-remote-project-prepare)
+               (lambda (&rest args)
+                 (push args prepares))))
+      (should-not
+       (claude-code-ide-manager--maybe-prepare-remote-project
+        "local" 'attachment nil 'first-display))
+      (should-not
+       (claude-code-ide-manager--maybe-prepare-remote-project
+        "enabled" 'attachment nil 'first-display))
+      (should-not
+       (claude-code-ide-manager--maybe-prepare-remote-project
+        "unapproved" 'attachment nil 'first-display))
+      (should-not loads)
+      (should-not prepares)
+      (setq claude-code-ide-remote-project-view-hosts '("host-a"))
+      (should
+       (claude-code-ide-manager--maybe-prepare-remote-project
+        "enabled" 'attachment nil 'first-display))
+      (should (equal loads '(claude-code-ide-remote-project)))
+      (should
+       (equal prepares
+              '(("enabled" "host-a" attachment nil
+                 first-display)))))))
+
+(ert-deftest claude-code-ide-test-remote-project-preference-change-does-no-work ()
+  "Changing either preference starts no work and keeps cleanup independent."
+  (let ((claude-code-ide-remote-project-view-hosts nil)
+        (claude-code-ide-remote-project-cleanup-hosts nil)
+        loaded)
+    (cl-letf (((symbol-function 'require)
+               (lambda (&rest _args)
+                 (setq loaded t))))
+      (setq claude-code-ide-remote-project-cleanup-hosts '("host-a"))
+      (should-not claude-code-ide-remote-project-view-hosts)
+      (setq claude-code-ide-remote-project-view-hosts '("host-b"))
+      (should
+       (equal claude-code-ide-remote-project-cleanup-hosts
+              '("host-a")))
+      (should-not loaded))))
+
+;;; Remote Project view creation and display
+
+(ert-deftest claude-code-ide-test-remote-project-provider-runs-without-windows ()
+  "A missing view uses the provider with worker-safe display bindings."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *remote-provider-terminal*"))
+         (candidate nil)
+         (intent (claude-code-ide-remote-project--intent-for
+                  "session-a" "host-a" attachment))
+         (attempt (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-manager-status-buffer-function
+          #'claude-code-ide-manager-magit-status-buffer)
+         observed result)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-remote-project--lookup-native-view)
+              (lambda (_key) nil))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (_directory)
+                (setq observed
+                      (list magit-display-buffer-function
+                            magit-display-buffer-noselect
+                            magit-inhibit-save-previous-winconf
+                            warning-minimum-level
+                            inhibit-interaction))
+                (setq candidate
+                      (create-file-buffer
+                       "/tmp/remote-provider-view"))
+                (with-current-buffer candidate
+                  (setq major-mode 'magit-status-mode))
+                candidate)))
+          (setq result
+                (claude-code-ide-remote-project--prepare-view
+                 attempt '("host-a" git "/rpc:host-a:/work")))
+          (should (eq (plist-get result :buffer) candidate))
+          (should (eq (plist-get result :origin)
+                      'created-by-feature))
+          (should (eq (plist-get result :creator) 'magit))
+          (should (equal observed '(ignore t unset :emergency t))))
+      (kill-buffer attachment)
+      (when (buffer-live-p candidate)
+        (kill-buffer candidate))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-cold-start-magit-owns-created-buffer ()
+  "A late-loaded Magit creator still proves exact buffer ownership."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment
+          (generate-new-buffer " *remote-cold-magit-terminal*"))
+         (candidate nil)
+         (generator-bound (fboundp 'magit-generate-new-buffer))
+         (generator-function
+          (and
+           generator-bound
+           (symbol-function 'magit-generate-new-buffer)))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" attachment))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-manager-status-buffer-function
+          #'claude-code-ide-manager-magit-status-buffer)
+         result)
+    (fmakunbound 'magit-generate-new-buffer)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-remote-project--lookup-native-view)
+              (lambda (_key) nil))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (_directory)
+                (fset
+                 'magit-generate-new-buffer
+                 (lambda (&rest _arguments)
+                   (setq candidate
+                         (generate-new-buffer
+                          " *remote-cold-magit-view*"))
+                   (with-current-buffer candidate
+                     (setq major-mode 'magit-status-mode))
+                   candidate))
+                (funcall 'magit-generate-new-buffer))))
+          (setq
+           result
+           (claude-code-ide-remote-project--prepare-view
+            attempt '("host-a" git "/rpc:host-a:/work")))
+          (should (eq (plist-get result :buffer) candidate))
+          (should
+           (eq
+            (plist-get result :origin)
+            'created-by-feature))
+          (should (eq (plist-get result :creator) 'magit)))
+      (kill-buffer attachment)
+      (when (buffer-live-p candidate)
+        (kill-buffer candidate))
+      (if generator-bound
+          (fset 'magit-generate-new-buffer generator-function)
+        (fmakunbound 'magit-generate-new-buffer))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-custom-provider-stays-uncertain ()
+  "A custom provider result cannot gain cleanup ownership."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *remote-custom-terminal*"))
+         (candidate (generate-new-buffer " *remote-custom-view*"))
+         (intent (claude-code-ide-remote-project--intent-for
+                  "session-a" "host-a" attachment))
+         (attempt (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-manager-status-buffer-function
+          (lambda (_directory) candidate))
+         result)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-remote-project--lookup-native-view)
+              (lambda (_key) nil))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (_directory) candidate)))
+          (setq result
+                (claude-code-ide-remote-project--prepare-view
+                 attempt '("host-a" directory
+                           "/rpc:host-a:/work")))
+          (should (eq (plist-get result :origin)
+                      'uncertain-custom))
+          (should-not (plist-get result :creator)))
+      (kill-buffer attachment)
+      (kill-buffer candidate)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-reuses-surviving-view-unchanged ()
+  "A surviving exact view bypasses the provider and keeps its state."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *remote-reuse-terminal*"))
+         (view (generate-new-buffer " *remote-reuse-view*"))
+         (intent (claude-code-ide-remote-project--intent-for
+                  "session-a" "host-a" attachment))
+         (attempt (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/repo/sub/" nil 'reset))
+         (key '("host-a" git "/rpc:host-a:/repo"))
+         (record
+          (claude-code-ide-remote-project--make-view
+           :key key :buffer view :origin 'created-by-feature
+           :creator 'magit)))
+    (with-current-buffer view
+      (insert "unchanged")
+      (goto-char 4))
+    (puthash key record claude-code-ide-remote-project--views)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (&rest _args)
+                (ert-fail "A surviving view reached the provider"))))
+          (let ((result
+                 (claude-code-ide-remote-project--prepare-view
+                  attempt key)))
+            (should (eq (plist-get result :buffer) view))
+            (with-current-buffer view
+              (should (equal (buffer-string) "unchanged"))
+              (should (= (point) 4)))))
+      (kill-buffer attachment)
+      (kill-buffer view)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-identity-separates-hosts-and-kinds ()
+  "Worktree keys share only on the exact host and canonical root."
+  (claude-code-ide-remote-project--reset-state)
+  (let ((attachment
+         (generate-new-buffer " *remote-identity-terminal*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'locate-dominating-file)
+                   (lambda (directory _name)
+                     (unless (string-match-p "plain" directory)
+                       "/rpc:host-a:/repo/")))
+                  ((symbol-function 'file-truename)
+                   (lambda (directory) directory)))
+          (cl-labels
+              ((key (session host directory)
+                 (let* ((intent
+                         (claude-code-ide-remote-project--intent-for
+                          session host attachment))
+                        (attempt
+                         (claude-code-ide-remote-project--begin-attempt
+                          intent directory nil 'first-display)))
+                   (claude-code-ide-remote-project--resolve-view-key
+                    attempt))))
+            (should
+             (equal (key "a" "host-a" "/rpc:host-a:/repo/one/")
+                    (key "b" "host-a" "/rpc:host-a:/repo/two/")))
+            (should-not
+             (equal (key "a2" "host-a" "/rpc:host-a:/repo/one/")
+                    (key "c" "host-b" "/rpc:host-b:/repo/one/")))
+            (should
+             (equal (key "plain" "host-a"
+                         "/rpc:host-a:/plain/")
+                    '("host-a" directory
+                      "/rpc:host-a:/plain")))))
+      (kill-buffer attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-enabled-layout-is-terminal-first ()
+  "An enabled remote Session starts in an ordinary terminal window."
+  (save-window-excursion
+    (let* ((claude-code-ide--sessions
+            (make-hash-table :test #'equal))
+           (claude-code-ide-manager--scope-state
+            (make-hash-table :test #'equal))
+           (claude-code-ide-manager--items nil)
+           (claude-code-ide-manager-persist-state nil)
+           (claude-code-ide-remote-hosts '("host-a"))
+           (claude-code-ide-remote-project-view-hosts '("host-a"))
+           (terminal
+            (generate-new-buffer " *remote-layout-terminal*"))
+           (process
+            (make-pipe-process
+             :name "remote-layout-client"
+             :buffer terminal :noquery t :sentinel #'ignore)))
+      (unwind-protect
+          (progn
+            (claude-code-ide--put-session
+             (claude-code-ide-session-create
+              :id "remote" :host "host-a"
+              :directory "/work/" :buffer terminal
+              :process process :zmx-name "agent"
+              :cli-type 'omp :order 1))
+            (cl-letf
+                (((symbol-function
+                   'claude-code-ide-manager--show-sidebar)
+                  #'ignore)
+                 ((symbol-function
+                   'claude-code-ide--show-session-buffer)
+                  (lambda (&rest _args)
+                    (ert-fail "Enabled layout used a side window")))
+                 ((symbol-function
+                   'claude-code-ide-manager--open-status-buffer)
+                  (lambda (&rest _args)
+                    (ert-fail "Enabled layout opened a status view early"))))
+              (delete-other-windows)
+              (let ((window
+                     (claude-code-ide-manager--build-default-layout
+                      "remote")))
+                (should (eq (window-buffer window) terminal))
+                (should-not
+                 (window-parameter window 'window-side)))))
+        (delete-process process)
+        (kill-buffer terminal)))))
+
+(ert-deftest claude-code-ide-test-remote-project-completion-preserves-focus ()
+  "A valid completion splits the visible terminal without focus theft."
+  (save-window-excursion
+    (let ((claude-code-ide-remote-hosts '("host-a"))
+          (claude-code-ide-remote-project-view-hosts
+           '("host-a"))
+          (terminal
+           (generate-new-buffer " *remote-complete-terminal*"))
+          (view
+           (generate-new-buffer " *remote-complete-view*"))
+          (focus
+           (generate-new-buffer " *remote-complete-focus*"))
+          displayed)
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (set-window-buffer (selected-window) terminal)
+            (let ((focus-window
+                   (split-window (selected-window) nil 'right)))
+              (set-window-buffer focus-window focus)
+              (select-window focus-window)
+              (cl-letf
+                  (((symbol-function
+                     'claude-code-ide-manager--session-host)
+                    (lambda (_session-id) "host-a"))
+                   ((symbol-function
+                     'claude-code-ide-manager--session-buffer)
+                    (lambda (_session-id) terminal))
+                   ((symbol-function
+                     'claude-code-ide-remote-project-record-display)
+                    (lambda (&rest args)
+                      (setq displayed args))))
+                (setq claude-code-ide-manager--current-session-key
+                      "session-a")
+                (claude-code-ide-manager--set-remote-project-frame-intent
+                 "session-a" terminal nil nil)
+                (should
+                 (claude-code-ide-manager--display-remote-project-view
+                  "session-a" terminal (selected-frame) view))
+                (should (eq (selected-window) focus-window))
+                (should (get-buffer-window view))
+                (should displayed))))
+        (mapc
+         (lambda (buffer)
+           (when (buffer-live-p buffer)
+             (kill-buffer buffer)))
+         (list terminal view focus))))))
+
+(ert-deftest claude-code-ide-test-remote-project-completion-admission-is-frame-local ()
+  "Completion uses the target frame's Session and attachment intent."
+  (let* ((frame-a 'frame-a)
+         (frame-b 'frame-b)
+         (terminal-a
+          (generate-new-buffer " *remote-frame-a-terminal*"))
+         (terminal-b
+          (generate-new-buffer " *remote-frame-b-terminal*"))
+         (view
+          (generate-new-buffer " *remote-frame-view*"))
+         (claude-code-ide-remote-hosts '("host-a"))
+         (claude-code-ide-remote-project-view-hosts '("host-a"))
+         (parameters (make-hash-table :test #'equal))
+         (claude-code-ide-manager--current-session-key "session-b")
+         displayed)
+    (puthash
+     (cons frame-a 'claude-code-ide-manager-remote-project-display)
+     (list :session-key "session-a" :attachment terminal-a)
+     parameters)
+    (puthash
+     (cons frame-b 'claude-code-ide-manager-remote-project-display)
+     (list :session-key "session-b" :attachment terminal-b)
+     parameters)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'frame-live-p)
+              (lambda (_frame) t))
+             ((symbol-function 'frame-parameter)
+              (lambda (frame parameter)
+                (gethash (cons frame parameter) parameters)))
+             ((symbol-function
+               'claude-code-ide-manager--session-host)
+              (lambda (_session-id) "host-a"))
+             ((symbol-function
+               'claude-code-ide-manager--session-buffer)
+              (lambda (session-id)
+                (if (equal session-id "session-a")
+                    terminal-a
+                  terminal-b)))
+             ((symbol-function 'get-buffer-window)
+              (lambda (buffer frame)
+                (and (eq buffer terminal-a)
+                     (memq frame (list frame-a frame-b))
+                     (list 'terminal-window frame))))
+             ((symbol-function 'window-live-p)
+              (lambda (_window) t))
+             ((symbol-function 'window-parameter)
+              (lambda (&rest _args) nil))
+             ((symbol-function 'selected-window)
+              (lambda () 'focus-window))
+             ((symbol-function 'split-window)
+              (lambda (_window &rest _args) 'view-window))
+             ((symbol-function 'set-window-buffer)
+              #'ignore)
+             ((symbol-function 'select-window)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--record-remote-project-display)
+              (lambda (_session _attachment frame _view _window)
+                (push frame displayed))))
+          (should
+           (claude-code-ide-manager--display-remote-project-view
+            "session-a" terminal-a frame-a view))
+          (should (equal displayed (list frame-a)))
+          (setq displayed nil
+                claude-code-ide-manager--current-session-key "session-a")
+          (should-not
+           (claude-code-ide-manager--display-remote-project-view
+            "session-a" terminal-a frame-b view))
+          (should-not displayed))
+      (mapc
+       (lambda (buffer)
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))
+       (list terminal-a terminal-b view)))))
+
+(ert-deftest claude-code-ide-test-remote-project-dismissal-admission-is-frame-local ()
+  "Dismissal uses the selected frame's Session and attachment intent."
+  (let* ((frame-a 'frame-a)
+         (frame-b 'frame-b)
+         (terminal-a
+          (generate-new-buffer " *remote-dismiss-frame-a-terminal*"))
+         (terminal-b
+          (generate-new-buffer " *remote-dismiss-frame-b-terminal*"))
+         (view
+          (generate-new-buffer " *remote-dismiss-frame-view*"))
+         (display-parameter
+          'claude-code-ide-manager-remote-project-display)
+         (command-parameter
+          'claude-code-ide-manager-remote-project-command)
+         (parameters (make-hash-table :test #'equal))
+         (claude-code-ide-manager--current-session-key "session-b")
+         suppressed)
+    (puthash
+     (cons frame-a display-parameter)
+     (list :session-key "session-a"
+           :attachment terminal-a
+           :view view
+           :view-window nil
+           :epoch 1)
+     parameters)
+    (puthash
+     (cons frame-a command-parameter)
+     (list :session-key "session-a"
+           :attachment terminal-a
+           :view view
+           :view-window nil
+           :epoch 1
+           :started-in-view t)
+     parameters)
+    (puthash
+     (cons frame-b display-parameter)
+     (list :session-key "session-b"
+           :attachment terminal-b
+           :view nil
+           :view-window nil
+           :epoch 2)
+     parameters)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'selected-frame)
+              (lambda () frame-a))
+             ((symbol-function 'frame-parameter)
+              (lambda (frame parameter)
+                (gethash (cons frame parameter) parameters)))
+             ((symbol-function 'set-frame-parameter)
+              (lambda (frame parameter value)
+                (puthash (cons frame parameter) value parameters)))
+             ((symbol-function 'get-buffer-window)
+              (lambda (&rest _args) nil))
+             ((symbol-function
+               'claude-code-ide-manager--session-buffer)
+              (lambda (_session-id) terminal-a))
+             ((symbol-function
+               'claude-code-ide-remote-project-suppress)
+              (lambda (&rest args)
+                (setq suppressed args))))
+          (claude-code-ide-manager--remote-project-post-command)
+          (should (equal suppressed (list "session-a" terminal-a)))
+          (should
+           (equal
+            (plist-get
+             (gethash (cons frame-b display-parameter) parameters)
+             :session-key)
+            "session-b")))
+      (mapc
+       (lambda (buffer)
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))
+       (list terminal-a terminal-b view)))))
+
+(ert-deftest claude-code-ide-test-remote-project-prepare-starts-exact-worker ()
+  "Preparation creates one worker for the Session's remote directory."
+  (claude-code-ide-remote-project--reset-state)
+  (let ((attachment
+         (generate-new-buffer " *remote-prepare-terminal*"))
+        (claude-code-ide-remote-hosts '("host-a"))
+        (claude-code-ide-remote-project-view-hosts '("host-a"))
+        started)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-manager--session-directory)
+              (lambda (_session-id) "/work/sub/"))
+             ((symbol-function
+               'claude-code-ide-manager--session-host)
+              (lambda (_session-id) "host-a"))
+             ((symbol-function
+               'claude-code-ide-remote-project--start-health-deadline)
+              #'ignore)
+             ((symbol-function 'make-thread)
+              (lambda (function &optional name)
+                (setq started (list function name))
+                'worker)))
+          (let ((attempt
+                 (claude-code-ide-remote-project-prepare
+                  "session-a" "host-a" attachment nil
+                  'first-display)))
+            (should attempt)
+            (should
+             (equal
+              (claude-code-ide-remote-project--attempt-directory
+               attempt)
+              "/rpc:host-a:/work/sub/"))
+            (should
+             (eq
+              (claude-code-ide-remote-project--attempt-worker attempt)
+              'worker))
+            (should
+             (equal (cadr started)
+                    "remote-project-session-a"))))
+      (kill-buffer attachment)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-bulk-attach-stays-lazy ()
+  "Bulk attachment creates terminals without preparing Project views."
+  (let (attached)
+    (cl-letf
+        (((symbol-function
+           'claude-code-ide-zmx-infer-cli-command)
+          (lambda (_command) "omp"))
+         ((symbol-function
+           'claude-code-ide-zmx--valid-directory-p)
+          (lambda (_directory) t))
+         ((symbol-function
+           'claude-code-ide--attach-zmx-entry)
+          (lambda (&rest args)
+            (push args attached)
+            t))
+         ((symbol-function
+           'claude-code-ide-manager--maybe-prepare-remote-project)
+          (lambda (&rest _args)
+            (ert-fail "Bulk attachment prepared a Project view"))))
+      (should
+       (= 2
+          (claude-code-ide--attach-zmx-entries
+           '((:name "one" :host "host-a"
+                    :start_dir "/one" :cmd "omp")
+             (:name "two" :host "host-a"
+                    :start_dir "/two" :cmd "omp")))))
+      (should (= 2 (length attached))))))
+
+;;; Remote Project view restoration and dismissal
+
+(ert-deftest claude-code-ide-test-remote-project-layout-keeps-exact-view-object ()
+  "Saved remote layouts restore the exact live view after a rename."
+  (save-window-excursion
+    (claude-code-ide-remote-project--reset-state)
+    (let* ((claude-code-ide-remote-hosts '("host-a"))
+           (claude-code-ide-remote-project-view-hosts
+            '("host-a"))
+           (terminal
+            (generate-new-buffer " *remote-restore-terminal*"))
+           (view
+            (generate-new-buffer " *remote-restore-view*"))
+           (claude-code-ide-manager--layouts
+            (make-hash-table :test #'equal))
+           (intent
+            (claude-code-ide-remote-project--intent-for
+             "session-a" "host-a" terminal)))
+      (setf
+       (claude-code-ide-remote-project--intent-view-buffer intent)
+       view
+       (claude-code-ide-remote-project--intent-outcome intent)
+       'ready)
+      (unwind-protect
+          (cl-letf
+              (((symbol-function
+                 'claude-code-ide-manager--session-host)
+                (lambda (_session-id) "host-a"))
+               ((symbol-function
+                 'claude-code-ide-manager--session-buffer)
+                (lambda (_session-id) terminal))
+               ((symbol-function
+                 'claude-code-ide-manager--save-state)
+                #'ignore))
+            (delete-other-windows)
+            (set-window-buffer (selected-window) terminal)
+            (let ((view-window
+                   (split-window (selected-window) nil 'right)))
+              (set-window-buffer view-window view))
+            (setq claude-code-ide-manager--current-session-key
+                  "session-a")
+            (let ((layout
+                   (claude-code-ide-manager--capture-layout
+                    "session-a")))
+              (should
+               (eq (plist-get layout :project-view-buffer) view))
+              (puthash "session-a" layout
+                       claude-code-ide-manager--layouts)
+              (let ((persisted
+                     (cdar
+                      (claude-code-ide-manager--serialize-layouts))))
+                (should-not
+                 (plist-member persisted :project-view-buffer))))
+            (with-current-buffer view
+              (rename-buffer " *remote-restore-renamed*" t))
+            (delete-other-windows)
+            (set-window-buffer (selected-window)
+                               (get-buffer-create
+                                " *remote-restore-other*"))
+            (should
+             (claude-code-ide-manager--restore-layout "session-a"))
+            (should (get-buffer-window view)))
+        (mapc
+         (lambda (buffer)
+           (when (buffer-live-p buffer)
+             (kill-buffer buffer)))
+         (list terminal view
+               (get-buffer " *remote-restore-other*")))
+        (claude-code-ide-remote-project--reset-state)))))
+
+(ert-deftest claude-code-ide-test-remote-project-terminal-layout-inserts-ready-view ()
+  "A terminal-only saved layout inserts its ready view without preparation."
+  (save-window-excursion
+    (claude-code-ide-remote-project--reset-state)
+    (let* ((claude-code-ide-remote-hosts '("host-a"))
+           (claude-code-ide-remote-project-view-hosts
+            '("host-a"))
+           (terminal
+            (generate-new-buffer " *remote-late-terminal*"))
+           (view
+            (generate-new-buffer " *remote-late-view*"))
+           (claude-code-ide-manager--layouts
+            (make-hash-table :test #'equal))
+           (intent
+            (claude-code-ide-remote-project--intent-for
+             "session-a" "host-a" terminal)))
+      (setf
+       (claude-code-ide-remote-project--intent-view-buffer intent)
+       view
+       (claude-code-ide-remote-project--intent-outcome intent)
+       'ready)
+      (unwind-protect
+          (cl-letf
+              (((symbol-function
+                 'claude-code-ide-manager--session-host)
+                (lambda (_session-id) "host-a"))
+               ((symbol-function
+                 'claude-code-ide-manager--session-buffer)
+                (lambda (_session-id) terminal))
+               ((symbol-function
+                 'claude-code-ide-manager--save-state)
+                #'ignore)
+               ((symbol-function
+                 'claude-code-ide-manager--maybe-prepare-remote-project)
+                (lambda (&rest _args)
+                  (ert-fail "Restoration started remote work"))))
+            (delete-other-windows)
+            (set-window-buffer (selected-window) terminal)
+            (setq claude-code-ide-manager--current-session-key
+                  "session-a")
+            (puthash
+             "session-a"
+             (claude-code-ide-manager--capture-layout "session-a")
+             claude-code-ide-manager--layouts)
+            (set-window-buffer
+             (selected-window)
+             (get-buffer-create " *remote-late-other*"))
+            (should
+             (claude-code-ide-manager--restore-layout "session-a"))
+            (should (get-buffer-window terminal))
+            (should (get-buffer-window view)))
+        (mapc
+         (lambda (buffer)
+           (when (buffer-live-p buffer)
+             (kill-buffer buffer)))
+         (list terminal view
+               (get-buffer " *remote-late-other*")))
+        (claude-code-ide-remote-project--reset-state)))))
+
+(ert-deftest claude-code-ide-test-remote-project-reset-requests-fresh-health ()
+  "Remote `R' rebuilds the layout and starts one reset attempt."
+  (let ((terminal
+         (generate-new-buffer " *remote-reset-terminal*"))
+        call)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-manager--session-host)
+              (lambda (_session-id) "host-a"))
+             ((symbol-function
+               'claude-code-ide-manager--session-buffer)
+              (lambda (_session-id) terminal))
+             ((symbol-function
+               'claude-code-ide-manager--ensure-live-target)
+              (lambda (&rest _args) t))
+             ((symbol-function 'claude-code-ide--touch-session)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--scope-for-command)
+              (lambda () '(:type global)))
+             ((symbol-function
+               'claude-code-ide-manager--visible-sidebar-scopes)
+              (lambda () nil))
+             ((symbol-function
+               'claude-code-ide-manager--build-default-layout)
+              (lambda (&rest _args) (selected-window)))
+             ((symbol-function
+               'claude-code-ide-manager--set-scope-active-session-key)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--save-state)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--mark-session-managed)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--reset-session-idle-state)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--adopt-visible-sidebars)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--refresh-sidebar-state)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--treemacs-window)
+              #'ignore)
+             ((symbol-function
+               'claude-code-ide-manager--maybe-prepare-remote-project)
+              (lambda (&rest args)
+                (setq call args))))
+          (let ((claude-code-ide-manager--current-session-key nil))
+            (claude-code-ide-manager-reset-layout "session-a")
+            (should
+             (equal call
+                    (list "session-a" terminal
+                          (selected-frame) 'reset)))))
+      (kill-buffer terminal))))
+
+(ert-deftest claude-code-ide-test-remote-project-command-dismissal-matrix ()
+  "Command-loop observation distinguishes dismissal from window reuse."
+  (dolist
+      (case
+       '((delete-window view delete-view t)
+         (quit view replace-view t)
+         (switch-to-buffer view replace-view t)
+         (delete-other-windows terminal keep-terminal t)
+         (dired-find-file view replace-view t)
+         (kill-buffer view kill-view t)
+         (manager-switch terminal manager-switch nil)
+         (describe-function terminal replace-view nil)))
+    (save-window-excursion
+      (claude-code-ide-remote-project--reset-state)
+      (let* ((terminal
+              (generate-new-buffer " *remote-close-terminal*"))
+             (view
+              (generate-new-buffer " *remote-close-view*"))
+             (other
+              (generate-new-buffer " *remote-close-other*"))
+             (intent
+              (claude-code-ide-remote-project--intent-for
+               "session-a" "host-a" terminal))
+             terminal-window view-window)
+        (setf
+         (claude-code-ide-remote-project--intent-view-buffer intent)
+         view)
+        (unwind-protect
+            (cl-letf
+                (((symbol-function
+                   'claude-code-ide-manager--session-buffer)
+                  (lambda (_session-id) terminal)))
+              (delete-other-windows)
+              (setq terminal-window (selected-window))
+              (set-window-buffer terminal-window terminal)
+              (setq view-window
+                    (split-window terminal-window nil 'right))
+              (set-window-buffer view-window view)
+              (setq claude-code-ide-manager--current-session-key
+                    "session-a")
+              (claude-code-ide-manager--set-remote-project-frame-intent
+               "session-a" terminal view view-window)
+              (select-window
+               (if (eq (nth 1 case) 'view)
+                   view-window
+                 terminal-window))
+              (let ((this-command (car case)))
+                (claude-code-ide-manager--remote-project-pre-command)
+                (pcase (nth 2 case)
+                  ('delete-view (delete-window view-window))
+                  ('replace-view
+                   (set-window-buffer view-window other))
+                  ('keep-terminal
+                   (delete-other-windows terminal-window))
+                  ('kill-view (kill-buffer view))
+                  ('manager-switch
+                   (claude-code-ide-manager--advance-layout-epoch)))
+                (claude-code-ide-manager--remote-project-post-command))
+              (should
+               (eq
+                (and
+                 (claude-code-ide-remote-project--intent-suppressed
+                  intent)
+                 t)
+                (nth 3 case))))
+          (mapc
+           (lambda (buffer)
+             (when (buffer-live-p buffer)
+               (kill-buffer buffer)))
+           (list terminal view other))
+          (claude-code-ide-remote-project--reset-state))))))
+
+(ert-deftest claude-code-ide-test-remote-project-failure-guidance-covers-phases ()
+  "Each worker phase names its host and one corrective action."
+  (let ((attempt
+         (claude-code-ide-remote-project--make-attempt
+          :host "host-a")))
+    (dolist
+        (case
+         '((checking-client "RPC client" "Install or update")
+           (connecting "authentication" "Configure noninteractive SSH")
+           (authentication "authentication" "Configure noninteractive SSH")
+           (server "server" "Install the configured server binary")
+           (health "health" "Check the server path and remote reachability")
+           (resolving-view "directory" "Check the remote directory")
+           (waiting-for-view "provider" "Check Magit or Dired")
+           (preparing "provider" "Check Magit or Dired")))
+      (setf
+       (claude-code-ide-remote-project--attempt-state attempt)
+       (nth 0 case))
+      (let ((text
+             (claude-code-ide-remote-project--failure-message
+              attempt '(error "boom"))))
+        (should (string-match-p "host-a" text))
+        (should (string-match-p (nth 1 case) text))
+        (should (string-match-p (nth 2 case) text))))))
+
+(ert-deftest claude-code-ide-test-remote-project-failure-reports-once ()
+  "A current failure reports once and leaves the terminal layout unchanged."
+  (save-window-excursion
+    (claude-code-ide-remote-project--reset-state)
+    (let* ((terminal
+            (generate-new-buffer " *remote-failure-terminal*"))
+           (intent
+            (claude-code-ide-remote-project--intent-for
+             "session-a" "host-a" terminal))
+           (attempt
+            (claude-code-ide-remote-project--begin-attempt
+             intent "/rpc:host-a:/work/" (selected-frame)
+             'first-display))
+           messages)
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) terminal)
+            (setf
+             (claude-code-ide-remote-project--attempt-state attempt)
+             'health)
+            (cl-letf
+                (((symbol-function 'message)
+                  (lambda (format-string &rest args)
+                    (push
+                     (apply #'format format-string args)
+                     messages))))
+              (claude-code-ide-remote-project--finish-failure
+               attempt '(error "not reachable"))
+              (claude-code-ide-remote-project--finish-failure
+               attempt '(error "not reachable")))
+            (should (= 1 (length messages)))
+            (should (string-match-p "host-a" (car messages)))
+            (should (string-match-p "health" (car messages)))
+            (should (eq (window-buffer) terminal))
+            (should (= 1 (length (window-list)))))
+        (kill-buffer terminal)
+        (claude-code-ide-remote-project--reset-state)))))
+
+(ert-deftest claude-code-ide-test-remote-project-health-deadline-reports ()
+  "The feature deadline reports one health failure and abandons its attempt."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-deadline-terminal*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         messages)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'message)
+              (lambda (format-string &rest args)
+                (push
+                 (apply #'format format-string args)
+                 messages))))
+          (claude-code-ide-remote-project--health-deadline
+           attempt)
+          (should (= 1 (length messages)))
+          (should (string-match-p "health" (car messages)))
+          (should (string-match-p "30 seconds" (car messages)))
+          (should-not
+           (claude-code-ide-remote-project--intent-attempt
+            intent))
+          (should
+           (eq
+            (claude-code-ide-remote-project--intent-outcome
+             intent)
+            'failed)))
+      (kill-buffer terminal)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-missing-client-does-no-acquisition ()
+  "A missing client reports through the main thread without remote work."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-client-terminal*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         callbacks messages)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-remote-project--load-client)
+              (lambda () nil))
+             ((symbol-function 'process-file)
+              (lambda (&rest _args)
+                (ert-fail "A missing client started remote work")))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (&rest _args)
+                (ert-fail "A missing client called the provider")))
+             ((symbol-function 'run-at-time)
+              (lambda (_time _repeat function &rest args)
+                (push (cons function args) callbacks)
+                'timer))
+             ((symbol-function 'message)
+              (lambda (format-string &rest args)
+                (push
+                 (apply #'format format-string args)
+                 messages))))
+          (claude-code-ide-remote-project--worker attempt)
+          (should (= 1 (length callbacks)))
+          (apply (caar callbacks) (cdar callbacks))
+          (should (= 1 (length messages)))
+          (should (string-match-p "RPC client" (car messages))))
+      (kill-buffer terminal)
+      (claude-code-ide-remote-project--reset-state))))
+(ert-deftest claude-code-ide-test-remote-project-cancel-discards-owned-candidate ()
+  "Cancellation discards an unpublished candidate created by the feature."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-candidate-terminal*"))
+         (candidate nil)
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-manager-status-buffer-function
+          #'claude-code-ide-manager-magit-status-buffer))
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-remote-project--lookup-native-view)
+              (lambda (_key) nil))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (_directory)
+                (setq candidate
+                      (create-file-buffer
+                       "/tmp/remote-candidate-owned"))
+                (with-current-buffer candidate
+                  (setq major-mode 'magit-status-mode))
+                candidate)))
+          (claude-code-ide-remote-project--prepare-view
+           attempt '("host-a" git "/rpc:host-a:/work"))
+          (should (buffer-live-p candidate))
+          (claude-code-ide-remote-project--abandon-attempt
+           attempt 'cancel)
+          (should-not (buffer-live-p candidate)))
+      (kill-buffer terminal)
+      (when (buffer-live-p candidate)
+        (kill-buffer candidate))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-candidate-kill-invalidates-attempt ()
+  "Killing an unpublished candidate invalidates its owning attempt."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-killed-candidate-terminal*"))
+         (candidate nil)
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-manager-status-buffer-function
+          #'claude-code-ide-manager-magit-status-buffer))
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-remote-project--lookup-native-view)
+              (lambda (_key) nil))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (_directory)
+                (setq candidate
+                      (create-file-buffer
+                       "/tmp/remote-killed-candidate"))
+                (with-current-buffer candidate
+                  (setq major-mode 'magit-status-mode))
+                candidate)))
+          (claude-code-ide-remote-project--prepare-view
+           attempt '("host-a" git "/rpc:host-a:/work"))
+          (kill-buffer candidate)
+          (should-not
+           (claude-code-ide-remote-project--intent-attempt intent))
+          (should
+           (eq
+            (claude-code-ide-remote-project--attempt-state attempt)
+            'abandoned)))
+      (kill-buffer terminal)
+      (when (buffer-live-p candidate)
+        (kill-buffer candidate))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-race-discards-owned-candidate ()
+  "A race winner replaces and disposes the feature's unpublished candidate."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-race-terminal*"))
+         (candidate nil)
+         (winner
+          (generate-new-buffer " *remote-race-winner*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-manager-status-buffer-function
+          #'claude-code-ide-manager-magit-status-buffer)
+         (lookups 0)
+         result)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-remote-project--lookup-native-view)
+              (lambda (_key)
+                (setq lookups (1+ lookups))
+                (and (= lookups 3) winner)))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (_directory)
+                (setq candidate
+                      (create-file-buffer
+                       "/tmp/remote-race-candidate"))
+                (with-current-buffer candidate
+                  (setq major-mode 'magit-status-mode))
+                candidate)))
+          (setq
+           result
+           (claude-code-ide-remote-project--prepare-view
+            attempt '("host-a" git "/rpc:host-a:/work")))
+          (should (eq (plist-get result :buffer) winner))
+          (should-not (buffer-live-p candidate)))
+      (mapc
+       (lambda (buffer)
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))
+       (list terminal candidate winner))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-default-provider-race-preserves-preexisting-buffer ()
+  "A default-provider race never grants ownership of a preexisting buffer."
+  (dolist (action '(cancel cleanup))
+    (claude-code-ide-remote-project--reset-state)
+    (let* ((terminal
+            (generate-new-buffer
+             (format " *remote-preexisting-%s-terminal*" action)))
+           (candidate
+            (generate-new-buffer
+             (format " *remote-preexisting-%s-view*" action)))
+           (intent
+            (claude-code-ide-remote-project--intent-for
+             "session-a" "host-a" terminal))
+           (attempt
+            (claude-code-ide-remote-project--begin-attempt
+             intent "/rpc:host-a:/work/" nil 'first-display))
+           (claude-code-ide-manager-status-buffer-function
+            #'claude-code-ide-manager-magit-status-buffer)
+           (key '("host-a" directory "/rpc:host-a:/work"))
+           (lookups 0)
+           result)
+      (with-current-buffer candidate
+        (setq major-mode 'dired-mode
+              default-directory "/rpc:host-a:/work/"))
+      (unwind-protect
+          (cl-letf
+              (((symbol-function
+                 'claude-code-ide-remote-project--lookup-native-view)
+                (lambda (_key)
+                  (setq lookups (1+ lookups))
+                  (and (= lookups 3) candidate)))
+               ((symbol-function
+                 'claude-code-ide-manager--open-status-buffer)
+                (lambda (_directory) candidate))
+               ((symbol-function
+                 'claude-code-ide-manager--display-remote-project-view)
+                #'ignore))
+            (setq
+             result
+             (claude-code-ide-remote-project--prepare-view
+              attempt key))
+            (should (eq (plist-get result :buffer) candidate))
+            (should (eq (plist-get result :origin) 'preexisting))
+            (pcase action
+              ('cancel
+               (should
+                (claude-code-ide-remote-project-cancel
+                 "session-a" terminal))
+               (should (buffer-live-p candidate))
+               (should
+                (gethash
+                 candidate
+                 claude-code-ide-remote-project--incomplete-candidates)))
+              ('cleanup
+               (claude-code-ide-remote-project--finish-success
+                attempt result)
+               (let* ((claude-code-ide-remote-project-cleanup-hosts
+                       '("host-a"))
+                      (snapshot
+                       (claude-code-ide-remote-project-cleanup-snapshot
+                        "session-a" terminal "host-a" nil))
+                      (outcome
+                       (claude-code-ide-remote-project-cleanup snapshot)))
+                 (should (buffer-live-p candidate))
+                 (should
+                  (eq
+                   (cdr
+                    (assq candidate (plist-get outcome :retained)))
+                   'reused))))))
+        (when (buffer-live-p terminal)
+          (kill-buffer terminal))
+        (when (buffer-live-p candidate)
+          (kill-buffer candidate))
+        (claude-code-ide-remote-project--reset-state)))))
+
+(ert-deftest claude-code-ide-test-remote-project-retained-candidate-is-not-reused ()
+  "A retained uncertain candidate cannot become a later native view."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-uncertain-terminal*"))
+         (candidate
+          (generate-new-buffer " *remote-uncertain-candidate*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         (claude-code-ide-manager-status-buffer-function
+          (lambda (_directory) candidate))
+         (key '("host-a" directory "/rpc:host-a:/work"))
+         reuse)
+    (with-current-buffer candidate
+      (setq major-mode 'dired-mode
+            default-directory "/rpc:host-a:/work/"))
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'dired-find-buffer-nocreate)
+              (lambda (_directory &optional _mode)
+                (and reuse candidate)))
+             ((symbol-function
+               'claude-code-ide-manager--open-status-buffer)
+              (lambda (_directory) candidate)))
+          (claude-code-ide-remote-project--prepare-view attempt key)
+          (claude-code-ide-remote-project--abandon-attempt
+           attempt 'cancel)
+          (setq reuse t)
+          (should (buffer-live-p candidate))
+          (should-not
+           (claude-code-ide-remote-project--find-view key)))
+      (kill-buffer terminal)
+      (when (buffer-live-p candidate)
+        (kill-buffer candidate))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-disabled-host-rejects-queued-success ()
+  "Disabling Project views invalidates a queued successful result."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-disabled-terminal*"))
+         (candidate
+          (generate-new-buffer " *remote-disabled-view*"))
+         (claude-code-ide-remote-hosts '("host-a"))
+         (claude-code-ide-remote-project-view-hosts '("host-a"))
+         attempt
+         displayed)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-manager--session-host)
+              (lambda (_session-id) "host-a"))
+             ((symbol-function
+               'claude-code-ide-manager--session-directory)
+              (lambda (_session-id) "/work/"))
+             ((symbol-function
+               'claude-code-ide-remote-project--start-health-deadline)
+              #'ignore)
+             ((symbol-function 'make-thread)
+              (lambda (_function &optional _name) nil))
+             ((symbol-function
+               'claude-code-ide-manager--display-remote-project-view)
+              (lambda (&rest _args) (setq displayed t))))
+          (setq
+           attempt
+           (claude-code-ide-remote-project-prepare
+            "session-a" "host-a" terminal nil 'first-display))
+          (setq claude-code-ide-remote-project-view-hosts nil)
+          (claude-code-ide-remote-project--finish-success
+           attempt
+           (list
+            :key '("host-a" git "/rpc:host-a:/work")
+            :buffer candidate :origin 'preexisting :creator nil))
+          (should-not displayed)
+          (should-not
+           (gethash
+            '("host-a" git "/rpc:host-a:/work")
+            claude-code-ide-remote-project--views))
+          (should-not
+           (claude-code-ide-remote-project--intent-attempt
+            (gethash
+             "session-a"
+             claude-code-ide-remote-project--intents))))
+      (kill-buffer terminal)
+      (kill-buffer candidate)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-approval-loss-rejects-queued-failure ()
+  "Removing host approval invalidates a queued failure without reporting it."
+  (claude-code-ide-remote-project--reset-state)
+  (let ((terminal
+         (generate-new-buffer " *remote-unapproved-terminal*"))
+        (claude-code-ide-remote-hosts '("host-a"))
+        (claude-code-ide-remote-project-view-hosts '("host-a"))
+        attempt
+        messages)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-manager--session-host)
+              (lambda (_session-id) "host-a"))
+             ((symbol-function
+               'claude-code-ide-manager--session-directory)
+              (lambda (_session-id) "/work/"))
+             ((symbol-function
+               'claude-code-ide-remote-project--start-health-deadline)
+              #'ignore)
+             ((symbol-function 'make-thread)
+              (lambda (_function &optional _name) nil))
+             ((symbol-function 'message)
+              (lambda (format-string &rest args)
+                (push (apply #'format format-string args) messages))))
+          (setq
+           attempt
+           (claude-code-ide-remote-project-prepare
+            "session-a" "host-a" terminal nil 'first-display))
+          (setq claude-code-ide-remote-hosts nil)
+          (claude-code-ide-remote-project--finish-failure
+           attempt '(error "late failure"))
+          (should-not messages)
+          (should-not
+           (claude-code-ide-remote-project--intent-attempt
+            (gethash
+             "session-a"
+             claude-code-ide-remote-project--intents))))
+      (kill-buffer terminal)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-host-change-rejects-queued-success ()
+  "Changing the Session host invalidates a queued successful result."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-host-change-terminal*"))
+         (candidate
+          (generate-new-buffer " *remote-host-change-view*"))
+         (claude-code-ide-remote-hosts '("host-a" "host-b"))
+         (claude-code-ide-remote-project-view-hosts
+          '("host-a" "host-b"))
+         (current-host "host-a")
+         attempt
+         displayed)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-manager--session-host)
+              (lambda (_session-id) current-host))
+             ((symbol-function
+               'claude-code-ide-manager--session-directory)
+              (lambda (_session-id) "/work/"))
+             ((symbol-function
+               'claude-code-ide-remote-project--start-health-deadline)
+              #'ignore)
+             ((symbol-function 'make-thread)
+              (lambda (_function &optional _name) nil))
+             ((symbol-function
+               'claude-code-ide-manager--display-remote-project-view)
+              (lambda (&rest _args) (setq displayed t))))
+          (setq
+           attempt
+           (claude-code-ide-remote-project-prepare
+            "session-a" "host-a" terminal nil 'first-display))
+          (setq current-host "host-b")
+          (claude-code-ide-remote-project--finish-success
+           attempt
+           (list
+            :key '("host-a" git "/rpc:host-a:/work")
+            :buffer candidate :origin 'preexisting :creator nil))
+          (should-not displayed)
+          (should-not
+           (gethash
+            '("host-a" git "/rpc:host-a:/work")
+            claude-code-ide-remote-project--views))
+          (should-not
+           (claude-code-ide-remote-project--intent-attempt
+            (gethash
+             "session-a"
+             claude-code-ide-remote-project--intents))))
+      (kill-buffer terminal)
+      (kill-buffer candidate)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-cancel-invalidates-exact-attempt ()
+  "Cancel invalidates immediately and defers a native connection signal."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-cancel-terminal*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (attempt
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         signals)
+    (unwind-protect
+        (progn
+          (setf
+           (claude-code-ide-remote-project--attempt-worker attempt)
+           'worker
+           (claude-code-ide-remote-project--attempt-connecting attempt)
+           t)
+          (cl-letf
+              (((symbol-function 'thread-live-p)
+                (lambda (_worker) t))
+               ((symbol-function 'thread-signal)
+                (lambda (&rest args)
+                  (push args signals))))
+            (should
+             (claude-code-ide-remote-project-cancel
+              "session-a" terminal))
+            (should-not signals)
+            (should-not
+             (claude-code-ide-remote-project--intent-attempt intent))
+            (should
+             (eq
+              (claude-code-ide-remote-project--intent-outcome intent)
+              'canceled))))
+      (kill-buffer terminal)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-stale-success-is-inert ()
+  "A superseded completion cannot publish or display its candidate."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal
+          (generate-new-buffer " *remote-stale-terminal*"))
+         (candidate
+          (generate-new-buffer " *remote-stale-view*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" terminal))
+         (old
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display))
+         (key '("host-a" git "/work")))
+    (unwind-protect
+        (progn
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'reset)
+          (cl-letf
+              (((symbol-function
+                 'claude-code-ide-manager--display-remote-project-view)
+                (lambda (&rest _args)
+                  (ert-fail "A stale result reached the manager"))))
+            (claude-code-ide-remote-project--finish-success
+             old
+             (list
+              :key key :buffer candidate
+              :origin 'preexisting :creator nil)))
+          (should-not
+           (gethash key claude-code-ide-remote-project--views)))
+      (kill-buffer terminal)
+      (kill-buffer candidate)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-display-rechecks-admission ()
+  "Completion needs current host admission and preserves unrelated windows."
+  (save-window-excursion
+    (let* ((terminal
+            (generate-new-buffer " *remote-authority-terminal*"))
+           (view
+            (generate-new-buffer " *remote-authority-view*"))
+           (other
+            (generate-new-buffer " *remote-authority-other*"))
+           (claude-code-ide-remote-hosts '("host-a"))
+           (claude-code-ide-remote-project-view-hosts nil)
+           (claude-code-ide-manager--current-session-key
+            "session-a"))
+      (unwind-protect
+          (cl-letf
+              (((symbol-function
+                 'claude-code-ide-manager--session-host)
+                (lambda (_session-id) "host-a"))
+               ((symbol-function
+                 'claude-code-ide-manager--session-buffer)
+                (lambda (_session-id) terminal))
+               ((symbol-function
+                 'claude-code-ide-remote-project-record-display)
+                #'ignore))
+            (delete-other-windows)
+            (set-window-buffer (selected-window) terminal)
+            (claude-code-ide-manager--set-remote-project-frame-intent
+             "session-a" terminal nil nil)
+            (let* ((other-window
+                    (split-window (selected-window) nil 'below))
+                   (selected (selected-window)))
+              (set-window-buffer other-window other)
+              (should-not
+               (claude-code-ide-manager--display-remote-project-view
+                "session-a" terminal (selected-frame) view))
+              (should (eq (selected-window) selected))
+              (should (eq (window-buffer other-window) other))
+              (setq
+               claude-code-ide-remote-project-view-hosts
+               '("host-a"))
+              (should
+               (claude-code-ide-manager--display-remote-project-view
+                "session-a" terminal (selected-frame) view))
+              (should (eq (selected-window) selected))
+              (should (eq (window-buffer other-window) other))))
+        (mapc
+         (lambda (buffer)
+           (when (buffer-live-p buffer)
+             (kill-buffer buffer)))
+         (list terminal view other))))))
+
+(ert-deftest claude-code-ide-test-remote-project-manager-cancel-command ()
+  "The action command cancels only the selected Session attachment."
+  (let* ((terminal
+          (generate-new-buffer " *remote-command-cancel*"))
+         (item
+          (make-claude-code-ide-manager-item
+           :session-key "session-a" :host "host-a"))
+         canceled)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function
+               'claude-code-ide-manager--item-at-point)
+              (lambda () item))
+             ((symbol-function
+
+               'claude-code-ide-manager--session-buffer)
+              (lambda (_session-id) terminal))
+             ((symbol-function
+               'claude-code-ide-remote-project-cancel)
+              (lambda (session-id attachment)
+                (setq canceled (list session-id attachment))
+                t))
+             ((symbol-function 'message) #'ignore))
+          (claude-code-ide-manager-cancel-project-view-at-point)
+          (should (equal canceled (list "session-a" terminal))))
+      (kill-buffer terminal))))
+
+(ert-deftest claude-code-ide-test-remote-project-session-end-preserves-intent ()
+  "A disconnected Session abandons work but keeps suppression for reattach."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((old-attachment
+          (generate-new-buffer " *remote-ended-old*"))
+         (new-attachment
+          (generate-new-buffer " *remote-ended-new*"))
+         (intent
+          (claude-code-ide-remote-project--intent-for
+           "session-a" "host-a" old-attachment)))
+    (unwind-protect
+        (progn
+          (setf
+           (claude-code-ide-remote-project--intent-suppressed intent)
+           t)
+          (claude-code-ide-remote-project--begin-attempt
+           intent "/rpc:host-a:/work/" nil 'first-display)
+          (should
+           (claude-code-ide-remote-project-invalidate
+            "session-a" old-attachment 'session-ended))
+          (should-not
+           (claude-code-ide-remote-project--intent-attempt intent))
+          (should
+           (eq
+            intent
+            (claude-code-ide-remote-project--intent-for
+             "session-a" "host-a" new-attachment)))
+          (should
+           (claude-code-ide-remote-project--intent-suppressed intent))
+          (should
+           (claude-code-ide-remote-project-invalidate
+            "session-a" new-attachment 'detach))
+          (should-not
+           (gethash
+            "session-a"
+            claude-code-ide-remote-project--intents)))
+      (kill-buffer old-attachment)
+      (kill-buffer new-attachment)
+      (claude-code-ide-remote-project--reset-state))))
+(ert-deftest claude-code-ide-test-remote-project-cleanup-matrix ()
+  "Explicit cleanup kills only proven local exclusive Project views."
+  (dolist
+      (case
+       '((eligible t)
+         (perspective-hook t)
+         (cross-host t)
+         (disabled nil)
+         (shared nil)
+         (unknown-sibling nil)
+         (reused nil)
+         (modified nil)
+         (custom nil)
+         (source-file nil)
+         (wrong-mode nil)
+         (process nil)
+         (temporary nil)
+         (unknown-hook nil)
+         (newer-attachment nil)))
+    (claude-code-ide-remote-project--reset-state)
+    (let* ((name (symbol-name (car case)))
+           (should-kill (cadr case))
+           (terminal
+            (generate-new-buffer
+             (format " *remote-cleanup-terminal-%s*" name)))
+           (new-terminal
+            (generate-new-buffer
+             (format " *remote-cleanup-new-%s*" name)))
+           (view-buffer
+            (generate-new-buffer
+             (format " *remote-cleanup-view-%s*" name)))
+           (key '("host-a" git "/work"))
+           (intent
+            (claude-code-ide-remote-project--intent-for
+             "session-a" "host-a" terminal))
+           (view
+            (claude-code-ide-remote-project--make-view
+             :key key :buffer view-buffer
+             :origin
+             (if (eq (car case) 'reused)
+                 'preexisting
+               (if (eq (car case) 'custom)
+                   'uncertain-custom
+                 'created-by-feature))
+             :creator 'dired
+             :sessions '("session-a")))
+           (claude-code-ide-remote-project-cleanup-hosts
+            (unless (eq (car case) 'disabled)
+              '("host-a")))
+           (siblings
+            (pcase (car case)
+              ('shared
+               '((:session-id "session-b" :host "host-a"
+                              :worktree-path "/work" :live-p t)))
+              ('unknown-sibling
+               '((:session-id "session-b" :host "host-a"
+                              :worktree-path nil :live-p t)))
+              ('cross-host
+               '((:session-id "session-b" :host "host-b"
+                              :worktree-path "/work" :live-p t)))))
+           process
+           snapshot
+           (global-hook-runs 0))
+      (unwind-protect
+          (progn
+            (with-current-buffer view-buffer
+              (setq major-mode
+                    (if (eq (car case) 'wrong-mode)
+                        'fundamental-mode
+                      'dired-mode)
+                    default-directory "/work/"
+                    buffer-file-name
+                    (and
+                     (eq (car case) 'source-file)
+                     "/tmp/source"))
+              (set-buffer-modified-p
+               (eq (car case) 'modified))
+              (when (eq (car case) 'temporary)
+                (setq-local
+                 tramp-temp-buffer-file-name "/tmp/remote"))
+              (when (eq (car case) 'unknown-hook)
+                (add-hook
+                 'kill-buffer-hook
+                 (lambda ()
+                   (ert-fail "An unknown local hook ran"))
+                 nil t))
+              (when
+                  (memq
+                   (car case)
+                   '(eligible perspective-hook cross-host))
+                (add-hook
+                 'kill-buffer-hook
+                 #'claude-code-ide-remote-project--view-killed
+                 nil t)))
+            (when (eq (car case) 'process)
+              (setq
+               process
+               (make-pipe-process
+                :name
+                (format "remote-cleanup-%s" name)
+                :buffer view-buffer :noquery t)))
+            (setf
+             (claude-code-ide-remote-project--intent-view-key intent)
+             key
+             (claude-code-ide-remote-project--intent-view-buffer intent)
+             view-buffer)
+            (puthash key view
+                     claude-code-ide-remote-project--views)
+            (setq
+             snapshot
+             (claude-code-ide-remote-project-cleanup-snapshot
+              "session-a" terminal "host-a" siblings))
+            (when (eq (car case) 'newer-attachment)
+              (claude-code-ide-remote-project--intent-for
+               "session-a" "host-a" new-terminal))
+            (let ((kill-buffer-hook
+                   (list
+                    (lambda ()
+                      (setq global-hook-runs
+                            (1+ global-hook-runs))))))
+              (cl-letf
+                  (((symbol-function 'process-file)
+                    (lambda (&rest _args)
+                      (ert-fail "Cleanup made a remote request")))
+                   ((symbol-function 'file-truename)
+                    (lambda (&rest _args)
+                      (ert-fail "Cleanup resolved a remote path")))
+                   ((symbol-function 'save-buffer)
+                    (lambda (&rest _args)
+                      (ert-fail "Cleanup saved a buffer")))
+                   ((symbol-function 'y-or-n-p)
+                    (lambda (&rest _args)
+                      (ert-fail "Cleanup prompted")))
+                   ((symbol-function 'tramp-cleanup-connection)
+                    (lambda (&rest _args)
+                      (ert-fail "Cleanup retired a connection"))))
+                (claude-code-ide-remote-project-cleanup snapshot)))
+            (should
+             (eq (not (buffer-live-p view-buffer))
+                 should-kill))
+            (should
+             (= global-hook-runs
+                (if should-kill 1 0))))
+        (when (process-live-p process)
+          (delete-process process))
+        (mapc
+         (lambda (buffer)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (kill-local-variable 'kill-buffer-hook)
+               (kill-local-variable
+                'kill-buffer-query-functions)
+               (set-buffer-modified-p nil))
+             (kill-buffer buffer)))
+         (list terminal new-terminal view-buffer))
+
+        (claude-code-ide-remote-project--reset-state)))))
+(ert-deftest claude-code-ide-test-remote-project-cleanup-follows-explicit-detach ()
+  "Explicit detach captures ownership first and cleans before forgetting."
+  (let ((item
+         (make-claude-code-ide-manager-item
+          :session-key "session-a"
+          :host "host-a"
+          :zmx-name "zmx-a"
+          :live-p nil))
+        events)
+    (cl-letf
+        (((symbol-function
+           'claude-code-ide-manager--item-at-point)
+          (lambda () item))
+         ((symbol-function 'claude-code-ide--get-session)
+          (lambda (_session-id) nil))
+         ((symbol-function
+           'claude-code-ide-manager--session-buffer)
+          (lambda (_session-id) nil))
+         ((symbol-function
+           'claude-code-ide-manager--scope-for-command)
+          (lambda () '(:type global)))
+         ((symbol-function
+           'claude-code-ide-manager--visible-session-keys)
+          (lambda (_scope) nil))
+         ((symbol-function
+           'claude-code-ide--remote-target-pending-reason)
+          (lambda (_session-id) nil))
+         ((symbol-function
+           'claude-code-ide-manager--remote-project-cleanup-siblings)
+          (lambda (_session-id) nil))
+         ((symbol-function
+           'claude-code-ide-remote-project-cleanup-snapshot)
+          (lambda (&rest _args)
+            (push 'capture events)
+            'snapshot))
+         ((symbol-function
+           'claude-code-ide-remote-project-cleanup)
+          (lambda (_snapshot)
+            (push 'cleanup events)))
+         ((symbol-function
+           'claude-code-ide-manager-session-ended)
+          (lambda (&rest _args)
+            (push 'forget events)))
+         ((symbol-function 'message) #'ignore))
+      (claude-code-ide-manager-detach-at-point)
+      (should
+       (equal
+        (nreverse events)
+        '(capture cleanup forget))))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

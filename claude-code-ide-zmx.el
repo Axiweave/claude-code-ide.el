@@ -63,11 +63,13 @@ integrations break after such a switch."
 (defcustom claude-code-ide-remote-hosts nil
   "SSH destinations available for explicit remote Agent attachment.
 SSH configuration supplies authentication, ports, and jump hosts.
-The package never discovers destinations or connects automatically.
+The package never discovers destinations.
 
 After an explicit remote attachment, the manager may start one
-optional Git metadata control request to the same host.  Startup,
-ordinary refresh, rendering, and navigation never connect."
+optional Git metadata request.  An independently enabled Project view
+may also connect on first managed display or explicit layout reset.
+Startup, ordinary refresh, rendering, and other navigation never
+connect."
   :type '(repeat string)
   :group 'claude-code-ide)
 

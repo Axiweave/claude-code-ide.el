@@ -58,9 +58,10 @@ Custom providers retain their directory-to-buffer contract. Preparation supplies
 | First managed display | Show the terminal immediately. Prepare the enabled host's view without a separate command. |
 | Bulk attach | Keep the existing no-display behavior. Do not prepare every attached project. |
 | Ordinary navigation | Restore surviving view/layout state without automatic remote refresh. |
-| `R` — Reset layout | For an attached Session on an enabled host, clear its suppression and supersede its pending attempt. Reset the whole layout and start fresh health. |
+| `R` — Reset layout | Clear suppression, supersede the pending attempt, reset the whole layout, and check fresh health. Reuse a surviving view unchanged or create a missing view. |
 | `? C` — Cancel Project-view preparation | Cancel only the selected Session's pending attempt. Do not detach, retry, close the connection, or change preferences. |
 | `o` — Open project/worktree | Retain its current project selection and Session start/resume meaning. Do not repurpose it as remote view retry. |
+| Native `g` in a Project view | Retain the provider's user-directed refresh behavior. Automatic reuse does not invoke it. |
 | `K` — Stop | Retain existing confirmation and terminal lifecycle behavior. Do not invoke Project-view cleanup. |
 | `D` / `X` — Detach | Retain existing detach behavior. Apply the separate view-cleanup policy only after explicit detach succeeds. |
 

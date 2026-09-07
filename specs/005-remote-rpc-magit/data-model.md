@@ -80,10 +80,16 @@ The kind discriminator prevents a directory view from masquerading as a known Gi
 | Buffer object | A live Magit/Dired/custom status buffer, or nil after a kill. |
 | Origin | `created-by-feature`, `preexisting`, or `uncertain-custom`. |
 | Creator kind | Known Magit/Dired creation path, or unknown. |
-| Feature writer | The attempt currently allowed to prepare this view. |
+| Feature writer | The attempt creating a missing view. A surviving published buffer has no feature writer. |
 | Interested Sessions | Session IDs whose runtime intents request this key. |
 
 The registry retains origin when an owned buffer is reused by a later attempt. It never upgrades a preexisting or uncertain buffer into feature ownership.
+
+Every new permitted attempt still checks health. A surviving buffer then returns unchanged, whether visible or hidden. `R` and reattach do not refresh it.
+
+An unpublished candidate is attempt-owned scratch state, not a shared Project view. Register it only after successful completion and a final reuse check.
+
+Known incomplete candidates never qualify for reuse. Discard only proven attempt-owned scratch buffers. Retain uncertain buffers and report the retry prerequisite.
 
 Two different Git Worktrees remain separate even when their Git common directory is the same. Existing metadata uses `:worktree-path`, not `:common-dir`, for this distinction.
 
@@ -133,9 +139,9 @@ Do not put source-file buffers in the candidate list. Do not scan a project's fi
 | Ordinary navigation with a surviving view | Ready | Restore the exact buffer and saved layout without remote refresh. |
 | Ordinary navigation after failure or explicit cancellation | Failed/canceled | Terminal only. No automatic retry. |
 | Managed display after sibling killed the requested buffer | Missing shared buffer, no own suppression | Permit replacement preparation. |
-| Reattach followed by managed display | New attachment, no suppression | Permit fresh preparation or refresh. |
+| Reattach followed by managed display | New attachment, no suppression | Check fresh health, then reuse unchanged or create a missing view. |
 | Reattach after own manual closure | Suppressed | Preserve suppression. Do not prepare automatically. |
-| `R` | Any attached enabled-host state | Abandon old attempt, clear suppression, reset full layout, start fresh health. |
+| `R` | Any attached enabled-host state | Abandon old attempt, clear suppression, reset full layout, check fresh health, then reuse unchanged or create. |
 | Cancel action | Pending | Invalidate immediately. Signal private abandonment outside connection initialization, or stop at its guarded checkpoint. Retain terminal and connection. |
 | Health deadline | Health | Report host, abandon only this attempt, retain terminal and connection. |
 | Natural transport failure | Pending | Report failure. Preserve the installed client's own cleanup policy. |
@@ -162,6 +168,8 @@ Do not put source-file buffers in the candidate list. Do not scan a project's fi
 10. A newer attachment cannot inherit an old attempt's completion or cleanup.
 11. View restoration never resolves a dead buffer name into an unrelated live buffer.
 12. A buffer opened from a Project view remains a source-file buffer, not an owned view.
+13. A feature worker never refreshes a surviving view, including a hidden view.
+14. An unpublished candidate cannot become the shared view before valid completion.
 
 ## Cleanup Eligibility
 

@@ -1,7 +1,7 @@
 # Research: Remote RPC Project Views
 
 **Date**: 2026-09-06
-**Scope**: Read-only source research and isolated local experiments. No remote host connection, server installation, source change, or live Emacs reload occurred.
+**Scope**: Source research and isolated local experiments. No remote connection, server installation, application-source change, or live Emacs reload occurred.
 
 ## Decisions
 
@@ -17,7 +17,7 @@
 
 ### R2. Use a worker thread and an attempt-owned deadline
 
-**Decision**: Perform connection acquisition, health, identity resolution, and status preparation in a cooperative Emacs worker. Keep display changes on the main thread.
+**Decision**: Perform connection acquisition, health, identity resolution, and missing-view creation in a cooperative worker. Reuse surviving views without mutation. Keep display changes on the main thread.
 
 **Rationale**: The installed synchronous RPC wait uses `accept-process-output` with external timers suspended. Calling it from a later main-thread timer still blocks normal interaction.
 
@@ -64,6 +64,12 @@ If server startup already entered its readiness wait, let the original client fi
 This avoids both connection retirement and partially initialized live generations. Do not synthesize connected properties or connection-local settings in the feature.
 
 E6 disproved immediate signaling during initial startup. E8 and E10 verified the guarded completion alternative. The feature still reports abandonment at its own deadline.
+
+Check admission at every `tramp-rpc--establish-controlmaster` entry, including its native retry. E12 shows why the server-start checkpoint alone is insufficient.
+
+Bind `timer-list` and `timer-idle-list` locally around native authentication. E11 shows that otherwise the main thread can consume its timeout with a `no-catch` error.
+
+The binding isolates timer ownership, not the timeout budget. Keep the original authentication timeout and native failure cleanup.
 
 **Alternatives rejected**: `keyboard-quit`, signaling `quit`, deleting the RPC process, TRAMP connection cleanup, or setting the RPC call timeout to the feature deadline.
 
@@ -127,11 +133,14 @@ The error still reaches the feature's main-thread guidance path. Keep global set
 
 ### R7. Reuse the local provider without using its display side effects
 
-**Decision**: Call `claude-code-ide-manager--open-status-buffer` inside the worker. Bind Magit's no-window controls during preparation.
+**Decision**: Look for a surviving view before calling the provider. Only missing-view creation calls `claude-code-ide-manager--open-status-buffer` inside the worker.
+
+Use these bindings for that creation call:
 
 ```elisp
 (let ((magit-display-buffer-function #'ignore)
       (magit-display-buffer-noselect t)
+      (magit-inhibit-save-previous-winconf 'unset)
       (warning-minimum-level :emergency))
   (claude-code-ide-manager--open-status-buffer directory))
 ```
@@ -146,6 +155,7 @@ The error still reaches the feature's main-thread guidance path. Keep global set
 - Adding `magit-display-buffer-noselect=t` let actual installed Magit prepare a local status buffer without changing the window state.
 - Magit's remote Git warning uses `display-warning`, outside its normal display function.
 - E9 verifies that the warning threshold prevents that window while normal warning logging remains available.
+- Binding `magit-inhibit-save-previous-winconf` to `unset` prevents a worker-time frame snapshot from later affecting native `q`.
 
 Bind `inhibit-interaction` to `t` for worker work. Keep `warning-minimum-log-level` unchanged. An interactive provider follows the existing error/fallback path without opening a prompt.
 
@@ -171,6 +181,10 @@ Serialize feature writers per resolved view identity. A Session switch does not 
 
 Before a command, record the current Session, visible terminal, actual displayed Project-view buffer, and epoch. After the command, mark suppression only if that same view disappeared without a Session or epoch change.
 
+Compare the exact attachment token on the snapshot's frame. Terminal visibility is required before the command, not after it.
+
+Require a deleted window, a killed buffer, or a command that started in the view window. An unrelated Help popup can reuse an unselected view window without expressing dismissal.
+
 Manager switches, reset, detach, layout restore, and asynchronous display advance the epoch. They therefore cannot count as manual closure. A pending view that never appeared has no before-command display record.
 
 **Evidence**: An isolated command-loop prototype used real `C-x 0`, `C-x k RET`, and manager-like commands through `execute-kbd-macro`. It distinguished window dismissal, shared-buffer killing, Session switches, pending results, and reset.
@@ -188,6 +202,26 @@ A buffer-local kill hook may invalidate the shared buffer record. It must not ma
 Preserve buffers unless all eligibility facts are already known. A same-host attached Session with unknown project identity prevents an exclusivity claim. Source-file buffers never enter the candidate set.
 
 **Alternatives rejected**: Generic kill/exit cleanup, project-directory buffer sweeps, remote identity resolution during detach, or shared-connection cleanup.
+
+### R11. Reuse surviving views instead of refreshing them
+
+**Decision**: The user approved the simpler rule after the shared-buffer experiment. Fresh health still runs for new attempts, including `R` and reattach.
+
+After identity resolution, reuse every matching surviving view unchanged. This includes hidden and preexisting user buffers. Invoke the provider only when the view is missing.
+
+Use native buffer lookup as well as the feature registry. Magit can otherwise find and refresh a user-created status buffer unknown to the feature.
+
+Use Dired's non-creating lookup instead of `dired-noselect` for reuse. The latter can revert an existing buffer when `dired-auto-revert-buffer` is enabled.
+
+**Evidence**: E13 demonstrates shared-point corruption during an actual Magit render. E14 verifies unchanged reuse of real Magit and Dired buffers after native user refresh.
+
+Claim creation per view identity before yielding. A second feature attempt waits for completion, then reuses the result. Do not reuse a known incomplete candidate.
+
+The creation slot does not serialize native user commands. During initial creation, wait or cancel before manually opening or refreshing the same project's native view.
+
+The feature does not add provider advice, buffer-state copying, point pinning, or a staging framework to cover that native concurrency limitation.
+
+**Alternatives rejected**: Background refresh of a surviving buffer, refresh-only locks, a hand-maintained buffer-state copier, or silently removing fresh health checks.
 
 ## Experiments Run
 
@@ -349,15 +383,69 @@ AUTH_FINISH canceled=t native-auth-completed=t auth-process-retained=t rpc-start
 
 The run exited zero. Native authentication completed without feature-induced process retirement. The server-start admission checkpoint prevented any RPC process or registered generation.
 
+### E11. Authentication timeout ownership
+
+A controlled handoff kept the main thread active across a worker timer's expiry. Each variant ran three times:
+
+```text
+Error running timer: (no-catch timeout timeout)
+TIMER_HANDOFF isolated=nil result=nil worker-live=t
+TIMER_HANDOFF isolated=t result=timeout worker-live=nil
+```
+
+Without isolation, all three runs consumed the timeout on the wrong stack. With local timer lists, all three workers handled their own timeout and exited.
+
+The final experiment exited zero. It tested the timer primitive used by native authentication, not a real SSH login timeout.
+
+### E12. No authentication retry after cancellation
+
+The native connection function received a local authentication failure after token invalidation:
+
+```text
+AUTH_RETRY guarded=nil total-starts=2 starts-after-cancel=1 rpc-starts=0 outcome=native-error
+AUTH_RETRY guarded=t total-starts=1 starts-after-cancel=0 rpc-starts=0 outcome=abandoned
+```
+
+The entry checkpoint prevented the second authentication process. The experiment exited zero and started no RPC server.
+
+### E13. Shared buffer point invalidates in-place worker refresh
+
+The basic thread handoff showed:
+
+```text
+POINT_HANDOFF worker-before=5 main-move=1 worker-after=1
+```
+
+An actual Magit render then paused at a Git call inside refresh. The main thread moved the same buffer's point:
+
+```text
+MAGIT_POINT before=62 main-point=1 same-text=nil worker-error=nil
+```
+
+The render order changed without an error. The experiment used a local fixture copied from existing Git objects. It created no commit and contacted no host.
+
+The user then approved removing automatic refresh of surviving buffers. The plan rejects that in-place worker design rather than adding a point or buffer-state repair mechanism.
+
+### E14. Reuse-only behavior with native provider buffers
+
+The prototype performed a real local `process-file` health command, then used native non-creating lookup. The main thread refreshed and moved point before reuse.
+
+```text
+REUSE_ONLY kind=magit health=1 provider-calls=0 same-buffer=t text-preserved=t point-preserved=t mode-state-preserved=t
+REUSE_ONLY kind=dired health=1 provider-calls=0 same-buffer=t text-preserved=t point-preserved=t mode-state-preserved=t
+```
+
+Both cases exited zero. These are native Magit/Dired buffers, not mocked buffer returns. The health operation was local, not a real-server compatibility check.
+
 ## Evidence Limits and Implementation Gates
 
 The experiments establish the selected primitives, not the completed feature. No real server was contacted. No remote delay, disconnection, or real Magit-over-RPC scenario ran.
 
-Implementation must exercise the complete guarded path against an authorized server. It must also test cancellation during connection startup, provider fallback, identity resolution, and shared-buffer preparation. Preserve ordinary client timeout behavior in those checks.
+Implementation must exercise the guarded path against an authorized server. Cover cancellation during startup, fallback, identity resolution, and missing-view creation. Preserve native timeout behavior.
 
 The full compile-and-test script was not run for this document-only change. It byte-compiles application files in the shared checkout. Run it after implementation, when that work is authorized.
 
-No product clarification remains open. E8 resolves E6's startup gap. The real-host scenarios remain implementation acceptance gates, not authorization to run them now.
+No product clarification remains open. The approved reuse-only rule resolves the shared-buffer design blocker. Real-host scenarios and native initial-creation limitations remain explicit implementation boundaries.
 
 ## Primary Source Locations
 

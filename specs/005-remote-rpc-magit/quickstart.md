@@ -77,6 +77,22 @@ Expected: both use the same buffer. Their Session IDs and directory metadata rem
 
 Expected: those view identities and buffers remain separate.
 
+## Surviving-View Reuse
+
+1. Record the prepared buffer object and contents.
+2. Change the fixture's working tree through the operator's separate workflow.
+3. Use manager `R`.
+
+Expected: fresh health succeeds, but the same buffer and old status contents remain. The feature does not call the status provider.
+
+4. Repeat with the surviving view hidden.
+5. Repeat after explicit reattach.
+6. Use native `g` in the view.
+
+Expected: hidden and visible views follow the same reuse rule. Native `g` performs the user-directed refresh.
+
+During initial creation, wait or cancel before manually opening or refreshing the same project's native Magit/Dired view. The feature serializes its own creators, not native user commands.
+
 ## Non-Git and Provider Fallback
 
 1. Display a Session in the accessible non-Git fixture directory.
@@ -88,11 +104,12 @@ Expected: Dired opens through the normal provider fallback. Git availability is 
 Expected: successful health followed by Dired, not a missing-Magit health failure.
 
 3. Set the existing provider option to `dired-noselect` in the isolated profile.
-4. Display a Git Session through `R`.
+4. Close the fixture's surviving Project-view buffer.
+5. Display the Git Session through `R`.
 
 Expected: the configured provider remains authoritative. The feature does not force Magit or change VC/cache options.
 
-5. Restore the original provider option.
+6. Restore the original provider option.
 
 ## Focus and Late Completion
 
@@ -140,6 +157,17 @@ Expected: only A gains suppression. B may recreate the missing view because its 
 
 Expected: the switch does not count as manual closure. A never-displayed candidate does not set suppression.
 
+Use `R` before each additional closure case:
+
+- Native `q` in the view.
+- `C-x b` from the view.
+- Dired `RET` to a source file.
+- `C-x 1` from the terminal or an unrelated window.
+
+Expected: each actual dismissal suppresses only its initiating Session. The source file remains outside cleanup.
+
+Also open Help from the terminal in a narrow frame. Reuse of an unselected view window by Help must not set suppression.
+
 ## Cancellation, Supersession, and Health Deadline
 
 Use an operator-controlled delay fixture and an independent RPC consumer on the same host.
@@ -148,7 +176,9 @@ Use an operator-controlled delay fixture and an independent RPC consumer on the 
 2. Use manager `? C` on that Session.
 3. Use the independent RPC consumer.
 
-Expected: preparation stops without retry or fallback. No later result changes the view or layout. The shared connection remains usable unless it independently fails.
+Expected: the attempt becomes canceled immediately and cannot publish, retry, or enter fallback. An admitted native initialization may finish under its own timeout.
+
+The shared connection remains usable unless it independently fails. A later `R` must not reuse an incomplete candidate from the canceled attempt.
 
 4. Repeat cancellation during identity resolution and initial status preparation.
 5. Repeat while another Session waits for the same view writer.
@@ -170,6 +200,11 @@ Expected: no new fixed status deadline fires. The cancel action remains availabl
 
 Expected: old tokens cannot publish. No result affects a newer attachment. Preference changes start no replacement request.
 
+12. Repeat cancellation during first authentication and server initialization.
+13. Exercise the native authentication timeout with main-thread timers active.
+
+Expected: no authentication retry starts after cancellation. Native initialization either completes before abandonment or follows its own failure policy.
+
 ## No Acquisition and Current Health
 
 Observe acquisition entry points in an isolated instrumented test profile. Keep the installed client's normal server selection unchanged.
@@ -190,6 +225,16 @@ Expected: global and saved settings remain unchanged. The unrelated RPC operatio
 8. Repeat with a live connection and warm metadata caches.
 
 Expected: each fresh attempt still receives its own uncached health response. Cached installation or directory state cannot pass health alone.
+
+## Worker Diagnostics
+
+1. Use a fixture without usable credentials or preapproved host trust.
+
+Expected: no prompt, automatic trust change, error-buffer selection, input discard, or display pause occurs.
+
+2. Use a fixture whose Git version triggers Magit's dependency warning.
+
+Expected: the warning follows the normal logging policy without opening a worker-owned warning window. Normal provider fallback remains available.
 
 ## Cleanup Matrix
 
@@ -230,3 +275,50 @@ Expected: cleanup resolves no remote paths, saves no files, and closes no shared
 Record the tested client/server versions, host fixture scope, ERT result, and actual manager behavior. Distinguish synthetic transport tests from real-server tests.
 
 The feature is complete only when the specified cases pass. A compiling module, successful local Magit call, or isolated cancellation primitive is not end-to-end acceptance.
+
+## Observed Acceptance — 2026-09-06
+
+The user authorized the non-destructive subset on the exact configured host `ramhorn`. The fixture exposed one attachable zmx Session in `/home/yufu/SAGA-sdk`.
+
+| Item | Observed result |
+|------|-----------------|
+| Emacs | `31.1.50` |
+| Installed `tramp-rpc` client | `0.13.1` |
+| Current remote server response | `system.info` reported `0.13.1`, Linux `x86_64`, on `ramhorn`. |
+| Disabled-host control | Bulk attachment created only the terminal. It created no Project-view intent and started no preparation. |
+| Current health | The worker's uncached `(process-file "true" nil nil nil)` returned status `0`. |
+| First Project view | Magit opened `magit: SAGA-sdk` beside the terminal in `magit-status-mode`. |
+| View identity | `("ramhorn" git "/rpc:ramhorn:/home/yufu/SAGA-sdk")` |
+| Layout and focus | The manager, terminal, and Magit view were visible. The terminal stayed selected. |
+| Visible reuse with `R` | Fresh health reused the exact buffer. Buffer text hash, modification tick, point, and focus stayed unchanged. The provider call count stayed `0`. |
+| Hidden reuse with `R` | Fresh health reused the same hidden buffer without a provider call or content change. The view returned beside the terminal. |
+| Cancellation | Cancellation during Magit preparation returned success. The worker ended while the terminal and shared RPC transport stayed live. |
+| Independent consumer after cancellation | A separate `process-file` health request returned status `0` on the same transport. |
+| Package verification | `772` ERT tests produced `763` expected results, `0` unexpected results, and `9` skips. Byte compilation passed. |
+
+The first live attempt found a worker transport-ownership defect after native startup released the RPC process. A regression test reproduced the defect.
+
+The fix now claims an unlocked transport only for each feature-owned RPC call. It releases the transport after every call and after cancellation.
+
+The authorized subset did not inject failures, detach Sessions, test cleanup, or change remote software. The host exposed no second Session or non-Git fixture.
+
+## Convergence Acceptance — 2026-09-07
+
+The checks used live Emacs `31.1.50` and the configured hosts `ramhorn` and `vps`.
+
+| Item | Observed result |
+|------|-----------------|
+| No acquisition | Existing-server health returned `0`. Observed download, build, transfer, promotion, and local-binary acquisition calls stayed at `0`. |
+| Missing server | A temporary nonexistent server path failed with exit `127`. Never-deploy mode made no acquisition call. |
+| Reconnect | An explicit client disconnect followed by a fresh health request returned `0`. |
+| Setting isolation | The server path and deployment setting matched their original values after every probe. |
+| Same Worktree | Two `ramhorn` subdirectories resolved to the same key and exact Dired buffer. |
+| Different Worktrees | Two `ramhorn` Git repositories resolved to different keys and different Dired buffers. |
+| Dired fallback | A non-Git `ramhorn` directory produced `dired-mode` through the normal Magit provider fallback. |
+| Host isolation | The same non-Git path on `ramhorn` and `vps` produced different keys and different buffers. |
+| Actual Session | Attached Session ID `claude-remote-ramhorn-eIuaBO` to zmx `cci-omp-saga-sdk-1lEr7U` on `ramhorn`. Its terminal buffer was `*claude-code[SAGA-sdk@ramhorn]*`. |
+| Actual Project view | Both completions published Dired buffer `SAGA-sdk` for `("ramhorn" git "/rpc:ramhorn:/home/yufu/SAGA-sdk")`. Its directory was `/rpc:ramhorn:~/SAGA-sdk/`. |
+| Manager focus | `*claude-code-manager*` stayed selected before and after completion in the same window. The actual Project view became visible. |
+| Unrelated focus | `*t046-unrelated*` stayed selected before and after completion in the same window. The actual Project view became visible. |
+| Fixture cleanup | No `cci-remote-project-acceptance-*` directory remained on either host. |
+| Package verification | Byte compilation passed. `781` ERT tests produced `772` expected results, `0` unexpected results, and `9` skips. |

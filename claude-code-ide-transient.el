@@ -81,6 +81,8 @@
 (declare-function claude-code-ide-manager-toggle-pin "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-reset-layout-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-detach-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-cancel-project-view-at-point
+                  "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-reattach-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-stop-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-move-up "claude-code-ide-manager" ())
@@ -684,6 +686,8 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("K" "Stop session (confirm)" claude-code-ide-manager-stop-at-point)
     ("D" "Detach zmx session" claude-code-ide-manager-detach-at-point)
     ("X" "Detach zmx session" claude-code-ide-manager-detach-at-point)
+    ("C" "Cancel pending Project view"
+     claude-code-ide-manager-cancel-project-view-at-point)
     ("o" "Open project/worktree" claude-code-ide-manager-open)
     ("r" "Rename session" claude-code-ide-manager-rename-at-point)
     ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]

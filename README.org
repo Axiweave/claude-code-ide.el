@@ -264,11 +264,54 @@ A timeout or ambiguous result leaves the row intact.
 Emacs never retries a kill.
 
 Remote attachment supports the Ghostel backend only. Future versions will deprecate vterm and Eat.
-Remote layouts show the terminal without opening a local project.
-Remote project launch, interactive Git, Magit, Dired, and Treemacs actions remain unsupported.
-Remote file editing, text-transfer integration, MCP, and SSE setup remain outside this mode.
+Remote layouts show only the terminal unless you enable optional remote Project views.
+Remote project launch, Treemacs actions, text transfer, MCP, and SSE setup remain outside this mode.
+Remote Project views support Magit or Dired. Use their normal commands for interactive Git and file access.
 
 If attachment fails, inspect the host-qualified error. Check SSH authentication, trusted host keys, and remote =PATH=. A missing target remains disconnected. Emacs never replaces it with a new agent session. See the [[file:specs/003-attach-remote-agents/quickstart.md][validation guide]] for backend coverage and the live acceptance procedure.
+
+*** Optional Remote Project Views
+
+Remote Project views require an installed compatible =tramp-rpc= client and its configured server binary on the remote host.
+Install and configure them separately. The package does not download, build, install, update, or deploy either component.
+Configure SSH credentials and host keys before use because automatic preparation cannot prompt.
+
+Enable each exact host separately:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-remote-hosts '("my-agent-host")
+      claude-code-ide-remote-project-view-hosts '("my-agent-host")
+      claude-code-ide-remote-project-cleanup-hosts nil)
+#+end_src
+
+=claude-code-ide-remote-hosts= remains the access approval list.
+=claude-code-ide-remote-project-view-hosts= does not approve a host by itself.
+Changing either Project-view option starts no remote work.
+
+The first managed display shows the terminal in an ordinary window.
+It then starts Project-view preparation in the background.
+The feature checks the current RPC connection and remote directory before it uses the configured status provider.
+The provider uses Magit when available and its normal Dired fallback otherwise.
+A failure leaves the terminal usable and reports the host, failed phase, and corrective action.
+
+One exact host and Git Worktree share one Project-view buffer.
+Non-Git directories use their exact directory identity.
+The feature reuses every surviving matching buffer without refreshing it.
+Use the view's native =g= command when you want a refresh.
+
+Close a Project-view window to suppress its automatic display for that Session.
+This suppression survives navigation and remote reattachment in the current Emacs process.
+Press manager =R= to reset the full layout, clear suppression, and run a fresh health check.
+Open the manager menu with =?=, then press =C= to cancel only the pending Project-view attempt.
+Cancellation does not detach the terminal or close a shared RPC connection.
+
+=claude-code-ide-remote-project-cleanup-hosts= independently permits conservative local buffer cleanup.
+Cleanup runs only after successful manager =D= or =X= detach.
+It can close only an unmodified Magit or Dired view that this feature created for the detached Session.
+It retains reused, custom, modified, shared, source-file, process, temporary, and uncertain buffers.
+It also retains buffers with unknown local kill or query hooks.
+Cleanup never saves, prompts, makes a remote request, or closes an RPC connection.
+Terminal close, network loss, Stop, and Emacs exit do not run this cleanup.
 
 ** CC Manager
 

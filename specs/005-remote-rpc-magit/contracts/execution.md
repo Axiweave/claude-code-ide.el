@@ -37,13 +37,19 @@ Publication requires the exact current attempt and attachment. Display additiona
 
 ### Scope
 
-Install the adapter only after the optional client passes its capability check. It wraps `tramp-rpc--connect` and `tramp-rpc--start-server-process`.
+Install the adapter only after the optional client passes its capability check. Guard `tramp-rpc--connect`, `tramp-rpc--establish-controlmaster`, and `tramp-rpc--start-server-process`.
 
 The connection wrapper owns scoped configuration and the connection-in-progress flag. The server-start wrapper owns admission, native initialization completion, and the post-start checkpoint.
 
 Both wrappers check admission and completion. If native code returns or raises `error` after invalidation, signal private abandonment before provider fallback.
 
+The authentication wrapper checks the token before each native entry, including retries. Bind `timer-list` and `timer-idle-list` to nil around that native authentication call.
+
+This keeps its timeout timer on the worker's dynamic timer list. The main thread retains its normal timers. Do not change the native authentication timeout.
+
 The adapter is active only when the current thread is an owned feature worker and the connection vector matches that worker's exact target. Main-thread RPC use and unrelated workers take the original path.
+
+Match the client's route-aware connection identity, not the vector's local directory. A reconnect from another subdirectory remains part of the owned attempt.
 
 Do not replace the client's request encoder, process filter, connection registry, or terminal transport. Do not edit installed sources or the reference checkout.
 
@@ -82,7 +88,7 @@ Without this binding, TRAMP's login-error path can select a buffer, discard inpu
 
 ### Capability check
 
-Check both connection entry points, the deterministic binary selector, no-deploy variables, connection accessors, and public process-thread controls. Validate behavioral assumptions through the compatibility tests.
+Check all three guarded entry points, the deterministic binary selector, no-deploy variables, connection accessors, and public process-thread controls. Validate behavioral assumptions through the compatibility tests.
 
 Do not claim compatibility from a version string alone. If a required safety interface changes, retain the terminal and report the unsupported client. Do not silently substitute a different transport.
 
@@ -139,9 +145,39 @@ Never synthesize connected properties or connection-local settings after an inte
 
 After health, resolve Worktree identity through remote file operations. A `.git` file also marks a Worktree. A non-Git directory retains its exact directory identity.
 
-Acquire only that view identity's feature-writer slot before calling the provider. Waiting for another writer must remain cancellable. Do not serialize unrelated view identities behind one global lock.
+Check and claim the view identity without yielding. A second feature attempt waits cancellably for that creator, then repeats the existing-buffer lookup.
 
-Call the existing local provider and normal fallback. Bind Magit's display function to `ignore` and its no-select variable to `t` during preparation. Do not save and later restore an old frame configuration across the worker's lifetime.
+Check native buffers as well as the feature registry. At the resolved root, use `magit-get-mode-buffer` for Magit and `dired-find-buffer-nocreate` for Dired.
+
+Validate exact directory identity for Dired. An ancestor-directory hit does not satisfy a different non-Git view key.
+
+Do not call `dired-noselect` merely to look for a surviving buffer. Its `dired-auto-revert-buffer` setting can cause a refresh.
+
+If a matching buffer survives, return it unchanged. Do not call the provider, reinitialize its mode, revert it, or refresh it.
+
+This rule includes hidden buffers, first display, reattach, and `R`. Health remains mandatory for each new permitted attempt.
+
+Only a missing view invokes the configured local provider and normal fallback. Keep its candidate undisplayed by the manager until completion.
+
+Record the exact new candidate through the native creation path. Do not hide it from Magit's lookup, copy buffer state, or advise ordinary provider commands.
+
+The creation slot serializes feature attempts only. It does not serialize user-directed native Magit/Dired commands on the same project.
+
+During initial creation, wait for completion or cancel before manually opening or refreshing the same project's native view. This is an installed-provider concurrency limitation.
+
+After completion, native `g` retains its normal behavior. Published views never receive feature-owned writes.
+
+On valid completion, check for a matching surviving view again. Reuse it if another creator won. Never publish a duplicate current view.
+
+Release only a known, never-published candidate during abandonment or a lost creation race. Preserve source-file, user-claimed, and uncertain custom buffers.
+
+Never reuse a known incomplete candidate. If ownership prevents discarding it, retain it and report that the user must resolve it before retry.
+
+These candidates are attempt scratch resources, not published Project views. Published-view cleanup still requires its separate opt-in and explicit detach.
+
+Bind Magit's display function to `ignore`, its no-select variable to `t`, and `magit-inhibit-save-previous-winconf` to `unset`.
+
+The last binding prevents Magit from recording a worker-time frame configuration for a later `q`. Do not restore an old frame configuration.
 
 Bind `warning-minimum-level` to `:emergency` during provider work. Keep `warning-minimum-log-level` unchanged to preserve the user's logging policy.
 
@@ -149,7 +185,11 @@ The Magit display-function binding does not cover `display-warning`. Missing or 
 
 A custom provider must return a buffer through the existing contract. Do not overwrite the user's provider, VC policy, or cache settings to force success. Preserve uncertain custom buffers from cleanup.
 
+A custom provider must obey undisplayed creation and reuse without mutation. Do not add a generic buffer-state copier for providers that cannot obey this contract.
+
 A feature cancellation must stop provider work before further remote requests or fallback begin. Cleanup during unwinding may release local request bookkeeping, but it must not publish a canceled result.
+
+Killing a candidate invalidates its owning attempt and triggers private abandonment. It must not become an ordinary provider error followed by Dired fallback.
 
 Recognize a created buffer only through the known creation path and exact returned buffer identity. A general before/after `buffer-list` difference is not enough when other user activity can create buffers concurrently.
 
@@ -179,9 +219,13 @@ The manager records a before-command snapshot only when a registered Project vie
 
 At command completion, suppression requires:
 
-- The same frame still presents the same Session and terminal.
-- The manager layout epoch has not changed.
-- The previously displayed view window or buffer no longer exists in that layout.
+- The snapshot's frame retains the same exact attachment token and manager layout epoch.
+- The view buffer is dead or no window in that frame displays it.
+- The view window was deleted, the buffer was killed, or the command started with the view window selected.
+
+Require terminal visibility only in the before-command snapshot. Removing both windows with `C-x 1` can still express manual closure.
+
+Do not classify Help or compilation reusing an unselected view window as dismissal. Test `q`, `C-x b`, and `C-x 1` separately.
 
 Manager switches, reset, detach, restore, and asynchronous view insertion advance the epoch. They must not count as manual closure.
 
@@ -224,10 +268,14 @@ Implementation must demonstrate these cases before release:
 - Canceled startup either never enters server startup or completes native initialization before the post-start checkpoint.
 - Owned stdout and stderr locks release before another consumer needs them, even when the creator worker remains alive.
 - A native startup timeout retains client cleanup behavior and cannot trigger fallback for an abandoned attempt.
+- Cancellation during failed authentication starts no second authentication process.
+- The native login timeout still fires when the main thread processes timers first.
 - Login failure selects no window, discards no input, and adds no display pause from worker code.
 - Magit dependency warnings remain logged without adding a worker-owned window.
 - No new RPC request, provider fallback, buffer publication, or layout change follows abandonment.
 - Two Sessions sharing one view cannot publish duplicate current buffers.
-- A user refresh or edit cannot receive stale content from a superseded feature writer.
+- Reuse preserves buffer text and mode state, even while the user moves point, refreshes, or edits the surviving view.
+- A second feature attempt waits for missing-view creation instead of reusing or refreshing an incomplete candidate.
+- Cancellation followed by `R` never reuses an incomplete candidate left by the abandoned attempt.
 - Manual window dismissal and shared-buffer killing suppress only the initiating Session.
 - Cleanup has no remote I/O, save, or connection-retirement path.

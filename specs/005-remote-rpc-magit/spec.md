@@ -22,6 +22,7 @@ Remote Project views must follow local managed-view behavior where possible, sub
 - Q: May canceling a Project-view attempt or reaching its health timeout disconnect other RPC users on the same host? → A: No. The feature must abandon only its own attempt and preserve the shared connection. The installed client's independent transport failure and timeout policy remains unchanged.
 - Q: When you close a shared Project view from one Session, which Sessions should require `R` before showing it again? → A: Only that Session. Other Sessions retain their own layout intent and may reuse or recreate the shared view.
 - Q: Should a completed Project view appear when its Session is still displayed but your focus is elsewhere? → A: Yes. If the same Session remains current, show its Project view beside the terminal without changing the selected window.
+- Q: How should the plan avoid unsafe background refresh of a shared buffer? → A: Simplify. Reuse every surviving matching view without automatic refresh. Create only missing views. Keep fresh health checks for new attempts and native `g` refresh.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -85,9 +86,9 @@ The user attaches many Sessions without opening every remote project. Each Sessi
 4. **Given** an existing prepared view, **When** the user leaves and returns to its Session, **Then** the saved layout returns without an automatic remote refresh.
 5. **Given** a manually closed Project-view buffer, **When** the user revisits its Session, **Then** the terminal remains alone until the user invokes `R` — Reset layout.
 6. **Given** a manually closed view, **When** the user invokes manager `R` — Reset layout, **Then** the default layout and health-gated Project view return without restarting the Agent.
-7. **Given** a disconnected Session, **When** the user explicitly reattaches and displays its managed layout, **Then** a new preparation attempt may refresh its surviving Project view.
+7. **Given** a disconnected Session with a surviving Project view, **When** reattach and managed display start a new attempt, **Then** fresh health precedes reuse without automatic refresh.
 8. **Given** a view manually closed before reattach, **When** reattach succeeds, **Then** recreating the view still requires manager `R` — Reset layout.
-9. **Given** an existing shared view, **When** another Session first prepares that Worktree's view, **Then** the feature reuses and refreshes the buffer without creating a duplicate.
+9. **Given** an existing shared view, **When** another Session first prepares that Worktree's view, **Then** fresh health precedes reuse of the same buffer. The feature neither refreshes it nor creates a duplicate.
 10. **Given** Sessions A and B sharing a view, **When** the user dismisses it from A's layout, **Then** only A requires `R` to show it again. B retains its own layout intent.
 11. **Given** the user kills the shared buffer from A, **When** B next enters managed display with a saved layout that includes that view, **Then** B may prepare a replacement. A still requires `R`.
 12. **Given** an initial attempt that finished while the user was away, **When** the user returns, **Then** absence of a previous display alone does not count as manual closure.
@@ -219,10 +220,10 @@ The user separately enables Project-view cleanup for a host. Explicit manager de
 - **FR-024**: Share a Project-view buffer across Sessions on the same exact host and Worktree, including different subdirectories. Each Session retains independent layout and manual-close state. Keep different hosts and Worktrees distinct. (Stories 2, 3)
 - **FR-025**: For non-Git directories, identify a Dired view by exact host and directory. Do not infer a common Worktree or merge ancestor directories. (Story 2)
 - **FR-026**: Keep Session-directory metadata unchanged. Resolve view identity only during permitted project access, without interpreting remote directories as local paths. (Stories 1, 2)
-- **FR-027**: During a new permitted preparation attempt, refresh or populate the selected status view, reusing an existing matching buffer when possible. (Stories 2, 3)
+- **FR-027**: After successful health checks, reuse a surviving matching status buffer without automatic refresh. Invoke the configured provider only when the view is missing. Apply this rule to first display, explicit reattach, and `R`, whether the surviving buffer is visible or hidden. Preserve native user-directed refresh controls such as `g`. (Stories 2, 3)
 - **FR-028**: When the saved Project-view buffer survives, later navigation MUST restore the existing layout without automatic remote refresh. If another Session killed that buffer, the current Session may prepare a replacement on managed display when its own layout still requests the view. The user retains explicit status refresh controls. (Story 3)
 - **FR-029**: Explicitly dismissing the Project-view window or killing its buffer from a Session MUST suppress automatic display only for that Session. Navigation, reattach, and another Session's view creation MUST preserve that suppression until manager `R` — Reset layout. Merely switching Sessions or never displaying a pending result MUST NOT count as manual closure. (Story 3)
-- **FR-030**: Explicit reattach followed by managed display may prepare or refresh a view when that Session's layout still requests it. The view may survive or need recreation after another Session's buffer closure or eligible cleanup. The current Session's own manual closure always takes precedence. (Story 3)
+- **FR-030**: Explicit reattach followed by managed display may start fresh health when the Session still requests its view. Reuse a surviving view without refresh, or create a missing view. The Session's own manual closure takes precedence until `R`. (Story 3)
 - **FR-031**: Preserve user VC, status-view, and project-cache settings. Do not rewrite them to enable remote access or advertise unverified acceleration. (Stories 1, 2, 4)
 
 #### Request ownership and cleanup
@@ -245,7 +246,7 @@ The user separately enables Project-view cleanup for a host. Explicit manager de
 - **Project view**: The shared status or directory buffer for one exact host and Worktree, or one exact non-Git host and directory.
 - **Project-view preferences**: Two independent disabled-by-default choices for each host: automatic Project views and cleanup on explicit manager detach.
 - **Health result**: Current evidence of usable local RPC prerequisites and a compatible response from the intended remote server, or a corrective failure reason.
-- **Preparation attempt**: One health-gated effort to create or refresh a Project view for a Session's current attachment. Its display intent depends on the current managed Session and visible terminal, not keyboard focus.
+- **Preparation attempt**: One health-gated effort to reuse or create a Project view for the current attachment. Its display intent depends on the current managed Session and visible terminal, not keyboard focus.
 - **Owned Project view**: An eligible Magit/Dired buffer created by this feature. Reusing an existing buffer does not grant cleanup ownership.
 - **Manually closed view**: A per-Session choice made by explicitly dismissing that Session's Project-view window or killing its buffer from that Session. Other Sessions' display choices remain independent.
 
@@ -260,7 +261,7 @@ The user separately enables Project-view cleanup for a host. Explicit manager de
 - **SC-005**: Missing-client, missing-server, incompatible-server, and denied-access scenarios yield corrective guidance with zero automatic software installation.
 - **SC-006**: Accessible non-Git directories and missing preferred status software use the normal directory-view fallback rather than falsely reporting broken remote transport.
 - **SC-007**: Bulk-attaching three Sessions starts zero project checks. Each receives its view on first managed display, with no preparation for undisplayed Sessions.
-- **SC-008**: Returning to a surviving prepared view makes zero automatic refresh requests. After manual closure in Session A, A creates or displays zero replacement views until Reset layout. A sibling Session B may independently reuse or recreate its requested view.
+- **SC-008**: Reuse of a surviving view causes zero automatic status refreshes, including after `R` and reattach. New permitted attempts still require current health. After manual closure in Session A, only `R` permits A to display a view again. Sibling B retains its independent view intent.
 - **SC-009**: After prerequisite repair, one manager Reset layout action restores access without restarting or reattaching the Agent.
 - **SC-010**: Same-Session completion changes keyboard focus zero times. Across Session changes, detach, replacement attachment, cancellation, disablement, and host removal, zero stale results replace the current layout.
 - **SC-011**: With cleanup enabled, explicit detach closes eligible unmodified Project views only after their last attached Session detaches.
@@ -278,6 +279,8 @@ The user separately enables Project-view cleanup for a host. Explicit manager de
 - The remote host needs a compatible server and accessible directory. Git is needed for Git status, not for a usable non-Git directory view.
 - Starting an RPC session and reading project data are permitted during a requested preparation attempt. Software provisioning and automatic repository mutation are not health-check actions.
 - The existing local status-view customization remains authoritative, including its normal fallback behavior. Unknown custom buffer ownership never grants cleanup permission.
+- The user approved reuse without automatic refresh after a shared-buffer concurrency experiment. This is a required remote difference, not a change to local refresh behavior.
+- Provider customization governs missing-view creation. To apply a changed provider to a surviving view, close that view and use `R`.
 - First managed display means the user's initial manager-driven presentation of an attached Session, not bulk attachment or background refresh.
 - Manual-close state belongs to the remembered Session, not the shared buffer or Worktree. It survives that Session's reattach without adding new cross-restart history.
 - Thirty seconds bounds only the health phase. Initial status preparation has no additional fixed deadline but must remain nonblocking and cancellable.
