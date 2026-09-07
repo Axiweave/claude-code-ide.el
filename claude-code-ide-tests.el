@@ -20469,6 +20469,8 @@ result arrives never has that result applied to the row now at its key."
             (generate-new-buffer " *remote-late-view*"))
            (claude-code-ide-manager--layouts
             (make-hash-table :test #'equal))
+           (claude-code-ide-manager--current-session-key nil)
+           (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
            (intent
             (claude-code-ide-remote-project--intent-for
              "session-a" "host-a" terminal)))
@@ -20488,6 +20490,14 @@ result arrives never has that result applied to the row now at its key."
                ((symbol-function
                  'claude-code-ide-manager--save-state)
                 #'ignore)
+               ((symbol-function 'claude-code-ide--touch-session) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--session-managed-p)
+                (lambda (_key) t))
+               ((symbol-function 'claude-code-ide-manager--session-directory)
+                (lambda (_key) temporary-file-directory))
+               ((symbol-function 'claude-code-ide-manager--reset-session-idle-state) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--treemacs-window) #'ignore)
                ((symbol-function
                  'claude-code-ide-manager--maybe-prepare-remote-project)
                 (lambda (&rest _args)
@@ -20503,8 +20513,9 @@ result arrives never has that result applied to the row now at its key."
             (set-window-buffer
              (selected-window)
              (get-buffer-create " *remote-late-other*"))
+            (setq claude-code-ide-manager--current-session-key nil)
             (should
-             (claude-code-ide-manager--restore-layout "session-a"))
+             (claude-code-ide-manager-switch-to-session "session-a" nil '(:type global)))
             (should (get-buffer-window terminal))
             (should (get-buffer-window view)))
         (mapc
@@ -20597,7 +20608,6 @@ result arrives never has that result applied to the row now at its key."
          (delete-other-windows terminal keep-terminal t)
          (dired-find-file view replace-view t)
          (kill-buffer view kill-view t)
-         (manager-switch terminal manager-switch nil)
          (describe-function terminal replace-view nil)))
     (save-window-excursion
       (claude-code-ide-remote-project--reset-state)
@@ -20641,9 +20651,7 @@ result arrives never has that result applied to the row now at its key."
                    (set-window-buffer view-window other))
                   ('keep-terminal
                    (delete-other-windows terminal-window))
-                  ('kill-view (kill-buffer view))
-                  ('manager-switch
-                   (claude-code-ide-manager--advance-layout-epoch)))
+                  ('kill-view (kill-buffer view)))
                 (claude-code-ide-manager--remote-project-post-command))
               (should
                (eq
@@ -20658,6 +20666,67 @@ result arrives never has that result applied to the row now at its key."
                (kill-buffer buffer)))
            (list terminal view other))
           (claude-code-ide-remote-project--reset-state))))))
+
+(ert-deftest claude-code-ide-test-remote-project-survives-local-manager-switch ()
+  "Local navigation preserves a ready view, including default-layout return."
+  (save-window-excursion
+    (let* ((terminal (generate-new-buffer " *remote-switch-terminal*"))
+           (view (generate-new-buffer " *remote-switch-view*"))
+           (local (generate-new-buffer " *local-switch-terminal*"))
+           (status (generate-new-buffer " *local-switch-status*"))
+           (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+           (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+           (claude-code-ide-manager--current-session-key "remote")
+           (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
+           (claude-code-ide-remote-hosts '("host-a"))
+           (claude-code-ide-remote-project-view-hosts '("host-a"))
+           (intent (claude-code-ide-remote-project--intent-for
+                    "remote" "host-a" terminal))
+           (frame-state
+            (mapcar (lambda (key) (cons key (frame-parameter nil key)))
+                    '(claude-code-ide-manager-remote-project-display
+                      claude-code-ide-manager-remote-project-command
+                      claude-code-ide-manager-remote-project-epoch))))
+      (setf (claude-code-ide-remote-project--intent-view-buffer intent) view
+            (claude-code-ide-remote-project--intent-outcome intent) 'ready)
+      (unwind-protect
+          (cl-letf
+              (((symbol-function 'claude-code-ide-manager--session-buffer)
+                (lambda (key) (if (equal key "remote") terminal local)))
+               ((symbol-function 'claude-code-ide-manager--session-host)
+                (lambda (key) (when (equal key "remote") "host-a")))
+               ((symbol-function 'claude-code-ide-manager--session-directory)
+                (lambda (_key) temporary-file-directory))
+               ((symbol-function 'claude-code-ide-manager--open-status-buffer)
+                (lambda (_directory) status))
+               ((symbol-function 'claude-code-ide-manager--save-state) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--show-sidebar) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--reset-session-idle-state) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--treemacs-window) #'ignore)
+               ((symbol-function 'claude-code-ide--touch-session) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--session-managed-p)
+                (lambda (_key) t))
+               ((symbol-function 'claude-code-ide-manager--maybe-prepare-remote-project)
+                (lambda (&rest _) (ert-fail "Navigation restarted a ready view"))))
+            (delete-other-windows)
+            (set-window-buffer (selected-window) terminal)
+            (let ((view-window (split-window nil nil 'right)))
+              (set-window-buffer view-window view)
+              (claude-code-ide-manager--set-remote-project-frame-intent
+               "remote" terminal view view-window))
+            (claude-code-ide-manager--remote-project-pre-command)
+            (claude-code-ide-manager-switch-to-session "local" nil '(:type global))
+            (claude-code-ide-manager--remote-project-post-command)
+            (should-not (claude-code-ide-remote-project--intent-suppressed intent))
+            ;; No saved layout must still restore the surviving Project view.
+            (remhash "remote" claude-code-ide-manager--layouts)
+            (claude-code-ide-manager-switch-to-session "remote" nil '(:type global))
+            (should (get-buffer-window terminal))
+            (should (get-buffer-window view)))
+        (dolist (entry frame-state)
+          (set-frame-parameter nil (car entry) (cdr entry)))
+        (mapc #'kill-buffer (list terminal view local status))))))
 
 (ert-deftest claude-code-ide-test-remote-project-failure-guidance-covers-phases ()
   "Each worker phase names its host and one corrective action."

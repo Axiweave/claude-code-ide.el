@@ -934,7 +934,7 @@ Append the current branch when SESSION-KEY is on a named branch."
   "Non-nil while cc-manager is reasserting sidebar state after layout changes.")
 
 (defun claude-code-ide-manager--advance-layout-epoch (&optional frame)
-  "Advance FRAME's manager layout epoch and clear its command snapshot."
+  "Advance FRAME's layout epoch and clear its old display and command intent."
   (let ((frame (or frame (selected-frame))))
     (set-frame-parameter
      frame 'claude-code-ide-manager-remote-project-epoch
@@ -943,6 +943,8 @@ Append the current branch when SESSION-KEY is on a named branch."
        (frame-parameter
         frame 'claude-code-ide-manager-remote-project-epoch)
        0)))
+    (set-frame-parameter
+     frame 'claude-code-ide-manager-remote-project-display nil)
     (set-frame-parameter
      frame 'claude-code-ide-manager-remote-project-command nil)))
 
@@ -3649,6 +3651,7 @@ Dired when it fails or returns a non-buffer."
          (cl-subst
           (buffer-name saved-view)
           old-name window-state :test #'equal)))
+      (claude-code-ide-manager--advance-layout-epoch)
       (window-state-put
        window-state (frame-root-window) 'safe)
       (setq
@@ -3689,7 +3692,6 @@ Dired when it fails or returns a non-buffer."
         (when target-window
           (select-window target-window))
         (when enabled
-          (claude-code-ide-manager--advance-layout-epoch)
           (claude-code-ide-manager--set-remote-project-frame-intent
            session-key session-buffer
            (and
@@ -3697,16 +3699,7 @@ Dired when it fails or returns a non-buffer."
             (get-buffer-window current-view)
             current-view)
            (and current-view
-                (get-buffer-window current-view)))
-          (when
-              (and
-               current-view
-               (claude-code-ide-remote-project-display-allowed-p
-                session-key session-buffer)
-               (not (get-buffer-window current-view)))
-            (claude-code-ide-manager--display-remote-project-view
-             session-key session-buffer
-             (selected-frame) current-view)))
+                (get-buffer-window current-view))))
         target-window))))
 
 (defun claude-code-ide-manager--session-active-file (session-key)
@@ -3829,6 +3822,7 @@ Preserve keyboard focus.  Return non-nil only after display."
     (unless (buffer-live-p session-buffer)
       (claude-code-ide-manager-refresh)
       (user-error "No live session buffer for %s" session-key))
+    (claude-code-ide-manager--advance-layout-epoch)
     (if (claude-code-ide-manager--session-host session-key)
         (if
             (claude-code-ide-manager--remote-project-enabled-p
@@ -3843,7 +3837,6 @@ Preserve keyboard focus.  Return non-nil only after display."
               (delete-other-windows)
               (let ((window (selected-window)))
                 (set-window-buffer window session-buffer)
-                (claude-code-ide-manager--advance-layout-epoch)
                 (claude-code-ide-manager--set-remote-project-frame-intent
                  session-key session-buffer nil nil)
                 (setq
@@ -3961,6 +3954,15 @@ session layout is updated."
               (claude-code-ide-manager--sync-point-to-session-key scope session-key))
           (when (window-live-p preferred-window)
             (select-window preferred-window))))
+      (when-let* (((featurep 'claude-code-ide-remote-project))
+                  ((claude-code-ide-manager--remote-project-enabled-p session-key))
+                  (attachment (claude-code-ide-manager--session-buffer session-key))
+                  (view (claude-code-ide-remote-project-surviving-view
+                         session-key attachment))
+                  ((claude-code-ide-remote-project-display-allowed-p
+                    session-key attachment)))
+        (claude-code-ide-manager--display-remote-project-view
+         session-key attachment (selected-frame) view))
       (cond
        (first-managed-switch
         (claude-code-ide-manager--maybe-prepare-remote-project

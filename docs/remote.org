@@ -179,6 +179,8 @@ Each Session starts preparation only when its managed layout first appears.
 Closing a Project-view window suppresses automatic display for that Session.
 The suppression survives navigation and remote reattachment during the current Emacs process.
 Other Sessions that share the buffer keep their own display intent.
+An ordinary manager switch, including a switch to a local Session, does not suppress the view.
+Returning to the remote Session displays its ready view even without a saved layout.
 
 Press manager =R= to clear that Session's suppression.
 This command resets the full default layout and starts a fresh health-gated attempt.
@@ -252,8 +254,8 @@ Then press manager =R=.
 
 ** A Project view does not return after navigation
 
-You probably dismissed that Session's view.
-Press manager =R= to clear suppression and rebuild the default layout.
+Ordinary manager navigation preserves the Session's view.
+If you closed its Project-view window, press manager =R= to clear suppression and rebuild the default layout.
 
 ** Root cause: macOS GUI worker starvation
 
