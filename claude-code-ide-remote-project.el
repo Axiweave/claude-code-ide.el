@@ -62,10 +62,6 @@
 (declare-function tramp-rpc--start-server-process
                   "tramp-rpc-transport"
                   (vec binary-path &optional sudo-password))
-(declare-function tramp-rpc--call-with-timeout
-                  "tramp-rpc-transport"
-                  (vec method params total-timeout poll-interval
-                       &optional connection))
 (declare-function tramp-rpc--connection-key "tramp-rpc-transport" (vec))
 (declare-function tramp-rpc--get-connection "tramp-rpc-transport" (vec))
 (declare-function tramp-rpc-connection-process "tramp-rpc-connection" (connection))
@@ -476,7 +472,6 @@
              '(tramp-rpc--connect
                tramp-rpc--establish-controlmaster
                tramp-rpc--start-server-process
-               tramp-rpc--call-with-timeout
                tramp-rpc--connection-key
                tramp-rpc--get-connection
                tramp-rpc-connection-process
@@ -521,43 +516,6 @@
       (claude-code-ide-remote-project--unlock-process
        (get-buffer-process stderr-buffer)))))
 
-(defun claude-code-ide-remote-project--call-rpc
-    (original vec method params timeout poll-interval
-              &optional connection)
-  "Call ORIGINAL RPC for VEC with temporary worker transport ownership."
-  (if (not (claude-code-ide-remote-project--owned-call-p vec))
-      (funcall
-       original vec method params timeout poll-interval connection)
-    (let* ((rpc-connection
-            (or connection (tramp-rpc--get-connection vec)))
-           (stdout
-            (and rpc-connection
-                 (tramp-rpc-connection-process rpc-connection)))
-           (stderr-buffer
-            (and
-             rpc-connection
-             (tramp-rpc-connection-stderr-buffer rpc-connection)))
-           (stderr
-            (and stderr-buffer (get-buffer-process stderr-buffer)))
-           (processes (delq nil (list stdout stderr)))
-           (worker (current-thread))
-           claimed)
-      (unwind-protect
-          (progn
-            (when
-                (cl-every
-                 (lambda (process)
-                   (memq (process-thread process)
-                         (list nil worker)))
-                 processes)
-              (dolist (process processes)
-                (unless (process-thread process)
-                  (set-process-thread process worker)
-                  (push process claimed))))
-            (funcall
-             original vec method params timeout poll-interval connection))
-        (dolist (process claimed)
-          (claude-code-ide-remote-project--unlock-process process))))))
 
 (defun claude-code-ide-remote-project--call-connect
     (original vec &rest arguments)
@@ -657,8 +615,6 @@
                 #'claude-code-ide-remote-project--call-auth)
     (advice-add 'tramp-rpc--start-server-process :around
                 #'claude-code-ide-remote-project--call-server-start)
-    (advice-add 'tramp-rpc--call-with-timeout :around
-                #'claude-code-ide-remote-project--call-rpc)
     (setq claude-code-ide-remote-project--client-advised t)))
 
 (defun claude-code-ide-remote-project--load-client ()
@@ -1135,18 +1091,33 @@ display ownership.  REASON identifies first display, reattach, or reset."
                   (claude-code-ide-manager--session-directory
                    session-id))
                  frame reason host))
-               (worker
-                (progn
-                  (claude-code-ide-remote-project--start-health-deadline
-                   attempt)
-                  (make-thread
-                   (lambda ()
-                     (claude-code-ide-remote-project--worker attempt))
-                   (format "remote-project-%s" session-id)))))
-          (setf
-           (claude-code-ide-remote-project--attempt-worker attempt)
-           worker)
-          attempt)))))
+               ;; The NS event loop can hold the Lisp lock while idle.
+               ;; Yield on the main thread until this worker exits.
+               (yield-timer
+                (when (featurep 'ns)
+                  (run-at-time 0 0.05 #'thread-yield)))
+               worker)
+          (unwind-protect
+              (progn
+                (claude-code-ide-remote-project--start-health-deadline
+                 attempt)
+                (setq worker
+                      (make-thread
+                       (lambda ()
+                         (unwind-protect
+                             (claude-code-ide-remote-project--worker attempt)
+                           (when yield-timer
+                             (cancel-timer yield-timer))))
+                       (format "remote-project-%s" session-id)))
+                (setf
+                 (claude-code-ide-remote-project--attempt-worker attempt)
+                 worker)
+                attempt)
+            (unless worker
+              (claude-code-ide-remote-project--abandon-attempt
+               attempt 'worker-unavailable)
+              (when yield-timer
+                (cancel-timer yield-timer)))))))))
 
 (defun claude-code-ide-remote-project-record-display
     (session-id attachment view-buffer)

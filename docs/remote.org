@@ -151,6 +151,8 @@ Changing either option starts no connection or window change.
 
 The first managed display shows the terminal before it starts Project-view preparation.
 Preparation runs in a worker and keeps the terminal interactive.
+On macOS, a temporary timer gives the worker execution time while the GUI is idle.
+The timer stops when the worker exits.
 
 Each fresh attempt requires a current RPC health response.
 The health phase has a 30-second feature deadline.
@@ -252,6 +254,72 @@ Then press manager =R=.
 
 You probably dismissed that Session's view.
 Press manager =R= to clear suppression and rebuild the default layout.
+
+** Root cause: macOS GUI worker starvation
+
+The September 2026 investigation used Emacs 31.1.50 with the native macOS =ns= GUI.
+After detach, attach, and =R=, the terminal could remain alone while Project-view preparation stalled or reached its 30-second health deadline.
+Batch tests passed, and =emacsclient= queries sometimes made the same attempt complete.
+
+*** Mechanism
+
+The native GUI can keep Emacs's global Lisp lock while its main thread waits inside =[NSApp run]=.
+In =src/nsterm.m=, =ns_select_1= briefly calls =thread_select= before it returns to that native event loop.
+An unrelated timer, input event, or eligible process descriptor can wake the main loop.
+Without an explicit yield, those wakes do not guarantee that a worker acquires the Lisp lock.
+
+In =src/process.c=, =compute_input_wait_mask= excludes descriptors that belong to another thread.
+The former =claude-code-ide-remote-project--call-rpc= advice assigned the shared RPC transport to the worker with =set-process-thread=.
+That ownership also prevented the transport's response from waking the main loop.
+Unlocking the process alone was insufficient: the main thread could receive the response without letting the waiting worker resume.
+
+*** Why the first fixes and checks misled us
+
+A global RPC mutex serialized workers but did not release the main thread's Lisp lock.
+The RPC client already matches responses by request ID, so the mutex added contention without fixing the stall.
+An available response in the connection's table did not prove a response-ID collision.
+
+Diagnostic timers and =emacsclient= requests introduced the main-loop activity that the idle reproduction lacked.
+Cursor blinking could also change the result.
+A batch test did not exercise the native GUI event loop.
+The old tests asserted process ownership and mutex serialization rather than useful progress, so they gave false confidence.
+
+*** Repair and lifetime rules
+
+On an =ns= build, =claude-code-ide-remote-project-prepare= starts a main-thread timer that calls =thread-yield= every 0.05 seconds.
+The timer starts before =make-thread= and remains active until that worker exits.
+It must continue after health succeeds, through Magit preparation and any deferred connection cancellation.
+The worker's outer =unwind-protect= cancels the timer.
+If worker creation fails, the main thread abandons the attempt and cancels its timers.
+Idle Sessions retain no scheduler timer.
+
+The repair removes the per-call process-ownership advice and the global mutex.
+The connection and server-start guards still release transport locks that the creating worker owns.
+They retain the existing admission, cancellation, and no-deployment checks.
+
+*** Verification evidence
+
+A controlled GUI probe disabled cursor blinking and used a worker with a local =cat= pipe.
+The worker sent 20 messages and waited with =(accept-process-output process 0.05 nil t)=.
+Without a yield timer, the worker did not start before the 12-second safety timeout.
+A timer that only called =ignore= did not reliably restore progress.
+With the yield timer, an independent run completed all 20 exchanges in about 0.06 seconds.
+
+Two live cold detach, discovery, attach, and =R= runs displayed Magit after =R= in 0.42 and 0.61 seconds.
+Those runs disabled cursor blinking and used no diagnostic sampling timers.
+The final check also required populated Magit status sections, not just a buffer name or a =ready= flag.
+
+For future regressions, test the idle native GUI as well as batch ERT.
+Check the exact Session, both visible windows, valid status sections, and scheduler cleanup.
+If the yield timer runs but the response table stays empty, investigate the RPC connection separately.
+The investigation also found an unresponsive connection that timed out on native =system.info= and recovered after native-client cleanup.
+Do not treat every later health timeout as this scheduling defect.
+
+The feature deadline starts before the native client's per-request timeout.
+It can abandon an attempt before native timeout cleanup retires an unresponsive connection.
+Repeated =R= attempts can then reuse that stale connection.
+This remains a separate timeout-ordering risk.
+The scheduling repair preserves the specified 30-second health deadline and does not change the native client's timeout policy.
 
 * Validation Status
 

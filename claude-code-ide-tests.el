@@ -19694,71 +19694,83 @@ result arrives never has that result applied to the row now at its key."
       (delete-process stderr)
       (kill-buffer stderr-buffer))))
 
-(ert-deftest claude-code-ide-test-remote-project-reclaims-unlocked-transport-for-worker-rpc ()
-  "Worker RPC calls temporarily reclaim and then release an unlocked transport."
+(ert-deftest claude-code-ide-test-remote-project-rpc-keeps-transport-readable ()
+  "Other consumers can read the shared transport during a worker RPC."
   (should (require 'claude-code-ide-remote-project nil t))
-  (claude-code-ide-remote-project--reset-state)
-  (let* ((stdout
-          (make-pipe-process
-           :name "remote-project-reclaim-stdout" :noquery t))
-         (stderr-buffer
-          (generate-new-buffer " *remote-project-reclaim-stderr*"))
-         (stderr
-          (make-pipe-process
-           :name "remote-project-reclaim-stderr"
-           :buffer stderr-buffer
-           :noquery t))
-         (attachment
-          (generate-new-buffer " *remote-project-reclaim-attachment*"))
-         (intent
-          (claude-code-ide-remote-project--intent-for
-           "session-a" "host-a" attachment))
-         (attempt
-          (claude-code-ide-remote-project--begin-attempt
-           intent "/rpc:host-a:/work/" nil 'first-display))
-         result)
-    (setf
-     (claude-code-ide-remote-project--attempt-route-key attempt)
-     'route-a)
+  (let* ((buffer (generate-new-buffer " *remote-project-rpc-transport*"))
+         (process (make-process :name "remote-project-rpc-transport"
+                                :buffer buffer :command '("cat")
+                                :connection-type 'pipe :noquery t))
+         (attempt (claude-code-ide-remote-project--make-attempt
+                   :route-key 'route-a))
+         (claude-code-ide-remote-project--client-advised nil)
+         entered release worker failure)
     (unwind-protect
         (cl-letf
-            (((symbol-function 'tramp-rpc--connection-key)
+            (((symbol-function 'tramp-rpc--connect) #'ignore)
+             ((symbol-function 'tramp-rpc--establish-controlmaster) #'ignore)
+             ((symbol-function 'tramp-rpc--start-server-process) #'ignore)
+             ((symbol-function 'tramp-rpc--connection-key)
               (lambda (_vec) 'route-a))
              ((symbol-function 'tramp-rpc--get-connection)
               (lambda (_vec) 'connection))
              ((symbol-function 'tramp-rpc-connection-process)
-              (lambda (_connection) stdout))
-             ((symbol-function
-               'tramp-rpc-connection-stderr-buffer)
-              (lambda (_connection) stderr-buffer)))
-          (set-process-thread stdout nil)
-          (set-process-thread stderr nil)
-          (thread-join
-           (make-thread
-            (lambda ()
-              (setf
-               (claude-code-ide-remote-project--attempt-worker attempt)
-               (current-thread))
-              (let
-                  ((claude-code-ide-remote-project--worker-attempt
-                    attempt))
-                (setq
-                 result
-                 (claude-code-ide-remote-project--call-rpc
-                  (lambda (&rest _arguments)
-                    (list
-                     (eq (process-thread stdout) (current-thread))
-                     (eq (process-thread stderr) (current-thread))))
-                  'vec "process.run" nil 60 0.01))))
-            "remote-project-reclaim-test"))
-          (should (equal result '(t t)))
-          (should-not (process-thread stdout))
-          (should-not (process-thread stderr)))
-      (delete-process stdout)
-      (delete-process stderr)
-      (kill-buffer stderr-buffer)
-      (kill-buffer attachment)
-      (claude-code-ide-remote-project--reset-state))))
+              (lambda (_connection) process))
+             ((symbol-function 'tramp-rpc-connection-stderr-buffer)
+              (lambda (_connection) nil))
+             ((symbol-function 'tramp-rpc--call-with-timeout)
+              (lambda (&rest _arguments)
+                (setq entered t)
+                (let ((deadline (+ (float-time) 2)))
+                  (while (and (not release) (< (float-time) deadline))
+                    (sleep-for 0.01))))))
+          (claude-code-ide-remote-project--install-client-guards)
+          (set-process-thread process nil)
+          (setq worker
+                (make-thread
+                 (lambda ()
+                   (let ((claude-code-ide-remote-project--worker-attempt
+                          attempt))
+                     (condition-case error-data
+                         (tramp-rpc--call-with-timeout
+                          'vec "process.run" nil 30 0.01)
+                       (error (setq failure error-data)))))
+                 "remote-project-rpc-reader"))
+          (let ((deadline (+ (float-time) 2)))
+            (while (and (not entered) (< (float-time) deadline))
+              (sleep-for 0.01)))
+          (should entered)
+          (process-send-string process "reply\n")
+          (let ((deadline (+ (float-time) 2)))
+            (while (and (with-current-buffer buffer (= (buffer-size) 0))
+                        (< (float-time) deadline))
+              (accept-process-output process 0.01)))
+          (should (equal (with-current-buffer buffer (buffer-string))
+                         "reply\n"))
+          (should-not failure))
+      (setq release t)
+      (when worker (thread-join worker))
+      (delete-process process)
+      (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-remote-project-worker-creation-failure-cleans-attempt ()
+  "A failed worker start leaves no pending attempt or scheduled timers."
+  (let ((claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
+        (timers (copy-sequence timer-list)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'claude-code-ide-manager--remote-project-enabled-p)
+                 (lambda (&rest _) t))
+                ((symbol-function 'claude-code-ide-manager--session-directory)
+                 (lambda (_) "/work/"))
+                ((symbol-function 'make-thread)
+                 (lambda (&rest _) (error "Worker unavailable"))))
+        (should-error
+         (claude-code-ide-remote-project-prepare
+          "session-a" "host-a" (current-buffer) nil 'first-display))
+        (let ((intent (gethash "session-a" claude-code-ide-remote-project--intents)))
+          (should-not (claude-code-ide-remote-project--intent-attempt intent))
+          (should (eq (claude-code-ide-remote-project--intent-outcome intent) 'failed)))
+        (should (equal timer-list timers))))))
 
 (ert-deftest claude-code-ide-test-remote-project-auth-checks-each-native-entry ()
   "Authentication owns worker timers and rejects a stale retry."
@@ -20345,48 +20357,6 @@ result arrives never has that result applied to the row now at its key."
            (kill-buffer buffer)))
        (list terminal-a terminal-b view)))))
 
-(ert-deftest claude-code-ide-test-remote-project-prepare-starts-exact-worker ()
-  "Preparation creates one worker for the Session's remote directory."
-  (claude-code-ide-remote-project--reset-state)
-  (let ((attachment
-         (generate-new-buffer " *remote-prepare-terminal*"))
-        (claude-code-ide-remote-hosts '("host-a"))
-        (claude-code-ide-remote-project-view-hosts '("host-a"))
-        started)
-    (unwind-protect
-        (cl-letf
-            (((symbol-function
-               'claude-code-ide-manager--session-directory)
-              (lambda (_session-id) "/work/sub/"))
-             ((symbol-function
-               'claude-code-ide-manager--session-host)
-              (lambda (_session-id) "host-a"))
-             ((symbol-function
-               'claude-code-ide-remote-project--start-health-deadline)
-              #'ignore)
-             ((symbol-function 'make-thread)
-              (lambda (function &optional name)
-                (setq started (list function name))
-                'worker)))
-          (let ((attempt
-                 (claude-code-ide-remote-project-prepare
-                  "session-a" "host-a" attachment nil
-                  'first-display)))
-            (should attempt)
-            (should
-             (equal
-              (claude-code-ide-remote-project--attempt-directory
-               attempt)
-              "/rpc:host-a:/work/sub/"))
-            (should
-             (eq
-              (claude-code-ide-remote-project--attempt-worker attempt)
-              'worker))
-            (should
-             (equal (cadr started)
-                    "remote-project-session-a"))))
-      (kill-buffer attachment)
-      (claude-code-ide-remote-project--reset-state))))
 
 (ert-deftest claude-code-ide-test-remote-project-bulk-attach-stays-lazy ()
   "Bulk attachment creates terminals without preparing Project views."
