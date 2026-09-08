@@ -250,6 +250,20 @@ back to `project.el' otherwise."
                  (const :tag "Merged" merged))
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-worktree-backend 'lane
+  "Tool that creates a new worktree for `claude-code-ide-manager-new-worktree'.
+
+`lane' creates a copy-on-write tree under `.lane/trees/' through
+`magit-lane'.  `wt' creates a tree where Worktrunk's own path template
+says, through `magit-worktrunk'.  A repository that already has a
+`.lane/' store always uses `lane'.  Otherwise a directory-local value
+of this variable wins, then the git config key
+`claude-code-ide.worktree-backend', then this default."
+  :type '(choice (const :tag "Lane (copy-on-write)" lane)
+                 (const :tag "Worktrunk (wt)" wt))
+  :safe (lambda (value) (memq value '(lane wt)))
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-treemacs-split-policy 'half
   "How to split the sidebar when collocating cc-manager with Treemacs."
   :type '(choice (const :tag "Half" half)
@@ -1246,6 +1260,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "C-j") #'claude-code-ide-manager-next-project-group)
 (define-key claude-code-ide-manager-mode-map (kbd "C-k") #'claude-code-ide-manager-previous-project-group)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
+(define-key claude-code-ide-manager-mode-map (kbd "w") #'claude-code-ide-manager-new-worktree)
 (define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
 (define-key claude-code-ide-manager-mode-map (kbd "a") #'claude-code-ide-attach)
@@ -3491,16 +3506,24 @@ owned sidebar windows."
                       nil t))))
 
 (defun claude-code-ide-manager--repo-worktree-directories (git-root)
-  "Return normalized worktree directories for GIT-ROOT."
+  "Return normalized worktree directories for GIT-ROOT that exist on disk."
   (let ((default-directory git-root)
         directories)
     (dolist (line (ignore-errors
                     (process-lines "git" "-C" git-root "worktree" "list" "--porcelain")))
       (when (string-prefix-p "worktree " line)
-        (push (claude-code-ide-manager--normalize-target-directory
-               (string-remove-prefix "worktree " line))
-              directories)))
+        (let ((directory (claude-code-ide-manager--normalize-target-directory
+                          (string-remove-prefix "worktree " line))))
+          (when (file-directory-p directory)
+            (push directory directories)))))
     (nreverse directories)))
+
+(defun claude-code-ide-manager--select-worktree-in (worktrees)
+  "Prompt among WORKTREES when there are several, else return the only one."
+  (if (cdr worktrees)
+      (claude-code-ide-manager--normalize-target-directory
+       (completing-read "Open worktree: " worktrees nil t))
+    (car worktrees)))
 
 (defun claude-code-ide-manager--select-repo-worktree (scope)
   "Prompt for an existing worktree in SCOPE and return its normalized root."
@@ -3510,13 +3533,21 @@ owned sidebar windows."
       (user-error "No repo scope for manager open"))
     (unless worktrees
       (user-error "No worktrees for %s" git-root))
-    (claude-code-ide-manager--normalize-target-directory
-     (completing-read "Open worktree: " worktrees nil t))))
+    (claude-code-ide-manager--select-worktree-in worktrees)))
 
 (defun claude-code-ide-manager--open-target-for-scope (scope)
-  "Prompt for an open target within SCOPE."
+  "Prompt for an open target within SCOPE.
+
+In the global scope the project comes first.  When that project has more
+than one worktree with an existing directory, a second prompt picks one.
+A project without worktrees (a plain directory) is the target itself."
   (pcase (plist-get scope :type)
-    ('global (claude-code-ide-manager--select-global-project))
+    ('global
+     (let* ((project (claude-code-ide-manager--select-global-project))
+            (worktrees (claude-code-ide-manager--repo-worktree-directories project)))
+       (if (cdr worktrees)
+           (claude-code-ide-manager--select-worktree-in worktrees)
+         project)))
     ('repo (claude-code-ide-manager--select-repo-worktree scope))
     (_ (error "Unknown manager scope: %S" scope))))
 
@@ -3684,22 +3715,167 @@ Keep a separate pass from
   (interactive)
   (claude-code-ide-manager-toggle-repo-sidebar 1))
 
-(defun claude-code-ide-manager-open ()
-  "Open a project or worktree relevant to the current manager scope."
-  (interactive)
+;;;###autoload
+(defun claude-code-ide-manager-open-directory (directory &optional force-new)
+  "Switch to the session for DIRECTORY, or start the default agent there.
+
+With a session and FORCE-NEW nil, switch to it.  Otherwise start a session
+in DIRECTORY: a sibling when FORCE-NEW is non-nil, the first one when no
+session exists.  This never shows the Start/Continue/Resume menu, so it
+is the entry that Magit worktree rows and worktree transients call.
+Interactively, DIRECTORY is read and a prefix argument is FORCE-NEW."
+  (interactive (list (read-directory-name "Worktree: " nil nil t)
+                     current-prefix-arg))
+  (when (file-remote-p directory)
+    (user-error "Remote worktrees are not supported"))
+  (let ((directory (claude-code-ide-manager--normalize-target-directory directory)))
+    (unless (file-directory-p directory)
+      (user-error "Worktree %s is unavailable" directory))
+    (let ((scope (claude-code-ide-manager--scope-for-command))
+          (existing (claude-code-ide--preferred-session directory)))
+      (if (and existing (not force-new))
+          (claude-code-ide-manager-switch-to-session
+           (claude-code-ide-session-id existing) nil scope)
+        (let* ((claude-code-ide--suppress-initial-display t)
+               (session (claude-code-ide--start-session nil nil directory force-new)))
+          (when session
+            (claude-code-ide-manager-switch-to-session
+             (claude-code-ide-session-id session) nil scope))
+          session)))))
+
+(defun claude-code-ide-manager-open (&optional force-new)
+  "Open a project or worktree relevant to the current manager scope.
+
+A target with a session switches to it.  With FORCE-NEW (the prefix
+argument) a sibling session starts at once.  A target without a session
+shows the Start/Continue/Resume menu."
+  (interactive "P")
   (when-let* ((item (claude-code-ide-manager--item-at-point))
               (host (claude-code-ide-manager--session-host
                      (claude-code-ide-manager-item-session-key item))))
     (user-error "Remote project access on %s is not available in attach mode" host))
   (let* ((scope (claude-code-ide-manager--scope-for-command))
-         (target (claude-code-ide-manager--open-target-for-scope scope))
-         (session (claude-code-ide--preferred-session target)))
-    (if session
-        (claude-code-ide-manager-switch-to-session
-         (claude-code-ide-session-id session) nil scope)
+         (target (claude-code-ide-manager--open-target-for-scope scope)))
+    (if (or force-new (claude-code-ide--preferred-session target))
+        (claude-code-ide-manager-open-directory target force-new)
       (setq claude-code-ide-manager--open-target target)
       (setq claude-code-ide-manager--open-scope scope)
       (claude-code-ide-manager-open-menu))))
+
+;;; Worktree creation
+
+(declare-function magit-lane-core-new "magit-lane-core")
+(declare-function magit-lane-core-init "magit-lane-core")
+(declare-function magit-lane-core-initialized-p "magit-lane-core")
+(declare-function magit-lane-core-entry-for-name "magit-lane-core")
+(declare-function magit-lane-core-available-p "magit-lane-core")
+(declare-function magit-worktrunk-core-switch "magit-worktrunk-core")
+(declare-function magit-worktrunk-core-wt-available-p "magit-worktrunk-core")
+(declare-function magit-status "magit-status")
+
+(defun claude-code-ide-manager--worktree-backend (root)
+  "Return the worktree backend symbol for the repository at ROOT.
+
+A `.lane/' store wins.  Then a directory-local value of
+`claude-code-ide-worktree-backend', then the git config key
+`claude-code-ide.worktree-backend', then the global default.  Values
+other than `lane' and `wt' are ignored."
+  (let ((valid (lambda (value) (and (memq value '(lane wt)) value))))
+    (or (and (file-directory-p (expand-file-name ".lane" root)) 'lane)
+        (funcall valid
+                 (cdr (assq 'claude-code-ide-worktree-backend
+                            (with-temp-buffer
+                              (setq default-directory (file-name-as-directory root))
+                              (cdr (ignore-errors (hack-dir-local--get-variables)))))))
+        (funcall valid
+                 (intern-soft
+                  (or (car (ignore-errors
+                             (process-lines "git" "-C" root "config" "--get"
+                                            "claude-code-ide.worktree-backend")))
+                      "")))
+        claude-code-ide-worktree-backend)))
+
+(defun claude-code-ide-manager--ensure-worktree-backend (backend)
+  "Signal unless BACKEND's package is loaded and its binary is found."
+  (pcase backend
+    ('lane
+     (unless (fboundp 'magit-lane-core-new)
+       (user-error "Backend lane needs magit-lane, which is not loaded"))
+     (unless (magit-lane-core-available-p)
+       (user-error "No lane executable found; set magit-lane-executable")))
+    ('wt
+     (unless (fboundp 'magit-worktrunk-core-switch)
+       (user-error "Backend wt needs magit-worktrunk, which is not loaded"))
+     (unless (magit-worktrunk-core-wt-available-p)
+       (user-error "No wt executable found; set magit-worktrunk-wt-executable")))
+    (_ (user-error "Unknown worktree backend: %S" backend)))
+  backend)
+
+(defun claude-code-ide-manager--check-worktree-name (root backend name)
+  "Signal unless NAME is a usable branch and tree name in ROOT for BACKEND.
+
+The shape rule is the one both tools apply: not empty, not absolute, no
+`.' or `..' component.  A local branch called NAME is a conflict for both
+backends.  For `lane', a listed lane called NAME is one too."
+  (when (or (string-empty-p (string-trim name))
+            (file-name-absolute-p name)
+            (cl-some (lambda (part) (member part '("" "." "..")))
+                     (split-string name "/")))
+    (user-error "%S is not a usable worktree name" name))
+  (when (zerop (call-process "git" nil nil nil "-C" root "rev-parse" "--verify"
+                             "--quiet" (concat "refs/heads/" name)))
+    (user-error "%s already exists as a branch" name))
+  (when (and (eq backend 'lane)
+             (magit-lane-core-initialized-p root)
+             (magit-lane-core-entry-for-name root name))
+    (user-error "%s already exists as a lane" name))
+  name)
+
+(defun claude-code-ide-manager--create-worktree (root backend name)
+  "Create the tree NAME in ROOT with BACKEND and return its directory.
+
+With `lane' and no `.lane/' store yet, ask before `lane init', which
+writes AGENTS.md into the repository.  A refusal creates nothing."
+  (claude-code-ide-manager--normalize-target-directory
+   (pcase backend
+     ('lane
+      (unless (magit-lane-core-initialized-p root)
+        (unless (y-or-n-p (format "Initialize lane in %s? This writes AGENTS.md " root))
+          (user-error "Lane not initialized; nothing created"))
+        (magit-lane-core-init root))
+      (magit-lane-core-new root name))
+     ('wt (magit-worktrunk-core-switch root name nil t)))))
+
+(defun claude-code-ide-manager--worktree-root-for-command ()
+  "Return the repository root the new-worktree command acts on.
+
+In the repo-scoped view that is the scope's root.  In the global view the
+user picks a project first, because the backend depends on it."
+  (let ((scope (claude-code-ide-manager--scope-for-command)))
+    (or (plist-get scope :git-root)
+        (claude-code-ide-manager--select-global-project))))
+
+;;;###autoload
+(defun claude-code-ide-manager-new-worktree (&optional arg)
+  "Create a worktree and start the default Agent in it.
+
+The name is asked once, with no default, and names both the branch and
+the tree.  The backend comes from `claude-code-ide-worktree-backend'
+resolution and its binary is checked before the name prompt.  With a
+prefix ARG the tree is created and shown in Magit, and no Agent starts."
+  (interactive "P")
+  (let* ((root (claude-code-ide-manager--worktree-root-for-command))
+         (backend (claude-code-ide-manager--ensure-worktree-backend
+                   (claude-code-ide-manager--worktree-backend root)))
+         (name (claude-code-ide-manager--check-worktree-name
+                root backend (read-string (format "New %s worktree name: " backend))))
+         (path (claude-code-ide-manager--create-worktree root backend name)))
+    (if arg
+        (if (fboundp 'magit-status)
+            (magit-status path)
+          (dired path))
+      (claude-code-ide-manager-open-directory path))
+    path))
 
 (defun claude-code-ide-manager-rename-session (session-key name)
   "Rename SESSION-KEY to NAME, or clear its name when NAME is empty."

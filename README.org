@@ -363,6 +363,16 @@ You can reach the manager in two ways:
   - =v= toggles flat and grouped global views
   - =C-j= and =C-k= move between project groups
   - =m= refreshes cached project metadata for one configured remote host
+  - =o= opens a project or worktree: in the global view it asks for the project, then for the worktree when the project has more than one. A target with a Session switches to it. =C-u o= starts a sibling Session at once. Otherwise the Start/Continue/Resume menu appears.
+  - =w= creates a worktree and starts the default Agent in it. It asks for one name that becomes the branch and the tree. =C-u w= creates the tree and opens =magit-status= without an Agent.
+
+*** Worktree Creation
+
+=claude-code-ide-worktree-backend= selects the tool that creates a worktree: =lane= (copy-on-write trees under =.lane/trees/= through =magit-lane=) or =wt= (Worktrunk, through =magit-worktrunk=). A repository that already has a =.lane/= store always uses =lane=. Otherwise a directory-local value wins, then the git config key =claude-code-ide.worktree-backend=, then the global default. Neither Magit package is required at load time. The command reports the missing package or binary before it asks for a name.
+
+With =lane=, a repository without a =.lane/= store gets one question before =lane init=, because that command writes =AGENTS.md=. Names that already exist as a branch, or as a lane, are refused before anything is created.
+
+=claude-code-ide-manager-open-directory= is the public entry for other packages: given a local directory it switches to its Session, or starts the default Agent there. =magit-lane= and =magit-worktrunk= bind =a= on their rows and transients to it.
 
 *** What The Sidebar Shows
 

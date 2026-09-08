@@ -46,5 +46,21 @@ C-j C-k to jump between project-group
 * TODO git-less view
 simplified git status without magit
 
-* TODO tramp if needed
+* DONE tramp if needed
+CLOSED: [2026-09-08 Tue 05:39]
 close related buffers when detached
+
+* DONE worktree creation
+CLOSED: [2026-09-08 Tue]
+worktrunk
+https://github.com/lukeed/lane
+Done in =specs/002-magit-worktree-launch= of the configuration repository:
+=claude-code-ide-manager-new-worktree= (=w=), =claude-code-ide-worktree-backend=,
+=claude-code-ide-manager-open-directory=.
+
+* TODO remote worktree open and create
+=claude-code-ide-manager-open-directory= refuses remote paths. Needs the RPC
+file names from spec 005.
+
+* TODO checkout an existing branch into a new worktree
+The new-worktree command refuses names that already exist as a branch.

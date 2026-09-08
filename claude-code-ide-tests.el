@@ -5546,23 +5546,26 @@ A `working' or `needs-input' state is left alone by the same clear."
 (ert-deftest claude-code-ide-test-manager-open-global-switches-existing-session ()
   "Test global manager open switches directly to an existing live session."
   (claude-code-ide-tests--reset-manager-state)
-  (let (switch-call)
-    (cl-letf (((symbol-function 'project-known-project-roots)
-               (lambda () '("/tmp/project-a/" "/tmp/project-b/")))
-              ((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _)
-                 (car (funcall collection "/tmp/project-b/" nil t))))
-              ((symbol-function 'claude-code-ide--preferred-session)
-               (lambda (_directory)
-                 (claude-code-ide-session-create
-                  :id "project-b-session" :directory "/tmp/project-b/")))
-              ((symbol-function 'claude-code-ide-manager-switch-to-session)
-               (lambda (session-key &optional keep-manager-focus scope)
-                 (setq switch-call (list session-key keep-manager-focus scope)))))
-      (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-        (claude-code-ide-manager-open))
-      (should (equal switch-call
-                     '("project-b-session" nil (:type global)))))))
+  (let ((project-b (file-name-as-directory (make-temp-file "ccide-project-b" t)))
+        switch-call)
+    (unwind-protect
+        (cl-letf (((symbol-function 'project-known-project-roots)
+                   (lambda () (list "/tmp/project-a/" project-b)))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (car (funcall collection project-b nil t))))
+                  ((symbol-function 'claude-code-ide--preferred-session)
+                   (lambda (_directory)
+                     (claude-code-ide-session-create
+                      :id "project-b-session" :directory project-b)))
+                  ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                   (lambda (session-key &optional keep-manager-focus scope)
+                     (setq switch-call (list session-key keep-manager-focus scope)))))
+          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+            (claude-code-ide-manager-open))
+          (should (equal switch-call
+                         '("project-b-session" nil (:type global)))))
+      (delete-directory project-b t))))
 
 (ert-deftest claude-code-ide-test-manager-known-project-roots-auto-prefers-projectile ()
   "Test auto source prefers Projectile when Projectile is available."
@@ -5660,29 +5663,348 @@ A `working' or `needs-input' state is left alone by the same clear."
       (should (equal captured-root "/tmp/repo/"))
       (should (equal captured-candidates '("/tmp/repo/" "/tmp/repo-wt/"))))))
 
+(ert-deftest claude-code-ide-test-manager-open-global-asks-worktree-when-several ()
+  "Two usable worktrees: project prompt, then worktree prompt; one: no second prompt."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((worktrees '("/tmp/proj/" "/tmp/proj-feat/"))
+        prompts target)
+    (cl-letf (((symbol-function 'project-known-project-roots)
+               (lambda () '("/tmp/proj/")))
+              ((symbol-function 'claude-code-ide-manager--repo-worktree-directories)
+               (lambda (_root) worktrees))
+              ((symbol-function 'completing-read)
+               (lambda (prompt collection &rest _)
+                 (push prompt prompts)
+                 (if (functionp collection) "/tmp/proj/" (cadr collection))))
+              ((symbol-function 'claude-code-ide--preferred-session) #'ignore)
+              ((symbol-function 'claude-code-ide-manager-open-menu)
+               (lambda () (setq target claude-code-ide-manager--open-target))))
+      (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+        (claude-code-ide-manager-open))
+      (should (equal (reverse prompts) '("Open project: " "Open worktree: ")))
+      (should (equal target "/tmp/proj-feat/"))
+      (setq prompts nil worktrees '("/tmp/proj/"))
+      (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+        (claude-code-ide-manager-open))
+      (should (equal prompts '("Open project: ")))
+      (should (equal target "/tmp/proj/")))))
+
+(ert-deftest claude-code-ide-test-repo-worktree-directories-skip-missing-trees ()
+  "A registered worktree whose directory is gone is not offered."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main topic)
+     (should (equal (claude-code-ide-manager--repo-worktree-directories main)
+                    (list main topic)))
+     (delete-directory topic t)
+     (should (equal (claude-code-ide-manager--repo-worktree-directories main)
+                    (list main))))))
+
 (ert-deftest claude-code-ide-test-manager-open-existing-session-uses-manager-switch-path ()
   "Test manager open uses the normal manager switch path for live sessions."
   (claude-code-ide-tests--reset-manager-state)
-  (let (switch-call transient-called)
+  (let ((project-a (file-name-as-directory (make-temp-file "ccide-project-a" t)))
+        switch-call transient-called)
+    (unwind-protect
+        (cl-letf (((symbol-function 'project-known-project-roots)
+                   (lambda () (list project-a)))
+                  ((symbol-function 'completing-read)
+                   (lambda (&rest _) project-a))
+                  ((symbol-function 'claude-code-ide--preferred-session)
+                   (lambda (_directory)
+                     (claude-code-ide-session-create
+                      :id "project-a-session" :directory project-a)))
+                  ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                   (lambda (&rest args)
+                     (setq switch-call args)))
+                  ((symbol-function 'claude-code-ide-manager-open-menu)
+                   (lambda ()
+                     (setq transient-called t))))
+          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+            (claude-code-ide-manager-open))
+          (should switch-call)
+          (should (equal (car switch-call) "project-a-session"))
+          (should-not transient-called))
+      (delete-directory project-a t))))
+
+(ert-deftest claude-code-ide-test-open-directory-switches-to-live-session ()
+  "A directory with a session switches; nothing starts and no menu shows."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((root (file-name-as-directory (make-temp-file "ccide-live" t)))
+        switch-call started menu)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--preferred-session)
+                   (lambda (_directory)
+                     (claude-code-ide-session-create :id "live" :directory root)))
+                  ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                   (lambda (&rest args) (setq switch-call args)))
+                  ((symbol-function 'claude-code-ide--start-session)
+                   (lambda (&rest args) (setq started args) nil))
+                  ((symbol-function 'claude-code-ide-manager-open-menu)
+                   (lambda () (setq menu t))))
+          (claude-code-ide-manager-open-directory (directory-file-name root))
+          (should (equal (car switch-call) "live"))
+          (should-not started)
+          (should-not menu))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-open-directory-starts-and-forces-sibling ()
+  "Without a session the default Agent starts at once; a prefix forces a sibling."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((root (file-name-as-directory (make-temp-file "ccide-open" t)))
+        (live nil)
+        calls switches menu)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--preferred-session)
+                   (lambda (_directory) live))
+                  ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                   (lambda (key &rest _) (push key switches)))
+                  ((symbol-function 'claude-code-ide--start-session)
+                   (lambda (continue resume directory force-new)
+                     (push (list continue resume directory force-new
+                                 claude-code-ide--suppress-initial-display)
+                           calls)
+                     (claude-code-ide-session-create :id "fresh" :directory directory)))
+                  ((symbol-function 'claude-code-ide-manager-open-menu)
+                   (lambda () (setq menu t))))
+          (claude-code-ide-manager-open-directory root)
+          (should (equal (car calls) (list nil nil root nil t)))
+          (setq live (claude-code-ide-session-create :id "fresh" :directory root))
+          (claude-code-ide-manager-open-directory root t)
+          (should (equal (car calls) (list nil nil root t t)))
+          (should (equal switches '("fresh" "fresh")))
+          (should-not menu))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-open-directory-refuses-remote-and-missing ()
+  (claude-code-ide-tests--reset-manager-state)
+  (cl-letf (((symbol-function 'claude-code-ide--preferred-session) #'ignore)
+            ((symbol-function 'claude-code-ide--start-session)
+             (lambda (&rest _) (error "must not start"))))
+    (should (string-match-p
+             "Remote worktrees are not supported"
+             (cadr (should-error (claude-code-ide-manager-open-directory "/ssh:host:/tree")
+                                 :type 'user-error))))
+    (should (string-match-p
+             "is unavailable"
+             (cadr (should-error (claude-code-ide-manager-open-directory "/tmp/ccide-no-such-tree")
+                                 :type 'user-error))))))
+
+(ert-deftest claude-code-ide-test-manager-open-prefix-starts-sibling-without-menu ()
+  "A prefix on the manager `o' delegates to the entry with FORCE-NEW."
+  (claude-code-ide-tests--reset-manager-state)
+  (let (entry-call menu)
     (cl-letf (((symbol-function 'project-known-project-roots)
                (lambda () '("/tmp/project-a/")))
               ((symbol-function 'completing-read)
                (lambda (&rest _) "/tmp/project-a/"))
-              ((symbol-function 'claude-code-ide--preferred-session)
-               (lambda (_directory)
-                 (claude-code-ide-session-create
-                  :id "project-a-session" :directory "/tmp/project-a/")))
-              ((symbol-function 'claude-code-ide-manager-switch-to-session)
-               (lambda (&rest args)
-                 (setq switch-call args)))
+              ((symbol-function 'claude-code-ide--preferred-session) #'ignore)
+              ((symbol-function 'claude-code-ide-manager-open-directory)
+               (lambda (directory &optional force-new)
+                 (setq entry-call (list directory force-new))))
               ((symbol-function 'claude-code-ide-manager-open-menu)
-               (lambda ()
-                 (setq transient-called t))))
+               (lambda () (setq menu t))))
       (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-        (claude-code-ide-manager-open))
-      (should switch-call)
-      (should (equal (car switch-call) "project-a-session"))
-      (should-not transient-called))))
+        (claude-code-ide-manager-open t))
+      (should (equal entry-call '("/tmp/project-a/" t)))
+      (should-not menu))))
+
+(ert-deftest claude-code-ide-test-worktree-backend-resolution-order ()
+  "Order: `.lane/' store, dir-local, git config, global default."
+  (let ((root (file-name-as-directory (make-temp-file "ccide-backend" t)))
+        (claude-code-ide-worktree-backend 'wt)
+        (enable-dir-local-variables t)
+        (enable-local-variables :all))
+    (unwind-protect
+        (progn
+          (should (eq (claude-code-ide-manager--worktree-backend root) 'wt))
+          (let ((claude-code-ide-worktree-backend 'lane))
+            (should (eq (claude-code-ide-manager--worktree-backend root) 'lane)))
+          (let ((default-directory root))
+            (claude-code-ide-tests--git "init" "-q")
+            (claude-code-ide-tests--git "config" "claude-code-ide.worktree-backend" "bogus"))
+          (should (eq (claude-code-ide-manager--worktree-backend root) 'wt))
+          (let ((default-directory root))
+            (claude-code-ide-tests--git "config" "claude-code-ide.worktree-backend" "lane"))
+          (should (eq (claude-code-ide-manager--worktree-backend root) 'lane))
+          (with-temp-file (expand-file-name ".dir-locals.el" root)
+            (insert "((nil . ((claude-code-ide-worktree-backend . wt))))"))
+          (should (eq (claude-code-ide-manager--worktree-backend root) 'wt))
+          (make-directory (expand-file-name ".lane" root))
+          (should (eq (claude-code-ide-manager--worktree-backend root) 'lane)))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-ensure-worktree-backend-reports-missing-package ()
+  "Each backend names its package when absent, and its binary when not found."
+  (skip-unless (not (or (fboundp 'magit-lane-core-new)
+                        (fboundp 'magit-worktrunk-core-switch))))
+  (let ((message (lambda (backend)
+                   (cadr (should-error (claude-code-ide-manager--ensure-worktree-backend backend)
+                                       :type 'user-error)))))
+    (should (string-match-p "needs magit-lane" (funcall message 'lane)))
+    (should (string-match-p "needs magit-worktrunk" (funcall message 'wt)))
+    (cl-letf (((symbol-function 'magit-lane-core-new) #'ignore)
+              ((symbol-function 'magit-lane-core-available-p) #'ignore))
+      (should (string-match-p "No lane executable found" (funcall message 'lane))))
+    (cl-letf (((symbol-function 'magit-worktrunk-core-switch) #'ignore)
+              ((symbol-function 'magit-worktrunk-core-wt-available-p) #'ignore))
+      (should (string-match-p "No wt executable found" (funcall message 'wt))))
+    (should-not (fboundp 'magit-lane-core-new))))
+
+(defmacro claude-code-ide-tests--with-worktree-backends (&rest body)
+  "Run BODY with both backend adapters stubbed and their calls recorded.
+`lane-calls' and `wt-calls' collect argument lists; `lane-init' and
+`asked' flag `lane init' and the init question; `opened' records the
+directory passed to the open entry."
+  (declare (indent 0))
+  `(let (lane-calls wt-calls lane-init asked opened (answer t))
+     (ignore answer)
+     (cl-letf (((symbol-function 'magit-lane-core-available-p) (lambda () t))
+               ((symbol-function 'magit-worktrunk-core-wt-available-p) (lambda () t))
+               ((symbol-function 'magit-lane-core-initialized-p)
+                (lambda (root) (file-directory-p (expand-file-name ".lane" root))))
+               ((symbol-function 'magit-lane-core-entry-for-name)
+                (lambda (_root name) (and (equal name "listed") '((name . "listed")))))
+               ((symbol-function 'magit-lane-core-init)
+                (lambda (root) (setq lane-init t)
+                  (make-directory (expand-file-name ".lane" root))))
+               ((symbol-function 'magit-lane-core-new)
+                (lambda (root name &rest _)
+                  (push (list root name) lane-calls)
+                  (expand-file-name (concat ".lane/trees/" name) root)))
+               ((symbol-function 'magit-worktrunk-core-switch)
+                (lambda (root name &optional base create)
+                  (push (list root name base create) wt-calls)
+                  (expand-file-name (concat "../wt-" name) root)))
+               ((symbol-function 'y-or-n-p) (lambda (_prompt) (setq asked t) answer))
+               ((symbol-function 'claude-code-ide-manager-open-directory)
+                (lambda (directory &rest _) (setq opened directory))))
+       ,@body)))
+
+(ert-deftest claude-code-ide-test-new-worktree-lane-asks-init-once-then-creates-and-opens ()
+  "Repo without `.lane/': ask, init, create, open the new tree with the entry."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (let ((claude-code-ide-worktree-backend 'lane)
+             prompts)
+         (cl-letf (((symbol-function 'read-string)
+                    (lambda (prompt &rest _) (push prompt prompts) "feat/x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (should (equal (claude-code-ide-manager-new-worktree)
+                            (file-name-as-directory
+                             (expand-file-name ".lane/trees/feat/x" main)))))
+           (should asked)
+           (should lane-init)
+           (should (equal lane-calls (list (list main "feat/x"))))
+           (should (equal prompts '("New lane worktree name: ")))
+           (should (equal opened (file-name-as-directory
+                                  (expand-file-name ".lane/trees/feat/x" main))))
+           (setq asked nil lane-init nil)
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree))
+           (should-not asked)
+           (should-not lane-init)))))))
+
+(ert-deftest claude-code-ide-test-new-worktree-lane-init-declined-creates-nothing ()
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (setq answer nil)
+       (let ((claude-code-ide-worktree-backend 'lane))
+         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (should (string-match-p
+                      "Lane not initialized; nothing created"
+                      (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                          :type 'user-error)))))
+           (should asked)
+           (should-not lane-init)
+           (should-not lane-calls)
+           (should-not opened)))))))
+
+(ert-deftest claude-code-ide-test-new-worktree-wt-creates-and-prefix-shows-status ()
+  "A wt override creates through `wt switch --create'; a prefix opens Magit only."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (let ((claude-code-ide-worktree-backend 'lane)
+             status)
+         (let ((default-directory main))
+           (claude-code-ide-tests--git "config" "claude-code-ide.worktree-backend" "wt"))
+         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat-y"))
+                   ((symbol-function 'magit-status) (lambda (directory) (setq status directory))))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree))
+           (should (equal wt-calls (list (list main "feat-y" nil t))))
+           (should-not lane-calls)
+           (should-not asked)
+           (should (equal opened (file-name-as-directory
+                                  (expand-file-name "../wt-feat-y" main))))
+           (setq opened nil)
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree t))
+           (should-not opened)
+           (should (equal status (file-name-as-directory
+                                  (expand-file-name "../wt-feat-y" main))))))))))
+
+(ert-deftest claude-code-ide-test-new-worktree-refuses-bad-and-taken-names ()
+  "Empty, absolute, dotted, existing-branch, and listed-lane names create nothing."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (make-directory (expand-file-name ".lane" main))
+       (let ((claude-code-ide-worktree-backend 'lane))
+         (dolist (case '(("" . "not a usable")
+                         ("/tmp/abs" . "not a usable")
+                         ("a/../b" . "not a usable")
+                         ("feature" . "already exists as a branch")
+                         ("listed" . "already exists as a lane")))
+           (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (car case))))
+             (with-current-buffer (claude-code-ide-manager--get-buffer
+                                   (list :type 'repo :git-root main))
+               (should (string-match-p
+                        (cdr case)
+                        (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                            :type 'user-error)))))))
+         (should-not lane-calls)
+         (should-not opened))))))
+
+(ert-deftest claude-code-ide-test-new-worktree-checks-binary-before-name-prompt ()
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (let ((claude-code-ide-worktree-backend 'lane)
+             prompted)
+         (cl-letf (((symbol-function 'magit-lane-core-available-p) #'ignore)
+                   ((symbol-function 'read-string) (lambda (&rest _) (setq prompted t) "x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (should (string-match-p
+                      "No lane executable found"
+                      (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                          :type 'user-error)))))
+           (should-not prompted)))))))
+
+(ert-deftest claude-code-ide-test-new-worktree-global-view-asks-project-first ()
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (make-directory (expand-file-name ".lane" main))
+       (let (order)
+         (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list main)))
+                   ((symbol-function 'completing-read)
+                    (lambda (prompt &rest _) (push prompt order) main))
+                   ((symbol-function 'read-string)
+                    (lambda (prompt &rest _) (push prompt order) "feat/z")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+             (claude-code-ide-manager-new-worktree))
+           (should (equal (reverse order) '("Open project: " "New lane worktree name: ")))
+           (should (equal lane-calls (list (list main "feat/z"))))))))))
 
 (ert-deftest claude-code-ide-test-manager-open-start-action-starts-selected-target ()
   "Test manager open start action launches the selected target."

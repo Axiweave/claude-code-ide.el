@@ -718,6 +718,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("C" "Cancel pending Project view"
      claude-code-ide-manager-cancel-project-view-at-point)
     ("o" "Open project/worktree" claude-code-ide-manager-open)
+    ("w" "New worktree + agent" claude-code-ide-manager-new-worktree)
     ("r" "Rename session" claude-code-ide-manager-rename-at-point)
     ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]
    ["Arrange"
