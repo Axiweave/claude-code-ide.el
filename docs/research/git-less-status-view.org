@@ -1,0 +1,166 @@
+#+title: Git-less Status View: Options and Measured Cost
+#+options: toc:2 num:nil
+
+* Purpose
+
+This document records the research for the =git-less view= item in
+[[file:../../TODOs.org][TODOs.org]]: a simplified Git status without Magit, showing the
+changed files and the added and deleted line counts.
+
+It covers the available options, a measured performance comparison against
+=magit-status=, and the integration cost inside this package.
+
+Date: 2026-09-07. No source file changed for this research.
+
+* Package Survey
+
+No published package renders "changed files plus +N/-N" as a buffer.
+The near misses are:
+
+- =vc-dir=: built in, lists non-up-to-date files, supports marks and diffs,
+  no line counts.
+- =diff-hl=: fringe marks per hunk in a file buffer, not a repository list.
+- =helm-ls-git=: needs Helm, and delegates status to =vc-dir= or Magit.
+- =egg= and =git-emacs=: unmaintained Magit forks, no smaller than Magit.
+
+So the choice is a built-in view, or about 40 lines of new code.
+
+* Options
+
+The manager already owns the seam. =claude-code-ide-manager-status-buffer-function=
+takes a directory and returns a buffer (=claude-code-ide-manager.el:156=).
+Every option below is a provider for that hook.
+
+** Built-in, no package change
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-manager-status-buffer-function
+      (lambda (dir) (save-window-excursion (vc-dir dir) (current-buffer))))
+#+end_src
+
+Verified: =vc-dir= returns a live =vc-dir-mode= buffer through
+=save-window-excursion=. Marks, commit on =v=, and diff on ~=~ all work.
+No line counts.
+
+** Built-in, with drill-down
+
+=vc-root-diff= plus =outline-minor-mode=, then =C-c @ C-t=. This folds to one
+line per changed file and opens the hunks on =TAB=. Emacs 31 provides
+=diff-outline-regexp=, so no configuration is needed. Still no counts.
+
+** The actual request
+
+=git diff --numstat -z HEAD= returns =added<TAB>deleted<TAB>path= per file.
+=git ls-files -o -z --exclude-standard= adds the untracked files.
+Render both with =tabulated-list-mode=, which supplies sorting, column faces,
+and =g= refresh.
+
+Use =process-file=, not =shell-command=: it honors =default-directory=.
+
+Policy decisions this view must make, because the plumbing does not:
+
+- Untracked files: =--numstat= omits them, so they need the second command.
+- Binary files: =--numstat= prints =-= for both columns.
+- Staged against unstaged: =HEAD= merges both. Two calls separate them.
+
+* Measured Cost
+
+** Method
+
+Synthetic repositories of 1200 files with 400 lines each. Only the changed
+file count varies. Every provider ran in its own =emacs -Q -batch= process,
+one first refresh per cell. Repeated runs varied under 5%.
+
+Environment: Emacs 31.1.50, Magit =20260401.2251=, Git 2.52.0, local APFS,
+warm cache, Apple M2 Max.
+
+** Results
+
+| changed files / lines | numstat view | vc-dir  | magit-status | magit buffer |
+|-----------------------+--------------+---------+--------------+--------------|
+| 5 / 200               | 0.030 s      | 0.100 s | 0.188 s      | 98 KB        |
+| 40 / 1.2 k            | 0.068 s      | 0.104 s | 0.276 s      | 597 KB       |
+| 300 / 12 k            | 0.158 s      | 0.107 s | 3.39 s       | 6.1 MB       |
+| 600 / 24 k            | 0.138 s      | 0.109 s | 15.7 s       | 12.2 MB      |
+| 1200 / 48 k           | 0.235 s      | 0.148 s | 94.8 s       | 24.5 MB      |
+
+Double the changed files, and Magit takes four to six times longer. The two
+cheap providers stay flat, because their input is 27 KB of =--numstat= output
+instead of 24 MB of diff.
+
+** Where the time goes
+
+=magit-refresh-verbose= on the 1200-file case:
+
+#+begin_example
+magit-insert-untracked-files      0.014
+magit-insert-unstaged-changes    94.542
+magit-insert-staged-changes       0.028
+#+end_example
+
+The same repository renders in 0.133 s with the diff sections removed from
+=magit-status-sections-hook=. The cost is the diff wash, not the Git calls and
+not the section machinery.
+
+Raw Git on the 1200-file repository:
+
+#+begin_example
+git status --porcelain=v2 -z    0.01 s     159 KB
+git diff --numstat -z HEAD      0.22 s      27 KB
+git diff --stat HEAD            0.22 s      96 KB
+git diff HEAD                   0.35 s   24.6 MB
+#+end_example
+
+Git produces the 24 MB diff in 0.35 s. Emacs then spends 94 s on it.
+
+** Caveats
+
+- Batch mode has no redisplay and no font-lock. Interactive Magit must also
+  redisplay a 24 MB buffer, so the real cost is higher, never lower.
+- The Magit column is one refresh. Magit refreshes again after each save and
+  each command, so an agent that writes files repays the cost. =magit-prime=
+  is already installed here and targets that repeat cost.
+- The repositories hold synthetic 400-line text files. Binary or minified
+  content shifts the numbers.
+- An earlier run measured all providers in one process and hit a 900 s cap.
+  That run is discarded. Every number above comes from an isolated run that
+  returned.
+- The three views do not show the same information. Magit shows the real
+  diff. =vc-dir= shows status letters without counts. Only the numstat view
+  shows +N/-N.
+
+* Recommendation
+
+Keep Magit as the default provider. Add the stat provider for the manager's
+auto-opened layout, because that buffer opens per session without a request,
+and agent sessions produce exactly the 300-to-1200-file case. Below about 50
+changed files Magit costs 0.28 s, and the difference does not matter.
+
+For a churn number on the manager sidebar, sum =git diff --numstat HEAD=
+rather than calling =git diff --shortstat HEAD=. Both ignore untracked files,
+the view already needs =ls-files -o=, and one parse then serves both. The
+total measures worktree churn, not the work of one agent.
+
+* Integration Cost
+
+Adding a provider to the package touches these places:
+
+1. =claude-code-ide-manager.el:162=: one more =function-item= in the =:type=.
+2. =claude-code-ide-remote-project.el:849,855,859,864,1411=: the reuse and
+   cleanup code recognizes only =magit-status-mode= and =dired-mode=. A new
+   mode stays =uncertain-custom= and is never closed automatically until it
+   is listed there.
+
+Remote support is a separate task, not a free result. The remote adapter
+loads =tramp-rpc= and calls the provider on an =/rpc:= directory. A local
+=process-file= measurement does not prove that a =tabulated-list-mode=
+provider works over that transport, or that it can be shared and cleaned up
+safely. Validate it before claiming remote parity.
+
+* Sources
+
+- [[https://docs.magit.vc/magit/Performance.html][Magit manual, Performance]]: status buffers are recreated from scratch.
+- [[https://github.com/magit/magit/issues/4718][magit#4718]]: =magit-refresh= with a large commit.
+- [[https://github.com/magit/magit/issues/3772][magit#3772]]: =magit-status= slow with 5500 deleted files.
+- [[https://jakemccrary.com/blog/2020/11/14/speeding-up-magit/][Speeding up magit]]: trimming =magit-status-sections-hook=.
+- [[https://www.gnu.org/software/emacs/manual/html_node/emacs/VC-Directory-Mode.html][Emacs manual, VC Directory Mode]].
