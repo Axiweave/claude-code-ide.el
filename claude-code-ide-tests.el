@@ -5891,11 +5891,12 @@ directory passed to the open entry."
        ,@body)))
 
 (ert-deftest claude-code-ide-test-new-worktree-lane-asks-init-once-then-creates-and-opens ()
-  "Repo without `.lane/': ask, init, create, open the new tree with the entry."
+  "Protocol on, repo without `.lane/': ask, init, create, open the new tree."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
        (let ((claude-code-ide-worktree-backend 'lane)
+             (claude-code-ide-lane-init-protocol t)
              prompts)
          (cl-letf (((symbol-function 'read-string)
                     (lambda (prompt &rest _) (push prompt prompts) "feat/x")))
@@ -5922,7 +5923,8 @@ directory passed to the open entry."
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
        (setq answer nil)
-       (let ((claude-code-ide-worktree-backend 'lane))
+       (let ((claude-code-ide-worktree-backend 'lane)
+             (claude-code-ide-lane-init-protocol t))
          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
            (with-current-buffer (claude-code-ide-manager--get-buffer
                                  (list :type 'repo :git-root main))
@@ -5935,13 +5937,13 @@ directory passed to the open entry."
            (should-not lane-calls)
            (should-not opened)))))))
 
-(ert-deftest claude-code-ide-test-new-worktree-lane-bare-store-when-protocol-off ()
-  "With the protocol knob off, a bare .lane/ is made: no question, no `lane init'."
+(ert-deftest claude-code-ide-test-new-worktree-lane-bare-store-by-default ()
+  "By default a bare .lane/ is made: no question, no `lane init', no AGENTS.md."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (let ((claude-code-ide-worktree-backend 'lane)
-             (claude-code-ide-lane-init-protocol nil))
+       (let ((claude-code-ide-worktree-backend 'lane))
+         (should-not claude-code-ide-lane-init-protocol)
          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
            (with-current-buffer (claude-code-ide-manager--get-buffer
                                  (list :type 'repo :git-root main))

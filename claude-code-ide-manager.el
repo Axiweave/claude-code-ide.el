@@ -264,17 +264,18 @@ of this variable wins, then the git config key
   :safe (lambda (value) (memq value '(lane wt)))
   :group 'claude-code-ide-manager)
 
-(defcustom claude-code-ide-lane-init-protocol t
+(defcustom claude-code-ide-lane-init-protocol nil
   "Whether a lane store is created with `lane init'.
 
-Non-nil asks once per repository, then runs `lane init', which writes
-lane's agent protocol block into AGENTS.md.  Nil creates the bare
-`.lane/' directory instead, with no question and no AGENTS.md write.
+Nil, the default, creates the bare `.lane/' directory with no question
+and no AGENTS.md write.  Non-nil asks once per repository, then runs
+`lane init', which writes lane's agent protocol block into AGENTS.md.
 
 Every lane command works on a bare store: new, enter, merge, push,
-prune, rm, and even note and why.  What is lost is the AGENTS.md
-protocol that tells agents to read and record lane memory, so the
-memory system stays unused unless the user runs `lane init' by hand."
+prune, rm, and even note and why.  What the protocol adds is the
+AGENTS.md text that tells agents to read and record lane memory, so
+with the default the memory system stays unused unless the user runs
+`lane init' by hand."
   :type 'boolean
   :group 'claude-code-ide-manager)
 
