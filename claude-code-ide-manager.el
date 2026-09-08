@@ -264,6 +264,16 @@ of this variable wins, then the git config key
   :safe (lambda (value) (memq value '(lane wt)))
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-lane-init-protocol t
+  "Whether a lane store is created with `lane init'.
+
+Non-nil asks once per repository, then runs `lane init', which writes
+lane's agent protocol block into AGENTS.md.  Nil creates the bare
+`.lane/' directory instead, with no question and no AGENTS.md write.
+Lane's memory and note commands are then unused."
+  :type 'boolean
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-treemacs-split-policy 'half
   "How to split the sidebar when collocating cc-manager with Treemacs."
   :type '(choice (const :tag "Half" half)
@@ -3845,14 +3855,19 @@ backends.  For `lane', a listed lane called NAME is one too."
   "Create the tree NAME in ROOT with BACKEND and return its directory.
 
 With `lane' and no `.lane/' store yet, ask before `lane init', which
-writes AGENTS.md into the repository.  A refusal creates nothing."
+writes AGENTS.md into the repository, unless
+`claude-code-ide-lane-init-protocol' is nil, in which case the bare
+store directory is created silently.  A refusal creates nothing."
   (claude-code-ide-manager--normalize-target-directory
    (pcase backend
      ('lane
       (unless (magit-lane-core-initialized-p root)
-        (unless (y-or-n-p (format "Initialize lane in %s? This writes AGENTS.md. " root))
-          (user-error "Lane not initialized; nothing created"))
-        (magit-lane-core-init root))
+        (if claude-code-ide-lane-init-protocol
+            (progn
+              (unless (y-or-n-p (format "Initialize lane in %s? This writes AGENTS.md. " root))
+                (user-error "Lane not initialized; nothing created"))
+              (magit-lane-core-init root))
+          (make-directory (expand-file-name ".lane" root))))
       (magit-lane-core-new root name))
      ('wt (magit-worktrunk-core-switch root name nil t)))))
 

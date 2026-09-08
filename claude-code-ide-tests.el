@@ -5935,6 +5935,24 @@ directory passed to the open entry."
            (should-not lane-calls)
            (should-not opened)))))))
 
+(ert-deftest claude-code-ide-test-new-worktree-lane-bare-store-when-protocol-off ()
+  "With the protocol knob off, a bare .lane/ is made: no question, no `lane init'."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (let ((claude-code-ide-worktree-backend 'lane)
+             (claude-code-ide-lane-init-protocol nil))
+         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree))
+           (should-not asked)
+           (should-not lane-init)
+           (should (file-directory-p (expand-file-name ".lane" main)))
+           (should-not (file-exists-p (expand-file-name "AGENTS.md" main)))
+           (should (equal lane-calls (list (list main "feat/x"))))
+           (should opened)))))))
+
 (ert-deftest claude-code-ide-test-new-worktree-wt-creates-and-prefix-shows-status ()
   "A wt override creates through `wt switch --create'; a prefix opens Magit only."
   (claude-code-ide-tests--with-temp-worktree-repo
