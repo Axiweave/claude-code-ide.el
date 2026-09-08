@@ -2928,7 +2928,7 @@ A `working' or `needs-input' state is left alone by the same clear."
       (should-not (gethash "s11" slots)))))
 
 (ert-deftest claude-code-ide-test-manager-sidebar-renders-project-with-hover-path ()
-  "Test sidebar render shows basename and keeps full path in hover text."
+  "Row hover text abbreviates a local home path but keeps a remote path whole."
   (claude-code-ide-tests--reset-manager-state)
   (setq claude-code-ide-manager--items
         (list (make-claude-code-ide-manager-item
@@ -2945,7 +2945,34 @@ A `working' or `needs-input' state is left alone by the same clear."
     (should-not (string-match-p "/tmp/project-a" (buffer-string)))
     (goto-char (point-min))
     (should (equal (get-text-property (point) 'help-echo)
-                   "/tmp/project-a"))))
+                   "/tmp/project-a"))
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "home-project"
+                 :display-name "home-project"
+                 :secondary-text (expand-file-name "~/home-project")
+                 :pinned t
+                 :order-key 1
+                 :live-p t)))
+    (claude-code-ide-manager--render)
+    (goto-char (point-min))
+    (should (equal (get-text-property (point) 'help-echo)
+                   "~/home-project"))
+    ;; A remote path that collides with the local home stays unabbreviated,
+    ;; because the host owns a file system this Emacs never reads.
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "remote-home"
+                 :display-name "home-project"
+                 :secondary-text (expand-file-name "~/home-project")
+                 :host "alpha"
+                 :pinned t
+                 :order-key 1
+                 :live-p t)))
+    (claude-code-ide-manager--render)
+    (goto-char (point-min))
+    (should (equal (get-text-property (point) 'help-echo)
+                   (format "[alpha] %s" (expand-file-name "~/home-project"))))))
 
 (ert-deftest claude-code-ide-test-manager-point-shows-full-path-in-echo-area ()
   "Test manager point movement mirrors the row path into the echo area."

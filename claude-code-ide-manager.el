@@ -783,11 +783,22 @@ Return nil without loading the feature when the host is not admitted."
                           (claude-code-ide-manager--session-directory session-or-key)
                           "branch" "--show-current")))))
 
+(defun claude-code-ide-manager--echo-path (path host)
+  "Return PATH for echo text.
+
+Abbreviate the home prefix only for a local path.  A remote PATH keeps
+its full form, because HOST names a file system this Emacs never reads."
+  (if (and (stringp path) (null host))
+      (abbreviate-file-name path)
+    path))
+
 (defun claude-code-ide-manager--session-help-echo (session-key path)
   "Return help text for SESSION-KEY using PATH.
 
 Append the current branch when SESSION-KEY is on a named branch."
-  (let ((branch (claude-code-ide-manager--session-branch-name session-key)))
+  (let ((branch (claude-code-ide-manager--session-branch-name session-key))
+        (path (claude-code-ide-manager--echo-path
+               path (claude-code-ide-manager--session-host session-key))))
     (if (and (stringp branch) (not (string-empty-p branch)))
         (format "%s [%s]" path branch)
       path)))
@@ -2191,7 +2202,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
           (unless (equal key previous-group)
             (push (list key
                         (if host (format "[%s] %s" host (car heading)) (car heading))
-                        (cdr heading))
+                        (claude-code-ide-manager--echo-path (cdr heading) host))
                   headings)
             (setq previous-group key))))
       (setq claude-code-ide-manager--pin-order-grouping
@@ -2558,8 +2569,9 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
                    (text
                     (if (eq (plist-get scope :type) 'global)
                         (let* ((branch (plist-get (claude-code-ide-manager-item-group-metadata item) :branch))
-                               (path (or (claude-code-ide-manager-item-secondary-text item)
-                                         (claude-code-ide-manager-item-directory item)))
+                               (raw (or (claude-code-ide-manager-item-secondary-text item)
+                                        (claude-code-ide-manager-item-directory item)))
+                               (path (claude-code-ide-manager--echo-path raw host))
                                (details (if branch (format "%s [%s]" path branch) path)))
                           (if (and host
                                    (not (claude-code-ide-manager-item-live-p item)))
@@ -2646,7 +2658,8 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
                   (claude-code-ide-manager--insert-group-heading
                    (format "[%s]" host) host (list 'host host)))
                 (claude-code-ide-manager--insert-group-heading
-                 (concat (if host "  " "") (car heading)) (cdr heading) key)
+                 (concat (if host "  " "") (car heading))
+                 (claude-code-ide-manager--echo-path (cdr heading) host) key)
                 (setq previous-group key previous-host host))))
           (claude-code-ide-manager--insert-item
            scope item (gethash (claude-code-ide-manager-item-session-key item) slots)
