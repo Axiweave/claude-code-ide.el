@@ -942,13 +942,26 @@ session's title stays local and never contacts either side's zmx."
                        (claude-code-ide-zmx--title-value old))
           (claude-code-ide-zmx-set-title zmx-name ghostel-title))))))
 
+(defun claude-code-ide--record-ghostel-directory ()
+  "Move this Ghostel buffer's Session to the directory it just reported.
+Runs from `ghostel-directory-change-hook', which fires only on a real
+move.  This is the escape-sequence path (the agent's OSC 7, gated by its
+own `terminal.reportCwd' setting); the IDE MCP `session_state_changed'
+report is the other.  Both land in `claude-code-ide-session-relocate',
+which validates the path and redraws only on a change, so a doubled
+report costs one no-op."
+  (claude-code-ide-session-relocate (current-buffer) default-directory))
+
 (defun claude-code-ide--install-ghostel-title-observer ()
-  "Install the Ghostel title observer once."
+  "Install the Ghostel title and directory observers once."
   (when (and (fboundp 'ghostel--set-title)
              (not (advice-member-p #'claude-code-ide--record-ghostel-title
                                    'ghostel--set-title)))
     (advice-add 'ghostel--set-title :after
-                #'claude-code-ide--record-ghostel-title)))
+                #'claude-code-ide--record-ghostel-title))
+  (when (boundp 'ghostel-directory-change-hook)
+    (add-hook 'ghostel-directory-change-hook
+              #'claude-code-ide--record-ghostel-directory)))
 
 (with-eval-after-load 'ghostel
   (claude-code-ide--install-ghostel-title-observer))

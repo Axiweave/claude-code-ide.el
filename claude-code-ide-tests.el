@@ -2131,6 +2131,27 @@ DIRECTORY, when non-nil, is reported as the agent working directory."
             (should (= refreshes 1)))
         (delete-directory worktree t)))))
 
+(ert-deftest claude-code-ide-test-ghostel-directory-hook-moves-session ()
+  "Test a Ghostel OSC 7 move relocates the Session, and the MCP report then no-ops."
+  (claude-code-ide-tests--with-agent-state-fixture buffer
+    (let* ((worktree (file-name-as-directory (make-temp-file "cci-osc7" t)))
+           (expected (file-name-as-directory (expand-file-name worktree)))
+           (refreshes 0)
+           (record (gethash "agent-id" claude-code-ide--sessions)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
+                     (lambda () (setq refreshes (1+ refreshes)))))
+            (with-current-buffer buffer
+              (setq default-directory worktree)
+              (claude-code-ide--record-ghostel-directory))
+            (should (equal (claude-code-ide-session-directory record) expected))
+            (should (= refreshes 1))
+            ;; The IDE report of the same move costs one no-op, not a redraw.
+            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+            (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
+            (should (= refreshes 1)))
+        (delete-directory worktree t)))))
+
 (ert-deftest claude-code-ide-mcp-sse-test-acknowledged-terminal-replay-stays-idle ()
   "Test SSE replay cannot restore an acknowledged terminal marker."
   (claude-code-ide-tests--with-agent-state-fixture buffer
