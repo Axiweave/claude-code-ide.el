@@ -847,6 +847,26 @@ text that is metadata rather than a local filesystem instruction."
   (setf (claude-code-ide-session-group-metadata session) metadata)
   session)
 
+(defun claude-code-ide-session-relocate (buffer directory)
+  "Move the Session owning BUFFER to DIRECTORY and redraw the manager.
+DIRECTORY arrives from an Agent report, so accept it only when it names
+an existing local absolute directory without control characters.  The
+registry is keyed by Session ID, so the record moves in place.  Return
+the moved Session, or nil when nothing changed."
+  (when-let* (((stringp directory))
+              ((not (string-match-p "[[:cntrl:]]" directory)))
+              ((file-name-absolute-p directory))
+              ((not (file-remote-p directory)))
+              ((file-directory-p directory))
+              (normalized (claude-code-ide--normalize-directory directory))
+              (session (claude-code-ide--session-for-buffer buffer))
+              ((not (equal normalized
+                           (claude-code-ide--normalize-directory
+                            (claude-code-ide-session-directory session))))))
+    (setf (claude-code-ide-session-directory session) normalized)
+    (claude-code-ide-manager-refresh-all)
+    session))
+
 (defun claude-code-ide--session-for-buffer (&optional buffer)
   "Return the live session that owns BUFFER, or nil."
   (let ((buffer (or buffer (current-buffer)))

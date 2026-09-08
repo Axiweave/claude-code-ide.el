@@ -2072,13 +2072,16 @@ have completed before cleanup.  Waits up to 5 seconds."
            ,@body)
        (kill-buffer ,buffer))))
 
-(defun claude-code-ide-tests--dispatch-agent-state (session-id state &optional zmx-name)
-  "Dispatch a `session_state_changed' for SESSION-ID with STATE and ZMX-NAME."
+(defun claude-code-ide-tests--dispatch-agent-state (session-id state &optional zmx-name directory)
+  "Dispatch a `session_state_changed' for SESSION-ID with STATE and ZMX-NAME.
+DIRECTORY, when non-nil, is reported as the agent working directory."
   (claude-code-ide-mcp-sse--dispatch
    session-id
    `((jsonrpc . "2.0")
      (method . "session_state_changed")
-     (params . ((state . ,state) (zmxSession . ,(or zmx-name "cci-omp-proj-x")))))))
+     (params . ((state . ,state)
+                (zmxSession . ,(or zmx-name "cci-omp-proj-x"))
+                ,@(when directory `((directory . ,directory))))))))
 
 (ert-deftest claude-code-ide-mcp-sse-test-dispatch-session-state ()
   "Test `session_state_changed' stores state on the zmx-resolved session buffer."
@@ -2096,6 +2099,37 @@ have completed before cleanup.  Waits up to 5 seconds."
                                                    (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
                                                    (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))
                                                    (should-not (gethash "sid" claude-code-ide-mcp-sse--sessions))))
+
+(ert-deftest claude-code-ide-mcp-sse-test-dispatch-session-directory ()
+  "Test a reported directory moves the Session and redraws the manager once."
+  (claude-code-ide-tests--with-agent-state-fixture buffer
+    (let* ((worktree (file-name-as-directory (make-temp-file "cci-worktree" t)))
+           (expected (file-name-as-directory (expand-file-name worktree)))
+           (refreshes 0)
+           (record (gethash "agent-id" claude-code-ide--sessions)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
+                     (lambda () (setq refreshes (1+ refreshes)))))
+            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+            (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
+            (should (equal (claude-code-ide-session-directory record) expected))
+            (should (= refreshes 1))
+            ;; The same directory on a later state report redraws nothing.
+            (claude-code-ide-tests--dispatch-agent-state "sid" "done" nil worktree)
+            (should (= refreshes 1))
+            ;; A relative, missing, remote, or control-character path is refused.
+            (dolist (bogus (list "relative/worktree"
+                                 (expand-file-name "gone" worktree)
+                                 "/ssh:elsewhere:/tmp"
+                                 "/tmp/with\nnewline"))
+              (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil bogus)
+              (should (equal (claude-code-ide-session-directory record) expected))
+              (should (= refreshes 1)))
+            ;; A state report without a directory keeps the moved record.
+            (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
+            (should (equal (claude-code-ide-session-directory record) expected))
+            (should (= refreshes 1)))
+        (delete-directory worktree t)))))
 
 (ert-deftest claude-code-ide-mcp-sse-test-acknowledged-terminal-replay-stays-idle ()
   "Test SSE replay cannot restore an acknowledged terminal marker."

@@ -77,6 +77,7 @@
 (declare-function claude-code-ide--session-buffer-for-agent "claude-code-ide" (zmx-name buffer-name))
 (declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
 (declare-function claude-code-ide-session-idle-set-agent-state "claude-code-ide-session-idle" (state &optional acknowledged))
+(declare-function claude-code-ide-session-relocate "claude-code-ide" (buffer directory))
 
 ;;; Constants
 
@@ -250,7 +251,10 @@ so a region selected before the client connected is not lost."
   "Agent state strings accepted from `session_state_changed'.")
 
 (defun claude-code-ide-mcp-sse--apply-session-state (session-id params)
-  "Store the agent state in PARAMS on the session buffer reported by SESSION-ID."
+  "Store the agent state in PARAMS on the session buffer reported by SESSION-ID.
+PARAMS also carries the agent's working directory, which follows a
+worktree switch inside a running Agent.  Moving the Session record
+relabels its manager row with the new path and branch."
   (let* ((state (alist-get 'state params))
          (zmx-name (alist-get 'zmxSession params))
          (buffer-name (alist-get 'bufferName params))
@@ -267,6 +271,7 @@ so a region selected before the client connected is not lost."
       (when session
         (puthash session-id (plist-put session :buffer buffer)
                  claude-code-ide-mcp-sse--sessions))
+      (claude-code-ide-session-relocate buffer (alist-get 'directory params))
       (with-current-buffer buffer
         (setq claude-code-ide-mcp-sse--agent-state-owner session-id)
         (claude-code-ide-session-idle-set-agent-state (intern state)))))))
