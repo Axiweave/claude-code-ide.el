@@ -6050,6 +6050,34 @@ directory passed to the open entry."
            (should (equal (reverse order) '("Open project: " "New worktree (branch) name: ")))
            (should (equal lane-calls (list (list main "feat/z"))))))))))
 
+(ert-deftest claude-code-ide-test-new-worktree-global-view-uses-row-project-at-point ()
+  "A local row under point supplies the project; a remote row refuses."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main topic)
+     (claude-code-ide-tests--with-worktree-backends
+       (make-directory (expand-file-name ".lane" main))
+       (let ((item (make-claude-code-ide-manager-item
+                    :session-key "s" :directory topic
+                    :group-metadata (list :project-path (directory-file-name main))))
+             (remote (make-claude-code-ide-manager-item
+                      :session-key "r" :host "box" :directory "/srv/repo/"))
+             asked)
+         (cl-letf (((symbol-function 'completing-read)
+                    (lambda (&rest _) (setq asked t) main))
+                   ((symbol-function 'read-string) (lambda (&rest _) "feat/row"))
+                   ((symbol-function 'claude-code-ide-manager--item-at-point)
+                    (lambda () item)))
+           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+             (claude-code-ide-manager-new-worktree))
+           (should-not asked)
+           (should (equal lane-calls (list (list main "feat/row")))))
+         (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                    (lambda () remote)))
+           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+             (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                                :type 'user-error))
+                            "Remote worktrees are not supported")))))))))
+
 (ert-deftest claude-code-ide-test-manager-open-start-action-starts-selected-target ()
   "Test manager open start action launches the selected target."
   (let ((claude-code-ide-manager--open-target "/tmp/project-a/")

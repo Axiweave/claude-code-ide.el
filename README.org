@@ -364,7 +364,7 @@ You can reach the manager in two ways:
   - =C-j= and =C-k= move between project groups
   - =m= refreshes cached project metadata for one configured remote host
   - =o= opens a project or worktree: in the global view it asks for the project, then for the worktree when the project has more than one. A target with a Session switches to it. =C-u o= starts a sibling Session at once. Otherwise the Start/Continue/Resume menu appears.
-  - =w= creates a worktree and starts the default Agent in it. It asks for one name that becomes the branch and the tree. =C-u w= creates the tree and opens =magit-status= without an Agent.
+  - =w= creates a worktree and starts the default Agent in it. In the global view the project comes from the row under point, and is asked only when point is on no row. It asks for one name that becomes the branch and the tree. =C-u w= creates the tree and opens =magit-status= without an Agent.
 
 *** Worktree Creation
 

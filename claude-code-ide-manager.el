@@ -3859,10 +3859,17 @@ writes AGENTS.md into the repository.  A refusal creates nothing."
   "Return the repository root the new-worktree command acts on.
 
 In the repo-scoped view that is the scope's root.  In the global view the
-user picks a project first, because the backend depends on it.  A remote
-root is refused before any backend work."
+project of the local row at point is used, and the user is asked only when
+point is on no such row, because the backend depends on the project.  A
+remote root is refused before any backend work."
   (let* ((scope (claude-code-ide-manager--scope-for-command))
+         (item (claude-code-ide-manager--item-at-point))
          (root (or (plist-get scope :git-root)
+                   (and item
+                        (or (not (claude-code-ide-manager-item-host item))
+                            (user-error "Remote worktrees are not supported"))
+                        (file-name-as-directory
+                         (claude-code-ide-manager--group-path item)))
                    (claude-code-ide-manager--select-global-project))))
     (when (file-remote-p root)
       (user-error "Remote worktrees are not supported"))
