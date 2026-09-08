@@ -2554,17 +2554,20 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
      (append
       (list 'claude-code-ide-manager-session-key session-key
             'help-echo
-            (if (eq (plist-get scope :type) 'global)
-                (let* ((branch (plist-get (claude-code-ide-manager-item-group-metadata item) :branch))
-                       (path (or (claude-code-ide-manager-item-secondary-text item)
-                                 (claude-code-ide-manager-item-directory item)))
-                       (details (if branch (format "%s [%s]" path branch) path)))
-                  (if (and (claude-code-ide-manager-item-host item)
-                           (not (claude-code-ide-manager-item-live-p item)))
-                      (format "%s. Session is disconnected. Press c to reattach." details)
-                    details))
-              (claude-code-ide-manager--session-help-echo
-               session-key (claude-code-ide-manager-item-secondary-text item))))
+            (let* ((host (claude-code-ide-manager-item-host item))
+                   (text
+                    (if (eq (plist-get scope :type) 'global)
+                        (let* ((branch (plist-get (claude-code-ide-manager-item-group-metadata item) :branch))
+                               (path (or (claude-code-ide-manager-item-secondary-text item)
+                                         (claude-code-ide-manager-item-directory item)))
+                               (details (if branch (format "%s [%s]" path branch) path)))
+                          (if (and host
+                                   (not (claude-code-ide-manager-item-live-p item)))
+                              (format "%s. Session is disconnected. Press c to reattach." details)
+                            details))
+                      (claude-code-ide-manager--session-help-echo
+                       session-key (claude-code-ide-manager-item-secondary-text item)))))
+              (if host (format "[%s] %s" host text) text)))
       (when-let* ((face (claude-code-ide-manager--row-face
                          scope session-key)))
         (list 'face face))))))
@@ -3415,12 +3418,12 @@ owned sidebar windows."
                                    (if (> step 0) 0 (1- (length groups))))
                                  groups)))
                (key (claude-code-ide-manager-item-session-key target)))
-          (if (and (claude-code-ide-manager-item-host target)
-                   (not (buffer-live-p (claude-code-ide-manager--session-buffer key))))
+          (if-let* ((host (claude-code-ide-manager-item-host target))
+                    ((not (buffer-live-p (claude-code-ide-manager--session-buffer key)))))
               (progn
                 (claude-code-ide-manager--sync-point-to-session-key scope key)
                 (claude-code-ide-manager--save-state)
-                (message "Session is disconnected. Press c to reattach."))
+                (message "Session on %s is disconnected. Press c to reattach." host))
             (claude-code-ide-manager-switch-to-session key t scope)))))))
 
 (defun claude-code-ide-manager-next-project-group ()
