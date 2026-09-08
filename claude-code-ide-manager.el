@@ -3495,9 +3495,10 @@ owned sidebar windows."
       (complete-with-action action projects string pred)))))
 
 (defun claude-code-ide-manager--select-global-project ()
-  "Prompt for a known project and return its normalized root."
-  (let ((projects (mapcar #'claude-code-ide-manager--normalize-target-directory
-                          (claude-code-ide-manager--known-project-roots))))
+  "Prompt for a known project whose directory exists and return its root."
+  (let ((projects (seq-filter #'file-directory-p
+                              (mapcar #'claude-code-ide-manager--normalize-target-directory
+                                      (claude-code-ide-manager--known-project-roots)))))
     (unless projects
       (user-error "No known projects"))
     (claude-code-ide-manager--normalize-target-directory
@@ -3545,9 +3546,9 @@ A project without worktrees (a plain directory) is the target itself."
     ('global
      (let* ((project (claude-code-ide-manager--select-global-project))
             (worktrees (claude-code-ide-manager--repo-worktree-directories project)))
-       (cond ((cdr worktrees) (claude-code-ide-manager--select-worktree-in worktrees))
-             ((file-directory-p project) project)
-             (t (user-error "Worktree %s is unavailable" project)))))
+       (if (cdr worktrees)
+           (claude-code-ide-manager--select-worktree-in worktrees)
+         project)))
     ('repo (claude-code-ide-manager--select-repo-worktree scope))
     (_ (error "Unknown manager scope: %S" scope))))
 

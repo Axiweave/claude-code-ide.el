@@ -6006,17 +6006,24 @@ directory passed to the open entry."
       (should-not lane-calls))))
 
 (ert-deftest claude-code-ide-test-manager-open-global-skips-missing-project ()
-  "A picked project whose directory is gone is refused before any menu."
+  "A known project whose directory is gone is not offered in the project prompt."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((gone (file-name-as-directory (make-temp-file "ccide-gone" t))))
+  (let ((gone (file-name-as-directory (make-temp-file "ccide-gone" t)))
+        (live (file-name-as-directory (make-temp-file "ccide-live" t)))
+        candidates)
     (delete-directory gone)
-    (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list gone)))
-              ((symbol-function 'completing-read) (lambda (&rest _) gone)))
-      (should (string-match-p
-               "is unavailable"
-               (cadr (should-error (claude-code-ide-manager--open-target-for-scope
-                                    '(:type global))
-                                   :type 'user-error)))))))
+    (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list gone live)))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (setq candidates (all-completions "" table))
+                 live)))
+      (should (equal (claude-code-ide-manager--select-global-project) live))
+      (should (equal candidates (list live)))
+      (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list gone))))
+        (should (equal (cadr (should-error (claude-code-ide-manager--select-global-project)
+                                           :type 'user-error))
+                       "No known projects"))))
+    (delete-directory live t)))
 
 (ert-deftest claude-code-ide-test-new-worktree-checks-binary-before-name-prompt ()
   (claude-code-ide-tests--with-temp-worktree-repo
