@@ -405,8 +405,16 @@ The first successful grouped move or Apply creates shared order keys when needed
 Those keys also fix the fallback order of other rows in the shared flat sequence.
 Toggling views does not change the order.
 
+Group order is stored for the global scope. Remote and local groups mix freely.
+=M-P= and =M-N= move the current row's project group up or down.
+=M-p= and =M-n= move a group when the row is the only row of that group.
+A group move never changes row order keys, so the flat view keeps its order.
+A group with no stored position follows the stored groups, sorted by heading name.
+
 In grouped global view, =E= includes live and disconnected rows under fixed project headings.
 =M-p= and =M-n= move rows only within the same project.
+=M-P= and =M-N= move a complete project block with its rows.
+Each group has one heading line, which shows =[HOST] PROJECT= for a remote group.
 Apply rejects edited labels or headings, missing rows, and changed project membership.
 Failure leaves the editor, pins, and order unchanged.
 
@@ -488,6 +496,8 @@ When point is in the manager buffer:
 - =K= confirms Stop for the exact selected target
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
+- =M-p= or =M-n= moves the project group instead when the row is its group's only row
+- =M-P= and =M-N= move the selected row's project group up or down in grouped global view
 - =v= toggles flat and grouped global views
 - =C-j= moves to the next project in grouped global view
 - =C-k= moves to the previous project in grouped global view
@@ -512,6 +522,8 @@ Each Session has one numbered row.
 
 - =M-p= moves the current row up and renumbers all rows
 - =M-n= moves the current row down and renumbers all rows
+- =M-P= moves the current group block up with its rows and renumbers all rows
+- =M-N= moves the current group block down with its rows and renumbers all rows
 - In Evil mode, use =V=, =d=, and =p= to move complete rows; stale row numbers are allowed
 - =C-c C-c= validates every opening row, pins all snapshot sessions, and applies the displayed order
 - Empty lines between rows are allowed

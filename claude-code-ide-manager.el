@@ -385,6 +385,21 @@ render two cells wide, which breaks gutter alignment.")
           claude-code-ide-manager--items)
     (plist-get (claude-code-ide-manager--scope-state-entry scope) :items)))
 
+(defun claude-code-ide-manager--group-order (scope)
+  "Return SCOPE's stored group identities in display order."
+  (plist-get (claude-code-ide-manager--scope-state-entry scope) :group-order))
+
+(defun claude-code-ide-manager--store-group-order (scope keys)
+  "Store KEYS as SCOPE's leading group order, keeping other stored identities."
+  ;; ponytail: stale identities are never pruned; prune when the list grows enough to matter.
+  (let* ((state (copy-sequence
+                 (or (claude-code-ide-manager--scope-state-entry scope)
+                     (list :items claude-code-ide-manager--items))))
+         (rest (cl-remove-if (lambda (key) (member key keys))
+                             (plist-get state :group-order))))
+    (claude-code-ide-manager--set-scope-state-entry
+     scope (plist-put state :group-order (append keys rest)))))
+
 (defun claude-code-ide-manager--view (scope)
   "Return the presentation for SCOPE."
   (if (and (eq (plist-get scope :type) 'global)
@@ -396,6 +411,16 @@ render two cells wide, which breaks gutter alignment.")
 (defun claude-code-ide-manager--normalize-view (view)
   "Return VIEW normalized to `flat' or `grouped'."
   (if (eq view 'grouped) 'grouped 'flat))
+
+(defun claude-code-ide-manager--valid-group-order (keys)
+  "Return KEYS limited to well-formed group identities."
+  (cl-remove-if-not
+   (lambda (key)
+     (and (proper-list-p key) (= (length key) 3)
+          (memq (nth 0 key) '(git non-git unresolved unresolved-session))
+          (or (null (nth 1 key)) (stringp (nth 1 key)))
+          (stringp (nth 2 key))))
+   (and (proper-list-p keys) keys)))
 
 (defun claude-code-ide-manager--valid-group-metadata (metadata host directory)
   "Return validated METADATA for exact HOST and DIRECTORY, or nil."
@@ -598,19 +623,27 @@ render two cells wide, which breaks gutter alignment.")
      groups)
     labels))
 
-(defun claude-code-ide-manager--group-less-p (left right headings)
-  "Compare LEFT and RIGHT group identities using HEADINGS."
-  (let ((left-host (cadr left)) (right-host (cadr right)))
+(defun claude-code-ide-manager--group-less-p (left right headings positions)
+  "Compare LEFT and RIGHT group identities using HEADINGS and stored POSITIONS."
+  (let ((left-position (and positions (gethash left positions)))
+        (right-position (and positions (gethash right positions))))
     (cond
-     ((not (equal left-host right-host))
-      (or (null left-host)
-          (and right-host (string-version-lessp left-host right-host))))
+     ((and left-position right-position) (< left-position right-position))
+     (left-position t)
+     (right-position nil)
      (t
       (let ((left-name (car (gethash left headings)))
-            (right-name (car (gethash right headings))))
-        (if (equal left-name right-name)
-            (string< (prin1-to-string left) (prin1-to-string right))
-          (string-version-lessp left-name right-name)))))))
+            (right-name (car (gethash right headings)))
+            (left-host (cadr left))
+            (right-host (cadr right)))
+        (cond
+         ((not (equal left-name right-name))
+          (string-version-lessp left-name right-name))
+         ((equal left-host right-host)
+          (string< (prin1-to-string left) (prin1-to-string right)))
+         ((null left-host) t)
+         ((null right-host) nil)
+         (t (string-version-lessp left-host right-host))))))))
 
 (defun claude-code-ide-manager--scope-selected-session-key (scope)
   "Return the last selected session key stored for SCOPE."
@@ -1191,6 +1224,10 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "M-n") #'claude-code-ide-manager-move-down)
 (define-key claude-code-ide-manager-mode-map (kbd "M-k") #'claude-code-ide-manager-move-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-j") #'claude-code-ide-manager-move-down)
+(define-key claude-code-ide-manager-mode-map (kbd "M-P") #'claude-code-ide-manager-move-group-up)
+(define-key claude-code-ide-manager-mode-map (kbd "M-N") #'claude-code-ide-manager-move-group-down)
+(define-key claude-code-ide-manager-mode-map (kbd "M-K") #'claude-code-ide-manager-move-group-up)
+(define-key claude-code-ide-manager-mode-map (kbd "M-J") #'claude-code-ide-manager-move-group-down)
 (define-key claude-code-ide-manager-mode-map (kbd "C-s") #'claude-code-ide-manager-sort-menu)
 (define-key claude-code-ide-manager-mode-map (kbd "!") #'claude-code-ide-manager-clear-all-idle-state)
 (define-key claude-code-ide-manager-mode-map (kbd "?") #'claude-code-ide-manager-dispatch)
@@ -1204,6 +1241,10 @@ scope when it is visible; otherwise return the first visible scope."
     (define-key map (kbd "M-n") #'claude-code-ide-manager-pin-order-move-down)
     (define-key map (kbd "M-k") #'claude-code-ide-manager-pin-order-move-up)
     (define-key map (kbd "M-j") #'claude-code-ide-manager-pin-order-move-down)
+    (define-key map (kbd "M-P") #'claude-code-ide-manager-pin-order-move-group-up)
+    (define-key map (kbd "M-N") #'claude-code-ide-manager-pin-order-move-group-down)
+    (define-key map (kbd "M-K") #'claude-code-ide-manager-pin-order-move-group-up)
+    (define-key map (kbd "M-J") #'claude-code-ide-manager-pin-order-move-group-down)
     map)
   "Keymap for `claude-code-ide-manager-pin-order-mode'.")
 (dotimes (index 10)
@@ -1363,7 +1404,8 @@ under the ESC prefix, so iterate that sub-keymap."
                           (plist-get state :active-session-key))
                     (when (equal scope-key "global")
                       (list :view (claude-code-ide-manager--normalize-view
-                                   (plist-get state :view))))))
+                                   (plist-get state :view))
+                            :group-order (plist-get state :group-order)))))
              serialized))
      claude-code-ide-manager--scope-state)
     (nreverse serialized)))
@@ -1382,7 +1424,10 @@ under the ESC prefix, so iterate that sub-keymap."
                       (plist-get (cdr entry) :active-session-key))
                 (when (equal (car entry) "global")
                   (list :view (claude-code-ide-manager--normalize-view
-                               (plist-get (cdr entry) :view)))))
+                               (plist-get (cdr entry) :view))
+                        :group-order
+                        (claude-code-ide-manager--valid-group-order
+                         (plist-get (cdr entry) :group-order)))))
                table))
     table))
 
@@ -1691,6 +1736,14 @@ IGNORE-PIN-ORDER bypasses pins and manual keys, not group boundaries."
                        (eq (or view (claude-code-ide-manager--view scope)) 'grouped)))
          (labels (and grouped (claude-code-ide-manager--grouped-labels items)))
          (headings (and grouped (claude-code-ide-manager--group-headings items)))
+         (positions (and grouped
+                         (let ((table (make-hash-table :test 'equal))
+                               (index 0))
+                           (dolist (key (claude-code-ide-manager--group-order scope))
+                             (unless (gethash key table)
+                               (puthash key index table)
+                               (setq index (1+ index))))
+                           table)))
          (keys (and grouped (make-hash-table :test 'eq)))
          (base-predicate
           (pcase claude-code-ide-manager-sort-by
@@ -1736,7 +1789,7 @@ IGNORE-PIN-ORDER bypasses pins and manual keys, not group boundaries."
             (cond
              ((and grouped (not (equal (gethash left keys) (gethash right keys))))
               (claude-code-ide-manager--group-less-p
-               (gethash left keys) (gethash right keys) headings))
+               (gethash left keys) (gethash right keys) headings positions))
              (ignore-pin-order (funcall fallback-predicate left right))
              ((and (claude-code-ide-manager-item-pinned left)
                    (not (claude-code-ide-manager-item-pinned right)))
@@ -2129,18 +2182,18 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   (when (eq claude-code-ide-manager--pin-order-view 'grouped)
     (let ((groups (make-hash-table :test 'equal))
           (names (claude-code-ide-manager--group-headings items))
-          headings previous-group previous-host)
+          headings previous-group)
       (dolist (item items)
         (let* ((key (claude-code-ide-manager--group-key item))
                (host (claude-code-ide-manager-item-host item))
                (heading (gethash key names)))
           (puthash (claude-code-ide-manager-item-session-key item) key groups)
           (unless (equal key previous-group)
-            (when (and host (not (equal host previous-host)))
-              (push (list (list 'host host) (format "[%s]" host) host) headings))
-            (push (list key (concat (if host "  " "") (car heading)) (cdr heading))
+            (push (list key
+                        (if host (format "[%s] %s" host (car heading)) (car heading))
+                        (cdr heading))
                   headings)
-            (setq previous-group key previous-host host))))
+            (setq previous-group key))))
       (setq claude-code-ide-manager--pin-order-grouping
             (list :groups groups :headings (nreverse headings)
                   :flat-order
@@ -2158,10 +2211,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
              for index from 1
              for group = (and groups (gethash session-key groups))
              do
-             (while (and headings
-                         (or (equal (caar headings) group)
-                             (and (eq (car (caar headings)) 'host)
-                                  (equal (car (cadr headings)) group))))
+             (when (and headings (equal (caar headings) group))
                (let ((heading (pop headings))
                      (start (point)))
                  (claude-code-ide-manager--insert-group-heading
@@ -2254,6 +2304,57 @@ This mirrors mouse hover text for keyboard navigation in the manager."
   (interactive)
   (claude-code-ide-manager--pin-order-move-row 1))
 
+(defun claude-code-ide-manager--pin-order-block-starts ()
+  "Return group heading line positions in buffer order."
+  (save-excursion
+    (goto-char (point-min))
+    (let (starts)
+      (while (< (point) (point-max))
+        (when (get-text-property (point) 'claude-code-ide-manager-group-heading)
+          (push (point) starts))
+        (forward-line 1))
+      (nreverse starts))))
+
+(defun claude-code-ide-manager--pin-order-move-group (direction)
+  "Move the group block at point in DIRECTION and keep captured headings in sync."
+  (let ((headings (plist-get claude-code-ide-manager--pin-order-grouping :headings)))
+    (unless headings
+      (user-error "The flat order editor has no project groups"))
+    (let* ((starts (claude-code-ide-manager--pin-order-block-starts))
+           (line (line-beginning-position))
+           (index (cl-position-if (lambda (start) (<= start line)) starts :from-end t))
+           (target (and index (+ index direction))))
+      (when (and index target (>= target 0) (< target (length starts)))
+        (let* ((low (min index target))
+               (first-start (nth low starts))
+               (middle (nth (1+ low) starts))
+               (end (or (nth (+ low 2) starts) (point-max)))
+               (ordered (copy-sequence headings))
+               (marker (copy-marker (point))))
+          (cl-rotatef (nth low ordered) (nth (1+ low) ordered))
+          (unwind-protect
+              (progn
+                (atomic-change-group
+                  (let ((inhibit-read-only t))
+                    (transpose-regions first-start middle middle end))
+                  (claude-code-ide-manager--pin-order-renumber))
+                (setq claude-code-ide-manager--pin-order-grouping
+                      (plist-put claude-code-ide-manager--pin-order-grouping
+                                 :headings ordered))
+                (goto-char marker)
+                (beginning-of-line))
+            (set-marker marker nil)))))))
+
+(defun claude-code-ide-manager-pin-order-move-group-up ()
+  "Move the current group block up."
+  (interactive)
+  (claude-code-ide-manager--pin-order-move-group -1))
+
+(defun claude-code-ide-manager-pin-order-move-group-down ()
+  "Move the current group block down."
+  (interactive)
+  (claude-code-ide-manager--pin-order-move-group 1))
+
 (defun claude-code-ide-manager--validate-pin-order-editor ()
   "Validate all editor rows and return their ordered Session IDs."
   (let* ((snapshot claude-code-ide-manager--pin-order-snapshot)
@@ -2282,7 +2383,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
                          (not (text-property-not-all
                                (point) end 'claude-code-ide-manager-session-key nil)))
               (user-error "A fixed heading changed. Reopen the order editor"))
-            (setq current-group (unless (eq (car identity) 'host) identity))))
+            (setq current-group identity)))
          (t
           (cl-incf row-number)
           (unless (looking-at "[0-9]+\\. \\(.+\\)$")
@@ -2346,6 +2447,11 @@ This mirrors mouse hover text for keyboard navigation in the manager."
     (unless grouping
       (claude-code-ide-manager-refresh-items scope))
     (when grouping
+      (let ((groups (plist-get grouping :groups))
+            sequence)
+        (dolist (key session-keys)
+          (cl-pushnew (gethash key groups) sequence :test #'equal))
+        (claude-code-ide-manager--store-group-order scope (nreverse sequence)))
       (setq session-keys
             (claude-code-ide-manager--merge-group-order
              (plist-get grouping :flat-order) session-keys (plist-get grouping :groups))))
@@ -2407,7 +2513,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
       (set-window-buffer window editor)
       (select-window window)
       (message
-       "C-c C-c applies. C-c C-k cancels. M-p/M-k and M-n/M-j move rows."))))
+       "C-c C-c applies. C-c C-k cancels. M-p/M-k move rows. M-P/M-K move groups."))))
 
 (defun claude-code-ide-manager--insert-item (scope item slot &optional grouped-label)
   "Insert ITEM with SLOT in SCOPE, optionally using GROUPED-LABEL.
@@ -2893,6 +2999,25 @@ DIRECTION should be -1 for up or 1 for down."
                               (claude-code-ide-manager--group-key candidate))))
           candidate)))))
 
+(defun claude-code-ide-manager--displayed-groups (scope)
+  "Return SCOPE's displayed (GROUP-KEY . FIRST-ITEM) pairs in grouped order."
+  (let (groups previous)
+    (dolist (item (claude-code-ide-manager--sorted-items
+                   (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+      (let ((key (claude-code-ide-manager--group-key item)))
+        (unless (equal key previous)
+          (push (cons key item) groups)
+          (setq previous key))))
+    (nreverse groups)))
+
+(defun claude-code-ide-manager--origin-item (scope)
+  "Return the item for point, or SCOPE's selected or active row."
+  (cl-loop for key in (list (get-text-property (point) 'claude-code-ide-manager-session-key)
+                            (claude-code-ide-manager--scope-selected-session-key scope)
+                            (claude-code-ide-manager--scope-active-session-key scope))
+           for item = (and key (claude-code-ide-manager--item-by-session-key scope key))
+           when item return item))
+
 (defun claude-code-ide-manager--merge-group-order (baseline ordered groups)
   "Fill each group's BASELINE positions from ORDERED using Session GROUPS.
 BASELINE and ORDERED contain Session IDs. GROUPS maps each ID to its group."
@@ -3277,22 +3402,8 @@ owned sidebar windows."
                  (eq (plist-get scope :type) 'global)
                  (eq (claude-code-ide-manager--view scope) 'grouped))
       (user-error "Grouped global view is required"))
-    (let* ((items (claude-code-ide-manager--sorted-items
-                   (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
-           (origin
-            (cl-loop for key in
-                     (list (get-text-property (point) 'claude-code-ide-manager-session-key)
-                           (claude-code-ide-manager--scope-selected-session-key scope)
-                           (claude-code-ide-manager--scope-active-session-key scope))
-                     for item = (and key (claude-code-ide-manager--item-by-session-key scope key))
-                     when item return item))
-           groups previous)
-      (dolist (item items)
-        (let ((key (claude-code-ide-manager--group-key item)))
-          (unless (equal key previous)
-            (push (cons key item) groups)
-            (setq previous key))))
-      (setq groups (nreverse groups))
+    (let* ((groups (claude-code-ide-manager--displayed-groups scope))
+           (origin (claude-code-ide-manager--origin-item scope)))
       (unless groups
         (user-error "No Sessions in this manager scope"))
       (when (cdr groups)
@@ -3553,25 +3664,70 @@ Keep a separate pass from
     (when session-key
       (claude-code-ide-manager--toggle-pin-for-session-key scope session-key))))
 
-(defun claude-code-ide-manager-move-up ()
-  "Move the current row up within its pinned bucket."
-  (interactive)
+(defun claude-code-ide-manager--move-group (scope group-key direction)
+  "Move GROUP-KEY by DIRECTION among SCOPE's displayed groups."
+  (let* ((groups (mapcar #'car (claude-code-ide-manager--displayed-groups scope)))
+         (index (cl-position group-key groups :test #'equal))
+         (target (and index (+ index direction))))
+    (when (and index (>= target 0) (< target (length groups)))
+      (let ((ordered (copy-sequence groups)))
+        (cl-rotatef (nth index ordered) (nth target ordered))
+        (claude-code-ide-manager--store-group-order scope ordered)
+        (claude-code-ide-manager--save-state)
+        (claude-code-ide-manager--render scope)
+        t))))
+
+(defun claude-code-ide-manager--move-group-at-point (direction)
+  "Move the project group of the current row by DIRECTION."
   (let ((scope (claude-code-ide-manager--scope-for-command)))
-    (when-let* ((item (claude-code-ide-manager--item-at-point))
-                (neighbor (claude-code-ide-manager--neighbor-in-bucket
-                           scope
-                           (claude-code-ide-manager-item-session-key item) -1)))
-      (claude-code-ide-manager--swap-order scope item neighbor))))
+    (unless (and (eq (plist-get scope :type) 'global)
+                 (eq (claude-code-ide-manager--view scope) 'grouped))
+      (user-error "Grouped global view is required"))
+    (when-let* ((item (claude-code-ide-manager--origin-item scope)))
+      (claude-code-ide-manager--move-group
+       scope (claude-code-ide-manager--group-key item) direction))))
+
+(defun claude-code-ide-manager-move-group-up ()
+  "Move the current row's project group up."
+  (interactive)
+  (claude-code-ide-manager--move-group-at-point -1))
+
+(defun claude-code-ide-manager-move-group-down ()
+  "Move the current row's project group down."
+  (interactive)
+  (claude-code-ide-manager--move-group-at-point 1))
+
+(defun claude-code-ide-manager--lone-grouped-row-p (scope item)
+  "Return non-nil when ITEM is the only displayed row of its group in SCOPE."
+  (and (eq (plist-get scope :type) 'global)
+       (eq (claude-code-ide-manager--view scope) 'grouped)
+       (let ((key (claude-code-ide-manager--group-key item)))
+         (= 1 (cl-count-if
+               (lambda (other) (equal key (claude-code-ide-manager--group-key other)))
+               (claude-code-ide-manager--scope-items scope))))))
+
+(defun claude-code-ide-manager--move-row-at-point (direction)
+  "Move the current row by DIRECTION, or its group when the row is its only member."
+  (let* ((scope (claude-code-ide-manager--scope-for-command))
+         (item (claude-code-ide-manager--item-at-point))
+         (session-key (and item (claude-code-ide-manager-item-session-key item))))
+    (when item
+      (if (claude-code-ide-manager--lone-grouped-row-p scope item)
+          (claude-code-ide-manager--move-group
+           scope (claude-code-ide-manager--group-key item) direction)
+        (when-let* ((neighbor (claude-code-ide-manager--neighbor-in-bucket
+                               scope session-key direction)))
+          (claude-code-ide-manager--swap-order scope item neighbor))))))
+
+(defun claude-code-ide-manager-move-up ()
+  "Move the current row up within its pinned bucket, or its lone group."
+  (interactive)
+  (claude-code-ide-manager--move-row-at-point -1))
 
 (defun claude-code-ide-manager-move-down ()
-  "Move the current row down within its pinned bucket."
+  "Move the current row down within its pinned bucket, or its lone group."
   (interactive)
-  (let ((scope (claude-code-ide-manager--scope-for-command)))
-    (when-let* ((item (claude-code-ide-manager--item-at-point))
-                (neighbor (claude-code-ide-manager--neighbor-in-bucket
-                           scope
-                           (claude-code-ide-manager-item-session-key item) 1)))
-      (claude-code-ide-manager--swap-order scope item neighbor))))
+  (claude-code-ide-manager--move-row-at-point 1))
 
 (defun claude-code-ide-manager--capture-layout (session-key)
   "Capture current frame layout for SESSION-KEY."

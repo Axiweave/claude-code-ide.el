@@ -807,6 +807,98 @@ Ensures a clean state before each test that involves process management."
              (funcall (cdr case))
              (should (equal before (mapcar #'claude-code-ide-manager-item-order-key items))))))))))
 
+(defun claude-code-ide-tests--group-order-items ()
+  "Return two local groups and one remote group for group-order tests."
+  (cl-loop for (id host root) in '(("a1" nil "/work/alpha") ("a2" nil "/work/alpha")
+                                   ("r1" "ramhorn" "/srv/repo") ("z1" nil "/work/zeta"))
+           for order from 1
+           for directory = (concat root "/" id)
+           collect (make-claude-code-ide-manager-item
+                    :session-key id :host host :directory directory
+                    :zmx-name (concat "cci-" id) :cli-type 'omp :order order
+                    :display-name id :secondary-text directory
+                    :group-metadata
+                    (list :kind 'git :host host :directory directory
+                          :common-dir (concat root "/.git") :project-path root
+                          :worktree-path directory :branch id))))
+
+(ert-deftest claude-code-ide-test-manager-grouped-group-order-moves-and-persists ()
+  "Group moves reorder groups, keep row order keys, and survive a state restore."
+  (claude-code-ide-tests--with-grouped-state
+   (let* ((scope '(:type global))
+          (claude-code-ide-manager--command-scope scope)
+          (claude-code-ide-manager-sort-by 'name)
+          (claude-code-ide-manager-sort-reverse nil)
+          (items (claude-code-ide-tests--group-order-items)))
+     (cl-loop for item in items for order from 11
+              do (setf (claude-code-ide-manager-item-order-key item) order))
+     (claude-code-ide-manager--set-scope-state-entry
+      scope (list :view 'grouped :items items))
+     (cl-labels ((sequence ()
+                   (let ((headings (claude-code-ide-manager--group-headings
+                                    (claude-code-ide-manager--scope-items scope))))
+                     (mapcar (lambda (pair) (car (gethash (car pair) headings)))
+                             (claude-code-ide-manager--displayed-groups scope))))
+                 (keys ()
+                   (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items
+                            (claude-code-ide-manager--scope-items scope) nil scope 'grouped)))
+                 (order-keys ()
+                   (mapcar #'claude-code-ide-manager-item-order-key
+                           (claude-code-ide-manager--scope-items scope))))
+       (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+         (claude-code-ide-manager--render scope)
+         ;; A remote group no longer sinks below every local group.
+         (should (equal (sequence) '("alpha" "repo" "zeta")))
+         (should (equal (keys) '("a1" "a2" "r1" "z1")))
+         (let ((before (order-keys)))
+           ;; A lone grouped row moves its whole group.
+           (claude-code-ide-manager--move-point-to-session-key "r1")
+           (claude-code-ide-manager-move-down)
+           (should (equal (sequence) '("alpha" "zeta" "repo")))
+           (claude-code-ide-manager-move-group-up)
+           (claude-code-ide-manager-move-group-up)
+           (should (equal (sequence) '("repo" "alpha" "zeta")))
+           (should (equal (order-keys) before)))
+         ;; A row inside a multi-session group still moves alone.
+         (claude-code-ide-manager--move-point-to-session-key "a1")
+         (claude-code-ide-manager-move-down)
+         (should (equal (sequence) '("repo" "alpha" "zeta")))
+         (should (equal (keys) '("r1" "a2" "a1" "z1")))
+         (let ((before (order-keys)))
+           (claude-code-ide-manager--move-point-to-session-key "a1")
+           (claude-code-ide-manager-move-group-down)
+           (should (equal (sequence) '("repo" "zeta" "alpha")))
+           (should (equal (keys) '("r1" "z1" "a2" "a1")))
+           (should (equal (order-keys) before))))
+       (let* ((data (claude-code-ide-manager--serialize-state))
+              (global (assoc "global" (plist-get data :scopes)))
+              (stored (plist-get (cdr global) :group-order)))
+         (should (= (length stored) 3))
+         (setcdr global (plist-put (copy-sequence (cdr global)) :group-order
+                                   (append '(bad (git 1 2) "x") stored)))
+         (claude-code-ide-manager--restore-state data)
+         (should (equal (claude-code-ide-manager--group-order scope) stored))
+         (should (equal (sequence) '("repo" "zeta" "alpha"))))))))
+
+(ert-deftest claude-code-ide-test-manager-grouped-editor-moves-group ()
+  "The order editor moves a whole group block and stores the new group order."
+  (claude-code-ide-tests--with-grouped-order-editor
+   (row "b2")
+   (claude-code-ide-manager-pin-order-move-group-up)
+   (claude-code-ide-manager-pin-order-apply)
+   (should-not (buffer-live-p editor))
+   (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                          (claude-code-ide-manager--sorted-items
+                           (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+                  '("b2" "b3" "b1" "a2" "a3" "a1")))
+   (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                          (claude-code-ide-manager--sorted-items
+                           (claude-code-ide-manager--scope-items scope) nil scope 'flat))
+                  '("a2" "b2" "a3" "b3" "a1" "b1")))
+   (should (equal (car (claude-code-ide-manager--group-order scope))
+                  '(git "beta" "/work/repo-b/.git")))))
+
 (ert-deftest claude-code-ide-test-manager-grouped-editor-applies-mixed-hosts ()
   "Unedited and reordered mixed-host editors apply and clear scope pins."
   (dolist (local '(nil t))
@@ -932,7 +1024,6 @@ Ensures a clean state before each test that involves process management."
          ('missing-heading
           (let ((inhibit-read-only t))
             (goto-char (point-min))
-            (forward-line 1)
             (delete-region (point) (line-beginning-position 2))))
          ('foreign-key
           (row "a2")
