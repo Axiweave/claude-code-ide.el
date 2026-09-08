@@ -83,6 +83,8 @@
 (declare-function claude-code-ide-manager-toggle-pin "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-reset-layout-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-detach-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-copy-path-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-copy-zmx-name-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-cancel-project-view-at-point
                   "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-reattach-at-point "claude-code-ide-manager" ())
@@ -684,6 +686,13 @@ Otherwise, if multiple sessions exist, prompt for selection."
                (if claude-code-ide-manager-sort-reverse "ON" "OFF")))
      :transient t)]])
 
+;;;###autoload (autoload 'claude-code-ide-manager-copy-menu "claude-code-ide-transient" "Copy a detail of the manager row at point." t)
+(transient-define-prefix claude-code-ide-manager-copy-menu ()
+  "Copy a detail of the manager row at point."
+  [["Copy Row Detail"
+    ("y" "Path" claude-code-ide-manager-copy-path-at-point)
+    ("z" "Zmx name" claude-code-ide-manager-copy-zmx-name-at-point)]])
+
 ;;;###autoload (autoload 'claude-code-ide-manager-dispatch "claude-code-ide-transient" "Dispatch a manager sidebar command." t)
 (transient-define-prefix claude-code-ide-manager-dispatch ()
   "Dispatch a manager sidebar command."
@@ -722,6 +731,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("M-N" "Move group down" claude-code-ide-manager-move-group-down)
     ("C-s" "Sort menu" claude-code-ide-manager-sort-menu)
     ("m" "Refresh remote metadata" claude-code-ide-manager-refresh-remote-metadata)
+    ("y" "Copy row detail" claude-code-ide-manager-copy-menu)
     ("G" "Refresh" claude-code-ide-manager-refresh)]])
 
 ;;;###autoload (autoload 'claude-code-ide-menu "claude-code-ide-transient" "Claude Code IDE main menu." t)

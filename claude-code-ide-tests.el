@@ -1788,6 +1788,48 @@ have completed before cleanup.  Waits up to 5 seconds."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "r"))
               #'claude-code-ide-manager-rename-at-point)))
 
+(ert-deftest claude-code-ide-test-manager-copy-menu-yanks-path-and-zmx-name ()
+  "Manager mode copies the row path on `y y' and the zmx name on `y z'."
+  (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "y"))
+              #'claude-code-ide-manager-copy-menu))
+  (should (eq (plist-get (claude-code-ide-tests--transient-suffix-plist
+                          'claude-code-ide-manager-copy-menu "y")
+                         :command)
+              #'claude-code-ide-manager-copy-path-at-point))
+  (should (eq (plist-get (claude-code-ide-tests--transient-suffix-plist
+                          'claude-code-ide-manager-copy-menu "z")
+                         :command)
+              #'claude-code-ide-manager-copy-zmx-name-at-point))
+  (claude-code-ide-tests--reset-manager-state)
+  (setq claude-code-ide-manager--items
+        (list (make-claude-code-ide-manager-item
+               :session-key "zmx-row"
+               :display-name "zmx-row"
+               :directory "/tmp/zmx-row/"
+               :zmx-name "cci-zmx-row"
+               :order-key 1
+               :live-p t)
+              (make-claude-code-ide-manager-item
+               :session-key "plain-row"
+               :display-name "plain-row"
+               :directory "/tmp/plain-row/"
+               :order-key 2
+               :live-p t)))
+  (with-current-buffer (claude-code-ide-manager--get-buffer)
+    (claude-code-ide-manager--render)
+    (let ((kill-ring nil))
+      (claude-code-ide-manager--move-point-to-session-key "zmx-row")
+      (claude-code-ide-manager-copy-path-at-point)
+      (should (equal (current-kill 0) "/tmp/zmx-row/"))
+      (claude-code-ide-manager-copy-zmx-name-at-point)
+      (should (equal (current-kill 0) "cci-zmx-row"))
+      (claude-code-ide-manager--move-point-to-session-key "plain-row")
+      (should-error (claude-code-ide-manager-copy-zmx-name-at-point)
+                    :type 'user-error)
+      (goto-char (point-max))
+      (should-error (claude-code-ide-manager-copy-path-at-point)
+                    :type 'user-error))))
+
 (ert-deftest claude-code-ide-test-manager-mode-binds-j-and-k-to-row-navigation ()
   "Manager mode exposes row navigation on `j' and `k'."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "j"))
@@ -2951,13 +2993,15 @@ A `working' or `needs-input' state is left alone by the same clear."
                  :session-key "home-project"
                  :display-name "home-project"
                  :secondary-text (expand-file-name "~/home-project")
+                 :zmx-name "cci-home"
+                 :group-metadata (list :branch "main")
                  :pinned t
                  :order-key 1
                  :live-p t)))
     (claude-code-ide-manager--render)
     (goto-char (point-min))
     (should (equal (get-text-property (point) 'help-echo)
-                   "~/home-project"))
+                   "~/home-project [main] (cci-home)"))
     ;; A remote path that collides with the local home stays unabbreviated,
     ;; because the host owns a file system this Emacs never reads.
     (setq claude-code-ide-manager--items
@@ -6359,7 +6403,8 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
        (should (derived-mode-p 'claude-code-ide-manager-mode)))
      (claude-code-ide-manager--move-point-to-session-key "remote")
      (should (equal (get-text-property (point) 'help-echo)
-                    "[alpha] /work/remote. Session is disconnected. Press c to reattach."))
+                    (concat "[alpha] /work/remote (cci-remote). "
+                            "Session is disconnected. Press c to reattach.")))
      (claude-code-ide-manager--set-scope-selected-session-key scope (session-key "a"))
      (claude-code-ide-manager--load-state)
      (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "remote"))

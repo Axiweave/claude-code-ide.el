@@ -59,6 +59,7 @@
 (declare-function claude-code-ide--transient-launch-flags "claude-code-ide-transient" (&optional bypass))
 (declare-function claude-code-ide-manager-sort-menu "claude-code-ide-transient" ())
 (declare-function claude-code-ide-manager-dispatch "claude-code-ide-transient" ())
+(declare-function claude-code-ide-manager-copy-menu "claude-code-ide-transient" ())
 (declare-function claude-code-ide-log "claude-code-ide" (format-string &rest args))
 (declare-function claude-code-ide--remote-target-pending-reason "claude-code-ide" (session-id))
 (declare-function claude-code-ide--read-remote-host "claude-code-ide" ())
@@ -1240,6 +1241,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "M-K") #'claude-code-ide-manager-move-group-up)
 (define-key claude-code-ide-manager-mode-map (kbd "M-J") #'claude-code-ide-manager-move-group-down)
 (define-key claude-code-ide-manager-mode-map (kbd "C-s") #'claude-code-ide-manager-sort-menu)
+(define-key claude-code-ide-manager-mode-map (kbd "y") #'claude-code-ide-manager-copy-menu)
 (define-key claude-code-ide-manager-mode-map (kbd "!") #'claude-code-ide-manager-clear-all-idle-state)
 (define-key claude-code-ide-manager-mode-map (kbd "?") #'claude-code-ide-manager-dispatch)
 
@@ -2120,6 +2122,26 @@ When STATE-LOADED-P is non-nil, do not reload persisted state."
      (claude-code-ide-manager--scope-for-command)
      session-key)))
 
+(defun claude-code-ide-manager-copy-path-at-point ()
+  "Copy the directory of the row at point to the kill ring."
+  (interactive)
+  (let* ((item (or (claude-code-ide-manager--item-at-point)
+                   (user-error "No session row at point")))
+         (path (or (claude-code-ide-manager-item-directory item)
+                   (user-error "Row has no directory"))))
+    (kill-new path)
+    (message "Copied path: %s" path)))
+
+(defun claude-code-ide-manager-copy-zmx-name-at-point ()
+  "Copy the zmx name of the row at point to the kill ring."
+  (interactive)
+  (let* ((item (or (claude-code-ide-manager--item-at-point)
+                   (user-error "No session row at point")))
+         (zmx-name (or (claude-code-ide-manager-item-zmx-name item)
+                       (user-error "Session is not zmx-backed"))))
+    (kill-new zmx-name)
+    (message "Copied zmx name: %s" zmx-name)))
+
 (defun claude-code-ide-manager--show-point-path ()
   "Show the current row's full path in the echo area.
 This mirrors mouse hover text for keyboard navigation in the manager."
@@ -2566,19 +2588,21 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
       (list 'claude-code-ide-manager-session-key session-key
             'help-echo
             (let* ((host (claude-code-ide-manager-item-host item))
-                   (text
+                   (zmx-name (claude-code-ide-manager-item-zmx-name item))
+                   (base
                     (if (eq (plist-get scope :type) 'global)
                         (let* ((branch (plist-get (claude-code-ide-manager-item-group-metadata item) :branch))
                                (raw (or (claude-code-ide-manager-item-secondary-text item)
                                         (claude-code-ide-manager-item-directory item)))
-                               (path (claude-code-ide-manager--echo-path raw host))
-                               (details (if branch (format "%s [%s]" path branch) path)))
-                          (if (and host
-                                   (not (claude-code-ide-manager-item-live-p item)))
-                              (format "%s. Session is disconnected. Press c to reattach." details)
-                            details))
+                               (path (claude-code-ide-manager--echo-path raw host)))
+                          (if branch (format "%s [%s]" path branch) path))
                       (claude-code-ide-manager--session-help-echo
-                       session-key (claude-code-ide-manager-item-secondary-text item)))))
+                       session-key (claude-code-ide-manager-item-secondary-text item))))
+                   (details (if zmx-name (format "%s (%s)" base zmx-name) base))
+                   (text (if (and host
+                                  (not (claude-code-ide-manager-item-live-p item)))
+                             (format "%s. Session is disconnected. Press c to reattach." details)
+                           details)))
               (if host (format "[%s] %s" host text) text)))
       (when-let* ((face (claude-code-ide-manager--row-face
                          scope session-key)))
