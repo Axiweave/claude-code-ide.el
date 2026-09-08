@@ -270,7 +270,11 @@ of this variable wins, then the git config key
 Non-nil asks once per repository, then runs `lane init', which writes
 lane's agent protocol block into AGENTS.md.  Nil creates the bare
 `.lane/' directory instead, with no question and no AGENTS.md write.
-Lane's memory and note commands are then unused."
+
+Every lane command works on a bare store: new, enter, merge, push,
+prune, rm, and even note and why.  What is lost is the AGENTS.md
+protocol that tells agents to read and record lane memory, so the
+memory system stays unused unless the user runs `lane init' by hand."
   :type 'boolean
   :group 'claude-code-ide-manager)
 
