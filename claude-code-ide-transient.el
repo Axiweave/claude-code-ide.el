@@ -93,6 +93,7 @@
 (declare-function claude-code-ide-manager-move-down "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-move-group-up "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-move-group-down "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-toggle-session-titles "claude-code-ide-manager" ())
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-port "claude-code-ide-mcp" (session))
@@ -134,6 +135,7 @@
 (defvar claude-code-ide-manager--open-scope)
 (defvar claude-code-ide-manager-sort-by)
 (defvar claude-code-ide-manager-sort-reverse)
+(defvar claude-code-ide-manager-show-session-titles)
 
 ;;; Helper Functions
 
@@ -723,6 +725,11 @@ Otherwise, if multiple sessions exist, prompt for selection."
      :description (lambda ()
                     (format "Global view (%s)"
                             (claude-code-ide-manager--view '(:type global)))))
+    ("V" claude-code-ide-manager-toggle-session-titles
+     :description (lambda ()
+                    (format "Session titles (%s)"
+                            (if claude-code-ide-manager-show-session-titles
+                                "on" "off"))))
     ("P" "Toggle pin" claude-code-ide-manager-toggle-pin)
     ("E" "Edit session order" claude-code-ide-manager-edit-pin-order)
     ("M-p" "Move row up (lone group)" claude-code-ide-manager-move-up)

@@ -196,6 +196,23 @@ performs no remote work."
   :type 'boolean
   :group 'claude-code-ide-manager)
 
+(defun claude-code-ide-manager--set-show-session-titles (symbol value)
+  "Set SYMBOL to VALUE and redraw every live manager sidebar."
+  (set-default symbol value)
+  (claude-code-ide-manager--refresh-sidebar-state))
+
+(defcustom claude-code-ide-manager-show-session-titles nil
+  "Whether a dim session title line appears under each manager row.
+
+This value decides the view an Emacs session starts with.  The command
+`claude-code-ide-manager-toggle-session-titles', bound to \\`V' in the
+manager sidebar, changes the view for the running Emacs only and never
+writes this value, so a restart always starts from the value here."
+  :type 'boolean
+  :initialize #'custom-initialize-default
+  :set #'claude-code-ide-manager--set-show-session-titles
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-pin-order-show-titles t
   "Whether the pin-order editor appends session titles to ambiguous rows.
 
@@ -276,6 +293,14 @@ Red is reserved for these rows."
 Used for the `[host]' group heading in the grouped view and for the
 `[host]' prefix of a row in the flat view.  A row status face still
 wins over this face."
+  :group 'claude-code-ide-manager)
+
+(defface claude-code-ide-manager-session-title-face
+  '((t :inherit shadow))
+  "Face for the Session title line under a manager sidebar row.
+Inherits `shadow' so the line dims with the user's theme.  It must
+not set `:extend', because the row status faces extend to paint a
+full-width row and this line must not read as a row."
   :group 'claude-code-ide-manager)
 
 (defconst claude-code-ide-manager--bell-glyph "🔔"
@@ -1210,6 +1235,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "g") #'claude-code-ide-manager-avy-switch)
 (define-key claude-code-ide-manager-mode-map (kbd "G") #'claude-code-ide-manager-refresh)
 (define-key claude-code-ide-manager-mode-map (kbd "v") #'claude-code-ide-manager-toggle-grouped-view)
+(define-key claude-code-ide-manager-mode-map (kbd "V") #'claude-code-ide-manager-toggle-session-titles)
 (define-key claude-code-ide-manager-mode-map (kbd "RET") #'claude-code-ide-manager-switch-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "<mouse-1>") #'claude-code-ide-manager-switch-at-mouse)
 (define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)
@@ -2195,16 +2221,52 @@ This mirrors mouse hover text for keyboard navigation in the manager."
      for item in items
      for base in bases
      for session-key = (claude-code-ide-manager-item-session-key item)
-     for session = (and (not labels) claude-code-ide-manager-pin-order-show-titles
-                        (> (gethash base counts) 1)
-                        (claude-code-ide-manager--session-record session-key))
-     for title = (and session (claude-code-ide-session-title session))
+     for title = (and (not labels) claude-code-ide-manager-pin-order-show-titles
+                      (> (gethash base counts) 1)
+                      (claude-code-ide-manager--item-title item))
      collect
      (cons session-key
-           (if (and (stringp title) (not (string-empty-p title)))
-               (concat base " - "
-                       (replace-regexp-in-string "[\r\n]+" " " title))
-             base)))))
+           (if title (concat base " - " title) base)))))
+
+(defconst claude-code-ide-manager--title-space-regexp
+  "[ \t\f\r\n\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+"
+  "Whitespace a terminal title can carry, including non-ASCII spaces.
+`string-trim' handles only space, tab, newline, and carriage return, so a
+title of one no-break space would otherwise read as text.")
+
+(defconst claude-code-ide-manager--title-prefix-regexp
+  "\\`\\(?:[>*π✳✻⠀-⣿] +\\)*\\(?:[>*π✳✻⠀-⣿]\\'\\)?"
+  "Leading agent status glyphs a terminal title carries before its text.
+A CLI prefixes its title with a glyph for itself and one for its state,
+for example \"π > \" when waiting and \"π ⠋ \" when working.  Each glyph
+is one character followed by a space, so the text after the last such
+pair is the title the user wrote.  A glyph with no text after it is a
+prefix too, so a title of glyphs alone leaves nothing.
+
+The set holds only glyphs a CLI uses as status chrome: the Pi and Claude
+marks, the ASCII prompt and busy marks, and the braille block every
+spinner draws from.  Any other leading character is text the user wrote,
+so a title like \"日本語 work\" or \"• Fix parser\" keeps its first word.")
+
+(defun claude-code-ide-manager--item-title (item)
+  "Return ITEM's Session title as one line, or nil when it has none.
+Flattens every whitespace run to a single space so the title never
+breaks a manager row, and drops the leading agent status glyphs
+described by `claude-code-ide-manager--title-prefix-regexp'.  Returns
+nil for a missing Session, a nil title, and a title that carries no text
+of its own."
+  (when-let* ((session (claude-code-ide-manager--session-record
+                        (claude-code-ide-manager-item-session-key item)))
+              (title (claude-code-ide-session-title session))
+              ((stringp title))
+              (flat (string-trim
+                     (replace-regexp-in-string
+                      claude-code-ide-manager--title-space-regexp " " title)))
+              (text (string-trim
+                     (replace-regexp-in-string
+                      claude-code-ide-manager--title-prefix-regexp "" flat)))
+              ((not (string-empty-p text))))
+    text))
 
 (defun claude-code-ide-manager--pin-order-capture (items)
   "Capture opening labels and grouping for the displayed ITEMS."
@@ -2556,7 +2618,9 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
          (current-p
           (equal session-key
                  (or (claude-code-ide-manager--scope-active-session-key scope)
-                     claude-code-ide-manager--current-session-key))))
+                     claude-code-ide-manager--current-session-key)))
+         (title (and claude-code-ide-manager-show-session-titles
+                     (claude-code-ide-manager--item-title item))))
     (insert (if current-p
                 (propertize
                  "▌" 'display
@@ -2603,10 +2667,18 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
                                   (not (claude-code-ide-manager-item-live-p item)))
                              (format "%s. Session is disconnected. Press c to reattach." details)
                            details)))
-              (if host (format "[%s] %s" host text) text)))
+              (let ((echo (if host (format "[%s] %s" host text) text)))
+                (if title (format "%s — %s" echo title) echo))))
       (when-let* ((face (claude-code-ide-manager--row-face
                          scope session-key)))
-        (list 'face face))))))
+        (list 'face face))))
+    (when title
+      (let ((title-start (point)))
+        (insert (propertize " " 'display '(space :align-to 7)) title "\n")
+        (add-text-properties
+         title-start (point)
+         (list 'face 'claude-code-ide-manager-session-title-face
+               'claude-code-ide-manager-session-key session-key))))))
 
 (defun claude-code-ide-manager--insert-group-heading (text path &optional identity)
   "Insert non-selectable heading TEXT with PATH and optional IDENTITY."
@@ -2644,6 +2716,23 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
       (dolist (visible (get-buffer-window-list buffer nil t))
         (set-window-point visible (with-current-buffer buffer (point)))))
     (message "Global manager view: %s" (plist-get state :view))))
+
+(defun claude-code-ide-manager-toggle-session-titles ()
+  "Toggle the session title line in every manager sidebar.
+Changes the view for this Emacs only.  The saved value of
+`claude-code-ide-manager-show-session-titles' stays as it is, so a
+restart returns to it.  The message reports how many Sessions carry a
+title, because a Session whose terminal reports none keeps a single row."
+  (interactive)
+  (setq claude-code-ide-manager-show-session-titles
+        (not claude-code-ide-manager-show-session-titles))
+  (claude-code-ide-manager--refresh-sidebar-state)
+  (let* ((items (claude-code-ide-manager--scope-items
+                 (claude-code-ide-manager--scope-for-command)))
+         (titled (cl-count-if #'claude-code-ide-manager--item-title items)))
+    (message "Manager session titles: %s (%d of %d Sessions have a title)"
+             (if claude-code-ide-manager-show-session-titles "on" "off")
+             titled (length items))))
 
 (defun claude-code-ide-manager--render (&optional scope)
   "Render the manager sidebar for SCOPE."

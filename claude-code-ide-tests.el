@@ -16654,6 +16654,339 @@ The resync ignores pin state and stored order keys."
      (equal (claude-code-ide-manager--pin-order-item-names items)
             '(("one" . "project") ("two" . "project"))))))
 
+(ert-deftest claude-code-ide-test-manager-item-title-drops-status-glyphs ()
+  "A Session title reduces to the text the user wrote, or to nil."
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal)))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "plain" :title "Alpha work"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "multi" :title "Reviewing\r\nsession\nstate"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "empty" :title ""))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "blank" :title "  \n\t "))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "untitled"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "waiting" :title "π > Alpha work"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "working" :title "π ⠋ Alpha work"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "unicode" :title "日本語 work"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "glyphs" :title "π >"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "glyphs-padded" :title "π > "))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "spinner" :title "⠋ pnpm run build"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "lone-spinner" :title "⠋"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "bullet" :title "• Fix parser"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "quote" :title "> quoted work"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "emoji" :title "✨ ship it"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "cjk-short" :title "日 work"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "nbsp" :title "\u00a0"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "ideographic" :title "\u3000\u3000"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "nbsp-text" :title "π\u00a0>\u00a0Alpha work"))
+    (cl-flet ((title-of (key)
+                (claude-code-ide-manager--item-title
+                 (make-claude-code-ide-manager-item :session-key key))))
+      (should (equal (title-of "plain") "Alpha work"))
+      (should (equal (title-of "multi") "Reviewing session state"))
+      (should-not (title-of "empty"))
+      (should-not (title-of "blank"))
+      (should-not (title-of "untitled"))
+      (should-not (title-of "absent"))
+      (should (equal (title-of "waiting") "Alpha work"))
+      (should (equal (title-of "working") "Alpha work"))
+      (should (equal (title-of "unicode") "日本語 work"))
+      (should-not (title-of "glyphs"))
+      (should-not (title-of "glyphs-padded"))
+      (should (equal (title-of "spinner") "pnpm run build"))
+      (should-not (title-of "lone-spinner"))
+      (should (equal (title-of "bullet") "• Fix parser"))
+      (should (equal (title-of "emoji") "✨ ship it"))
+      (should (equal (title-of "cjk-short") "日 work"))
+      (should (equal (title-of "quote") "quoted work"))
+      (should-not (title-of "nbsp"))
+      (should-not (title-of "ideographic"))
+      (should (equal (title-of "nbsp-text") "Alpha work")))))
+
+(defun claude-code-ide-tests--detail-view-items ()
+  "Register two Sessions, one titled and one not, and return their items."
+  (claude-code-ide--put-session
+   (claude-code-ide-session-create :id "/tmp/project-a" :title "Alpha work"))
+  (claude-code-ide--put-session
+   (claude-code-ide-session-create :id "/tmp/project-b"))
+  (list (make-claude-code-ide-manager-item
+         :session-key "/tmp/project-a" :display-name "project-a"
+         :secondary-text "/tmp/project-a" :order-key 1 :live-p t)
+        (make-claude-code-ide-manager-item
+         :session-key "/tmp/project-b" :display-name "project-b"
+         :secondary-text "/tmp/project-b" :order-key 2 :live-p t)))
+
+(defun claude-code-ide-tests--session-title-lines ()
+  "Return each title line's text, past the one-character alignment pad."
+  (let (lines)
+    (goto-char (point-min))
+    (while (not (eobp))
+      (when (eq (get-text-property (point) 'face)
+                'claude-code-ide-manager-session-title-face)
+        (push (buffer-substring-no-properties
+               (1+ (line-beginning-position)) (line-end-position))
+              lines))
+      (forward-line 1))
+    (nreverse lines)))
+
+(ert-deftest claude-code-ide-test-manager-compact-view-ignores-session-titles ()
+  "The compact view renders one line per Session and never shows a title."
+  (claude-code-ide-tests--with-grouped-state
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (with-current-buffer (claude-code-ide-manager--get-buffer)
+      (let ((claude-code-ide-manager-show-session-titles nil))
+        (claude-code-ide-manager--render))
+      (let ((compact (buffer-substring-no-properties (point-min) (point-max))))
+        (should (= (count-lines (point-min) (point-max)) 2))
+        (should-not (string-match-p "Alpha work" compact))
+        ;; A sidebar where no Session has a title renders identically in
+        ;; both views.
+        (claude-code-ide--put-session
+         (claude-code-ide-session-create :id "/tmp/project-a"))
+        (let ((claude-code-ide-manager-show-session-titles t))
+          (claude-code-ide-manager--render))
+        (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                       compact))))))
+
+(ert-deftest claude-code-ide-test-manager-detail-view-adds-one-line-per-title ()
+  "Only a Session with a title gains a line, and it gains exactly one."
+  (claude-code-ide-tests--with-grouped-state
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles t))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (should (= (count-lines (point-min) (point-max)) 3))
+        (should (equal (claude-code-ide-tests--session-title-lines)
+                       '("Alpha work")))
+        (goto-char (point-min))
+        (forward-line 2)
+        ;; The untitled Session keeps a single row and adds no blank line.
+        (should (string-match-p "project-b"
+                                (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position))))))))
+
+(ert-deftest claude-code-ide-test-manager-toggle-session-titles-redraws-and-reports ()
+  "The toggle flips the view, redraws an open sidebar, and names the result."
+  (claude-code-ide-tests--with-grouped-state
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles nil)
+          reported)
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (setq reported (apply #'format format-string args)))))
+          (claude-code-ide-manager-toggle-session-titles)
+          (should claude-code-ide-manager-show-session-titles)
+          (should (equal (claude-code-ide-tests--session-title-lines)
+                         '("Alpha work")))
+          (should (equal reported
+                         "Manager session titles: on (1 of 2 Sessions have a title)"))
+          (claude-code-ide-manager-toggle-session-titles)
+          (should-not claude-code-ide-manager-show-session-titles)
+          (should-not (claude-code-ide-tests--session-title-lines))
+          (should (equal reported
+                         "Manager session titles: off (1 of 2 Sessions have a title)")))))))
+
+(ert-deftest claude-code-ide-test-manager-toggle-session-titles-keeps-selected-row ()
+  "The toggle keeps the sidebar window on its Session when lines shift."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-title-row-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-title-row-b" :buffer nil))
+        (claude-code-ide-manager-show-session-titles nil)
+        session-key-b)
+    (unwind-protect
+        (let ((session-a (claude-code-ide-tests--put-session "/tmp/a" process-a)))
+          (setf (claude-code-ide-session-title session-a) "Alpha work")
+          (setq session-key-b
+                (claude-code-ide-session-id
+                 (claude-code-ide-tests--put-session "/tmp/b" process-b)))
+          (setq claude-code-ide-manager--items
+                (list (make-claude-code-ide-manager-item
+                       :session-key (claude-code-ide-session-id session-a)
+                       :display-name "a" :secondary-text "/tmp/a"
+                       :order-key 1 :live-p t)
+                      (make-claude-code-ide-manager-item
+                       :session-key session-key-b
+                       :display-name "b" :secondary-text "/tmp/b"
+                       :order-key 2 :live-p t)))
+          (delete-other-windows)
+          (switch-to-buffer (get-buffer-create "*cc-title-row*"))
+          (let ((sidebar-window (claude-code-ide-manager-toggle-sidebar 1)))
+            (with-current-buffer (window-buffer sidebar-window)
+              (claude-code-ide-manager--render '(:type global))
+              (claude-code-ide-manager--move-point-to-session-key session-key-b)
+              (set-window-point sidebar-window (point)))
+            ;; The user works elsewhere, so the sidebar window is not selected.
+            (select-window (next-window sidebar-window))
+            (cl-letf (((symbol-function 'message) #'ignore))
+              (claude-code-ide-manager-toggle-session-titles))
+            (with-current-buffer (window-buffer sidebar-window)
+              ;; Session a gained a title line, so every later row moved down.
+              (should (= (count-lines (point-min) (point-max)) 3))
+              (should (equal (get-text-property (window-point sidebar-window)
+                                                'claude-code-ide-manager-session-key)
+                             session-key-b)))))
+      (ignore-errors (delete-process process-a))
+      (ignore-errors (delete-process process-b))
+      (when-let* ((window (get-buffer-window (claude-code-ide-manager--get-buffer))))
+        (delete-window window))
+      (when-let* ((buffer (get-buffer "*cc-title-row*")))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-pin-order-titles-drop-status-glyphs ()
+  "The pin-order editor shows the same stripped title the sidebar shows."
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
+        (claude-code-ide-manager-pin-order-show-titles t))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "one" :title "π ⠋ Alpha work"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "two" :title "π > Beta work"))
+    (should (equal (claude-code-ide-manager--pin-order-item-names
+                    (list (make-claude-code-ide-manager-item
+                           :session-key "one" :display-name "repo")
+                          (make-claude-code-ide-manager-item
+                           :session-key "two" :display-name "repo")))
+                   '(("one" . "repo - Alpha work")
+                     ("two" . "repo - Beta work"))))))
+
+(ert-deftest claude-code-ide-test-manager-detail-line-is-dim-and-aligned ()
+  "The title line uses the dim face alone and starts at the label column."
+  (claude-code-ide-tests--with-grouped-state
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "/tmp/project-a" :title "Reviewing\nsession state"))
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "/tmp/project-a" :display-name "project-a"
+                 :secondary-text "/tmp/project-a" :order-key 1 :live-p t)))
+    (let ((claude-code-ide-manager-show-session-titles t)
+          (claude-code-ide-manager--current-session-key "/tmp/project-a"))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (goto-char (point-min))
+        ;; The row above carries the current-session status face.
+        (should (eq (get-text-property (point) 'face)
+                    'claude-code-ide-manager-current-session-face))
+        (let* ((name-start
+                (next-single-property-change
+                 (point-min) 'claude-code-ide-manager-session-name-start))
+               (label-column
+                (cl-loop for pos from (line-beginning-position)
+                         below (line-end-position)
+                         for spec = (get-text-property pos 'display)
+                         when (eq (car-safe spec) 'space)
+                         return (+ (plist-get (cdr spec) :align-to)
+                                   (- name-start pos 1))))
+               (detail-start (progn (forward-line 1) (point))))
+          (should (= label-column 7))
+          (should (equal (get-text-property detail-start 'display)
+                         (list 'space :align-to label-column)))
+          ;; The whole detail line carries the dim face and no row face.
+          (cl-loop for pos from detail-start below (point-max)
+                   do (should (eq (get-text-property pos 'face)
+                                  'claude-code-ide-manager-session-title-face)))
+          ;; A title holding a newline still renders as one line.
+          (should (equal (buffer-substring-no-properties
+                          detail-start (1- (point-max)))
+                         " Reviewing session state"))
+          (should (= (count-lines (point-min) (point-max)) 2)))))))
+
+(ert-deftest claude-code-ide-test-manager-detail-line-resolves-to-its-row ()
+  "The title line points at its own Session but is not a navigation target."
+  (claude-code-ide-tests--with-grouped-state
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles t))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (goto-char (point-min))
+        (forward-line 1)
+        (should (equal (claude-code-ide-manager-item-session-key
+                        (claude-code-ide-manager--item-at-point))
+                       "/tmp/project-a"))
+        (should-not (get-text-property
+                     (point) 'claude-code-ide-manager-session-name-start))
+        ;; One navigation anchor per Session, not per line.
+        (should (= (cl-loop for pos from (point-min) below (point-max)
+                            count (get-text-property
+                                   pos
+                                   'claude-code-ide-manager-session-name-start))
+                   2))
+        (should (string-match-p
+                 "Alpha work"
+                 (get-text-property (point-min) 'help-echo)))))))
+
+(ert-deftest claude-code-ide-test-manager-compact-view-tooltip-omits-title ()
+  "The compact view leaves the row tooltip as it is."
+  (claude-code-ide-tests--with-grouped-state
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles nil))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (should-not (string-match-p
+                     "Alpha work"
+                     (get-text-property (point-min) 'help-echo)))))))
+
+(ert-deftest claude-code-ide-test-manager-session-titles-setting-drives-startup-only ()
+  "The setting redraws on change, and the toggle never rewrites it."
+  (claude-code-ide-tests--with-grouped-state
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (should-not (eval (car (get 'claude-code-ide-manager-show-session-titles
+                                'standard-value))
+                      t))
+    (with-current-buffer (claude-code-ide-manager--get-buffer)
+      (claude-code-ide-manager--render)
+      (unwind-protect
+          (progn
+            ;; Setting the option redraws the open sidebar with no refresh call.
+            (customize-set-variable
+             'claude-code-ide-manager-show-session-titles t)
+            (should (equal (claude-code-ide-tests--session-title-lines)
+                           '("Alpha work"))))
+        (customize-set-variable
+         'claude-code-ide-manager-show-session-titles nil)
+        (put 'claude-code-ide-manager-show-session-titles 'customized-value nil))
+      ;; The toggle changes the running Emacs only.  It records no
+      ;; customization, so a restart reads the setting, not the toggle.
+      (let ((claude-code-ide-manager-show-session-titles nil))
+        (claude-code-ide-manager-toggle-session-titles)
+        (should claude-code-ide-manager-show-session-titles)
+        (should-not (get 'claude-code-ide-manager-show-session-titles
+                         'customized-value))
+        (should-not (get 'claude-code-ide-manager-show-session-titles
+                         'saved-value)))
+      ;; The view never reaches the manager state file.
+      (should (equal (cl-loop for (key _value)
+                              on (claude-code-ide-manager--serialize-state)
+                              by #'cddr
+                              collect key)
+                     '(:version :scopes :layouts))))))
+
 (ert-deftest claude-code-ide-test-manager-pin-order-opens-selected-scope-in-content-window ()
   "The editor refreshes its scope and uses the normal content window."
   (claude-code-ide-tests--reset-manager-state)

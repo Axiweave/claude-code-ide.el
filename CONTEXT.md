@@ -38,6 +38,16 @@ Only Worktrees with manager Sessions appear.
 ### Flat view
 A global manager view that lists Session rows without Project group headings.
 
+### Compact view
+A manager sidebar layout with one line per Session. This is the default.
+
+### Detail view
+A manager sidebar layout that adds one dim line under each Session row
+holding that Session's terminal title. A Session whose terminal reports no
+title keeps a single line. `V` in the sidebar switches the running Emacs
+between the two, and `claude-code-ide-manager-show-session-titles` decides
+which one a fresh Emacs starts with.
+
 ### Zmx session
 A backend-owned persistent PTY managed by the external `zmx` program.
 It survives Emacs restarts and buffer kills. Emacs is one attach client
