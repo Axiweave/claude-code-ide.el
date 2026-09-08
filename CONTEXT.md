@@ -18,6 +18,13 @@ local file predicate.
 A working directory of a Git repository, including its main working directory
 and linked worktrees. Multiple Sessions can use the same Worktree.
 
+### Worktree backend
+The tool that creates a new Worktree for the manager: `lane` or `wt`.
+Resolved per repository in this order: a `.lane/` store, a directory-local
+`claude-code-ide-worktree-backend`, the git config key
+`claude-code-ide.worktree-backend`, the global default. The new-worktree
+command (`w`) is the only manager command that writes repository state.
+
 ### Project group
 Sessions that belong to one Git repository and its Worktrees on one host.
 Independent clones and different hosts form separate groups.
