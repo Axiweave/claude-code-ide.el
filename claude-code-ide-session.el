@@ -70,6 +70,7 @@
                   "claude-code-ide-session-idle" (&optional buffer))
 (declare-function claude-code-ide--touch-session-for-buffer
                   "claude-code-ide" (&optional buffer))
+(declare-function claude-code-ide--format-insertion "claude-code-ide" (body))
 
 (defgroup claude-code-ide-session nil
   "Session support for Claude Code IDE."
@@ -307,18 +308,25 @@ KIND is \"prompt\" (set the leading slash command) or \"keyword\"
   (claude-code-ide-session-send-string
    (concat "\e_pi:" kind ";" value "\e\\")))
 
-(defun claude-code-ide-session-insert-command (&optional command)
+(defun claude-code-ide-session-insert-command (&optional command in-place)
   "Insert COMMAND into the current Claude Code session buffer.
 
 When COMMAND is nil, use
 `claude-code-ide-session-command-reader-function'.  For Oh My Pi, a
 bare `/name' sets the prompt's slash command and a bare word inserts
-a magic keyword, both through `pi:' APC packets instead of a paste."
-  (interactive)
+a magic keyword, both through `pi:' APC packets instead of a paste.
+
+With IN-PLACE non-nil, interactively a prefix argument, paste COMMAND
+at the cursor instead.  The paste keeps a leading space unless the
+cursor already follows whitespace, and always adds a trailing space."
+  (interactive (list nil current-prefix-arg))
   (claude-code-ide-session--ensure-session-buffer)
   (let ((text (or command (claude-code-ide-session--read-command))))
     (unless (string-empty-p text)
       (cond
+       (in-place
+        (claude-code-ide-session-send-string
+         (claude-code-ide--format-insertion (string-trim text)) t))
        ((not (eq (claude-code-ide--current-cli-type) 'omp))
         (claude-code-ide-session-send-string text t))
        ((string-match "\\`/\\([^[:space:]/[:cntrl:]]+\\)[[:space:]]*\\'" text)

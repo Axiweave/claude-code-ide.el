@@ -619,15 +619,15 @@ Returns the buffer on success, or nil if no prompt buffer is visible."
             (set-window-point win target-point)))))
     buf))
 
-(defun claude-code-ide--format-file-reference (reference-body)
-  "Format REFERENCE-BODY for insertion at point.
+(defun claude-code-ide--format-insertion (body)
+  "Format BODY for insertion at point.
 Prepends a space unless point is at beginning of buffer or after
 whitespace, and always appends a trailing space."
   (concat
    (if-let* ((prev (char-before)))
        (if (eq (char-syntax prev) ?\s) "" " ")
      "")
-   reference-body
+   body
    " "))
 
 (defun claude-code-ide--any-visible-session-buffer ()
@@ -676,7 +676,7 @@ referencing a file that is not part of a project."
         (progn
           (claude-code-ide--prompt-buffer-send-string
            (with-current-buffer prompt-buf
-             (claude-code-ide--format-file-reference reference-body)))
+             (claude-code-ide--format-insertion reference-body)))
           (claude-code-ide-debug "Sent file reference to prompt buffer: %s"
                                  reference-body)
           (claude-code-ide--maybe-switch-to-window prompt-buf))
@@ -684,7 +684,7 @@ referencing a file that is not part of a project."
           (progn
             (with-current-buffer buffer
               (claude-code-ide--terminal-send-string
-               (claude-code-ide--format-file-reference reference-body) t))
+               (claude-code-ide--format-insertion reference-body) t))
             (claude-code-ide-debug "Sent file reference to Claude Code: %s"
                                    reference-body)
             (claude-code-ide--maybe-switch-to-window buffer))

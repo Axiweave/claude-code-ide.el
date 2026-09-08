@@ -12487,22 +12487,22 @@ connected sessions would silently break first-connect replay."
         (fmakunbound 'treemacs-safe-button-get))
       (kill-buffer terminal-buf))))
 
-(ert-deftest claude-code-ide-test-format-file-reference ()
+(ert-deftest claude-code-ide-test-format-insertion ()
   "Test conditional leading-space formatting for file references."
   (with-temp-buffer
-    (should (equal (claude-code-ide--format-file-reference "@file.el")
+    (should (equal (claude-code-ide--format-insertion "@file.el")
                    "@file.el ")))
   (with-temp-buffer
     (insert "x")
-    (should (equal (claude-code-ide--format-file-reference "@file.el")
+    (should (equal (claude-code-ide--format-insertion "@file.el")
                    " @file.el ")))
   (with-temp-buffer
     (insert " ")
-    (should (equal (claude-code-ide--format-file-reference "@file.el")
+    (should (equal (claude-code-ide--format-insertion "@file.el")
                    "@file.el ")))
   (with-temp-buffer
     (insert "\n")
-    (should (equal (claude-code-ide--format-file-reference "@file.el")
+    (should (equal (claude-code-ide--format-insertion "@file.el")
                    "@file.el "))))
 
 (ert-deftest claude-code-ide-test-send-current-file-adds-leading-space-when-needed ()
@@ -15409,6 +15409,24 @@ sessions back to working every few seconds with no real output."
         (should (equal sent '("\e_pi:keyword;orchestrate\e\\" . nil)))
         (claude-code-ide-session-insert-command "/review now")
         (should (equal sent '("/review now" . t)))))))
+
+(ert-deftest claude-code-ide-test-session-insert-command-in-place ()
+  "A prefix argument pastes at the cursor instead of sending an omp packet."
+  (should (require 'claude-code-ide-session nil t))
+  (let (sent)
+    (cl-letf (((symbol-function 'claude-code-ide-session-send-string)
+               (lambda (string &optional paste)
+                 (setq sent (cons string paste)))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-insert-in-place]*" t)
+        (setq-local claude-code-ide--session-cli-type 'omp)
+        (claude-code-ide-session-mode 1)
+        (insert "fix ")
+        (claude-code-ide-session-insert-command "/review " t)
+        (should (equal sent '("/review " . t)))
+        (insert "now")
+        (claude-code-ide-session-insert-command "/review " t)
+        (should (equal sent '(" /review " . t)))))))
 
 (ert-deftest claude-code-ide-test-session-insert-file-reference-uses-reader-function ()
   "Test that the public file-reference insert helper uses the configured reader."
