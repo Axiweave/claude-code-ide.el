@@ -3545,9 +3545,9 @@ A project without worktrees (a plain directory) is the target itself."
     ('global
      (let* ((project (claude-code-ide-manager--select-global-project))
             (worktrees (claude-code-ide-manager--repo-worktree-directories project)))
-       (if (cdr worktrees)
-           (claude-code-ide-manager--select-worktree-in worktrees)
-         project)))
+       (cond ((cdr worktrees) (claude-code-ide-manager--select-worktree-in worktrees))
+             ((file-directory-p project) project)
+             (t (user-error "Worktree %s is unavailable" project)))))
     ('repo (claude-code-ide-manager--select-repo-worktree scope))
     (_ (error "Unknown manager scope: %S" scope))))
 
@@ -3771,6 +3771,7 @@ shows the Start/Continue/Resume menu."
 (declare-function magit-lane-core-available-p "magit-lane-core")
 (declare-function magit-worktrunk-core-switch "magit-worktrunk-core")
 (declare-function magit-worktrunk-core-wt-available-p "magit-worktrunk-core")
+(declare-function magit-worktrunk-core-list "magit-worktrunk-core")
 (declare-function magit-status "magit-status")
 
 (defun claude-code-ide-manager--worktree-backend (root)
@@ -3795,20 +3796,24 @@ other than `lane' and `wt' are ignored."
                       "")))
         claude-code-ide-worktree-backend)))
 
+(defconst claude-code-ide-manager--worktree-backend-functions
+  '((lane magit-lane-core-available-p magit-lane-core-new magit-lane-core-init
+          magit-lane-core-initialized-p magit-lane-core-entry-for-name)
+    (wt magit-worktrunk-core-wt-available-p magit-worktrunk-core-switch
+        magit-worktrunk-core-list))
+  "Functions each backend's package must define before the manager calls it.")
+
 (defun claude-code-ide-manager--ensure-worktree-backend (backend)
   "Signal unless BACKEND's package is loaded and its binary is found."
-  (pcase backend
-    ('lane
-     (unless (fboundp 'magit-lane-core-new)
-       (user-error "Backend lane needs magit-lane, which is not loaded"))
-     (unless (magit-lane-core-available-p)
-       (user-error "No lane executable found; set magit-lane-executable")))
-    ('wt
-     (unless (fboundp 'magit-worktrunk-core-switch)
-       (user-error "Backend wt needs magit-worktrunk, which is not loaded"))
-     (unless (magit-worktrunk-core-wt-available-p)
-       (user-error "No wt executable found; set magit-worktrunk-wt-executable")))
-    (_ (user-error "Unknown worktree backend: %S" backend)))
+  (let ((functions (alist-get backend claude-code-ide-manager--worktree-backend-functions)))
+    (unless functions
+      (user-error "Unknown worktree backend: %S" backend))
+    (unless (cl-every #'fboundp functions)
+      (user-error "Backend %s needs %s, which is not loaded"
+                  backend (if (eq backend 'lane) "magit-lane" "magit-worktrunk")))
+    (unless (funcall (car functions))
+      (user-error "No %s executable found; set %s" backend
+                  (if (eq backend 'lane) "magit-lane-executable" "magit-worktrunk-wt-executable"))))
   backend)
 
 (defun claude-code-ide-manager--check-worktree-name (root backend name)
@@ -3829,6 +3834,10 @@ backends.  For `lane', a listed lane called NAME is one too."
              (magit-lane-core-initialized-p root)
              (magit-lane-core-entry-for-name root name))
     (user-error "%s already exists as a lane" name))
+  (when (and (eq backend 'wt)
+             (cl-find name (magit-worktrunk-core-list root)
+                      :key (lambda (entry) (alist-get 'branch entry)) :test #'equal))
+    (user-error "%s already exists as a wt worktree" name))
   name)
 
 (defun claude-code-ide-manager--create-worktree (root backend name)
@@ -3840,7 +3849,7 @@ writes AGENTS.md into the repository.  A refusal creates nothing."
    (pcase backend
      ('lane
       (unless (magit-lane-core-initialized-p root)
-        (unless (y-or-n-p (format "Initialize lane in %s? This writes AGENTS.md " root))
+        (unless (y-or-n-p (format "Initialize lane in %s? This writes AGENTS.md. " root))
           (user-error "Lane not initialized; nothing created"))
         (magit-lane-core-init root))
       (magit-lane-core-new root name))
@@ -3850,10 +3859,14 @@ writes AGENTS.md into the repository.  A refusal creates nothing."
   "Return the repository root the new-worktree command acts on.
 
 In the repo-scoped view that is the scope's root.  In the global view the
-user picks a project first, because the backend depends on it."
-  (let ((scope (claude-code-ide-manager--scope-for-command)))
-    (or (plist-get scope :git-root)
-        (claude-code-ide-manager--select-global-project))))
+user picks a project first, because the backend depends on it.  A remote
+root is refused before any backend work."
+  (let* ((scope (claude-code-ide-manager--scope-for-command))
+         (root (or (plist-get scope :git-root)
+                   (claude-code-ide-manager--select-global-project))))
+    (when (file-remote-p root)
+      (user-error "Remote worktrees are not supported"))
+    root))
 
 ;;;###autoload
 (defun claude-code-ide-manager-new-worktree (&optional arg)
@@ -3868,12 +3881,10 @@ prefix ARG the tree is created and shown in Magit, and no Agent starts."
          (backend (claude-code-ide-manager--ensure-worktree-backend
                    (claude-code-ide-manager--worktree-backend root)))
          (name (claude-code-ide-manager--check-worktree-name
-                root backend (read-string (format "New %s worktree name: " backend))))
+                root backend (read-string "New worktree (branch) name: ")))
          (path (claude-code-ide-manager--create-worktree root backend name)))
     (if arg
-        (if (fboundp 'magit-status)
-            (magit-status path)
-          (dired path))
+        (magit-status path)
       (claude-code-ide-manager-open-directory path))
     path))
 

@@ -54,7 +54,7 @@ close related buffers when detached
 CLOSED: [2026-09-08 Tue]
 worktrunk
 https://github.com/lukeed/lane
-Done in =specs/002-magit-worktree-launch= of the configuration repository:
+Done in [[file:../../specs/002-magit-worktree-launch/quickstart.md][specs/002-magit-worktree-launch/quickstart.md]] of the configuration repository:
 =claude-code-ide-manager-new-worktree= (=w=), =claude-code-ide-worktree-backend=,
 =claude-code-ide-manager-open-directory=.
 

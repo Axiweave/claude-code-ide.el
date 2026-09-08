@@ -5628,11 +5628,10 @@ A `working' or `needs-input' state is left alone by the same clear."
 (ert-deftest claude-code-ide-test-manager-open-global-shows-transient-for-new-target ()
   "Test global manager open hands a new target to the transient path."
   (claude-code-ide-tests--reset-manager-state)
-  (let (transient-target)
-    (cl-letf (((symbol-function 'project-known-project-roots)
-               (lambda () '("/tmp/project-a/")))
-              ((symbol-function 'completing-read)
-               (lambda (&rest _) "/tmp/project-a/"))
+  (let ((root (file-name-as-directory (make-temp-file "ccide-project-a" t)))
+        transient-target)
+    (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list root)))
+              ((symbol-function 'completing-read) (lambda (&rest _) root))
               ((symbol-function 'claude-code-ide--preferred-session)
                (lambda (_directory) nil))
               ((symbol-function 'claude-code-ide-manager-open-menu)
@@ -5640,7 +5639,8 @@ A `working' or `needs-input' state is left alone by the same clear."
                  (setq transient-target claude-code-ide-manager--open-target))))
       (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
         (claude-code-ide-manager-open))
-      (should (equal transient-target "/tmp/project-a/")))))
+      (should (equal transient-target root)))
+    (delete-directory root t)))
 
 (ert-deftest claude-code-ide-test-manager-open-repo-lists-current-repo-worktrees-only ()
   "Test repo-local manager open queries worktrees from the current repo scope."
@@ -5666,16 +5666,16 @@ A `working' or `needs-input' state is left alone by the same clear."
 (ert-deftest claude-code-ide-test-manager-open-global-asks-worktree-when-several ()
   "Two usable worktrees: project prompt, then worktree prompt; one: no second prompt."
   (claude-code-ide-tests--reset-manager-state)
-  (let ((worktrees '("/tmp/proj/" "/tmp/proj-feat/"))
-        prompts target)
-    (cl-letf (((symbol-function 'project-known-project-roots)
-               (lambda () '("/tmp/proj/")))
+  (let* ((root (file-name-as-directory (make-temp-file "ccide-proj" t)))
+         (worktrees (list root "/tmp/proj-feat/"))
+         prompts target)
+    (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list root)))
               ((symbol-function 'claude-code-ide-manager--repo-worktree-directories)
                (lambda (_root) worktrees))
               ((symbol-function 'completing-read)
                (lambda (prompt collection &rest _)
                  (push prompt prompts)
-                 (if (functionp collection) "/tmp/proj/" (cadr collection))))
+                 (if (functionp collection) root (cadr collection))))
               ((symbol-function 'claude-code-ide--preferred-session) #'ignore)
               ((symbol-function 'claude-code-ide-manager-open-menu)
                (lambda () (setq target claude-code-ide-manager--open-target))))
@@ -5683,11 +5683,12 @@ A `working' or `needs-input' state is left alone by the same clear."
         (claude-code-ide-manager-open))
       (should (equal (reverse prompts) '("Open project: " "Open worktree: ")))
       (should (equal target "/tmp/proj-feat/"))
-      (setq prompts nil worktrees '("/tmp/proj/"))
+      (setq prompts nil worktrees (list root))
       (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
         (claude-code-ide-manager-open))
       (should (equal prompts '("Open project: ")))
-      (should (equal target "/tmp/proj/")))))
+      (should (equal target root)))
+    (delete-directory root t)))
 
 (ert-deftest claude-code-ide-test-repo-worktree-directories-skip-missing-trees ()
   "A registered worktree whose directory is gone is not offered."
@@ -5792,11 +5793,10 @@ A `working' or `needs-input' state is left alone by the same clear."
 (ert-deftest claude-code-ide-test-manager-open-prefix-starts-sibling-without-menu ()
   "A prefix on the manager `o' delegates to the entry with FORCE-NEW."
   (claude-code-ide-tests--reset-manager-state)
-  (let (entry-call menu)
-    (cl-letf (((symbol-function 'project-known-project-roots)
-               (lambda () '("/tmp/project-a/")))
-              ((symbol-function 'completing-read)
-               (lambda (&rest _) "/tmp/project-a/"))
+  (let ((root (file-name-as-directory (make-temp-file "ccide-project-a" t)))
+        entry-call menu)
+    (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list root)))
+              ((symbol-function 'completing-read) (lambda (&rest _) root))
               ((symbol-function 'claude-code-ide--preferred-session) #'ignore)
               ((symbol-function 'claude-code-ide-manager-open-directory)
                (lambda (directory &optional force-new)
@@ -5805,8 +5805,9 @@ A `working' or `needs-input' state is left alone by the same clear."
                (lambda () (setq menu t))))
       (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
         (claude-code-ide-manager-open t))
-      (should (equal entry-call '("/tmp/project-a/" t)))
-      (should-not menu))))
+      (should (equal entry-call (list root t)))
+      (should-not menu))
+    (delete-directory root t)))
 
 (ert-deftest claude-code-ide-test-worktree-backend-resolution-order ()
   "Order: `.lane/' store, dir-local, git config, global default."
@@ -5834,7 +5835,7 @@ A `working' or `needs-input' state is left alone by the same clear."
       (delete-directory root t))))
 
 (ert-deftest claude-code-ide-test-ensure-worktree-backend-reports-missing-package ()
-  "Each backend names its package when absent, and its binary when not found."
+  "Each backend names its package when any function is absent, and its binary when not found."
   (skip-unless (not (or (fboundp 'magit-lane-core-new)
                         (fboundp 'magit-worktrunk-core-switch))))
   (let ((message (lambda (backend)
@@ -5844,8 +5845,15 @@ A `working' or `needs-input' state is left alone by the same clear."
     (should (string-match-p "needs magit-worktrunk" (funcall message 'wt)))
     (cl-letf (((symbol-function 'magit-lane-core-new) #'ignore)
               ((symbol-function 'magit-lane-core-available-p) #'ignore))
+      (should (string-match-p "needs magit-lane" (funcall message 'lane))))
+    (cl-letf (((symbol-function 'magit-lane-core-new) #'ignore)
+              ((symbol-function 'magit-lane-core-init) #'ignore)
+              ((symbol-function 'magit-lane-core-initialized-p) #'ignore)
+              ((symbol-function 'magit-lane-core-entry-for-name) #'ignore)
+              ((symbol-function 'magit-lane-core-available-p) #'ignore))
       (should (string-match-p "No lane executable found" (funcall message 'lane))))
     (cl-letf (((symbol-function 'magit-worktrunk-core-switch) #'ignore)
+              ((symbol-function 'magit-worktrunk-core-list) #'ignore)
               ((symbol-function 'magit-worktrunk-core-wt-available-p) #'ignore))
       (should (string-match-p "No wt executable found" (funcall message 'wt))))
     (should-not (fboundp 'magit-lane-core-new))))
@@ -5871,6 +5879,8 @@ directory passed to the open entry."
                 (lambda (root name &rest _)
                   (push (list root name) lane-calls)
                   (expand-file-name (concat ".lane/trees/" name) root)))
+               ((symbol-function 'magit-worktrunk-core-list)
+                (lambda (_root) '(((branch . "wt-listed") (path . "/tmp/wt-listed/")))))
                ((symbol-function 'magit-worktrunk-core-switch)
                 (lambda (root name &optional base create)
                   (push (list root name base create) wt-calls)
@@ -5897,7 +5907,7 @@ directory passed to the open entry."
            (should asked)
            (should lane-init)
            (should (equal lane-calls (list (list main "feat/x"))))
-           (should (equal prompts '("New lane worktree name: ")))
+           (should (equal prompts '("New worktree (branch) name: ")))
            (should (equal opened (file-name-as-directory
                                   (expand-file-name ".lane/trees/feat/x" main))))
            (setq asked nil lane-init nil)
@@ -5953,26 +5963,60 @@ directory passed to the open entry."
                                   (expand-file-name "../wt-feat-y" main))))))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-refuses-bad-and-taken-names ()
-  "Empty, absolute, dotted, existing-branch, and listed-lane names create nothing."
+  "Empty, absolute, dotted, existing-branch, listed-lane, and listed-wt names create nothing."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
        (make-directory (expand-file-name ".lane" main))
-       (let ((claude-code-ide-worktree-backend 'lane))
-         (dolist (case '(("" . "not a usable")
-                         ("/tmp/abs" . "not a usable")
-                         ("a/../b" . "not a usable")
-                         ("feature" . "already exists as a branch")
-                         ("listed" . "already exists as a lane")))
-           (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (car case))))
+       (dolist (case '((lane "" "not a usable")
+                       (lane "/tmp/abs" "not a usable")
+                       (lane "a/../b" "not a usable")
+                       (lane "feature" "already exists as a branch")
+                       (lane "listed" "already exists as a lane")
+                       (wt "wt-listed" "already exists as a wt worktree")))
+         (let ((claude-code-ide-worktree-backend (car case)))
+           (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (cadr case)))
+                     ((symbol-function 'claude-code-ide-manager--worktree-backend)
+                      (lambda (_root) claude-code-ide-worktree-backend)))
              (with-current-buffer (claude-code-ide-manager--get-buffer
                                    (list :type 'repo :git-root main))
                (should (string-match-p
-                        (cdr case)
+                        (caddr case)
                         (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                            :type 'user-error)))))))
-         (should-not lane-calls)
-         (should-not opened))))))
+                                            :type 'user-error))))))))
+       (should-not lane-calls)
+       (should-not wt-calls)
+       (should-not opened)))))
+
+(ert-deftest claude-code-ide-test-new-worktree-refuses-remote-root-before-backend ()
+  "A remote root stops before backend resolution and the name prompt."
+  (claude-code-ide-tests--reset-manager-state)
+  (claude-code-ide-tests--with-worktree-backends
+    (let (prompted)
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) (setq prompted t) "x"))
+                ((symbol-function 'claude-code-ide-manager--worktree-backend)
+                 (lambda (_root) (error "backend resolved on a remote root"))))
+        (with-current-buffer (claude-code-ide-manager--get-buffer
+                              (list :type 'repo :git-root "/ssh:host:/srv/repo/"))
+          (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                             :type 'user-error))
+                         "Remote worktrees are not supported"))))
+      (should-not prompted)
+      (should-not lane-calls))))
+
+(ert-deftest claude-code-ide-test-manager-open-global-skips-missing-project ()
+  "A picked project whose directory is gone is refused before any menu."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((gone (file-name-as-directory (make-temp-file "ccide-gone" t))))
+    (delete-directory gone)
+    (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list gone)))
+              ((symbol-function 'completing-read) (lambda (&rest _) gone)))
+      (should (string-match-p
+               "is unavailable"
+               (cadr (should-error (claude-code-ide-manager--open-target-for-scope
+                                    '(:type global))
+                                   :type 'user-error)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-checks-binary-before-name-prompt ()
   (claude-code-ide-tests--with-temp-worktree-repo
@@ -6003,7 +6047,7 @@ directory passed to the open entry."
                     (lambda (prompt &rest _) (push prompt order) "feat/z")))
            (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
              (claude-code-ide-manager-new-worktree))
-           (should (equal (reverse order) '("Open project: " "New lane worktree name: ")))
+           (should (equal (reverse order) '("Open project: " "New worktree (branch) name: ")))
            (should (equal lane-calls (list (list main "feat/z"))))))))))
 
 (ert-deftest claude-code-ide-test-manager-open-start-action-starts-selected-target ()
