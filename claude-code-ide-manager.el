@@ -269,6 +269,14 @@ Red is reserved for these rows."
   "Face used to highlight sessions whose agent finished a turn."
   :group 'claude-code-ide-manager)
 
+(defface claude-code-ide-manager-host-face
+  '((t :inherit font-lock-type-face :weight bold))
+  "Face for the remote host label in the manager sidebar.
+Used for the `[host]' group heading in the grouped view and for the
+`[host]' prefix of a row in the flat view.  A row status face still
+wins over this face."
+  :group 'claude-code-ide-manager)
+
 (defconst claude-code-ide-manager--bell-glyph "🔔"
   ;; NOTE: Some fonts render this emoji taller than surrounding fixed-pitch
   ;; text, which can make manager rows look uneven. Keep the current glyph for
@@ -2422,6 +2430,14 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
     (insert " ")
     (let ((name-start (point)))
       (insert (claude-code-ide-manager--item-visible-name item grouped-label) "\n")
+      (when-let* ((host (and (null grouped-label)
+                             (claude-code-ide-manager-item-host item)))
+                  (prefix (format "[%s]" host))
+                  (end (+ name-start (length prefix)))
+                  ((<= end (1- (point))))
+                  ((equal (buffer-substring-no-properties name-start end) prefix)))
+        (put-text-property name-start end
+                           'face 'claude-code-ide-manager-host-face))
       (put-text-property name-start (min (1+ name-start) (1- (point)))
                          'claude-code-ide-manager-session-name-start t))
     (add-text-properties
@@ -2453,7 +2469,10 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
     (insert text "\n")
     (set-text-properties
      start (point)
-     (list 'face 'font-lock-keyword-face 'help-echo path
+     (list 'face (if (eq (car-safe identity) 'host)
+                     'claude-code-ide-manager-host-face
+                   'font-lock-keyword-face)
+           'help-echo path
            'claude-code-ide-manager-group-heading identity 'rear-nonsticky t))))
 
 (defun claude-code-ide-manager-toggle-grouped-view ()
