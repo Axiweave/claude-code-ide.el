@@ -7202,6 +7202,51 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
      (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
      (jump "01-input-a" command))))
 
+(ert-deftest claude-code-ide-test-manager-priority-previous-pops-visit-history ()
+  "Back walks the pass trail, and the forward pass resumes without repeats."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" working) ("02" working) ("03" working) ("04" working))
+   (let ((back #'claude-code-ide-manager-previous-priority-session))
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (jump "02")
+     (jump "03")
+     (jump "02" back)
+     (jump "01" back)
+     (should-error (call-interactively back) :type 'user-error)
+     (should (equal claude-code-ide-manager--current-session-key (session-key "01")))
+     (jump "04"))))
+
+(ert-deftest claude-code-ide-test-manager-previous-skips-dead-and-keeps-passes-separate ()
+  "Back skips departed sessions, and each pass pops only its own trail."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" needs-input) ("02" needs-input) ("03" needs-input))
+   (let ((forward #'claude-code-ide-manager-next-uncleared-session)
+         (back #'claude-code-ide-manager-previous-uncleared-session))
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (jump "02" forward)
+     (jump "03" forward)
+     (should-error
+      (call-interactively #'claude-code-ide-manager-previous-priority-session)
+      :type 'user-error)
+     (kill-buffer (session-buffer "02"))
+     (jump "01" back)
+     (should-error (call-interactively back) :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-manager-previous-drops-fully-dead-history ()
+  "A trail of dead sessions is pruned, so the next press does not rescan it."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" working) ("02" working) ("03" working))
+   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+   (jump "02")
+   (jump "03")
+   (kill-buffer (session-buffer "01"))
+   (kill-buffer (session-buffer "02"))
+   (should-error (call-interactively #'claude-code-ide-manager-previous-priority-session)
+                 :type 'user-error)
+   (should-not (plist-get (gethash (claude-code-ide-manager--scope-key scope)
+                                   claude-code-ide-manager--priority-visits)
+                          :history))))
+
 (ert-deftest claude-code-ide-test-manager-avy-switch-selects-only-current-window ()
   "Avy selects only session rows in the selected manager window."
   (claude-code-ide-tests--reset-manager-state)
