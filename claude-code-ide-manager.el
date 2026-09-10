@@ -389,6 +389,11 @@ Each record holds :visited entries, a :resume key, and a :history stack.")
   "Per-scope uncleared passes.
 Each record holds :visited entries, a :resume key, and a :history stack.")
 
+(defvar claude-code-ide-manager--pass-switch nil
+  "Non-nil while a priority or uncleared pass performs its own switch.
+Those commands write their own :history stack, so
+`claude-code-ide-manager--record-switch-history' stands down.")
+
 (defvar claude-code-ide-manager--layouts (make-hash-table :test 'equal)
   "Saved layouts keyed by session key.")
 
@@ -2076,7 +2081,7 @@ markers, which take precedence over the pin marker."
               (maphash
                (lambda (_scope record)
                  (let ((visited (plist-get record :visited)))
-                   (when (gethash key visited)
+                   (when (and visited (gethash key visited))
                      (puthash key
                               (if (memq (nth 3 after) '(needs-input failed done))
                                   'attention
@@ -3628,15 +3633,39 @@ A project without worktrees (a plain directory) is the target itself."
      (buffer-live-p (claude-code-ide-manager--session-buffer key)))
    (claude-code-ide-manager--visible-session-keys scope)))
 
+(defun claude-code-ide-manager--shown-session-keys (scope)
+  "Return SCOPE's candidate current-session keys, most specific first."
+  (list (claude-code-ide-manager--session-key-for-buffer
+         (window-buffer (selected-window)))
+        (claude-code-ide-manager--visible-layout-session-key)
+        (claude-code-ide-manager--scope-active-session-key scope)
+        claude-code-ide-manager--current-session-key))
+
 (defun claude-code-ide-manager--current-pass-session-key (scope eligible)
   "Return the session key in ELIGIBLE that SCOPE currently shows."
-  (cl-loop for key in
-           (list (claude-code-ide-manager--session-key-for-buffer
-                  (window-buffer (selected-window)))
-                 (claude-code-ide-manager--visible-layout-session-key)
-                 (claude-code-ide-manager--scope-active-session-key scope)
-                 claude-code-ide-manager--current-session-key)
+  (cl-loop for key in (claude-code-ide-manager--shown-session-keys scope)
            when (member key eligible) return key))
+
+(defun claude-code-ide-manager--record-switch-history (scope target)
+  "Push the session SCOPE shows now onto both pass history stacks.
+TARGET is the session being switched to.  Switches made outside the two
+passes -- slot keys, Avy, manager rows, a started session -- feed the same
+trail, so the previous-session commands walk back to where the user came
+from.  Entries are deduplicated, and stale keys are pruned on pop by
+`claude-code-ide-manager--previous-visited-session'."
+  (unless claude-code-ide-manager--pass-switch
+    (when-let* ((current (car (delq nil (claude-code-ide-manager--shown-session-keys
+                                         scope))))
+                ((not (equal current target))))
+      (let ((scope-key (claude-code-ide-manager--scope-key scope)))
+        (dolist (visits (list claude-code-ide-manager--priority-visits
+                              claude-code-ide-manager--uncleared-visits))
+          (let* ((record (copy-sequence (gethash scope-key visits)))
+                 (history (plist-get record :history)))
+            (puthash scope-key
+                     (plist-put record :history
+                                (cons current (remove current history)))
+                     visits)))))))
 
 (defun claude-code-ide-manager--next-priority-session (visits &optional uncleared-only)
   "Focus the next priority session using the per-scope VISITS table.
@@ -3683,7 +3712,8 @@ When UNCLEARED-ONLY is non-nil, exclude cleared and unmarked sessions."
        ((or new-pass (equal target resume)) (setq resume nil))
        ((and visited (eq (gethash target visited) 'attention) (not resume))
         (setq resume current)))
-      (let ((window (claude-code-ide-manager-switch-to-session target nil scope))
+      (let ((window (let ((claude-code-ide-manager--pass-switch t))
+                      (claude-code-ide-manager-switch-to-session target nil scope)))
             (updated (make-hash-table :test 'equal)))
         ;; Saved layouts can restore editor focus.  This command visits the agent.
         (when-let* ((session-window
@@ -3743,7 +3773,8 @@ continues the same pass."
         (when record
           (puthash scope-key (plist-put (copy-sequence record) :history rest) visits))
         (user-error "No earlier session in this manager scope"))
-      (let ((window (claude-code-ide-manager-switch-to-session target nil scope)))
+      (let ((window (let ((claude-code-ide-manager--pass-switch t))
+                      (claude-code-ide-manager-switch-to-session target nil scope))))
         ;; Saved layouts can restore editor focus.  This command visits the agent.
         (when-let* ((session-window
                      (get-buffer-window
@@ -3758,16 +3789,16 @@ continues the same pass."
         window))))
 
 (defun claude-code-ide-manager-previous-priority-session ()
-  "Focus the session the priority pass left most recently.
-Repeat to walk further back.  The pass keeps its visits, so
+  "Focus the session left most recently in this manager scope.
+Repeat to walk further back.  The priority pass keeps its visits, so
 `claude-code-ide-manager-next-priority-session' resumes where it stopped."
   (interactive)
   (claude-code-ide-manager--previous-visited-session
    claude-code-ide-manager--priority-visits))
 
 (defun claude-code-ide-manager-previous-uncleared-session ()
-  "Focus the session the uncleared pass left most recently.
-Repeat to walk further back.  The pass keeps its visits, so
+  "Focus the session left most recently in this manager scope.
+Repeat to walk further back.  The uncleared pass keeps its visits, so
 `claude-code-ide-manager-next-uncleared-session' resumes where it stopped."
   (interactive)
   (claude-code-ide-manager--previous-visited-session
@@ -4511,6 +4542,7 @@ session layout is updated."
          (not (claude-code-ide-manager--session-managed-p session-key)))
         (claude-code-ide-manager--command-scope
          (or scope (claude-code-ide-manager--scope-for-command))))
+    (claude-code-ide-manager--record-switch-history scope session-key)
     (when claude-code-ide-manager--current-session-key
       (puthash claude-code-ide-manager--current-session-key
                (claude-code-ide-manager--capture-layout

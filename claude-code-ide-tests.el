@@ -7247,6 +7247,22 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                                    claude-code-ide-manager--priority-visits)
                           :history))))
 
+(ert-deftest claude-code-ide-test-manager-previous-walks-non-pass-switches ()
+  "Back walks slot switches, and both passes record them."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" working) ("02" working) ("03" working))
+   (let ((back #'claude-code-ide-manager-previous-uncleared-session))
+     (claude-code-ide-manager-refresh-items scope)
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (claude-code-ide-manager-switch-by-slot 2)
+     (should (equal claude-code-ide-manager--current-session-key (session-key "02")))
+     (claude-code-ide-manager-switch-by-slot 3)
+     (should (equal claude-code-ide-manager--current-session-key (session-key "03")))
+     (jump "02" back)
+     (jump "01" back)
+     (should-error (call-interactively back) :type 'user-error)
+     (jump "02" #'claude-code-ide-manager-previous-priority-session))))
+
 (ert-deftest claude-code-ide-test-manager-avy-switch-selects-only-current-window ()
   "Avy selects only session rows in the selected manager window."
   (claude-code-ide-tests--reset-manager-state)
