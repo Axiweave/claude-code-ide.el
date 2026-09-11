@@ -3418,6 +3418,18 @@ which relativizes the path to the session directory when possible."
     (claude-code-ide--send-reference-body reference-body)))
 
 ;;;###autoload
+(defun claude-code-ide-send-project ()
+  "Send a known project's root with @ prefix to the Claude Code terminal.
+Prompt over the known projects of Projectile or `project.el', as
+selected by `claude-code-ide-manager-global-project-source'.  The
+absolute root is always sent, unlike `claude-code-ide-send-file',
+which relativizes a path to the session directory."
+  (interactive)
+  (claude-code-ide--send-reference-body
+   (concat "@" (directory-file-name
+                (claude-code-ide-manager--select-global-project)))))
+
+;;;###autoload
 (defun claude-code-ide-send-current-file-line-reference ()
   "Send the current file's absolute path, with an optional selected line suffix.
 The reference format is /absolute/path or /absolute/path:LINE[-END]

@@ -13281,6 +13281,32 @@ connected sessions would silently break first-connect replay."
         (should (equal sent-string
                        (concat "@" home "docs/notes.txt" " ")))))))
 
+(ert-deftest claude-code-ide-test-send-project ()
+  "Send-project sends the picked project root as an absolute @ reference."
+  (let ((sent-string nil)
+        (home (expand-file-name "~/"))
+        (claude-code-ide-manager-global-project-source 'auto))
+    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
+               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--terminal-send-string)
+               (lambda (str &optional _paste) (setq sent-string str)))
+              ((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/project/"))
+              ((symbol-function 'claude-code-ide-manager--projectile-known-project-roots)
+               (lambda () (list home temporary-file-directory)))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (car (all-completions "" collection)))))
+      (with-temp-buffer
+        (rename-buffer "*test-claude-buffer*")
+        ;; A mismatched default-directory must not leak into the result.
+        (setq default-directory "/tmp/other-project/")
+        (claude-code-ide-send-project)
+        (should (equal sent-string
+                       (concat "@" (directory-file-name home) " ")))))))
+
 (ert-deftest claude-code-ide-test-send-file-adds-leading-space-when-needed ()
   "Test send-file prefixes a space when point follows a word."
   (let ((sent-string nil))
