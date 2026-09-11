@@ -1005,9 +1005,9 @@ directory text; see `claude-code-ide--project-key'."
                      (> (or (claude-code-ide-session-last-accessed-at a) 0)
                         (or (claude-code-ide-session-last-accessed-at b) 0))))))
 
-(defun claude-code-ide--preferred-session (directory)
-  "Return the preferred live session for DIRECTORY, or nil."
-  (car (claude-code-ide--sessions-for-directory directory)))
+(defun claude-code-ide--preferred-session (directory &optional host)
+  "Return the preferred live session for DIRECTORY on exact HOST, or nil."
+  (car (claude-code-ide--sessions-for-directory directory host)))
 
 (defun claude-code-ide--touch-session (session-id)
   "Mark SESSION-ID as most recently accessed and return its session."
@@ -2134,7 +2134,7 @@ failure still leaves exactly one disconnected row instead of none."
     :host host)))
 
 (defun claude-code-ide--create-remote-session
-    (working-dir zmx-attach-name host reusable-session-id)
+    (working-dir zmx-attach-name host reusable-session-id &optional intent-valid)
   "Attach a terminal session to an existing remote zmx target.
 WORKING-DIR is the remote project directory, kept as opaque metadata:
 never passed through a local file-name function.  ZMX-ATTACH-NAME is
@@ -2145,7 +2145,10 @@ startup, and local zmx wrapping; shared terminal setup, Session
 registration, and cleanup orchestration still run, matching the local
 path.  Materializes a disconnected manager row before the terminal
 exists, so a failed first attach still leaves one row instead of
-none."
+none.  INTENT-VALID, when non-nil, must still approve local attachment
+after any remote identity read."
+  (when (and intent-valid (not (funcall intent-valid)))
+    (user-error "The remote attachment intent was canceled"))
   (unless zmx-attach-name
     (user-error "Remote attachment needs an existing zmx session name"))
   (unless (claude-code-ide-zmx--valid-directory-p working-dir)
@@ -2178,6 +2181,8 @@ none."
             (claude-code-ide-zmx-require-remote-session
              host zmx-attach-name
              (claude-code-ide--remote-target-process-name session-id)))
+          (when (and intent-valid (not (funcall intent-valid)))
+            (user-error "The remote attachment intent was canceled"))
           (let* ((claude-code-ide--pending-remote-host host)
                  (buffer-and-process
                   (claude-code-ide--create-terminal-with-command
@@ -2240,7 +2245,7 @@ none."
        (signal (car err) (cdr err))))))
 
 (defun claude-code-ide--create-session
-    (working-dir continue resume &optional zmx-attach-name host reusable-session-id)
+    (working-dir continue resume &optional zmx-attach-name host reusable-session-id intent-valid)
   "Create a terminal session in WORKING-DIR, locally or on HOST.
 CONTINUE and RESUME select the CLI conversation mode; a non-nil HOST
 requires both nil, since a remote session always reattaches to an
@@ -2248,13 +2253,14 @@ existing target instead of starting a conversation.  ZMX-ATTACH-NAME
 reattaches to that existing zmx session instead of running a freshly
 built CLI command; it is required when HOST is non-nil.
 REUSABLE-SESSION-ID only applies to a remote HOST; see
-`claude-code-ide--create-remote-session'."
+`claude-code-ide--create-remote-session'.  INTENT-VALID optionally guards
+remote attachment after a pending identity read."
   (if host
       (progn
         (when (or continue resume)
           (user-error "Remote attachment does not support continue or resume"))
         (claude-code-ide--create-remote-session
-         working-dir zmx-attach-name host reusable-session-id))
+         working-dir zmx-attach-name host reusable-session-id intent-valid))
     (claude-code-ide--create-local-session
      working-dir continue resume zmx-attach-name)))
 
@@ -2512,7 +2518,7 @@ A :host-bearing ENTRY is prefixed \"HOST: \" ahead of PROJECT."
             (when title (concat "  " (subst-char-in-string ?_ ?\s title)))
             "  " (or (plist-get entry :cmd) ""))))
 
-(defun claude-code-ide--attach-zmx-entry (entry directory cli-path &optional session-id)
+(defun claude-code-ide--attach-zmx-entry (entry directory cli-path &optional session-id intent-valid)
   "Adopt zmx ENTRY as a session in DIRECTORY running CLI-PATH.
 ENTRY's :host routes the attachment to that remote
 target instead of the local zmx server; DIRECTORY then stays opaque
@@ -2523,7 +2529,10 @@ instead of opening a second client, and an otherwise-unspecified
 SESSION-ID falls back to a remembered target's own Session ID so a
 fresh attach reuses its identity rather than creating a duplicate row.
 Return the new or existing session, or nil when creation returns nil
-or another request already owns this target."
+or another request already owns this target.  INTENT-VALID optionally
+guards a feature-owned attachment before terminal creation."
+  (when (and intent-valid (not (funcall intent-valid)))
+    (user-error "The remote attachment intent was canceled"))
   (let* ((host (plist-get entry :host))
          (zmx-name (plist-get entry :name))
          (live (and host (claude-code-ide--live-session-for-target host zmx-name)))
@@ -2542,7 +2551,7 @@ or another request already owns this target."
             (claude-code-ide--suppress-initial-display t))
         (if host
             (claude-code-ide--create-session
-             directory nil nil zmx-name host session-id)
+             directory nil nil zmx-name host session-id intent-valid)
           (claude-code-ide--create-session (file-name-as-directory directory)
                                            nil nil zmx-name)))))))
 

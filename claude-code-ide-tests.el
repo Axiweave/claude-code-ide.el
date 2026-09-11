@@ -267,6 +267,7 @@ Like the real one, drop the stored value when it equals the default."
 (define-error 'mcp-error "MCP Error" 'error)
 (require 'claude-code-ide-mcp-handlers)
 (require 'claude-code-ide)
+(require 'claude-code-ide-remote-worktree)
 
 ;;; Test Helper Functions
 
@@ -2103,54 +2104,54 @@ DIRECTORY, when non-nil, is reported as the agent working directory."
 (ert-deftest claude-code-ide-mcp-sse-test-dispatch-session-directory ()
   "Test a reported directory moves the Session and redraws the manager once."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-    (let* ((worktree (file-name-as-directory (make-temp-file "cci-worktree" t)))
-           (expected (file-name-as-directory (expand-file-name worktree)))
-           (refreshes 0)
-           (record (gethash "agent-id" claude-code-ide--sessions)))
-      (unwind-protect
-          (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
-                     (lambda () (setq refreshes (1+ refreshes)))))
-            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-            (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
-            (should (equal (claude-code-ide-session-directory record) expected))
-            (should (= refreshes 1))
-            ;; The same directory on a later state report redraws nothing.
-            (claude-code-ide-tests--dispatch-agent-state "sid" "done" nil worktree)
-            (should (= refreshes 1))
-            ;; A relative, missing, remote, or control-character path is refused.
-            (dolist (bogus (list "relative/worktree"
-                                 (expand-file-name "gone" worktree)
-                                 "/ssh:elsewhere:/tmp"
-                                 "/tmp/with\nnewline"))
-              (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil bogus)
-              (should (equal (claude-code-ide-session-directory record) expected))
-              (should (= refreshes 1)))
-            ;; A state report without a directory keeps the moved record.
-            (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
-            (should (equal (claude-code-ide-session-directory record) expected))
-            (should (= refreshes 1)))
-        (delete-directory worktree t)))))
+                                                   (let* ((worktree (file-name-as-directory (make-temp-file "cci-worktree" t)))
+                                                          (expected (file-name-as-directory (expand-file-name worktree)))
+                                                          (refreshes 0)
+                                                          (record (gethash "agent-id" claude-code-ide--sessions)))
+                                                     (unwind-protect
+                                                         (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
+                                                                    (lambda () (setq refreshes (1+ refreshes)))))
+                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
+                                                           (should (equal (claude-code-ide-session-directory record) expected))
+                                                           (should (= refreshes 1))
+                                                           ;; The same directory on a later state report redraws nothing.
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "done" nil worktree)
+                                                           (should (= refreshes 1))
+                                                           ;; A relative, missing, remote, or control-character path is refused.
+                                                           (dolist (bogus (list "relative/worktree"
+                                                                                (expand-file-name "gone" worktree)
+                                                                                "/ssh:elsewhere:/tmp"
+                                                                                "/tmp/with\nnewline"))
+                                                             (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil bogus)
+                                                             (should (equal (claude-code-ide-session-directory record) expected))
+                                                             (should (= refreshes 1)))
+                                                           ;; A state report without a directory keeps the moved record.
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
+                                                           (should (equal (claude-code-ide-session-directory record) expected))
+                                                           (should (= refreshes 1)))
+                                                       (delete-directory worktree t)))))
 
 (ert-deftest claude-code-ide-test-ghostel-directory-hook-moves-session ()
   "Test a Ghostel OSC 7 move relocates the Session, and the MCP report then no-ops."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-    (let* ((worktree (file-name-as-directory (make-temp-file "cci-osc7" t)))
-           (expected (file-name-as-directory (expand-file-name worktree)))
-           (refreshes 0)
-           (record (gethash "agent-id" claude-code-ide--sessions)))
-      (unwind-protect
-          (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
-                     (lambda () (setq refreshes (1+ refreshes)))))
-            (with-current-buffer buffer
-              (setq default-directory worktree)
-              (claude-code-ide--record-ghostel-directory))
-            (should (equal (claude-code-ide-session-directory record) expected))
-            (should (= refreshes 1))
-            ;; The IDE report of the same move costs one no-op, not a redraw.
-            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-            (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
-            (should (= refreshes 1)))
-        (delete-directory worktree t)))))
+                                                   (let* ((worktree (file-name-as-directory (make-temp-file "cci-osc7" t)))
+                                                          (expected (file-name-as-directory (expand-file-name worktree)))
+                                                          (refreshes 0)
+                                                          (record (gethash "agent-id" claude-code-ide--sessions)))
+                                                     (unwind-protect
+                                                         (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
+                                                                    (lambda () (setq refreshes (1+ refreshes)))))
+                                                           (with-current-buffer buffer
+                                                             (setq default-directory worktree)
+                                                             (claude-code-ide--record-ghostel-directory))
+                                                           (should (equal (claude-code-ide-session-directory record) expected))
+                                                           (should (= refreshes 1))
+                                                           ;; The IDE report of the same move costs one no-op, not a redraw.
+                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
+                                                           (should (= refreshes 1)))
+                                                       (delete-directory worktree t)))))
 
 (ert-deftest claude-code-ide-mcp-sse-test-acknowledged-terminal-replay-stays-idle ()
   "Test SSE replay cannot restore an acknowledged terminal marker."
@@ -5831,19 +5832,156 @@ A `working' or `needs-input' state is left alone by the same clear."
           (should-not menu))
       (delete-directory root t))))
 
-(ert-deftest claude-code-ide-test-open-directory-refuses-remote-and-missing ()
+(ert-deftest claude-code-ide-test-open-directory-rejects-unsupported-route-and-missing ()
   (claude-code-ide-tests--reset-manager-state)
-  (cl-letf (((symbol-function 'claude-code-ide--preferred-session) #'ignore)
-            ((symbol-function 'claude-code-ide--start-session)
-             (lambda (&rest _) (error "must not start"))))
-    (should (string-match-p
-             "Remote worktrees are not supported"
-             (cadr (should-error (claude-code-ide-manager-open-directory "/ssh:host:/tree")
-                                 :type 'user-error))))
-    (should (string-match-p
-             "is unavailable"
-             (cadr (should-error (claude-code-ide-manager-open-directory "/tmp/ccide-no-such-tree")
-                                 :type 'user-error))))))
+  (let ((starts 0))
+    (cl-letf (((symbol-function 'claude-code-ide--start-session)
+               (lambda (&rest _) (cl-incf starts))))
+      (should-error (claude-code-ide-manager-open-directory "/ssh:host:/tree")
+                    :type 'user-error)
+      (should-error (claude-code-ide-manager-open-directory "/tmp/ccide-no-such-tree")
+                    :type 'user-error)
+      (should (zerop starts)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-manager-captures-exact-context ()
+  "A remote row request retains its host, path, and prefix without local work."
+  (let ((claude-code-ide-remote-hosts '("alpha" "beta"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (local-starts 0))
+    (cl-letf (((symbol-function 'claude-code-ide--start-session)
+               (lambda (&rest _) (cl-incf local-starts)))
+              ((symbol-function 'read-directory-name)
+               (lambda (&rest _) (ert-fail "Remote paths must not use a directory browser"))))
+      (let* ((id (claude-code-ide-manager-open-directory "/rpc:beta:/srv/repo" t))
+             (operation (gethash id claude-code-ide-remote-worktree--operations)))
+        (unwind-protect
+            (progn
+              (should (equal (claude-code-ide-remote-worktree--operation-target operation)
+                             '(:host "beta" :directory "/srv/repo")))
+              (should (plist-get (claude-code-ide-remote-worktree--operation-options operation) :sibling))
+              (should (zerop local-starts)))
+          (claude-code-ide-remote-worktree-cancel-observation id)))
+      (should-error (claude-code-ide-manager-open-directory "/rpc:gamma:/srv/repo")
+                    :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-manager-known-context-skips-prompts ()
+  "An explicit remote command uses the current RPC host without new path prompts."
+  (let ((claude-code-ide-remote-hosts '("alpha" "beta"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (default-directory "/rpc:alpha:/srv/repo/"))
+    (cl-letf (((symbol-function 'claude-code-ide--read-remote-host)
+               (lambda () (ert-fail "The current host is already known")))
+              ((symbol-function 'read-string)
+               (lambda (&rest _) (ert-fail "The current repository is already known"))))
+      (let* ((id (claude-code-ide-manager-open-remote))
+             (operation (gethash id claude-code-ide-remote-worktree--operations)))
+        (unwind-protect
+            (progn
+              (should (equal (plist-get (claude-code-ide-remote-worktree--operation-target operation) :host)
+                             "alpha"))
+              (should (plist-get (claude-code-ide-remote-worktree--operation-options operation) :select)))
+          (claude-code-ide-remote-worktree-cancel-observation id))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-manager-open-prefers-rpc-context ()
+  "Remote Magit context takes precedence over an unrelated local sidebar."
+  (with-temp-buffer
+    (let ((default-directory "/rpc:alpha:/srv/repo/")
+          (file-name-handler-alist nil)
+          (claude-code-ide-remote-hosts '("alpha" "beta"))
+          (claude-code-ide-manager--command-scope nil)
+          (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal)))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--visible-sidebar-scope-for-frame)
+                 (lambda (&rest _) '(:type repo :git-root "/tmp/local/")))
+                ((symbol-function 'claude-code-ide-manager--repo-worktree-directories)
+                 (lambda (&rest _) (ert-fail "Remote open selected a local repository")))
+                ((symbol-function 'claude-code-ide--start-session)
+                 (lambda (&rest _) (ert-fail "Remote open started a local Agent")))
+                ((symbol-function 'read-string)
+                 (lambda (&rest _) (ert-fail "The remote context is already known"))))
+        (dolist (prefix '(nil (4)))
+          (let* ((id (claude-code-ide-manager-open prefix))
+                 (operation (gethash id claude-code-ide-remote-worktree--operations)))
+            (unwind-protect
+                (progn
+                  (should (equal (claude-code-ide-remote-worktree--operation-target operation)
+                                 '(:host "alpha" :directory "/srv/repo/")))
+                  (should (plist-get (claude-code-ide-remote-worktree--operation-options operation) :select))
+                  (should (eq (plist-get (claude-code-ide-remote-worktree--operation-options operation) :sibling)
+                              (and prefix t))))
+              (claude-code-ide-remote-worktree-cancel-observation id))))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-manager-open-refuses-unsafe-context ()
+  "Unsupported and unapproved remote contexts never select a local target."
+  (with-temp-buffer
+    (let ((claude-code-ide-remote-hosts '("alpha"))
+          (claude-code-ide-manager--command-scope '(:type repo :git-root "/tmp/local/")))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--repo-worktree-directories)
+                 (lambda (&rest _) (ert-fail "Unsafe remote context selected a local repository"))))
+        (dolist (default-directory '("/ssh:alpha:/srv/repo/" "/rpc:gamma:/srv/repo/"))
+          (should-error (claude-code-ide-manager-open) :type 'user-error))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-manager-create-asks-one-name ()
+  "Both creation commands use known remote context without local work."
+  (dolist (command '(claude-code-ide-manager-new-remote-worktree
+                     claude-code-ide-manager-new-worktree))
+    (let ((claude-code-ide-remote-hosts '("alpha"))
+          (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+          (claude-code-ide-lane-init-protocol t)
+          (default-directory "/rpc:alpha:/srv/repo/")
+          (file-name-handler-alist nil)
+          (prompts 0))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (prompt &rest _)
+                   (should (string-match-p "alpha" prompt))
+                   (cl-incf prompts)
+                   "feature/new"))
+                ((symbol-function 'claude-code-ide--read-remote-host)
+                 (lambda () (ert-fail "The host is already known")))
+                ((symbol-function 'claude-code-ide-manager--item-at-point) #'ignore)
+                ((symbol-function 'claude-code-ide-manager--worktree-root-for-command)
+                 (lambda () (ert-fail "Remote creation entered local root selection"))))
+        (let* ((id (funcall command t))
+               (operation (gethash id claude-code-ide-remote-worktree--operations)))
+          (unwind-protect
+              (progn
+                (should (= prompts 1))
+                (should (equal (claude-code-ide-remote-worktree--operation-target operation)
+                               '(:host "alpha" :directory "/srv/repo/"))))
+            (claude-code-ide-remote-worktree-cancel-observation id)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-create-rejects-conflicts-before-setup ()
+  "Invalid names and branch namespace collisions stop before any remote setup."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (contacts 0))
+    (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
+               (lambda (&rest _) (cl-incf contacts)))
+              ((symbol-function 'claude-code-ide-remote-worktree--stage)
+               (lambda (&rest _) (ert-fail "Rejected input reached setup"))))
+      (dolist (name '("../escape" "feature/new" "feature" "existing"))
+        (let ((operation (claude-code-ide-remote-worktree--new-operation
+                          'create "fixture" "/srv/repo" (list :name name :initialize t))))
+          (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+                '(:settings (:backend lane)
+                            :refs (("refs/heads/feature/topic" . "existing")
+                                   ("refs/heads/feature/new/deeper" . "existing")
+                                   ("refs/heads/existing" . "existing"))))
+          (should-error (claude-code-ide-remote-worktree--prepare-create operation #'ignore)
+                        :type 'user-error)))
+      (should (zerop contacts)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-create-rejects-wt-initialization ()
+  "Explicit Lane initialization on Worktrunk fails before any remote request."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'create "fixture" "/srv/repo"
+                     '(:backend wt :name "topic" :initialize t)))
+         contacted)
+    (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
+               (lambda (&rest _) (setq contacted t))))
+      (should-error (claude-code-ide-remote-worktree--prepare-create operation #'ignore)
+                    :type 'user-error)
+      (should-not contacted))))
 
 (ert-deftest claude-code-ide-test-manager-open-prefix-starts-sibling-without-menu ()
   "A prefix on the manager `o' delegates to the entry with FORCE-NEW."
@@ -5950,135 +6088,135 @@ directory passed to the open entry."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (let ((claude-code-ide-worktree-backend 'lane)
-             (claude-code-ide-lane-init-protocol t)
-             prompts)
-         (cl-letf (((symbol-function 'read-string)
-                    (lambda (prompt &rest _) (push prompt prompts) "feat/x")))
-           (with-current-buffer (claude-code-ide-manager--get-buffer
-                                 (list :type 'repo :git-root main))
-             (should (equal (claude-code-ide-manager-new-worktree)
-                            (file-name-as-directory
-                             (expand-file-name ".lane/trees/feat/x" main)))))
-           (should asked)
-           (should lane-init)
-           (should (equal lane-calls (list (list main "feat/x"))))
-           (should (equal prompts '("New worktree (branch) name: ")))
-           (should (equal opened (file-name-as-directory
-                                  (expand-file-name ".lane/trees/feat/x" main))))
-           (setq asked nil lane-init nil)
-           (with-current-buffer (claude-code-ide-manager--get-buffer
-                                 (list :type 'repo :git-root main))
-             (claude-code-ide-manager-new-worktree))
-           (should-not asked)
-           (should-not lane-init)))))))
+      (let ((claude-code-ide-worktree-backend 'lane)
+            (claude-code-ide-lane-init-protocol t)
+            prompts)
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (prompt &rest _) (push prompt prompts) "feat/x")))
+          (with-current-buffer (claude-code-ide-manager--get-buffer
+                                (list :type 'repo :git-root main))
+            (should (equal (claude-code-ide-manager-new-worktree)
+                           (file-name-as-directory
+                            (expand-file-name ".lane/trees/feat/x" main)))))
+          (should asked)
+          (should lane-init)
+          (should (equal lane-calls (list (list main "feat/x"))))
+          (should (equal prompts '("New worktree (branch) name: ")))
+          (should (equal opened (file-name-as-directory
+                                 (expand-file-name ".lane/trees/feat/x" main))))
+          (setq asked nil lane-init nil)
+          (with-current-buffer (claude-code-ide-manager--get-buffer
+                                (list :type 'repo :git-root main))
+            (claude-code-ide-manager-new-worktree))
+          (should-not asked)
+          (should-not lane-init)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-lane-init-declined-creates-nothing ()
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (setq answer nil)
-       (let ((claude-code-ide-worktree-backend 'lane)
-             (claude-code-ide-lane-init-protocol t))
-         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
-           (with-current-buffer (claude-code-ide-manager--get-buffer
-                                 (list :type 'repo :git-root main))
-             (should (string-match-p
-                      "Lane not initialized; nothing created"
-                      (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                          :type 'user-error)))))
-           (should asked)
-           (should-not lane-init)
-           (should-not lane-calls)
-           (should-not opened)))))))
+      (setq answer nil)
+      (let ((claude-code-ide-worktree-backend 'lane)
+            (claude-code-ide-lane-init-protocol t))
+        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
+          (with-current-buffer (claude-code-ide-manager--get-buffer
+                                (list :type 'repo :git-root main))
+            (should (string-match-p
+                     "Lane not initialized; nothing created"
+                     (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                         :type 'user-error)))))
+          (should asked)
+          (should-not lane-init)
+          (should-not lane-calls)
+          (should-not opened)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-lane-bare-store-by-default ()
   "By default a bare .lane/ is made: no question, no `lane init', no AGENTS.md."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (let ((claude-code-ide-worktree-backend 'lane))
-         (should-not claude-code-ide-lane-init-protocol)
-         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
-           (with-current-buffer (claude-code-ide-manager--get-buffer
-                                 (list :type 'repo :git-root main))
-             (claude-code-ide-manager-new-worktree))
-           (should-not asked)
-           (should-not lane-init)
-           (should (file-directory-p (expand-file-name ".lane" main)))
-           (should-not (file-exists-p (expand-file-name "AGENTS.md" main)))
-           (should (equal lane-calls (list (list main "feat/x"))))
-           (should opened)))))))
+      (let ((claude-code-ide-worktree-backend 'lane))
+        (should-not claude-code-ide-lane-init-protocol)
+        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
+          (with-current-buffer (claude-code-ide-manager--get-buffer
+                                (list :type 'repo :git-root main))
+            (claude-code-ide-manager-new-worktree))
+          (should-not asked)
+          (should-not lane-init)
+          (should (file-directory-p (expand-file-name ".lane" main)))
+          (should-not (file-exists-p (expand-file-name "AGENTS.md" main)))
+          (should (equal lane-calls (list (list main "feat/x"))))
+          (should opened)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-wt-creates-and-prefix-shows-status ()
   "A wt override creates through `wt switch --create'; a prefix opens Magit only."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (let ((claude-code-ide-worktree-backend 'lane)
-             status)
-         (let ((default-directory main))
-           (claude-code-ide-tests--git "config" "claude-code-ide.worktree-backend" "wt"))
-         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat-y"))
-                   ((symbol-function 'magit-status) (lambda (directory) (setq status directory))))
-           (with-current-buffer (claude-code-ide-manager--get-buffer
-                                 (list :type 'repo :git-root main))
-             (claude-code-ide-manager-new-worktree))
-           (should (equal wt-calls (list (list main "feat-y" nil t))))
-           (should-not lane-calls)
-           (should-not asked)
-           (should (equal opened (file-name-as-directory
-                                  (expand-file-name "../wt-feat-y" main))))
-           (setq opened nil)
-           (with-current-buffer (claude-code-ide-manager--get-buffer
-                                 (list :type 'repo :git-root main))
-             (claude-code-ide-manager-new-worktree t))
-           (should-not opened)
-           (should (equal status (file-name-as-directory
-                                  (expand-file-name "../wt-feat-y" main))))))))))
+      (let ((claude-code-ide-worktree-backend 'lane)
+            status)
+        (let ((default-directory main))
+          (claude-code-ide-tests--git "config" "claude-code-ide.worktree-backend" "wt"))
+        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat-y"))
+                  ((symbol-function 'magit-status) (lambda (directory) (setq status directory))))
+          (with-current-buffer (claude-code-ide-manager--get-buffer
+                                (list :type 'repo :git-root main))
+            (claude-code-ide-manager-new-worktree))
+          (should (equal wt-calls (list (list main "feat-y" nil t))))
+          (should-not lane-calls)
+          (should-not asked)
+          (should (equal opened (file-name-as-directory
+                                 (expand-file-name "../wt-feat-y" main))))
+          (setq opened nil)
+          (with-current-buffer (claude-code-ide-manager--get-buffer
+                                (list :type 'repo :git-root main))
+            (claude-code-ide-manager-new-worktree t))
+          (should-not opened)
+          (should (equal status (file-name-as-directory
+                                 (expand-file-name "../wt-feat-y" main))))))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-refuses-bad-and-taken-names ()
   "Empty, absolute, dotted, existing-branch, listed-lane, and listed-wt names create nothing."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (make-directory (expand-file-name ".lane" main))
-       (dolist (case '((lane "" "not a usable")
-                       (lane "/tmp/abs" "not a usable")
-                       (lane "a/../b" "not a usable")
-                       (lane "feature" "already exists as a branch")
-                       (lane "listed" "already exists as a lane")
-                       (wt "wt-listed" "already exists as a wt worktree")))
-         (let ((claude-code-ide-worktree-backend (car case)))
-           (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (cadr case)))
-                     ((symbol-function 'claude-code-ide-manager--worktree-backend)
-                      (lambda (_root) claude-code-ide-worktree-backend)))
-             (with-current-buffer (claude-code-ide-manager--get-buffer
-                                   (list :type 'repo :git-root main))
-               (should (string-match-p
-                        (caddr case)
-                        (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                            :type 'user-error))))))))
-       (should-not lane-calls)
-       (should-not wt-calls)
-       (should-not opened)))))
+      (make-directory (expand-file-name ".lane" main))
+      (dolist (case '((lane "" "not a usable")
+                      (lane "/tmp/abs" "not a usable")
+                      (lane "a/../b" "not a usable")
+                      (lane "feature" "already exists as a branch")
+                      (lane "listed" "already exists as a lane")
+                      (wt "wt-listed" "already exists as a wt worktree")))
+        (let ((claude-code-ide-worktree-backend (car case)))
+          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (cadr case)))
+                    ((symbol-function 'claude-code-ide-manager--worktree-backend)
+                     (lambda (_root) claude-code-ide-worktree-backend)))
+            (with-current-buffer (claude-code-ide-manager--get-buffer
+                                  (list :type 'repo :git-root main))
+              (should (string-match-p
+                       (caddr case)
+                       (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                           :type 'user-error))))))))
+      (should-not lane-calls)
+      (should-not wt-calls)
+      (should-not opened)))))
 
 (ert-deftest claude-code-ide-test-new-worktree-refuses-remote-root-before-backend ()
   "A remote root stops before backend resolution and the name prompt."
   (claude-code-ide-tests--reset-manager-state)
   (claude-code-ide-tests--with-worktree-backends
-    (let (prompted)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) (setq prompted t) "x"))
-                ((symbol-function 'claude-code-ide-manager--worktree-backend)
-                 (lambda (_root) (error "backend resolved on a remote root"))))
-        (with-current-buffer (claude-code-ide-manager--get-buffer
-                              (list :type 'repo :git-root "/ssh:host:/srv/repo/"))
-          (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                             :type 'user-error))
-                         "Remote worktrees are not supported"))))
-      (should-not prompted)
-      (should-not lane-calls))))
+   (let (prompted)
+     (cl-letf (((symbol-function 'read-string)
+                (lambda (&rest _) (setq prompted t) "x"))
+               ((symbol-function 'claude-code-ide-manager--worktree-backend)
+                (lambda (_root) (error "backend resolved on a remote root"))))
+       (with-current-buffer (claude-code-ide-manager--get-buffer
+                             (list :type 'repo :git-root "/ssh:host:/srv/repo/"))
+         (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                            :type 'user-error))
+                        "Remote worktrees are not supported"))))
+     (should-not prompted)
+     (should-not lane-calls))))
 
 (ert-deftest claude-code-ide-test-manager-open-global-skips-missing-project ()
   "A known project whose directory is gone is not offered in the project prompt."
@@ -6104,61 +6242,61 @@ directory passed to the open entry."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (let ((claude-code-ide-worktree-backend 'lane)
-             prompted)
-         (cl-letf (((symbol-function 'magit-lane-core-available-p) #'ignore)
-                   ((symbol-function 'read-string) (lambda (&rest _) (setq prompted t) "x")))
-           (with-current-buffer (claude-code-ide-manager--get-buffer
-                                 (list :type 'repo :git-root main))
-             (should (string-match-p
-                      "No lane executable found"
-                      (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                          :type 'user-error)))))
-           (should-not prompted)))))))
+      (let ((claude-code-ide-worktree-backend 'lane)
+            prompted)
+        (cl-letf (((symbol-function 'magit-lane-core-available-p) #'ignore)
+                  ((symbol-function 'read-string) (lambda (&rest _) (setq prompted t) "x")))
+          (with-current-buffer (claude-code-ide-manager--get-buffer
+                                (list :type 'repo :git-root main))
+            (should (string-match-p
+                     "No lane executable found"
+                     (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                         :type 'user-error)))))
+          (should-not prompted)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-global-view-asks-project-first ()
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-       (make-directory (expand-file-name ".lane" main))
-       (let (order)
-         (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list main)))
-                   ((symbol-function 'completing-read)
-                    (lambda (prompt &rest _) (push prompt order) main))
-                   ((symbol-function 'read-string)
-                    (lambda (prompt &rest _) (push prompt order) "feat/z")))
-           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-             (claude-code-ide-manager-new-worktree))
-           (should (equal (reverse order) '("Open project: " "New worktree (branch) name: ")))
-           (should (equal lane-calls (list (list main "feat/z"))))))))))
+      (make-directory (expand-file-name ".lane" main))
+      (let (order)
+        (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list main)))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt &rest _) (push prompt order) main))
+                  ((symbol-function 'read-string)
+                   (lambda (prompt &rest _) (push prompt order) "feat/z")))
+          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+            (claude-code-ide-manager-new-worktree))
+          (should (equal (reverse order) '("Open project: " "New worktree (branch) name: ")))
+          (should (equal lane-calls (list (list main "feat/z"))))))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-global-view-uses-row-project-at-point ()
   "A local row under point supplies the project; a remote row refuses."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main topic)
      (claude-code-ide-tests--with-worktree-backends
-       (make-directory (expand-file-name ".lane" main))
-       (let ((item (make-claude-code-ide-manager-item
-                    :session-key "s" :directory topic
-                    :group-metadata (list :project-path (directory-file-name main))))
-             (remote (make-claude-code-ide-manager-item
-                      :session-key "r" :host "box" :directory "/srv/repo/"))
-             asked)
-         (cl-letf (((symbol-function 'completing-read)
-                    (lambda (&rest _) (setq asked t) main))
-                   ((symbol-function 'read-string) (lambda (&rest _) "feat/row"))
-                   ((symbol-function 'claude-code-ide-manager--item-at-point)
-                    (lambda () item)))
-           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-             (claude-code-ide-manager-new-worktree))
-           (should-not asked)
-           (should (equal lane-calls (list (list main "feat/row")))))
-         (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
-                    (lambda () remote)))
-           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-             (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                                :type 'user-error))
-                            "Remote worktrees are not supported")))))))))
+      (make-directory (expand-file-name ".lane" main))
+      (let ((item (make-claude-code-ide-manager-item
+                   :session-key "s" :directory topic
+                   :group-metadata (list :project-path (directory-file-name main))))
+            (remote (make-claude-code-ide-manager-item
+                     :session-key "r" :host "box" :directory "/srv/repo/"))
+            asked)
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) (setq asked t) main))
+                  ((symbol-function 'read-string) (lambda (&rest _) "feat/row"))
+                  ((symbol-function 'claude-code-ide-manager--item-at-point)
+                   (lambda () item)))
+          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+            (claude-code-ide-manager-new-worktree))
+          (should-not asked)
+          (should (equal lane-calls (list (list main "feat/row")))))
+        (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                   (lambda () remote)))
+          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+            (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                               :type 'user-error))
+                           "Remote worktrees are not supported")))))))))
 
 (ert-deftest claude-code-ide-test-manager-open-start-action-starts-selected-target ()
   "Test manager open start action launches the selected target."
@@ -8658,6 +8796,26 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
     (should (equal (claude-code-ide-session-id
                     (claude-code-ide--preferred-session directory))
                    "two"))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-preference-isolates-exact-hosts ()
+  "Identical local and remote paths retain separate most-recent Session choices."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal)))
+    (dolist (entry '(("local" nil 9) ("alpha-old" "alpha" 1)
+                     ("alpha-new" "alpha" 2) ("beta" "beta" 8)))
+      (claude-code-ide--put-session
+       (claude-code-ide-session-create
+        :id (nth 0 entry) :host (nth 1 entry) :directory "/srv/repo"
+        :last-accessed-at (nth 2 entry))))
+    (should (equal (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session "/srv/repo" "alpha")) "alpha-new"))
+    (claude-code-ide--touch-session "alpha-old")
+    (should (equal (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session "/srv/repo" "alpha")) "alpha-old"))
+    (should (equal (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session "/srv/repo" "beta")) "beta"))
+    (should (equal (claude-code-ide-session-id
+                    (claude-code-ide--preferred-session "/srv/repo")) "local"))
+    (should-not (claude-code-ide--preferred-session "/srv/repo" "ALPHA"))))
 
 (ert-deftest claude-code-ide-test-touch-session-changes-directory-preference ()
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal)))
@@ -17277,65 +17435,65 @@ The resync ignores pin state and stored order keys."
 (ert-deftest claude-code-ide-test-manager-compact-view-ignores-session-titles ()
   "The compact view renders one line per Session and never shows a title."
   (claude-code-ide-tests--with-grouped-state
-    (setq claude-code-ide-manager--items
-          (claude-code-ide-tests--detail-view-items))
-    (with-current-buffer (claude-code-ide-manager--get-buffer)
-      (let ((claude-code-ide-manager-show-session-titles nil))
-        (claude-code-ide-manager--render))
-      (let ((compact (buffer-substring-no-properties (point-min) (point-max))))
-        (should (= (count-lines (point-min) (point-max)) 2))
-        (should-not (string-match-p "Alpha work" compact))
-        ;; A sidebar where no Session has a title renders identically in
-        ;; both views.
-        (claude-code-ide--put-session
-         (claude-code-ide-session-create :id "/tmp/project-a"))
-        (let ((claude-code-ide-manager-show-session-titles t))
-          (claude-code-ide-manager--render))
-        (should (equal (buffer-substring-no-properties (point-min) (point-max))
-                       compact))))))
+   (setq claude-code-ide-manager--items
+         (claude-code-ide-tests--detail-view-items))
+   (with-current-buffer (claude-code-ide-manager--get-buffer)
+     (let ((claude-code-ide-manager-show-session-titles nil))
+       (claude-code-ide-manager--render))
+     (let ((compact (buffer-substring-no-properties (point-min) (point-max))))
+       (should (= (count-lines (point-min) (point-max)) 2))
+       (should-not (string-match-p "Alpha work" compact))
+       ;; A sidebar where no Session has a title renders identically in
+       ;; both views.
+       (claude-code-ide--put-session
+        (claude-code-ide-session-create :id "/tmp/project-a"))
+       (let ((claude-code-ide-manager-show-session-titles t))
+         (claude-code-ide-manager--render))
+       (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                      compact))))))
 
 (ert-deftest claude-code-ide-test-manager-detail-view-adds-one-line-per-title ()
   "Only a Session with a title gains a line, and it gains exactly one."
   (claude-code-ide-tests--with-grouped-state
-    (setq claude-code-ide-manager--items
-          (claude-code-ide-tests--detail-view-items))
-    (let ((claude-code-ide-manager-show-session-titles t))
-      (with-current-buffer (claude-code-ide-manager--get-buffer)
-        (claude-code-ide-manager--render)
-        (should (= (count-lines (point-min) (point-max)) 3))
-        (should (equal (claude-code-ide-tests--session-title-lines)
-                       '("Alpha work")))
-        (goto-char (point-min))
-        (forward-line 2)
-        ;; The untitled Session keeps a single row and adds no blank line.
-        (should (string-match-p "project-b"
-                                (buffer-substring-no-properties
-                                 (line-beginning-position)
-                                 (line-end-position))))))))
+   (setq claude-code-ide-manager--items
+         (claude-code-ide-tests--detail-view-items))
+   (let ((claude-code-ide-manager-show-session-titles t))
+     (with-current-buffer (claude-code-ide-manager--get-buffer)
+       (claude-code-ide-manager--render)
+       (should (= (count-lines (point-min) (point-max)) 3))
+       (should (equal (claude-code-ide-tests--session-title-lines)
+                      '("Alpha work")))
+       (goto-char (point-min))
+       (forward-line 2)
+       ;; The untitled Session keeps a single row and adds no blank line.
+       (should (string-match-p "project-b"
+                               (buffer-substring-no-properties
+                                (line-beginning-position)
+                                (line-end-position))))))))
 
 (ert-deftest claude-code-ide-test-manager-toggle-session-titles-redraws-and-reports ()
   "The toggle flips the view, redraws an open sidebar, and names the result."
   (claude-code-ide-tests--with-grouped-state
-    (setq claude-code-ide-manager--items
-          (claude-code-ide-tests--detail-view-items))
-    (let ((claude-code-ide-manager-show-session-titles nil)
-          reported)
-      (with-current-buffer (claude-code-ide-manager--get-buffer)
-        (claude-code-ide-manager--render)
-        (cl-letf (((symbol-function 'message)
-                   (lambda (format-string &rest args)
-                     (setq reported (apply #'format format-string args)))))
-          (claude-code-ide-manager-toggle-session-titles)
-          (should claude-code-ide-manager-show-session-titles)
-          (should (equal (claude-code-ide-tests--session-title-lines)
-                         '("Alpha work")))
-          (should (equal reported
-                         "Manager session titles: on (1 of 2 Sessions have a title)"))
-          (claude-code-ide-manager-toggle-session-titles)
-          (should-not claude-code-ide-manager-show-session-titles)
-          (should-not (claude-code-ide-tests--session-title-lines))
-          (should (equal reported
-                         "Manager session titles: off (1 of 2 Sessions have a title)")))))))
+   (setq claude-code-ide-manager--items
+         (claude-code-ide-tests--detail-view-items))
+   (let ((claude-code-ide-manager-show-session-titles nil)
+         reported)
+     (with-current-buffer (claude-code-ide-manager--get-buffer)
+       (claude-code-ide-manager--render)
+       (cl-letf (((symbol-function 'message)
+                  (lambda (format-string &rest args)
+                    (setq reported (apply #'format format-string args)))))
+         (claude-code-ide-manager-toggle-session-titles)
+         (should claude-code-ide-manager-show-session-titles)
+         (should (equal (claude-code-ide-tests--session-title-lines)
+                        '("Alpha work")))
+         (should (equal reported
+                        "Manager session titles: on (1 of 2 Sessions have a title)"))
+         (claude-code-ide-manager-toggle-session-titles)
+         (should-not claude-code-ide-manager-show-session-titles)
+         (should-not (claude-code-ide-tests--session-title-lines))
+         (should (equal reported
+                        "Manager session titles: off (1 of 2 Sessions have a title)")))))))
 
 (ert-deftest claude-code-ide-test-manager-toggle-session-titles-keeps-selected-row ()
   "The toggle keeps the sidebar window on its Session when lines shift."
@@ -17403,117 +17561,117 @@ The resync ignores pin state and stored order keys."
 (ert-deftest claude-code-ide-test-manager-detail-line-is-dim-and-aligned ()
   "The title line uses the dim face alone and starts at the label column."
   (claude-code-ide-tests--with-grouped-state
-    (claude-code-ide--put-session
-     (claude-code-ide-session-create
-      :id "/tmp/project-a" :title "Reviewing\nsession state"))
-    (setq claude-code-ide-manager--items
-          (list (make-claude-code-ide-manager-item
-                 :session-key "/tmp/project-a" :display-name "project-a"
-                 :secondary-text "/tmp/project-a" :order-key 1 :live-p t)))
-    (let ((claude-code-ide-manager-show-session-titles t)
-          (claude-code-ide-manager--current-session-key "/tmp/project-a"))
-      (with-current-buffer (claude-code-ide-manager--get-buffer)
-        (claude-code-ide-manager--render)
-        (goto-char (point-min))
-        ;; The row above carries the current-session status face.
-        (should (eq (get-text-property (point) 'face)
-                    'claude-code-ide-manager-current-session-face))
-        (let* ((name-start
-                (next-single-property-change
-                 (point-min) 'claude-code-ide-manager-session-name-start))
-               (label-column
-                (cl-loop for pos from (line-beginning-position)
-                         below (line-end-position)
-                         for spec = (get-text-property pos 'display)
-                         when (eq (car-safe spec) 'space)
-                         return (+ (plist-get (cdr spec) :align-to)
-                                   (- name-start pos 1))))
-               (detail-start (progn (forward-line 1) (point))))
-          (should (= label-column 7))
-          (should (equal (get-text-property detail-start 'display)
-                         (list 'space :align-to label-column)))
-          ;; The whole detail line carries the dim face and no row face.
-          (cl-loop for pos from detail-start below (point-max)
-                   do (should (eq (get-text-property pos 'face)
-                                  'claude-code-ide-manager-session-title-face)))
-          ;; A title holding a newline still renders as one line.
-          (should (equal (buffer-substring-no-properties
-                          detail-start (1- (point-max)))
-                         " Reviewing session state"))
-          (should (= (count-lines (point-min) (point-max)) 2)))))))
+   (claude-code-ide--put-session
+    (claude-code-ide-session-create
+     :id "/tmp/project-a" :title "Reviewing\nsession state"))
+   (setq claude-code-ide-manager--items
+         (list (make-claude-code-ide-manager-item
+                :session-key "/tmp/project-a" :display-name "project-a"
+                :secondary-text "/tmp/project-a" :order-key 1 :live-p t)))
+   (let ((claude-code-ide-manager-show-session-titles t)
+         (claude-code-ide-manager--current-session-key "/tmp/project-a"))
+     (with-current-buffer (claude-code-ide-manager--get-buffer)
+       (claude-code-ide-manager--render)
+       (goto-char (point-min))
+       ;; The row above carries the current-session status face.
+       (should (eq (get-text-property (point) 'face)
+                   'claude-code-ide-manager-current-session-face))
+       (let* ((name-start
+               (next-single-property-change
+                (point-min) 'claude-code-ide-manager-session-name-start))
+              (label-column
+               (cl-loop for pos from (line-beginning-position)
+                        below (line-end-position)
+                        for spec = (get-text-property pos 'display)
+                        when (eq (car-safe spec) 'space)
+                        return (+ (plist-get (cdr spec) :align-to)
+                                  (- name-start pos 1))))
+              (detail-start (progn (forward-line 1) (point))))
+         (should (= label-column 7))
+         (should (equal (get-text-property detail-start 'display)
+                        (list 'space :align-to label-column)))
+         ;; The whole detail line carries the dim face and no row face.
+         (cl-loop for pos from detail-start below (point-max)
+                  do (should (eq (get-text-property pos 'face)
+                                 'claude-code-ide-manager-session-title-face)))
+         ;; A title holding a newline still renders as one line.
+         (should (equal (buffer-substring-no-properties
+                         detail-start (1- (point-max)))
+                        " Reviewing session state"))
+         (should (= (count-lines (point-min) (point-max)) 2)))))))
 
 (ert-deftest claude-code-ide-test-manager-detail-line-resolves-to-its-row ()
   "The title line points at its own Session but is not a navigation target."
   (claude-code-ide-tests--with-grouped-state
-    (setq claude-code-ide-manager--items
-          (claude-code-ide-tests--detail-view-items))
-    (let ((claude-code-ide-manager-show-session-titles t))
-      (with-current-buffer (claude-code-ide-manager--get-buffer)
-        (claude-code-ide-manager--render)
-        (goto-char (point-min))
-        (forward-line 1)
-        (should (equal (claude-code-ide-manager-item-session-key
-                        (claude-code-ide-manager--item-at-point))
-                       "/tmp/project-a"))
-        (should-not (get-text-property
-                     (point) 'claude-code-ide-manager-session-name-start))
-        ;; One navigation anchor per Session, not per line.
-        (should (= (cl-loop for pos from (point-min) below (point-max)
-                            count (get-text-property
-                                   pos
-                                   'claude-code-ide-manager-session-name-start))
-                   2))
-        (should (string-match-p
-                 "Alpha work"
-                 (get-text-property (point-min) 'help-echo)))))))
+   (setq claude-code-ide-manager--items
+         (claude-code-ide-tests--detail-view-items))
+   (let ((claude-code-ide-manager-show-session-titles t))
+     (with-current-buffer (claude-code-ide-manager--get-buffer)
+       (claude-code-ide-manager--render)
+       (goto-char (point-min))
+       (forward-line 1)
+       (should (equal (claude-code-ide-manager-item-session-key
+                       (claude-code-ide-manager--item-at-point))
+                      "/tmp/project-a"))
+       (should-not (get-text-property
+                    (point) 'claude-code-ide-manager-session-name-start))
+       ;; One navigation anchor per Session, not per line.
+       (should (= (cl-loop for pos from (point-min) below (point-max)
+                           count (get-text-property
+                                  pos
+                                  'claude-code-ide-manager-session-name-start))
+                  2))
+       (should (string-match-p
+                "Alpha work"
+                (get-text-property (point-min) 'help-echo)))))))
 
 (ert-deftest claude-code-ide-test-manager-compact-view-tooltip-omits-title ()
   "The compact view leaves the row tooltip as it is."
   (claude-code-ide-tests--with-grouped-state
-    (setq claude-code-ide-manager--items
-          (claude-code-ide-tests--detail-view-items))
-    (let ((claude-code-ide-manager-show-session-titles nil))
-      (with-current-buffer (claude-code-ide-manager--get-buffer)
-        (claude-code-ide-manager--render)
-        (should-not (string-match-p
-                     "Alpha work"
-                     (get-text-property (point-min) 'help-echo)))))))
+   (setq claude-code-ide-manager--items
+         (claude-code-ide-tests--detail-view-items))
+   (let ((claude-code-ide-manager-show-session-titles nil))
+     (with-current-buffer (claude-code-ide-manager--get-buffer)
+       (claude-code-ide-manager--render)
+       (should-not (string-match-p
+                    "Alpha work"
+                    (get-text-property (point-min) 'help-echo)))))))
 
 (ert-deftest claude-code-ide-test-manager-session-titles-setting-drives-startup-only ()
   "The setting redraws on change, and the toggle never rewrites it."
   (claude-code-ide-tests--with-grouped-state
-    (setq claude-code-ide-manager--items
-          (claude-code-ide-tests--detail-view-items))
-    (should-not (eval (car (get 'claude-code-ide-manager-show-session-titles
-                                'standard-value))
-                      t))
-    (with-current-buffer (claude-code-ide-manager--get-buffer)
-      (claude-code-ide-manager--render)
-      (unwind-protect
-          (progn
-            ;; Setting the option redraws the open sidebar with no refresh call.
-            (customize-set-variable
-             'claude-code-ide-manager-show-session-titles t)
-            (should (equal (claude-code-ide-tests--session-title-lines)
-                           '("Alpha work"))))
-        (customize-set-variable
-         'claude-code-ide-manager-show-session-titles nil)
-        (put 'claude-code-ide-manager-show-session-titles 'customized-value nil))
-      ;; The toggle changes the running Emacs only.  It records no
-      ;; customization, so a restart reads the setting, not the toggle.
-      (let ((claude-code-ide-manager-show-session-titles nil))
-        (claude-code-ide-manager-toggle-session-titles)
-        (should claude-code-ide-manager-show-session-titles)
-        (should-not (get 'claude-code-ide-manager-show-session-titles
-                         'customized-value))
-        (should-not (get 'claude-code-ide-manager-show-session-titles
-                         'saved-value)))
-      ;; The view never reaches the manager state file.
-      (should (equal (cl-loop for (key _value)
-                              on (claude-code-ide-manager--serialize-state)
-                              by #'cddr
-                              collect key)
-                     '(:version :scopes :layouts))))))
+   (setq claude-code-ide-manager--items
+         (claude-code-ide-tests--detail-view-items))
+   (should-not (eval (car (get 'claude-code-ide-manager-show-session-titles
+                               'standard-value))
+                     t))
+   (with-current-buffer (claude-code-ide-manager--get-buffer)
+     (claude-code-ide-manager--render)
+     (unwind-protect
+         (progn
+           ;; Setting the option redraws the open sidebar with no refresh call.
+           (customize-set-variable
+            'claude-code-ide-manager-show-session-titles t)
+           (should (equal (claude-code-ide-tests--session-title-lines)
+                          '("Alpha work"))))
+       (customize-set-variable
+        'claude-code-ide-manager-show-session-titles nil)
+       (put 'claude-code-ide-manager-show-session-titles 'customized-value nil))
+     ;; The toggle changes the running Emacs only.  It records no
+     ;; customization, so a restart reads the setting, not the toggle.
+     (let ((claude-code-ide-manager-show-session-titles nil))
+       (claude-code-ide-manager-toggle-session-titles)
+       (should claude-code-ide-manager-show-session-titles)
+       (should-not (get 'claude-code-ide-manager-show-session-titles
+                        'customized-value))
+       (should-not (get 'claude-code-ide-manager-show-session-titles
+                        'saved-value)))
+     ;; The view never reaches the manager state file.
+     (should (equal (cl-loop for (key _value)
+                             on (claude-code-ide-manager--serialize-state)
+                             by #'cddr
+                             collect key)
+                    '(:version :scopes :layouts))))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-opens-selected-scope-in-content-window ()
   "The editor refreshes its scope and uses the normal content window."
@@ -20794,9 +20952,8 @@ result arrives never has that result applied to the row now at its key."
       (kill-buffer buffer))))
 
 (ert-deftest claude-code-ide-test-remote-project-worker-creation-failure-cleans-attempt ()
-  "A failed worker start leaves no pending attempt or scheduled timers."
-  (let ((claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
-        (timers (copy-sequence timer-list)))
+  "A failed worker start leaves a failed intent without a pending attempt."
+  (let ((claude-code-ide-remote-project--intents (make-hash-table :test #'equal)))
     (with-temp-buffer
       (cl-letf (((symbol-function 'claude-code-ide-manager--remote-project-enabled-p)
                  (lambda (&rest _) t))
@@ -20809,8 +20966,7 @@ result arrives never has that result applied to the row now at its key."
           "session-a" "host-a" (current-buffer) nil 'first-display))
         (let ((intent (gethash "session-a" claude-code-ide-remote-project--intents)))
           (should-not (claude-code-ide-remote-project--intent-attempt intent))
-          (should (eq (claude-code-ide-remote-project--intent-outcome intent) 'failed)))
-        (should (equal timer-list timers))))))
+          (should (eq (claude-code-ide-remote-project--intent-outcome intent) 'failed)))))))
 
 (ert-deftest claude-code-ide-test-remote-project-auth-checks-each-native-entry ()
   "Authentication owns worker timers and rejects a stale retry."
@@ -20948,7 +21104,8 @@ result arrives never has that result applied to the row now at its key."
 ;;; Remote Project view creation and display
 
 (ert-deftest claude-code-ide-test-remote-project-provider-runs-without-windows ()
-  "A missing view uses the provider with worker-safe display bindings."
+  "The provider returns a view without displaying its warnings."
+  (require 'warnings)
   (claude-code-ide-remote-project--reset-state)
   (let* ((attachment (generate-new-buffer " *remote-provider-terminal*"))
          (candidate nil)
@@ -20958,38 +21115,36 @@ result arrives never has that result applied to the row now at its key."
                    intent "/rpc:host-a:/work/" nil 'first-display))
          (claude-code-ide-manager-status-buffer-function
           #'claude-code-ide-manager-magit-status-buffer)
-         observed result)
+         (warning-minimum-level :warning)
+         result)
     (unwind-protect
-        (cl-letf
-            (((symbol-function
-               'claude-code-ide-remote-project--lookup-native-view)
-              (lambda (_key) nil))
-             ((symbol-function
-               'claude-code-ide-manager--open-status-buffer)
-              (lambda (_directory)
-                (setq observed
-                      (list magit-display-buffer-function
-                            magit-display-buffer-noselect
-                            magit-inhibit-save-previous-winconf
-                            warning-minimum-level
-                            inhibit-interaction))
-                (setq candidate
-                      (create-file-buffer
-                       "/tmp/remote-provider-view"))
-                (with-current-buffer candidate
-                  (setq major-mode 'magit-status-mode))
-                candidate)))
-          (setq result
-                (claude-code-ide-remote-project--prepare-view
-                 attempt '("host-a" git "/rpc:host-a:/work")))
-          (should (eq (plist-get result :buffer) candidate))
-          (should (eq (plist-get result :origin)
-                      'created-by-feature))
-          (should (eq (plist-get result :creator) 'magit))
-          (should (equal observed '(ignore t unset :emergency t))))
+        (save-window-excursion
+          (cl-letf
+              (((symbol-function
+                 'claude-code-ide-remote-project--lookup-native-view)
+                (lambda (_key &optional _include-unavailable) nil))
+               ((symbol-function
+                 'claude-code-ide-manager--open-status-buffer)
+                (lambda (_directory)
+                  (let ((noninteractive nil))
+                    (display-warning 'claude-code-ide "Disposable provider warning."
+                                     :warning " *remote-provider-warnings*"))
+                  (setq candidate
+                        (create-file-buffer
+                         "/tmp/remote-provider-view"))
+                  (with-current-buffer candidate
+                    (setq major-mode 'magit-status-mode))
+                  candidate)))
+            (setq result
+                  (claude-code-ide-remote-project--prepare-view
+                   attempt '("host-a" git "/rpc:host-a:/work")))
+            (should (eq (plist-get result :buffer) candidate))
+            (should-not (get-buffer-window " *remote-provider-warnings*" t))))
       (kill-buffer attachment)
       (when (buffer-live-p candidate)
         (kill-buffer candidate))
+      (when-let* ((warnings (get-buffer " *remote-provider-warnings*")))
+        (kill-buffer warnings))
       (claude-code-ide-remote-project--reset-state))))
 
 (ert-deftest claude-code-ide-test-remote-project-cold-start-magit-owns-created-buffer ()
@@ -21017,7 +21172,7 @@ result arrives never has that result applied to the row now at its key."
         (cl-letf
             (((symbol-function
                'claude-code-ide-remote-project--lookup-native-view)
-              (lambda (_key) nil))
+              (lambda (_key &optional _include-unavailable) nil))
              ((symbol-function
                'claude-code-ide-manager--open-status-buffer)
               (lambda (_directory)
@@ -21065,7 +21220,7 @@ result arrives never has that result applied to the row now at its key."
         (cl-letf
             (((symbol-function
                'claude-code-ide-remote-project--lookup-native-view)
-              (lambda (_key) nil))
+              (lambda (_key &optional _include-unavailable) nil))
              ((symbol-function
                'claude-code-ide-manager--open-status-buffer)
               (lambda (_directory) candidate)))
@@ -21114,6 +21269,261 @@ result arrives never has that result applied to the row now at its key."
       (kill-buffer attachment)
       (kill-buffer view)
       (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-reconcile-unregistered-native-view ()
+  "A visible affected native view remains intact but unavailable."
+  (claude-code-ide-remote-project--reset-state)
+  (let ((buffer (generate-new-buffer " *unregistered-sibling*"))
+        (other (generate-new-buffer " *unregistered-other-host*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer buffer
+            (setq major-mode 'magit-status-mode
+                  default-directory "/rpc:host-a:/work/sibling/")
+            (insert "retained content")
+            (set-buffer-modified-p nil))
+          (with-current-buffer other
+            (setq major-mode 'magit-status-mode
+                  default-directory "/rpc:host-b:/work/sibling/"))
+          (set-window-buffer (selected-window) buffer)
+          (cl-letf (((symbol-function 'process-file)
+                     (lambda (&rest _) (ert-fail "Reconciliation contacted a host"))))
+            (let ((report (claude-code-ide-remote-project-reconcile-worktrees
+                           "host-a" '("/work/sibling") nil)))
+              (should-not (plist-get report :invalidated))
+              (should (eq buffer (plist-get (car (plist-get report :retained)) :buffer)))
+              (should (eq buffer (window-buffer (selected-window))))
+              (with-current-buffer buffer
+                (should (equal (buffer-string) "retained content"))
+                (should (string-match-p "host-a" header-line-format)))
+              (with-current-buffer other (should-not header-line-format)))))
+      (kill-buffer buffer)
+      (kill-buffer other)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-reconcile-descendant-views ()
+  "Known descendant views become unavailable without changing unrelated or owned content."
+  (claude-code-ide-remote-project--reset-state)
+  (let (buffers)
+    (unwind-protect
+        (progn
+          (dolist (case '((child "/rpc:host-a:/work/old/sub/")
+                          (registered "/rpc:host-a:/work/old/registered/")
+                          (neighbor "/rpc:host-a:/work/old-neighbor/")
+                          (other-host "/rpc:host-b:/work/old/sub/")
+                          (uncertain "/rpc:host-a:/work/old/../elsewhere/")
+                          (modified "/rpc:host-a:/work/old/edited/")
+                          (source "/rpc:host-a:/work/old/source/")
+                          (custom "/rpc:host-a:/work/old/custom/")))
+            (let ((buffer (generate-new-buffer " *descendant-view*")))
+              (push (cons (car case) buffer) buffers)
+              (with-current-buffer buffer
+                (setq major-mode 'dired-mode default-directory (cadr case))
+                (insert "retained content")
+                (set-buffer-modified-p (eq (car case) 'modified))
+                (pcase (car case)
+                  ('source (setq buffer-file-name (concat default-directory "notes")))
+                  ('custom (setq-local kill-buffer-hook '(ignore)))
+                  ('registered
+                   (let ((key '("host-a" directory "/rpc:host-a:/work/old/registered")))
+                     (puthash key
+                              (claude-code-ide-remote-project--make-view
+                               :key key :buffer buffer :origin 'preexisting)
+                              claude-code-ide-remote-project--views)))))))
+          (cl-letf (((symbol-function 'process-file)
+                     (lambda (&rest _) (ert-fail "Reconciliation contacted a host")))
+                    ((symbol-function 'file-truename)
+                     (lambda (&rest _) (ert-fail "Reconciliation resolved an uncertain alias"))))
+            (let* ((report (claude-code-ide-remote-project-reconcile-worktrees
+                            "host-a" '("/work/old") nil))
+                   (retained (mapcar (lambda (entry) (plist-get entry :buffer))
+                                     (plist-get report :retained))))
+              (dolist (entry buffers)
+                (with-current-buffer (cdr entry)
+                  (should (equal (buffer-string) "retained content"))
+                  (if (memq (car entry) '(child registered))
+                      (progn
+                        (should claude-code-ide-remote-project--unavailable-header)
+                        (should (memq (cdr entry) retained)))
+                    (should-not claude-code-ide-remote-project--unavailable-header)))))))
+      (dolist (entry buffers)
+        (with-current-buffer (cdr entry)
+          (setq buffer-file-name nil)
+          (set-buffer-modified-p nil))
+        (kill-buffer (cdr entry)))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-reuses-view-explicit-refresh ()
+  "Only explicit recovery refreshes an unchanged native view."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((attachment (generate-new-buffer " *refresh-terminal*"))
+         (buffer (generate-new-buffer " *refresh-view*"))
+         (intent (claude-code-ide-remote-project--intent-for
+                  "refresh" "host-a" attachment))
+         (attempt (claude-code-ide-remote-project--begin-attempt
+                   intent "/rpc:host-a:/repo/" nil 'first-display))
+         (key '("host-a" git "/rpc:host-a:/repo"))
+         (view (claude-code-ide-remote-project--make-view
+                :key key :buffer buffer :origin 'preexisting))
+         (refreshes 0))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq major-mode 'magit-status-mode
+                  default-directory "/rpc:host-a:/repo/")
+            (insert "stale")
+            (set-buffer-modified-p nil))
+          (puthash key view claude-code-ide-remote-project--views)
+          (cl-letf (((symbol-function 'magit-refresh-buffer)
+                     (lambda ()
+                       (cl-incf refreshes)
+                       (erase-buffer)
+                       (insert "fresh")
+                       (set-buffer-modified-p nil))))
+            (dolist (reason '(first-display reset explicit-target unknown))
+              (setf (claude-code-ide-remote-project--attempt-reason attempt) reason)
+              (claude-code-ide-remote-project--prepare-view attempt key)
+              (should (= refreshes 0)))
+            (setf (claude-code-ide-remote-project--attempt-reason attempt)
+                  'worktree-recovery)
+            (should (eq buffer
+                        (plist-get
+                         (claude-code-ide-remote-project--prepare-view attempt key)
+                         :buffer)))
+            (should (= refreshes 1))
+            (with-current-buffer buffer
+              (should (equal (buffer-string) "fresh"))
+              (set-buffer-modified-p t))
+            (claude-code-ide-remote-project--prepare-view attempt key)
+            (should (= refreshes 1))
+            (with-current-buffer buffer
+              (set-buffer-modified-p nil)
+              (setq buffer-file-name "/tmp/refresh-source"))
+            (claude-code-ide-remote-project--prepare-view attempt key)
+            (should (= refreshes 1))
+            (with-current-buffer buffer
+              (setq buffer-file-name nil major-mode 'fundamental-mode))
+            (claude-code-ide-remote-project--prepare-view attempt key)
+            (should (= refreshes 1))
+            (with-current-buffer buffer (setq major-mode 'magit-status-mode))
+            (let ((other (claude-code-ide-remote-project--intent-for
+                          "refresh-other" "host-a" attachment)))
+              (setf (claude-code-ide-remote-project--intent-view-key intent) key
+                    (claude-code-ide-remote-project--intent-view-key other) key
+                    (claude-code-ide-remote-project--view-sessions view) '("refresh" "refresh-other"))
+              (claude-code-ide-remote-project--prepare-view attempt key)
+              (should (= refreshes 1)))))
+      (kill-buffer attachment)
+      (with-current-buffer buffer
+        (setq buffer-file-name nil)
+        (set-buffer-modified-p nil))
+      (kill-buffer buffer)
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-recovery-preserves-changed-native-view ()
+  "Recovery cannot refresh a retargeted or uncertain native buffer."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-project--views (make-hash-table :test #'equal))
+        (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
+        (key '("fixture" git "/rpc:fixture:/srv/main")))
+    (dolist (case '(other-host other-directory kill-hook query-hook temporary mode-changed))
+      (ert-info ((format "Changed view: %s" case))
+        (with-temp-buffer
+          (setq major-mode 'magit-status-mode
+                default-directory "/rpc:fixture:/srv/main/")
+          (insert "retained")
+          (set-buffer-modified-p nil)
+          (pcase case
+            ('other-host (setq default-directory "/rpc:otherhost:/srv/main/"))
+            ('other-directory (setq default-directory "/rpc:fixture:/unrelated/"))
+            ('kill-hook (setq-local kill-buffer-hook '(ignore)))
+            ('query-hook (setq-local kill-buffer-query-functions '(ignore)))
+            ('temporary (setq-local tramp-temp-buffer-file-name "/tmp/view-copy"))
+            ('mode-changed (setq major-mode 'dired-mode)))
+          (let ((view (claude-code-ide-remote-project--make-view
+                       :key key :buffer (current-buffer) :origin 'created-by-feature :creator 'magit))
+                (attempt (claude-code-ide-remote-project--make-attempt
+                          :host "fixture" :admitted-host "fixture" :directory "/rpc:fixture:/srv/main/"
+                          :callback #'ignore :state 'preparing :reason 'worktree-recovery)))
+            (puthash key view claude-code-ide-remote-project--views)
+            (cl-letf (((symbol-function 'magit-refresh-buffer)
+                       (lambda (&rest _) (erase-buffer) (insert "refreshed")))
+                      ((symbol-function 'revert-buffer)
+                       (lambda (&rest _) (erase-buffer) (insert "refreshed"))))
+              (if (memq case '(other-host other-directory))
+                  (should-error (claude-code-ide-remote-project--prepare-view attempt key))
+                (should (eq (current-buffer)
+                            (plist-get (claude-code-ide-remote-project--prepare-view attempt key) :buffer)))))
+            (should (equal (buffer-string) "retained")))
+          (setq kill-buffer-hook nil kill-buffer-query-functions nil
+                default-directory temporary-file-directory)
+          (set-buffer-modified-p nil))))))
+
+(ert-deftest claude-code-ide-test-remote-project-unavailable-native-view-preserves-edits ()
+  "Fresh native preparation preserves unsafe unavailable views and refreshes safe ones."
+  (require 'magit-status)
+  (dolist (case '(edited kill-hook shared safe))
+    (ert-info ((format "Unavailable native view: %s" case))
+      (let ((claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-remote-project--views (make-hash-table :test #'equal))
+            (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
+            (claude-code-ide-remote-project--view-writers (make-hash-table :test #'equal))
+            (claude-code-ide-remote-project--incomplete-candidates (make-hash-table :test #'eq))
+            (claude-code-ide-manager-status-buffer-function #'claude-code-ide-manager-magit-status-buffer)
+            (file-name-handler-alist nil)
+            (key '("fixture" git "/rpc:fixture:/srv/main")))
+        (with-temp-buffer
+          (setq major-mode 'magit-status-mode default-directory "/rpc:fixture:/srv/main/")
+          (insert "Retained native contents")
+          (set-buffer-modified-p nil)
+          (should (claude-code-ide-remote-project--mark-unavailable
+                   (current-buffer) "fixture" "/srv/main"))
+          (pcase case
+            ('edited (insert "\nUser edits"))
+            ('kill-hook (setq-local kill-buffer-hook '(ignore)))
+            ('shared
+             (puthash key (claude-code-ide-remote-project--make-view
+                           :key key :buffer (current-buffer) :origin 'preexisting :sessions '("one" "two"))
+                      claude-code-ide-remote-project--views)
+             (dolist (session '("one" "two"))
+               (puthash session (claude-code-ide-remote-project--make-intent
+                                 :session-id session :view-key key)
+                        claude-code-ide-remote-project--intents))))
+          (let* ((buffer (current-buffer))
+                 (before (buffer-string))
+                 (attempt (claude-code-ide-remote-project--make-attempt
+                           :host "fixture" :admitted-host "fixture" :directory default-directory
+                           :callback #'ignore :state 'preparing :reason 'worktree-recovery))
+                 (magit-status-sections-hook (list (lambda () (insert "Fresh native rows\n"))))
+                 (magit-mode-hook nil) (magit-status-mode-hook nil) (magit-setup-buffer-hook nil)
+                 (magit-pre-display-buffer-hook nil) (magit-post-display-buffer-hook nil)
+                 (magit-refresh-buffer-hook nil) (magit-status-goto-file-position nil))
+            (cl-letf (((symbol-function 'magit-git-version-assert) #'ignore)
+                      ((symbol-function 'magit-diff--get-value) (lambda (&rest _) '(nil nil)))
+                      ((symbol-function 'magit-log--get-value) (lambda (&rest _) '(nil nil)))
+                      ((symbol-function 'magit-toplevel) (lambda (&rest _) "/rpc:fixture:/srv/main/"))
+                      ((symbol-function 'magit-gitdir) (lambda (&rest _) "/rpc:fixture:/srv/main/.git/"))
+                      ((symbol-function 'magit-git-exit-code) (lambda (&rest _) 0))
+                      ((symbol-function 'magit-git-string) (lambda (&rest _) nil))
+                      ((symbol-function 'magit-xref-setup) #'ignore)
+                      ((symbol-function 'process-file) (lambda (&rest _) (ert-fail "Unexpected host access")))
+                      ((symbol-function 'magit-get-mode-buffer) (lambda (&rest _) buffer)))
+              (if (eq case 'safe)
+                  (progn
+                    (should (eq buffer (plist-get (claude-code-ide-remote-project--prepare-view attempt key) :buffer)))
+                    (should (equal (buffer-string) "Fresh native rows\n")))
+                (should-error (claude-code-ide-remote-project--prepare-view attempt key))
+                (should (equal (buffer-string) before))
+                (should claude-code-ide-remote-project--unavailable-header)
+                (pcase case
+                  ('edited (should (buffer-modified-p)))
+                  ('kill-hook (should (equal kill-buffer-hook '(ignore))))
+                  ('shared
+                   (dolist (session '("one" "two"))
+                     (should (equal key (claude-code-ide-remote-project--intent-view-key
+                                         (gethash session claude-code-ide-remote-project--intents))))))))))
+          (setq kill-buffer-hook nil default-directory temporary-file-directory)
+          (set-buffer-modified-p nil))))))
 
 (ert-deftest claude-code-ide-test-remote-project-identity-separates-hosts-and-kinds ()
   "Worktree keys share only on the exact host and canonical root."
@@ -21924,7 +22334,7 @@ result arrives never has that result applied to the row now at its key."
         (cl-letf
             (((symbol-function
                'claude-code-ide-remote-project--lookup-native-view)
-              (lambda (_key) nil))
+              (lambda (_key &optional _include-unavailable) nil))
              ((symbol-function
                'claude-code-ide-manager--open-status-buffer)
               (lambda (_directory)
@@ -21963,7 +22373,7 @@ result arrives never has that result applied to the row now at its key."
         (cl-letf
             (((symbol-function
                'claude-code-ide-remote-project--lookup-native-view)
-              (lambda (_key) nil))
+              (lambda (_key &optional _include-unavailable) nil))
              ((symbol-function
                'claude-code-ide-manager--open-status-buffer)
               (lambda (_directory)
@@ -22009,7 +22419,7 @@ result arrives never has that result applied to the row now at its key."
         (cl-letf
             (((symbol-function
                'claude-code-ide-remote-project--lookup-native-view)
-              (lambda (_key)
+              (lambda (_key &optional _include-unavailable)
                 (setq lookups (1+ lookups))
                 (and (= lookups 3) winner)))
              ((symbol-function
@@ -22062,7 +22472,7 @@ result arrives never has that result applied to the row now at its key."
           (cl-letf
               (((symbol-function
                  'claude-code-ide-remote-project--lookup-native-view)
-                (lambda (_key)
+                (lambda (_key &optional _include-unavailable)
                   (setq lookups (1+ lookups))
                   (and (= lookups 3) candidate)))
                ((symbol-function
@@ -22706,9 +23116,9 @@ and returns nil for a buffer that owns no Session."
             :buffer buffer))
           (with-current-buffer buffer
             (should (eq (claude-code-ide-session-for-buffer)
-                       (claude-code-ide--session-for-buffer))))
+                        (claude-code-ide--session-for-buffer))))
           (should (eq (claude-code-ide-session-for-buffer buffer)
-                     (claude-code-ide--session-for-buffer buffer)))
+                      (claude-code-ide--session-for-buffer buffer)))
           (should-not (claude-code-ide-session-for-buffer other-buffer)))
       (kill-buffer buffer)
       (kill-buffer other-buffer))))
@@ -22854,6 +23264,3465 @@ displayed last."
   "With no Session the accessor returns nil and makes no remote call."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal)))
     (should-not (claude-code-ide-recent-session))))
+
+(defun claude-code-ide-tests--remote-worktree-wait-file (file)
+  "Wait at most five seconds for a private fixture FILE."
+  (let ((deadline (+ (float-time) 5)))
+    (while (and (not (file-exists-p file)) (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    (should (file-exists-p file))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-runner-claims-an-attempt-once ()
+  "Duplicate dispatch cannot repeat a completed or pending mutation."
+  (let* ((root (make-temp-file "cci-runner-" t))
+         (runner (expand-file-name "runner.sh" root))
+         (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+         (effect (expand-file-name "effect" root))
+         submitted)
+    (unwind-protect
+        (progn
+          (copy-file
+           (expand-file-name
+            "scripts/remote-worktree-runner.sh"
+            (file-name-directory (locate-library "claude-code-ide-zmx")))
+           runner)
+          (set-file-modes runner #o700)
+          (with-temp-file (expand-file-name "manifest" root)
+            (insert "protocol=cci-worktree-1\n"
+                    "operation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                    "attempt=" attempt "\nkind=create\nsteps=1\n"))
+          (with-temp-file (expand-file-name "plan.sh" root)
+            (dotimes (_ 2)
+              (insert "cci_step 1 backend-create "
+                      (claude-code-ide-zmx--quote root)
+                      " /bin/sh -c 'printf x >> effect'\n")))
+          (set-file-modes (expand-file-name "manifest" root) #o600)
+          (set-file-modes (expand-file-name "plan.sh" root) #o600)
+          (setq submitted t)
+          (should (zerop (call-process "/bin/sh" nil nil nil
+                                       runner "dispatch" root attempt)))
+          (should (memq (call-process "/bin/sh" nil nil nil
+                                      runner "dispatch" root attempt)
+                        '(0 73)))
+          (claude-code-ide-tests--remote-worktree-wait-file
+           (expand-file-name "finished" root))
+          (let ((files (directory-files root nil nil t))
+                (modified (file-attribute-modification-time (file-attributes root))))
+            (with-temp-buffer
+              (should (zerop
+                       (call-process "/bin/sh" nil t nil runner "read" root attempt
+                                     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "1")))
+              (should (string-match-p "^generation=stable$" (buffer-string)))
+              (should (string-match-p "^file=finished\t" (buffer-string))))
+            (should (equal files (directory-files root nil nil t)))
+            (should (equal modified
+                           (file-attribute-modification-time (file-attributes root)))))
+          (let* ((bin (expand-file-name "bin" root))
+                 (finished (expand-file-name "finished" root))
+                 (pending (expand-file-name "pending-finished" root))
+                 (ps (expand-file-name "ps" bin))
+                 (process-environment (cons (concat "PATH=" bin ":" (getenv "PATH")) process-environment)))
+            (make-directory bin)
+            (with-temp-file ps
+              (insert "#!/bin/sh\n/bin/mv " (claude-code-ide-zmx--quote pending)
+                      " " (claude-code-ide-zmx--quote finished) "\nexit 1\n"))
+            (set-file-modes ps #o700)
+            (rename-file finished pending)
+            (unwind-protect
+                (with-temp-buffer
+                  (should (zerop (call-process "/bin/sh" nil t nil runner "read" root attempt
+                                               "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "1")))
+                  ;; A worker can finish while the reader samples its PID.
+                  (should (string-match-p "^generation=changed$" (buffer-string))))
+              (when (file-exists-p pending) (rename-file pending finished t))))
+          (with-temp-buffer
+            (insert-file-contents-literally effect)
+            (should (equal (buffer-string) "x")))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "step-1.exit" root))
+            (should (string-match-p "^status=0$" (buffer-string)))))
+      (if (or (not submitted)
+              (file-exists-p (expand-file-name "finished" root)))
+          (delete-directory root t)
+        (message "Retained unfinished runner fixture: %s" root)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-observer-preserves-landing-evidence ()
+  "A successful landing remains verifiable after its source branch disappears."
+  (require 'claude-code-ide-remote-worktree)
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main linked)
+     (let* ((root (file-truename (make-temp-file "cci-landing-read-" t)))
+            (runner (expand-file-name "runner.sh" root))
+            (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            (operation
+             (claude-code-ide-remote-worktree--make-operation
+              :id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" :attempt-id attempt :kind 'merge
+              :steps '((:step-id 1 :kind backend-merge
+                                 :merge-record (:source-ref "refs/heads/feature" :target-ref "refs/heads/main")))))
+            (default-directory main)
+            (repository (claude-code-ide-tests--git "rev-parse" "--absolute-git-dir"))
+            (head (claude-code-ide-tests--git "rev-parse" "HEAD"))
+            submitted)
+       (unwind-protect
+           (progn
+             (copy-file claude-code-ide-remote-worktree--runner-file runner)
+             (set-file-modes runner #o700)
+             (with-temp-file (expand-file-name "manifest" root)
+               (insert "protocol=cci-worktree-1\noperation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                       "attempt=" attempt "\nkind=merge\nsteps=1\n"))
+             (with-temp-file (expand-file-name "plan.sh" root)
+               (insert "CCI_GRANTED_STEP=1\ncci_step 1 backend-merge "
+                       (claude-code-ide-zmx--quote (directory-file-name main))
+                       " " (claude-code-ide-zmx--quote (executable-find "git"))
+                       " merge --ff-only feature || exit \"$?\"\ncci_record_merge 1 "
+                       (claude-code-ide-zmx--quote (executable-find "git")) " "
+                       (claude-code-ide-zmx--quote repository)
+                       " refs/heads/feature refs/heads/main || exit \"$?\"\n"))
+             (dolist (name '("manifest" "plan.sh"))
+               (set-file-modes (expand-file-name name root) #o600))
+             (setq submitted t)
+             (should (zerop (call-process "/bin/sh" nil nil nil runner "dispatch" root attempt)))
+             (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "finished" root))
+             (claude-code-ide-tests--git "worktree" "remove" (directory-file-name linked))
+             (claude-code-ide-tests--git "branch" "-d" "feature")
+             (with-temp-buffer
+               (should (zerop (call-process "/bin/sh" nil t nil runner "read" root attempt
+                                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "1")))
+               (should (claude-code-ide-remote-worktree--condition-result
+                        '(:kind landing :source-ref "refs/heads/feature" :target-ref "refs/heads/main")
+                        (list :refs (list (cons "refs/heads/main" head)))
+                        (claude-code-ide-remote-worktree--decode-receipts operation (buffer-string))))))
+         (if (or (not submitted) (file-exists-p (expand-file-name "finished" root)))
+             (delete-directory root t)
+           (message "Retained unfinished landing fixture: %s" root)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-prune-read-refuses-later-work ()
+  "A stale landed listing cannot qualify later commits or untracked files for removal."
+  (require 'claude-code-ide-remote-worktree)
+  (cl-progv '(magit-lane-core-landed-marker-relpath) '("lane/landed")
+    (claude-code-ide-tests--with-temp-worktree-repo
+     (lambda (main linked)
+       (let* ((default-directory linked)
+              (head (claude-code-ide-tests--git "rev-parse" "HEAD"))
+              (marker (expand-file-name "lane/landed"
+                                        (claude-code-ide-tests--git "rev-parse" "--absolute-git-dir")))
+              (path (directory-file-name linked))
+              (operation
+               (claude-code-ide-remote-worktree--make-operation
+                :kind 'prune :snapshot
+                (list :main-worktree (directory-file-name main)
+                      :tools (list (cons 'git (executable-find "git")))
+                      :worktrees (list (list :path path :branch "feature" :head head :exists t))
+                      :backend-entries
+                      (list (list (cons 'name "feature") (cons 'branch "feature") (cons 'path path)
+                                  '(state . "landed") '(pending_notes . 0))))))
+              completed)
+         (make-directory (file-name-directory marker) t)
+         (with-temp-file marker (insert "fixture 2026-09-09T00:00:00Z " head "\n"))
+         (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
+                    (lambda (_operation _purpose program argv callback &optional directory &rest _)
+                      (let ((default-directory directory))
+                        (with-temp-buffer
+                          (should (eq 0 (apply #'process-file program nil t nil argv)))
+                          (funcall callback (buffer-string)))))))
+           (claude-code-ide-remote-worktree--prepare-lane-prune operation (lambda (_) (setq completed t)))
+           (should completed)
+           (should (equal
+                    (mapcar (lambda (entry) (plist-get entry :name))
+                            (plist-get (claude-code-ide-remote-worktree--operation-snapshot operation) :prune-candidates))
+                    '("feature")))
+           (should (equal head (claude-code-ide-tests--git "rev-parse" "HEAD")))
+           (with-temp-file (expand-file-name "untracked" linked) (insert "keep this\n"))
+           (claude-code-ide-remote-worktree--prepare-lane-prune operation #'ignore)
+           (should-not (plist-get (claude-code-ide-remote-worktree--operation-snapshot operation) :prune-candidates))
+           (claude-code-ide-tests--git "add" "untracked")
+           (claude-code-ide-tests--git "commit" "-m" "work after landing")
+           (claude-code-ide-remote-worktree--prepare-lane-prune operation #'ignore)
+           (should-not (plist-get (claude-code-ide-remote-worktree--operation-snapshot operation) :prune-candidates))
+           (should (file-exists-p (expand-file-name "untracked" linked)))))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-snapshots-isolate-hosts-and-expire ()
+  "Rendering uses host-qualified snapshots and cannot retain stale mutation rows."
+  (require 'claude-code-ide-remote-worktree)
+  (let ((claude-code-ide-remote-hosts '("alpha" "beta"))
+        (claude-code-ide-remote-worktree--snapshots (make-hash-table :test #'equal))
+        alpha)
+    (dolist (host claude-code-ide-remote-hosts)
+      (let ((operation
+             (claude-code-ide-remote-worktree--make-operation
+              :kind 'list
+              :snapshot (list :host host :backend 'wt :repository "/repo/.git"
+                              :directory "/repo" :worktree "/repo" :main-worktree "/repo"
+                              :backend-entries (list (list (cons 'branch host)))))))
+        (claude-code-ide-remote-worktree--publish-snapshot operation)
+        (when (equal host "alpha") (setq alpha operation))))
+    (cl-letf (((symbol-function 'process-file) (lambda (&rest _) (ert-fail "Snapshot rendering contacted a host")))
+              ((symbol-function 'file-truename) (lambda (&rest _) (ert-fail "Snapshot rendering resolved a remote path"))))
+      (should (equal (alist-get 'branch
+                                (car (plist-get (claude-code-ide-remote-worktree-snapshot-for-file
+                                                 "/rpc:alpha:/repo/" 'wt) :backend-entries)))
+                     "alpha"))
+      (claude-code-ide-remote-worktree--reconcile alpha '(:worktrees nil))
+      (should-not (claude-code-ide-remote-worktree-snapshot-for-file "/rpc:alpha:/repo" 'wt))
+      (should (equal (alist-get 'branch
+                                (car (plist-get (claude-code-ide-remote-worktree-snapshot-for-file
+                                                 "/rpc:beta:/repo" 'wt) :backend-entries)))
+                     "beta")))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-settings-preserve-cleanup-policy ()
+  "Merged backend settings and project specificity preserve explicit keep policy."
+  (require 'claude-code-ide-remote-worktree)
+  (let* ((report (json-parse-string
+                  "{\"user\":{\"config\":{\"merge\":{\"remove\":false},\"projects\":{\"*\":{\"merge\":{\"remove\":true}},\"git.example/team/*\":{\"merge\":{\"remove\":true}},\"git.example/team/repo\":{\"merge\":{\"remove\":false}}}}},\"project\":{\"identifier\":\"git.example/team/repo\"}}"
+                  :null-object nil :false-object :false))
+         (projects (gethash "projects" (gethash "config" (gethash "user" report)))))
+    (should (plist-get (claude-code-ide-remote-worktree--wt-merge-settings report) :keep))
+    (remhash "git.example/team/repo" projects)
+    (should-not (plist-get (claude-code-ide-remote-worktree--wt-merge-settings report) :keep))
+    (puthash "GIT.EXAMPLE/TEAM/REPO"
+             (json-parse-string "{\"merge\":{\"verify\":true}}") projects)
+    (puthash "verify" :false (gethash "merge" (gethash "config" (gethash "user" report))))
+    (should-error (claude-code-ide-remote-worktree--wt-merge-settings report) :type 'user-error)))
+
+(ert-deftest claude-code-ide-test-remote-worktree-publication-preview-resolves-matching-refs ()
+  "A real matching push preview selects only advertised matching branches without publication."
+  (require 'claude-code-ide-remote-worktree)
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (let* ((default-directory main)
+            (destination (make-temp-file "cci-preview-destination-" t))
+            (branch (claude-code-ide-tests--git "symbolic-ref" "--short" "HEAD"))
+            (ref (concat "refs/heads/" branch))
+            (head (claude-code-ide-tests--git "rev-parse" "HEAD")))
+       (unwind-protect
+           (progn
+             (claude-code-ide-tests--git "init" "--bare" destination)
+             (claude-code-ide-tests--git "push" destination (concat ref ":" ref))
+             (claude-code-ide-tests--git "commit" "--allow-empty" "-m" "unpublished")
+             (let* ((refs (list (cons ref (claude-code-ide-tests--git "rev-parse" "HEAD"))
+                                (cons "refs/heads/feature" head)))
+                    (preview (claude-code-ide-remote-worktree--publication-preview
+                              (claude-code-ide-tests--git "push" "--dry-run" "--porcelain"
+                                                          "--no-verify" "-u" destination ":")
+                              refs)))
+               (should (equal (plist-get preview :refs) (list (cons ref ref))))
+               (should (equal (claude-code-ide-tests--git "--git-dir" destination "rev-parse" ref) head))
+               (should-error
+                (claude-code-ide-remote-worktree--publication-preview
+                 (concat "To " destination "\n!\t" ref ":" ref "\t[rejected]\nDone\n") refs)
+                :type 'user-error)))
+         (delete-directory destination t))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-control-preserves-literal-argv ()
+  "An asynchronous control request cannot execute punctuation in an argument."
+  (let* ((root (make-temp-file "cci-control-" t))
+         (ssh (expand-file-name "ssh" root))
+         (sentinel (expand-file-name "must-not-exist" root))
+         (literal (concat "quotes' ; touch " sentinel))
+         (exec-path (cons root exec-path))
+         (process-environment
+          (cons (concat "PATH=" root ":" (getenv "PATH")) process-environment))
+         (claude-code-ide-remote-hosts '("fixture"))
+         process result)
+    (unwind-protect
+        (progn
+          (with-temp-file ssh
+            (insert "#!/bin/sh\nfor command do :; done\n"
+                    "exec /bin/sh -c \"$command\"\n"))
+          (set-file-modes ssh #o700)
+          (setq process
+                (claude-code-ide-zmx-remote-exec
+                 "fixture" 'worktree-read "/usr/bin/printf"
+                 (list "%s" literal)
+                 (lambda (value) (setq result value)) root))
+          (let ((deadline (+ (float-time) 5)))
+            (while (and (not result) (< (float-time) deadline))
+              (accept-process-output process 0.02)))
+          (should result)
+          (should (equal (plist-get result :status) 0))
+          (should (equal (plist-get result :stdout) literal))
+          (should-not (file-exists-p sentinel)))
+      (when (and (processp process) (process-live-p process))
+        (delete-process process))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-remote-project-reconcile-worktrees-scopes-and-invalidates ()
+  "Reconcile touches only its exact host and canonical affected path."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal-a (generate-new-buffer " *reconcile-term-a*"))
+         (terminal-b (generate-new-buffer " *reconcile-term-b*"))
+         (terminal-c (generate-new-buffer " *reconcile-term-c*"))
+         (view-old (generate-new-buffer " *reconcile-view-old*"))
+         (view-other-host (generate-new-buffer " *reconcile-view-other-host*"))
+         (view-unaffected (generate-new-buffer " *reconcile-view-unaffected*"))
+         (key-old '("host-a" git "/rpc:host-a:/work/old"))
+         (key-other-host '("host-b" git "/rpc:host-b:/work/old"))
+         (key-unaffected '("host-a" git "/rpc:host-a:/work/other"))
+         (intent-old
+          (claude-code-ide-remote-project--intent-for
+           "session-old" "host-a" terminal-a))
+         (intent-other-host
+          (claude-code-ide-remote-project--intent-for
+           "session-other-host" "host-b" terminal-b))
+         (intent-unaffected
+          (claude-code-ide-remote-project--intent-for
+           "session-unaffected" "host-a" terminal-c))
+         report)
+    (unwind-protect
+        (progn
+          (dolist
+              (spec
+               (list
+                (list key-old view-old "session-old")
+                (list key-other-host view-other-host "session-other-host")
+                (list key-unaffected view-unaffected "session-unaffected")))
+            (with-current-buffer (nth 1 spec)
+              (setq major-mode 'magit-status-mode
+                    default-directory (concat (nth 2 (car spec)) "/")
+                    header-line-format "Original view header"))
+            (puthash
+             (nth 0 spec)
+             (claude-code-ide-remote-project--make-view
+              :key (nth 0 spec) :buffer (nth 1 spec)
+              :origin 'created-by-feature :creator 'magit
+              :sessions (list (nth 2 spec)))
+             claude-code-ide-remote-project--views))
+          (setf
+           (claude-code-ide-remote-project--intent-view-key intent-old)
+           key-old
+           (claude-code-ide-remote-project--intent-view-buffer intent-old)
+           view-old
+           (claude-code-ide-remote-project--intent-view-key
+            intent-other-host)
+           key-other-host
+           (claude-code-ide-remote-project--intent-view-buffer
+            intent-other-host)
+           view-other-host
+           (claude-code-ide-remote-project--intent-view-key
+            intent-unaffected)
+           key-unaffected
+           (claude-code-ide-remote-project--intent-view-buffer
+            intent-unaffected)
+           view-unaffected)
+          (cl-letf (((symbol-function 'process-file)
+                     (lambda (&rest _args)
+                       (ert-fail "Reconcile made a remote request")))
+                    ((symbol-function 'file-truename)
+                     (lambda (&rest _args)
+                       (ert-fail "Reconcile resolved a remote path")))
+                    ((symbol-function 'save-buffer)
+                     (lambda (&rest _args)
+                       (ert-fail "Reconcile saved a buffer")))
+                    ((symbol-function
+                      'claude-code-ide-manager--display-remote-project-view)
+                     (lambda (&rest _args)
+                       (ert-fail "Reconcile displayed a view"))))
+            (setq report
+                  (claude-code-ide-remote-project-reconcile-worktrees
+                   "host-a" '("/work/old") nil nil)))
+          (should (= 1 (length (plist-get report :invalidated))))
+          (should
+           (equal
+            "/work/old"
+            (plist-get (car (plist-get report :invalidated)) :path)))
+          (should-not (plist-get report :retained))
+          (should-not
+           (claude-code-ide-remote-project--intent-view-key intent-old))
+          (should-not
+           (claude-code-ide-remote-project--intent-view-buffer intent-old))
+          (should-not
+           (claude-code-ide-remote-project--intent-outcome intent-old))
+          (should-not
+           (gethash key-old claude-code-ide-remote-project--views))
+          (should (buffer-live-p view-old))
+          (with-current-buffer view-old
+            (should (string-match-p "host-a" (or header-line-format "")))
+            (should (string-match-p "/work/old" (or header-line-format "")))
+            (should-not (buffer-modified-p)))
+          (dolist (buffer (list view-other-host view-unaffected))
+            (should (equal "Original view header"
+                           (buffer-local-value 'header-line-format buffer))))
+          (cl-letf (((symbol-function 'magit-get-mode-buffer)
+                     (lambda (&rest _arguments) view-old))
+                    ((symbol-function 'dired-find-buffer-nocreate) #'ignore))
+            (should-not (claude-code-ide-remote-project--find-view key-old)))
+          (should
+           (equal
+            key-other-host
+            (claude-code-ide-remote-project--intent-view-key
+             intent-other-host)))
+          (should
+           (eq
+            view-other-host
+            (claude-code-ide-remote-project--intent-view-buffer
+             intent-other-host)))
+          (should
+           (eq
+            view-other-host
+            (claude-code-ide-remote-project--view-buffer
+             (gethash
+              key-other-host claude-code-ide-remote-project--views))))
+          (should
+           (equal
+            key-unaffected
+            (claude-code-ide-remote-project--intent-view-key
+             intent-unaffected))))
+      (mapc
+       (lambda (buffer)
+         (when (buffer-live-p buffer) (kill-buffer buffer)))
+       (list
+        terminal-a terminal-b terminal-c
+        view-old view-other-host view-unaffected))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-reconcile-worktrees-retains-modified-and-shared ()
+  "Reconcile retains a modified or shared View and marks it unavailable."
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((terminal-modified (generate-new-buffer " *reconcile-term-mod*"))
+         (terminal-shared-a (generate-new-buffer " *reconcile-term-sh-a*"))
+         (terminal-shared-b (generate-new-buffer " *reconcile-term-sh-b*"))
+         (view-modified (generate-new-buffer " *reconcile-view-mod*"))
+         (view-shared (generate-new-buffer " *reconcile-view-shared*"))
+         (key-modified '("host-a" git "/rpc:host-a:/work/modified"))
+         (key-shared '("host-a" git "/rpc:host-a:/work/shared"))
+         (intent-modified
+          (claude-code-ide-remote-project--intent-for
+           "session-modified" "host-a" terminal-modified))
+         (intent-shared-a
+          (claude-code-ide-remote-project--intent-for
+           "session-shared-a" "host-a" terminal-shared-a))
+         (intent-shared-b
+          (claude-code-ide-remote-project--intent-for
+           "session-shared-b" "host-a" terminal-shared-b))
+         report)
+    (unwind-protect
+        (progn
+          (with-current-buffer view-modified
+            (setq major-mode 'magit-status-mode)
+            (set-buffer-modified-p t))
+          (with-current-buffer view-shared
+            (setq major-mode 'magit-status-mode))
+          (puthash
+           key-modified
+           (claude-code-ide-remote-project--make-view
+            :key key-modified :buffer view-modified
+            :origin 'created-by-feature :creator 'magit
+            :sessions '("session-modified"))
+           claude-code-ide-remote-project--views)
+          (puthash
+           key-shared
+           (claude-code-ide-remote-project--make-view
+            :key key-shared :buffer view-shared
+            :origin 'created-by-feature :creator 'magit
+            :sessions '("session-shared-a" "session-shared-b"))
+           claude-code-ide-remote-project--views)
+          (setf
+           (claude-code-ide-remote-project--intent-view-key
+            intent-modified)
+           key-modified
+           (claude-code-ide-remote-project--intent-view-buffer
+            intent-modified)
+           view-modified
+           (claude-code-ide-remote-project--intent-view-key
+            intent-shared-a)
+           key-shared
+           (claude-code-ide-remote-project--intent-view-buffer
+            intent-shared-a)
+           view-shared
+           (claude-code-ide-remote-project--intent-view-key
+            intent-shared-b)
+           key-shared
+           (claude-code-ide-remote-project--intent-view-buffer
+            intent-shared-b)
+           view-shared)
+          (cl-letf (((symbol-function 'process-file)
+                     (lambda (&rest _args)
+                       (ert-fail "Reconcile made a remote request")))
+                    ((symbol-function 'save-buffer)
+                     (lambda (&rest _args)
+                       (ert-fail "Reconcile saved a buffer"))))
+            (setq report
+                  (claude-code-ide-remote-project-reconcile-worktrees
+                   "host-a" '("/work/modified" "/work/shared") nil nil)))
+          (should-not (plist-get report :invalidated))
+          (should (= 2 (length (plist-get report :retained))))
+          (should
+           (eq
+            'modified
+            (plist-get
+             (cl-find
+              "/work/modified" (plist-get report :retained)
+              :key (lambda (entry) (plist-get entry :path))
+              :test #'equal)
+             :reason)))
+          (should
+           (eq
+            'shared
+            (plist-get
+             (cl-find
+              "/work/shared" (plist-get report :retained)
+              :key (lambda (entry) (plist-get entry :path))
+              :test #'equal)
+             :reason)))
+          (dolist
+              (intent
+               (list intent-modified intent-shared-a intent-shared-b))
+            (should
+             (eq
+              'unavailable
+              (claude-code-ide-remote-project--intent-outcome intent))))
+          (should
+           (eq
+            view-modified
+            (claude-code-ide-remote-project--intent-view-buffer
+             intent-modified)))
+          (should
+           (eq
+            view-shared
+            (claude-code-ide-remote-project--intent-view-buffer
+             intent-shared-a)))
+          (should (buffer-live-p view-modified))
+          (should (buffer-live-p view-shared))
+          (should-not
+           (claude-code-ide-remote-project-surviving-view
+            "session-modified" terminal-modified))
+          (should-not
+           (claude-code-ide-remote-project-surviving-view
+            "session-shared-a" terminal-shared-a))
+          (should
+           (eq
+            view-modified
+            (claude-code-ide-remote-project--view-buffer
+             (gethash
+              key-modified claude-code-ide-remote-project--views)))))
+      (mapc
+       (lambda (buffer)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer (set-buffer-modified-p nil))
+           (kill-buffer buffer)))
+       (list
+        terminal-modified terminal-shared-a terminal-shared-b
+        view-modified view-shared))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-project-reconcile-worktrees-prefers-verified-destination ()
+  "Reconcile's destination prefers a verified move, else a surviving Worktree."
+  (claude-code-ide-remote-project--reset-state)
+  (let ((surviving
+         (list
+          (list :path "/work/a" :branch "main" :head "abc" :exists t)
+          (list :path "/work/b" :branch "feature" :head "def" :exists t)
+          (list :path "/work/c" :branch "stale" :head "ghi" :exists nil))))
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (&rest _args)
+                 (ert-fail "Reconcile made a remote request")))
+              ((symbol-function 'file-truename)
+               (lambda (&rest _args)
+                 (ert-fail "Reconcile resolved a remote path"))))
+      (should
+       (equal
+        "/work/b"
+        (plist-get
+         (plist-get
+          (claude-code-ide-remote-project-reconcile-worktrees
+           "host-a" nil surviving "/work/b")
+          :destination)
+         :path)))
+      (should
+       (equal
+        "/work/a"
+        (plist-get
+         (plist-get
+          (claude-code-ide-remote-project-reconcile-worktrees
+           "host-a" nil surviving "/work/does-not-exist")
+          :destination)
+         :path)))
+      (should
+       (equal
+        "/work/a"
+        (plist-get
+         (plist-get
+          (claude-code-ide-remote-project-reconcile-worktrees
+           "host-a" nil surviving nil)
+          :destination)
+         :path)))
+      (should-not
+       (plist-get
+        (claude-code-ide-remote-project-reconcile-worktrees
+         "host-a" nil nil nil)
+        :destination))))
+  (claude-code-ide-remote-project--reset-state))
+
+(ert-deftest claude-code-ide-test-remote-worktree-explicit-view-rejects-unapproved-host ()
+  "Explicit no-Session views retain the host approval boundary."
+  (require 'claude-code-ide-remote-project)
+  (let ((claude-code-ide-remote-hosts '("approved")))
+    (should-error
+     (claude-code-ide-remote-project-open-target
+      "unapproved" "/srv/project" #'ignore)
+     :type 'user-error)))
+
+(ert-deftest claude-code-ide-test-remote-worktree-preparation-keeps-captured-context ()
+  "Preparation ignores ambient directories and executable directory-local forms."
+  (require 'claude-code-ide-remote-worktree)
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main linked)
+     (let* ((bin (make-temp-file "cci-prepare-ssh-" t))
+            (ssh (expand-file-name "ssh" bin))
+            (exec-path (cons bin exec-path))
+            (process-environment
+             (cons (concat "PATH=" bin ":" (getenv "PATH"))
+                   process-environment))
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-remote-worktree--operations
+             (make-hash-table :test #'equal))
+            (operation
+             (claude-code-ide-remote-worktree--new-operation
+              'list "fixture" main nil))
+            result)
+       (unwind-protect
+           (progn
+             (with-temp-file ssh
+               (insert "#!/bin/sh\nfor command do :; done\n"
+                       "exec /bin/sh -c \"$command\"\n"))
+             (set-file-modes ssh #o700)
+             (with-temp-file (expand-file-name ".dir-locals.el" main)
+               (insert "((nil . ((claude-code-ide-worktree-backend . lane)\n"
+                       "          (eval . (error \"Unsafe form evaluated\")))))"))
+             (with-temp-file (expand-file-name ".dir-locals-2.el" main)
+               (insert "((nil . ((claude-code-ide-worktree-backend . wt))))"))
+             (let ((default-directory main))
+               (claude-code-ide-tests--git
+                "config" "claude-code-ide.worktree-backend" "lane"))
+             (let ((default-directory linked))
+               (claude-code-ide-remote-worktree--prepare
+                operation (lambda (snapshot) (setq result snapshot)))
+               (let ((deadline (+ (float-time) 10)))
+                 (while (and (not result) (< (float-time) deadline))
+                   (accept-process-output nil 0.02))))
+             (should (equal (plist-get result :host) "fixture"))
+             (should (equal (plist-get result :worktree)
+                            (directory-file-name main)))
+             (should (eq (plist-get (plist-get result :settings) :backend) 'wt))
+             (should (equal (sort (mapcar
+                                   (lambda (entry) (plist-get entry :branch))
+                                   (plist-get result :worktrees))
+                                  #'string<)
+                            (sort (list "feature"
+                                        (let ((default-directory main))
+                                          (claude-code-ide-tests--git
+                                           "symbolic-ref" "--short" "HEAD")))
+                                  #'string<))))
+         (when-let* ((process
+                      (claude-code-ide-remote-worktree--operation-request operation))
+                     ((process-live-p process)))
+           (delete-process process))
+         (delete-directory bin t))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-preference-rejects-read-time-forms ()
+  "Remote directory-local text cannot execute a read-time form."
+  (require 'claude-code-ide-remote-worktree)
+  (cl-progv '(read-eval) '(t)
+    (let ((inhibit-message nil))
+      (should-error
+       (claude-code-ide-remote-worktree--safe-preference
+        '("#.(progn (setq inhibit-message t) nil)") "/srv/repo" "/srv/repo")
+       :type 'user-error)
+      (should-not inhibit-message))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-staging-dispatches-an-immutable-plan ()
+  "Private staging retains real effects when the dispatch acknowledgment is lost."
+  (require 'claude-code-ide-remote-worktree)
+  (dolist (lose-ack '(nil t cancel))
+    (let* ((root (make-temp-file "cci-stage-fixture-" t))
+           (ssh (expand-file-name "ssh" root))
+           (exec-path (cons root exec-path))
+           (process-environment
+            (cons (concat "PATH=" root ":" (getenv "PATH")) process-environment))
+           (claude-code-ide-remote-hosts '("fixture"))
+           (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+           (operation (claude-code-ide-remote-worktree--new-operation
+                       'create "fixture" root '(:name "fixture" :create-only t)))
+           acknowledged resource late-delivery)
+      (unwind-protect
+          (progn
+            (with-temp-file ssh
+              (insert "#!/bin/sh\nfor command do :; done\n"
+                      (if (eq lose-ack t)
+                          (concat "case \"$command\" in *\"'dispatch'\"*)\n"
+                                  "  /bin/sh -c \"$command\"\n  exit 255;;\nesac\n")
+                        "")
+                      "exec /bin/sh -c \"$command\"\n"))
+            (set-file-modes ssh #o700)
+            (setf (claude-code-ide-remote-worktree--operation-steps operation)
+                  (list (list :step-id 1 :kind 'backend-create :cwd root
+                              :program "/bin/sh"
+                              :argv (list "-c" (if (eq lose-ack 'cancel)
+                                                   "sleep 1; printf x >> effect"
+                                                 "printf x >> effect"))))
+                  (claude-code-ide-remote-worktree--operation-approval operation)
+                  (claude-code-ide-remote-worktree--approval-signature operation))
+            (claude-code-ide-remote-worktree--transition operation 'awaiting-confirmation)
+            (claude-code-ide-remote-worktree--stage
+             operation
+             (lambda (staged)
+               (setq resource
+                     (claude-code-ide-remote-worktree--operation-receipt-directory staged))
+               (claude-code-ide-remote-worktree--dispatch
+                staged (lambda (_operation) (setq acknowledged t)))))
+            (let ((deadline (+ (float-time) 5)))
+              (while (and (not acknowledged) (< (float-time) deadline)
+                          (not (memq
+                                (claude-code-ide-remote-worktree--operation-state operation)
+                                '(refused unknown))))
+                (accept-process-output nil 0.02)))
+            (ert-info ((format "Operation error: %s"
+                               (claude-code-ide-remote-worktree--operation-error operation)))
+              (if (eq lose-ack t)
+                  (progn
+                    (should-not acknowledged)
+                    (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                                'unknown)))
+                (should acknowledged)))
+            (when (eq lose-ack 'cancel)
+              (claude-code-ide-tests--remote-worktree-wait-file
+               (expand-file-name "step-1.entered" resource))
+              (should-not (file-exists-p (expand-file-name "finished" resource)))
+              (claude-code-ide-remote-worktree--control
+               operation "fixture-observation" "/bin/sh" '("-c" "sleep 1; printf stale")
+               (lambda (_) (setq late-delivery t)))
+              (let ((request (claude-code-ide-remote-worktree--operation-request operation)))
+                (should (process-live-p request))
+                (claude-code-ide-remote-worktree-cancel-observation
+                 (claude-code-ide-remote-worktree--operation-id operation))
+                (should-not (process-live-p request)))
+              (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                          'observation-stopped)))
+            (claude-code-ide-tests--remote-worktree-wait-file
+             (expand-file-name "finished" resource))
+            (should-not late-delivery)
+            (with-temp-buffer
+              (insert-file-contents-literally (expand-file-name "effect" root))
+              (should (equal (buffer-string) "x")))
+            (should (equal (logand (file-modes resource) #o777) #o700))
+            (should (zerop
+                     (logand (file-modes (expand-file-name "manifest" resource)) #o077))))
+        (when-let* ((process (claude-code-ide-remote-worktree--operation-request operation))
+                    ((process-live-p process)))
+          (delete-process process))
+        (setq resource
+              (claude-code-ide-remote-worktree--operation-receipt-directory operation))
+        (when (and resource (eq lose-ack 'cancel)
+                   (not (file-exists-p (expand-file-name "finished" resource))))
+          (let ((deadline (+ (float-time) 5)))
+            (while (and (not (file-exists-p (expand-file-name "finished" resource)))
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.02))))
+        (if (or (not resource)
+                (memq (claude-code-ide-remote-worktree--operation-state operation)
+                      '(preparing awaiting-confirmation refused canceled-before-dispatch))
+                (file-exists-p (expand-file-name "finished" resource)))
+            (progn (when resource (delete-directory resource t))
+                   (delete-directory root t))
+          (message "Retained unfinished staging fixture: %s, %s" root resource))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-explicit-view-honors-revoked-host ()
+  "Revocation after request capture prevents the first RPC contact."
+  (require 'claude-code-ide-remote-project)
+  (let ((claude-code-ide-remote-hosts '("approved"))
+        contacted)
+    (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+               (lambda (attempt _label) attempt))
+              ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+               (lambda () t))
+              ((symbol-function 'process-file)
+               (lambda (&rest _) (setq contacted t) 0)))
+      (let ((attempt (claude-code-ide-remote-project-open-target
+                      "approved" "/srv/project" #'ignore)))
+        (setq claude-code-ide-remote-hosts nil)
+        (should
+         (condition-case nil
+             (progn (claude-code-ide-remote-project--health-check attempt) nil)
+           (claude-code-ide-remote-project-abandoned t)))
+        (should-not contacted)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-explicit-view-completes-once ()
+  "A late worker result cannot complete an explicit target twice."
+  (require 'claude-code-ide-remote-project)
+  (let ((claude-code-ide-remote-hosts '("approved"))
+        results)
+    (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+               (lambda (attempt _label) attempt))
+              ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+               (lambda () t)))
+      (let ((attempt (claude-code-ide-remote-project-open-target
+                      "approved" "/srv/project"
+                      (lambda (result) (push (plist-get result :status) results)))))
+        (claude-code-ide-remote-project--finish-failure attempt '(error "Fixture failure"))
+        (claude-code-ide-remote-project--finish-failure attempt '(error "Late failure"))
+        (should (equal results '(failed)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-runner-rejects-unterminated-manifest ()
+  "An incomplete authority file cannot authorize a mutation."
+  (let* ((root (make-temp-file "cci-invalid-manifest-" t))
+         (runner (expand-file-name "runner.sh" root))
+         (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+    (unwind-protect
+        (progn
+          (copy-file claude-code-ide-remote-worktree--runner-file runner)
+          (set-file-modes runner #o700)
+          (with-temp-file (expand-file-name "manifest" root)
+            (insert "protocol=cci-worktree-1\n"
+                    "operation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                    "attempt=" attempt "\nkind=create\nsteps=1"))
+          (with-temp-file (expand-file-name "plan.sh" root)
+            (insert "cci_step 1 backend-create "
+                    (claude-code-ide-zmx--quote root)
+                    " /bin/sh -c 'printf x > effect'\n"))
+          (set-file-modes (expand-file-name "manifest" root) #o600)
+          (set-file-modes (expand-file-name "plan.sh" root) #o600)
+          (should-not (zerop (call-process "/bin/sh" nil nil nil
+                                           runner "run" root attempt)))
+          (should-not (file-exists-p (expand-file-name "effect" root))))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-protected-cleanup-rechecks-inventory ()
+  "Initial, nested, and newly discovered Agents block only affected directories."
+  (dolist (initial '(t nil nested sibling))
+    (let* ((root (file-truename (make-temp-file "cci-protection-" t)))
+           (main (expand-file-name "repo" root))
+           (linked (expand-file-name "linked" root))
+           (agent-directory (pcase initial
+                              ('nested (expand-file-name "nested % café" linked))
+                              ('sibling (concat linked "-other"))
+                              (_ linked)))
+           (runner (expand-file-name "runner.sh" root))
+           (zmx (expand-file-name "zmx" root))
+           (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+           (git (executable-find "git"))
+           agent submitted)
+      (unwind-protect
+          (progn
+            (make-directory main)
+            (let ((default-directory main))
+              (claude-code-ide-tests--git "init")
+              (claude-code-ide-tests--git "config" "user.name" "Worktree Fixture")
+              (claude-code-ide-tests--git "config" "user.email" "fixture@example.invalid")
+              (claude-code-ide-tests--git
+               "-c" "commit.gpgsign=false" "-c" "core.hooksPath=/dev/null"
+               "commit" "--allow-empty" "-m" "fixture")
+              (claude-code-ide-tests--git "worktree" "add" "-b" "feature" linked))
+            (when (memq initial '(nested sibling))
+              (make-directory agent-directory t)
+              (let ((default-directory agent-directory))
+                (claude-code-ide-tests--git "init")))
+            (setq agent (make-process :name "cci-external-fixture" :buffer nil
+                                      :command '("/bin/sleep" "60") :noquery t
+                                      :sentinel #'ignore))
+            (copy-file claude-code-ide-remote-worktree--runner-file runner)
+            (with-temp-file zmx
+              (insert "#!/bin/sh\ninventory="
+                      (claude-code-ide-zmx--quote (expand-file-name "inventory" root))
+                      "\nif [ \"$(cat \"$inventory\")\" = 'no sessions found' ]; then\n"
+                      "printf 'no sessions found in /tmp/fixture-zmx\\n' >&2\n"
+                      "else cat \"$inventory\"; fi\n"))
+            (with-temp-file (expand-file-name "admitted-inventory" root)
+              (insert "no sessions found\n"))
+            (copy-file (expand-file-name "admitted-inventory" root)
+                       (expand-file-name "inventory" root))
+            (with-temp-file (expand-file-name "next-inventory" root)
+              (insert (format
+                       "name=external-fixture\tpid=%d\tclients=0\tcreated=1\tcwd=file://fixture%s\tcmd=claude\ttitle=fixture\n"
+                       (process-id agent)
+                       (mapconcat #'url-hexify-string (split-string agent-directory "/") "/"))))
+            (when initial
+              (dolist (name '("admitted-inventory" "inventory"))
+                (copy-file (expand-file-name "next-inventory" root)
+                           (expand-file-name name root) t)))
+            (with-temp-file (expand-file-name "manifest" root)
+              (insert "protocol=cci-worktree-1\n"
+                      "operation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                      "attempt=" attempt "\nkind=merge\nsteps=2\n"))
+            (with-temp-file (expand-file-name "plan.sh" root)
+              (let* ((default-directory main)
+                     (guard
+                      (mapconcat
+                       #'claude-code-ide-zmx--quote
+                       (list zmx git (expand-file-name ".git" main)
+                             main (claude-code-ide-tests--git "symbolic-ref" "--short" "HEAD")
+                             (claude-code-ide-tests--git "rev-parse" "HEAD")
+                             linked "feature" (claude-code-ide-tests--git "rev-parse" "HEAD"))
+                       " ")))
+                (insert "cci_plan() {\n  cci_protect 1 " guard " || return \"$?\"\n"
+                        "  cci_step 1 backend-merge "
+                        (claude-code-ide-zmx--quote root)
+                        " /bin/sh -c 'printf landed > effect; cp next-inventory inventory' || return \"$?\"\n"
+                        "  cci_protect 2 " guard " || return \"$?\"\n"
+                        "  cci_step 2 named-remove "
+                        (claude-code-ide-zmx--quote main) " /bin/rm -rf "
+                        (claude-code-ide-zmx--quote linked) " || return \"$?\"\n"
+                        "}\ncci_plan\n")))
+            (dolist (file '("runner.sh" "zmx")) (set-file-modes (expand-file-name file root) #o700))
+            (dolist (file '("manifest" "plan.sh" "admitted-inventory" "inventory" "next-inventory"))
+              (set-file-modes (expand-file-name file root) #o600))
+            (setq submitted t)
+            (should (zerop (call-process "/bin/sh" nil nil nil runner "dispatch" root attempt)))
+            (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "finished" root))
+            (if (memq initial '(t nested))
+                (progn
+                  (should-not (file-exists-p (expand-file-name "effect" root)))
+                  (should-not (file-exists-p (expand-file-name "step-1.entered" root))))
+              (with-temp-buffer
+                (insert-file-contents (expand-file-name "effect" root))
+                (should (equal (buffer-string) "landed"))))
+            (should (eq (and (file-directory-p linked) t) (not (eq initial 'sibling))))
+            (should (eq (and (file-exists-p (expand-file-name "step-2.entered" root)) t)
+                        (eq initial 'sibling)))
+            (should (process-live-p agent)))
+        (when (and agent (process-live-p agent)) (delete-process agent))
+        (if (or (not submitted) (file-exists-p (expand-file-name "finished" root)))
+            (delete-directory root t)
+          (message "Retained unfinished protection fixture: %s" root))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-protection-includes-idle-and-unknown-agents ()
+  "Force cannot bypass an external idle Agent or unresolved inventory."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        process-attempts)
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _) (push 'process process-attempts) nil)))
+      (dolist (force '(nil t))
+        (let ((operation
+               (claude-code-ide-remote-worktree--new-operation
+                'remove "fixture" "/srv/repo/feature"
+                (list :backend 'wt :force force))))
+          (setf (claude-code-ide-remote-worktree--operation-steps operation)
+                '((:step-id 1 :kind named-remove
+                            :protected-targets ("/srv/repo/feature")))
+                (claude-code-ide-remote-worktree--operation-snapshot operation)
+                (copy-tree
+                 '(:host "fixture" :repository "/srv/repo/.git"
+                         :agents ((:host "fixture" :name "external"
+                                         :directory "/srv/repo/feature/nested/subdir"
+                                         :worktree "/srv/repo/feature/nested" :repository "/srv/repo/feature/nested/.git"
+                                         :cli-type claude :clients "0" :status idle)))))
+          (should-error (claude-code-ide-remote-worktree--assert-unprotected operation)
+                        :type 'user-error)
+          (setf (plist-get
+                 (claude-code-ide-remote-worktree--operation-snapshot operation) :agents)
+                '((:host "fixture" :name "unresolved" :error "Unresolved directory")))
+          (should-error (claude-code-ide-remote-worktree--assert-unprotected operation)
+                        :type 'user-error)
+          (setf (claude-code-ide-remote-worktree--operation-steps operation)
+                '((:step-id 1 :kind native-prune :protected-targets nil)))
+          (should-error (claude-code-ide-remote-worktree--assert-unprotected operation)
+                        :type 'user-error)
+          (setf (plist-get (claude-code-ide-remote-worktree--operation-snapshot operation) :agents) nil)
+          (should (eq operation (claude-code-ide-remote-worktree--assert-unprotected operation)))))
+      (should-not process-attempts))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-inventory-protects-merge-destination ()
+  "Fresh external discovery protects the destination without a manager Session."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main linked)
+     (let* ((bin (make-temp-file "cci-inventory-ssh-" t))
+            (ssh (expand-file-name "ssh" bin))
+            (zmx (expand-file-name "zmx" bin))
+            (exec-path (cons bin exec-path))
+            (process-environment
+             (cons (concat "PATH=" bin ":" (getenv "PATH")) process-environment))
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-zmx-program "zmx")
+            (claude-code-ide--sessions (make-hash-table :test #'equal))
+            (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+            (operation (claude-code-ide-remote-worktree--new-operation
+                        'merge "fixture" linked '(:backend wt)))
+            ready)
+       (unwind-protect
+           (progn
+             (make-directory (expand-file-name "nested" main))
+             (let ((default-directory (expand-file-name "nested" main)))
+               (claude-code-ide-tests--git "init")
+               (claude-code-ide-tests--git "config" "user.name" "Worktree Fixture")
+               (claude-code-ide-tests--git "config" "user.email" "fixture@example.invalid")
+               (claude-code-ide-tests--git
+                "-c" "commit.gpgsign=false" "-c" "core.hooksPath=/dev/null"
+                "commit" "--allow-empty" "-m" "nested fixture"))
+             (with-temp-file ssh
+               (insert "#!/bin/sh\nfor command do :; done\nexec /bin/sh -c \"$command\"\n"))
+             (with-temp-file zmx
+               (insert "#!/bin/sh\nprintf '%s\\n' "
+                       (claude-code-ide-zmx--quote
+                        (format "name=external\tpid=%d\tclients=0\tcreated=1\tstart_dir=%s\tcmd=claude\ttitle=fixture"
+                                (emacs-pid) (expand-file-name "nested" main)))
+                       "\n"))
+             (set-file-modes ssh #o700)
+             (set-file-modes zmx #o700)
+             (claude-code-ide-remote-worktree--prepare
+              operation
+              (lambda (_snapshot)
+                (claude-code-ide-remote-worktree--inventory
+                 operation (lambda (_operation) (setq ready t)))))
+             (let ((default-directory "/")
+                   (deadline (+ (float-time) 5)))
+               (while (and (not ready) (< (float-time) deadline)
+                           (eq (claude-code-ide-remote-worktree--operation-state operation)
+                               'preparing))
+                 (accept-process-output nil 0.02)))
+             (should ready)
+             (setf (claude-code-ide-remote-worktree--operation-steps operation)
+                   (list (list :step-id 1 :kind 'backend-merge
+                               :protected-targets
+                               (mapcar #'directory-file-name (list linked main)))))
+             (should-error (claude-code-ide-remote-worktree--assert-unprotected operation)
+                           :type 'user-error)
+             ;; A known Agent in a different Worktree is not a source-removal blocker.
+             (setf (plist-get (car (claude-code-ide-remote-worktree--operation-steps operation))
+                              :protected-targets)
+                   (list (directory-file-name linked)))
+             (claude-code-ide-remote-worktree--assert-unprotected operation)
+             (let ((default-directory main))
+               (claude-code-ide-tests--git "worktree" "remove" linked))
+             (should-not (file-directory-p linked))
+             (should (file-directory-p main)))
+         (when-let* ((request (claude-code-ide-remote-worktree--operation-request operation)))
+           (when (process-live-p request) (delete-process request)))
+         (delete-directory bin t))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-confirmation-preserves-admission ()
+  "Decline or revoked host approval prevents the continuation, including force."
+  (let ((root (make-temp-file "cci-confirmation-" t))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal)))
+    (unwind-protect
+        (dolist (decision '(declined revoked approved))
+          (let* ((claude-code-ide-remote-hosts '("fixture"))
+                 (effect (expand-file-name (symbol-name decision) root))
+                 (operation (claude-code-ide-remote-worktree--new-operation
+                             'remove "fixture" "/srv/repo/feature"
+                             '(:backend wt :force t :force-delete t)))
+                 (answer (lambda (&rest _)
+                           (when (eq decision 'revoked)
+                             (setq claude-code-ide-remote-hosts nil))
+                           (not (eq decision 'declined)))))
+            (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+                  '(:host "fixture" :repository "/srv/repo/.git" :agents nil
+                          :settings (:backend wt))
+                  (claude-code-ide-remote-worktree--operation-steps operation)
+                  '((:step-id 1 :kind named-remove :cwd "/srv/repo"
+                              :program "/usr/bin/wt" :argv ("remove" "--foreground" "feature")
+                              :protected-targets ("/srv/repo/feature"))))
+            (cl-letf (((symbol-function 'y-or-n-p) answer)
+                      ((symbol-function 'yes-or-no-p) answer))
+              (claude-code-ide-remote-worktree--confirm
+               operation
+               (lambda (_operation)
+                 (with-temp-file effect (insert "admitted\n"))))
+              (let ((deadline (+ (float-time) 5)))
+                (while (and (< (float-time) deadline)
+                            (not (file-exists-p effect))
+                            (not (eq (claude-code-ide-remote-worktree--operation-state
+                                      operation) 'refused)))
+                  (accept-process-output nil 0.02)))
+              (if (eq decision 'approved)
+                  (with-temp-buffer
+                    (insert-file-contents effect)
+                    (should (equal (buffer-string) "admitted\n")))
+                (should-not (file-exists-p effect))))))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-protected-plan-requires-targets ()
+  "No protected command can omit its final admission target set."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal)))
+    (dolist (entry '((merge . backend-merge) (remove . named-remove)
+                     (move . native-move) (prune . native-prune)
+                     (push . backend-push)))
+      (let ((operation (claude-code-ide-remote-worktree--new-operation
+                        (car entry) "fixture" "/srv/repo/feature" nil)))
+        (setf (claude-code-ide-remote-worktree--operation-steps operation)
+              (list (list :step-id 1 :kind (cdr entry) :cwd "/srv/repo/feature"
+                          :program "/bin/true" :argv nil :protected-targets nil)))
+        (should-error (claude-code-ide-remote-worktree--render-plan operation)
+                      :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-unresolved-discovery-blocks-protection ()
+  "Incomplete metadata and unknown wrappers cannot become harmless outside Agents."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal)))
+    (dolist (case
+             '(("claude" (:kind non-git))
+               ("claude" (:kind git :worktree-path "/srv/other"))
+               ("claude" (:kind git :common-dir "/srv/other/.git"))
+               ("claude" (:kind error))
+               ("unknown-wrapper" (:kind git :worktree-path "/srv/other"
+                                         :common-dir "/srv/other/.git"))))
+      (let* ((operation (claude-code-ide-remote-worktree--new-operation
+                         'remove "fixture" "/srv/repo/feature" nil))
+             (agent
+              (claude-code-ide-remote-worktree--resolve-agent
+               "fixture"
+               (list :name "external" :start_dir "/srv/other" :cmd (car case)
+                     :pid "123" :created "1" :clients "0")
+               (cadr case))))
+        (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+              (list :agents (list agent))
+              (claude-code-ide-remote-worktree--operation-steps operation)
+              '((:step-id 1 :kind named-remove :protected-targets ("/srv/repo/feature"))))
+        (should-error (claude-code-ide-remote-worktree--assert-unprotected operation)
+                      :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-guard-bounds-target-identity-reads ()
+  "The first Git identity read belongs to the guard's total deadline."
+  (let* ((root (make-temp-file "cci-guard-deadline-" t))
+         (runner (expand-file-name "runner.sh" root))
+         (git (expand-file-name "git" root))
+         (timer (expand-file-name "sleep" root))
+         (repository (expand-file-name "common" root))
+         (worktree (expand-file-name "worktree" root))
+         (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+         (process-environment
+          (cons (concat "PATH=" root ":" (getenv "PATH")) process-environment)))
+    (unwind-protect
+        (progn
+          (make-directory repository)
+          (make-directory worktree)
+          (copy-file claude-code-ide-remote-worktree--runner-file runner)
+          (with-temp-file git (insert "#!/bin/sh\nexec /bin/sleep 4\n"))
+          ;; Scale only the watchdog clock, not the blocked Git read.
+          (with-temp-file timer (insert "#!/bin/sh\nexec /bin/sleep 0.1\n"))
+          (with-temp-file (expand-file-name "admitted-inventory" root)
+            (insert "no sessions found\n"))
+          (with-temp-file (expand-file-name "manifest" root)
+            (insert "protocol=cci-worktree-1\n"
+                    "operation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                    "attempt=" attempt "\nkind=remove\nsteps=1\n"))
+          (with-temp-file (expand-file-name "plan.sh" root)
+            (insert "cci_protect 1 /bin/false "
+                    (mapconcat #'claude-code-ide-zmx--quote
+                               (list git repository worktree "feature" (make-string 40 ?a)) " ")
+                    " && cci_step 1 named-remove "
+                    (claude-code-ide-zmx--quote root)
+                    " /usr/bin/touch effect\n"))
+          (dolist (file '("runner.sh" "git" "sleep"))
+            (set-file-modes (expand-file-name file root) #o700))
+          (dolist (file '("manifest" "plan.sh" "admitted-inventory"))
+            (set-file-modes (expand-file-name file root) #o600))
+          (let ((start (float-time)))
+            (should (zerop (call-process "/bin/sh" nil nil nil runner "run" root attempt)))
+            (should (< (- (float-time) start) 2)))
+          (should-not (file-exists-p (expand-file-name "step-1.entered" root)))
+          (should-not (file-exists-p (expand-file-name "effect" root))))
+      (delete-directory root t))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-prerequisites-never-fall-back ()
+  "Missing remote tools, view support, or hook trust cannot start a local substitute."
+  (require 'claude-code-ide-remote-project)
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (load-path (cons (expand-file-name
+                          "../magit-worktrunk"
+                          (file-name-directory (locate-library "claude-code-ide-zmx")))
+                         load-path))
+        attempts)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) (push 'local-tool attempts) nil))
+              ((symbol-function 'process-file)
+               (lambda (&rest _) (push 'process attempts) 1))
+              ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+               (lambda () nil)))
+      (dolist (case '(missing-tool approval-bypass missing-view))
+        (let ((operation
+               (claude-code-ide-remote-worktree--new-operation
+                (if (eq case 'missing-view) 'create 'remove)
+                "fixture" "/srv/repo/feature"
+                (if (eq case 'missing-view)
+                    '(:backend wt :name "new" :create-only t)
+                  '(:backend wt)))))
+          (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+                (list :settings '(:backend wt)
+                      :tools (list '(git . "/remote/git") '(zmx . "/remote/zmx")
+                                   (cons 'wt (unless (eq case 'missing-tool) "/remote/wt"))))
+                (claude-code-ide-remote-worktree--operation-steps operation)
+                (list (list :step-id 1
+                            :kind (if (eq case 'missing-view) 'backend-create 'named-remove)
+                            :cwd "/srv/repo" :program "/remote/wt"
+                            :argv (if (eq case 'approval-bypass)
+                                      '("remove" "--yes" "feature")
+                                    '("remove" "feature"))
+                            :protected-targets
+                            (unless (eq case 'missing-view) '("/srv/repo/feature")))))
+          (should-error (claude-code-ide-remote-worktree--prerequisites operation)
+                        :type 'user-error)))
+      (should-not attempts))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-outcomes-require-authority ()
+  "Five outcomes preserve completed work and never authorize an entered failure."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'create "fixture" "/srv/repo" '(:name "topic")))
+         (attempt (claude-code-ide-remote-worktree--operation-attempt-id operation)))
+    (setf (claude-code-ide-remote-worktree--operation-steps operation)
+          '((:step-id 1 :kind backend-setup
+                      :postconditions ((:kind directory :path "/fixture/first" :exists t)))
+            (:step-id 2 :kind backend-create :requires (1)
+                      :preconditions ((:kind directory :path "/fixture/ready" :exists t))
+                      :postconditions ((:kind directory :path "/fixture/second" :exists t))))
+          (claude-code-ide-remote-worktree--operation-receipt-directory operation) "/fixture/receipts")
+    (cl-labels
+        ((frame (name text)
+           (concat "file=" name "\t"
+                   (base64-encode-string (encode-coding-string text 'utf-8-unix) t) "\n"))
+         (packet (statuses terminal live)
+           (concat
+            "cci-receipts-1\ngeneration=stable\nworker-live=" live "\n"
+            (frame "manifest"
+                   (format "protocol=cci-worktree-1\noperation=%s\nattempt=%s\nkind=%s\nsteps=2\n"
+                           (claude-code-ide-remote-worktree--operation-id operation) attempt
+                           (claude-code-ide-remote-worktree--operation-kind operation)))
+            (frame "worker-started" (format "attempt=%s\npid=123\nstart-signature=fixture\n" attempt))
+            (cl-loop for status in statuses for number from 1
+                     concat (concat
+                             (frame (format "step-%d.entered" number)
+                                    (format "attempt=%s\nstep=%d\nstate=entered\n" attempt number))
+                             (when (integerp status)
+                               (frame (format "step-%d.exit" number)
+                                      (format "attempt=%s\nstep=%d\nstatus=%d\n" attempt number status)))))
+            (when terminal
+              (frame "finished" (format "attempt=%s\nentered=%d\nstate=finished\n"
+                                        attempt (length statuses))))
+            ;; Backend output cannot supply missing terminal authority.
+            "diagnostic=worker.log\t"
+            (base64-encode-string (format "attempt=%s\nentered=2\nstate=finished\n" attempt) t)
+            "\n")))
+      (dolist (case '((completed (0 0) t "0" ((1 . verified) (2 . verified)) nil)
+                      (still-running (0) nil "1" ((1 . verified)) nil)
+                      (still-running (pending) nil "1" nil nil)
+                      (unknown (pending) nil "unknown" nil nil)
+                      (confirmed-unfinished (0) t "0" ((1 . verified)) (2))
+                      (partial (0 1) t "0" ((1 . verified) (2 . unknown)) nil)
+                      (partial (1) t "0" ((1 . verified)) nil)
+                      (unknown (1) t "0" nil nil)
+                      (unknown (0 0) nil "0" ((1 . verified) (2 . verified)) nil)
+                      (partial (0 1) t "0" ((1 . verified)) nil merge)
+                      (partial (0 1) t "0" ((1 . verified)) nil push)))
+        (pcase-let* ((`(,expected ,statuses ,terminal ,live ,checks ,retryable . ,kind) case)
+                     (fresh (list :paths
+                                  (list '("/fixture/ready" . directory)
+                                        (cons "/fixture/first"
+                                              (if (eq (alist-get 1 checks) 'verified) 'directory 'missing))
+                                        (cons "/fixture/second"
+                                              (if (eq (alist-get 2 checks) 'verified) 'directory 'missing))))))
+          (setf (claude-code-ide-remote-worktree--operation-kind operation) (or (car kind) 'create)
+                (plist-get (cadr (claude-code-ide-remote-worktree--operation-steps operation)) :kind)
+                (pcase (car kind) ('merge 'backend-merge) ('push 'backend-push) (_ 'backend-create)))
+          (dolist (canceled '(nil t))
+            (setf (claude-code-ide-remote-worktree--operation-state operation) 'observing)
+            (when canceled
+              (claude-code-ide-remote-worktree-cancel-observation
+               (claude-code-ide-remote-worktree--operation-id operation)))
+            (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--runner-request)
+                       (lambda (_operation action callback &rest _)
+                         (should (equal action "read"))
+                         (funcall callback (packet statuses terminal live))))
+                      ((symbol-function 'claude-code-ide-remote-worktree--read-state)
+                       (lambda (_operation callback) (funcall callback (copy-tree fresh))))
+                      ((symbol-function 'claude-code-ide-remote-worktree--dispatch)
+                       (lambda (&rest _) (ert-fail "Check outcome dispatched a mutation")))
+                      ((symbol-function 'claude-code-ide-remote-worktree--release)
+                       (lambda (&rest _) (ert-fail "Check outcome released receipts"))))
+              (claude-code-ide-remote-worktree-check-outcome
+               (claude-code-ide-remote-worktree--operation-id operation)))
+            (should (eq (claude-code-ide-remote-worktree--operation-state operation) expected))
+            (should (equal
+                     (plist-get (claude-code-ide-remote-worktree--operation-results operation) :retryable)
+                     retryable))
+            (cl-loop for status in statuses
+                     for step in (plist-get (claude-code-ide-remote-worktree--operation-results operation) :steps)
+                     do (cond
+                         ((eq status 'pending)
+                          (should (eq (plist-get step :outcome)
+                                      (if (equal live "1") 'pending 'unknown))))
+                         ((/= status 0)
+                          (should (eq (plist-get step :outcome) 'failed))))))))
+      (let ((saved-steps (claude-code-ide-remote-worktree--operation-steps operation)))
+        (unwind-protect
+            (progn
+              (setf (claude-code-ide-remote-worktree--operation-kind operation) 'create
+                    (claude-code-ide-remote-worktree--operation-state operation) 'observing
+                    (claude-code-ide-remote-worktree--operation-steps operation)
+                    (list (car saved-steps)
+                          '(:step-id 2 :kind bootstrap :requires (1)
+                                     :postconditions ((:kind bootstrap)))))
+              (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--runner-request)
+                         (lambda (_operation action callback &rest _)
+                           (should (equal action "read"))
+                           (funcall callback (packet '(0 0) t "0"))))
+                        ((symbol-function 'claude-code-ide-remote-worktree--read-state)
+                         (lambda (_operation callback)
+                           (funcall callback '(:paths (("/fixture/first" . directory))
+                                                      :bootstrap-verified nil))))
+                        ((symbol-function 'claude-code-ide-zmx-discover-remote)
+                         (lambda (_host callback &rest _)
+                           (funcall callback '(:sessions nil)))))
+                (claude-code-ide-remote-worktree-check-outcome
+                 (claude-code-ide-remote-worktree--operation-id operation)))
+              (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'partial))
+              (should-not (plist-get (claude-code-ide-remote-worktree--operation-results operation) :retryable)))
+          (setf (claude-code-ide-remote-worktree--operation-steps operation) saved-steps)))
+      (dolist (ending '(cancel disconnect completed changed))
+        (let ((reads 0) settled)
+          (setf (claude-code-ide-remote-worktree--operation-kind operation) 'create
+                (claude-code-ide-remote-worktree--operation-state operation) 'observing)
+          (unwind-protect
+              (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--runner-request)
+                         (lambda (_operation action callback &rest _)
+                           (should (equal action "read"))
+                           (cl-incf reads)
+                           (if (= reads 1)
+                               (funcall callback
+                                        (if (eq ending 'changed)
+                                            (string-replace
+                                             (frame "step-2.entered"
+                                                    (format "attempt=%s\nstep=2\nstate=entered\n" attempt))
+                                             ""
+                                             (string-replace "generation=stable" "generation=changed"
+                                                             (packet '(0 0) t "0")))
+                                          (packet '(0) nil "1")))
+                             (if (eq ending 'disconnect)
+                                 (error "Fixture read disconnected")
+                               (funcall callback (packet '(0 0) t "0"))))))
+                        ((symbol-function 'claude-code-ide-remote-worktree--read-state)
+                         (lambda (_operation callback)
+                           (funcall callback '(:paths (("/fixture/first" . directory)
+                                                       ("/fixture/second" . directory)))))))
+                (claude-code-ide-remote-worktree--observe
+                 operation (lambda (checked) (setq settled (claude-code-ide-remote-worktree--operation-state checked))))
+                (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                            (if (eq ending 'changed) 'unknown 'still-running)))
+                (should-not (plist-get (claude-code-ide-remote-worktree--operation-results operation) :retryable))
+                (when (eq ending 'cancel)
+                  (claude-code-ide-remote-worktree-cancel-observation
+                   (claude-code-ide-remote-worktree--operation-id operation)))
+                (let ((deadline (+ (float-time) 2.2)))
+                  (while (< (float-time) deadline) (accept-process-output nil 0.02)))
+                (should (= reads (if (eq ending 'cancel) 1 2)))
+                (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                            (pcase ending ('cancel 'observation-stopped) ('disconnect 'unknown) (_ 'completed))))
+                (should (eq settled (and (memq ending '(completed changed)) 'completed)))
+                (should-not (claude-code-ide-remote-worktree--operation-timer operation)))
+            (claude-code-ide-remote-worktree-cancel-observation
+             (claude-code-ide-remote-worktree--operation-id operation)))))
+      (let ((wire (packet '(0 0) t "0")))
+        (should-error
+         (claude-code-ide-remote-worktree--decode-receipts
+          operation (concat wire (frame "finished" (format "attempt=%s\nentered=2\nstate=finished\n" attempt))))
+         :type 'user-error)
+        (should-error
+         (claude-code-ide-remote-worktree--decode-receipts
+          operation (replace-regexp-in-string
+                     (regexp-quote (frame "step-1.exit" (format "attempt=%s\nstep=1\nstatus=0\n" attempt)))
+                     (frame "step-1.exit" (format "attempt=%s\nstep=1\nstatus=0\nstatus=0\n" attempt))
+                     wire t t))
+         :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-check-outcome-is-read-only ()
+  "Fresh Git facts need terminal authority, and checking cannot replay creation."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (let* ((bin (make-temp-file "cci-outcome-ssh-" t))
+            (ssh (expand-file-name "ssh" bin))
+            (creator (expand-file-name "create" bin))
+            (effect (expand-file-name "effect" bin))
+            (destination (expand-file-name "outcome" (file-name-directory (directory-file-name main))))
+            (exec-path (cons bin exec-path))
+            (process-environment (cons (concat "PATH=" bin ":" (getenv "PATH")) process-environment))
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+            (operation (claude-code-ide-remote-worktree--new-operation
+                        'create "fixture" main '(:name "outcome" :create-only t)))
+            resource acknowledged terminal terminal-text)
+       (unwind-protect
+           (progn
+             (with-temp-file ssh
+               (insert "#!/bin/sh\nfor command do :; done\nexec /bin/sh -c \"$command\"\n"))
+             (with-temp-file creator
+               (insert "#!/bin/sh\nprintf x >> \"$1\"\nshift\nexec \"$@\"\n"))
+             (set-file-modes ssh #o700)
+             (set-file-modes creator #o700)
+             (claude-code-ide-remote-worktree--prepare
+              operation
+              (lambda (snapshot)
+                (setf (claude-code-ide-remote-worktree--operation-steps operation)
+                      (list
+                       (list :step-id 1 :kind 'backend-create :cwd main :program creator
+                             :argv (list effect (alist-get 'git (plist-get snapshot :tools))
+                                         "worktree" "add" "-b" "outcome" destination)
+                             :postconditions '((:kind creation)))
+                       (list :step-id 2 :kind 'record-result :cwd destination :program :runner
+                             :argv '("created" :resource :attempt) :requires '(1)
+                             :postconditions '((:kind creation))))
+                      (claude-code-ide-remote-worktree--operation-approval operation)
+                      (claude-code-ide-remote-worktree--approval-signature operation))
+                (claude-code-ide-remote-worktree--transition operation 'awaiting-confirmation)
+                (claude-code-ide-remote-worktree--stage
+                 operation
+                 (lambda (staged)
+                   (setq resource (claude-code-ide-remote-worktree--operation-receipt-directory staged))
+                   (claude-code-ide-remote-worktree--dispatch
+                    staged (lambda (_) (setq acknowledged t)))))))
+             (let ((deadline (+ (float-time) 10)))
+               (while (and (not acknowledged) (< (float-time) deadline))
+                 (accept-process-output nil 0.02)))
+             (should acknowledged)
+             (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "finished" resource))
+             (setq terminal t
+                   terminal-text (with-temp-buffer
+                                   (insert-file-contents-literally (expand-file-name "finished" resource))
+                                   (buffer-string)))
+             (claude-code-ide-remote-worktree--local-result operation :view '(:status failed))
+             ;; An outcome read must not execute code found in the remote resource.
+             (with-temp-file (expand-file-name "runner.sh" resource)
+               (insert "#!/bin/sh\nprintf y >> " (claude-code-ide-zmx--quote effect) "\n"))
+             (dolist (missing '(nil finished creation-result))
+               (unless (file-exists-p (expand-file-name "finished" resource))
+                 (with-temp-file (expand-file-name "finished" resource) (insert terminal-text))
+                 (set-file-modes (expand-file-name "finished" resource) #o600))
+               (when (eq missing 'finished)
+                 (with-temp-file (expand-file-name "worker.log" resource)
+                   (insert "attempt=" (claude-code-ide-remote-worktree--operation-attempt-id operation)
+                           "\nentered=2\nstate=finished\n"))
+                 )
+               (when missing (delete-file (expand-file-name (symbol-name missing) resource)))
+               (let ((files (directory-files resource nil nil t)))
+                 (claude-code-ide-remote-worktree-check-outcome
+                  (claude-code-ide-remote-worktree--operation-id operation))
+                 (let ((deadline (+ (float-time) 10)))
+                   (while (and (eq (claude-code-ide-remote-worktree--operation-state operation) 'checking)
+                               (< (float-time) deadline))
+                     (accept-process-output nil 0.02)))
+                 (ert-info ((format "Outcome error: %S"
+                                    (claude-code-ide-remote-worktree--operation-error operation)))
+                   (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                               (if missing 'unknown 'completed))))
+                 (should-not (claude-code-ide-remote-worktree--operation-error operation))
+                 (unless missing
+                   (require 'claude-code-ide-remote-project)
+                   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+                         view-attempt)
+                     (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                                (lambda () t))
+                               ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                                (lambda (attempt _label) (setq view-attempt attempt))))
+                       (claude-code-ide-remote-worktree-recover-view
+                        (claude-code-ide-remote-worktree--operation-id operation))
+                       (should view-attempt)
+                       (claude-code-ide-remote-project--finish-failure
+                        view-attempt '(error "Fixture RPC unavailable")))
+                     (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+                     (should (zerop (hash-table-count claude-code-ide--sessions)))))
+                 (should (equal files (directory-files resource nil nil t)))
+                 (should (eq (plist-get
+                              (plist-get (claude-code-ide-remote-worktree--operation-results operation) :view)
+                              :status)
+                             'failed))
+                 (with-temp-buffer
+                   (insert-file-contents-literally effect)
+                   (should (equal (buffer-string) "x"))))))
+         (when-let* ((request (claude-code-ide-remote-worktree--operation-request operation))
+                     ((process-live-p request)))
+           (delete-process request))
+         (if (or terminal (not resource))
+             (progn (when resource (delete-directory resource t))
+                    (delete-directory bin t))
+           (message "Retained unfinished outcome fixture: %s" resource)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-publication-needs-advertised-refs ()
+  "Matching local refs cannot replace the selected destination's fresh advertisement."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (let* ((bin (make-temp-file "cci-publication-read-" t))
+            (ssh (expand-file-name "ssh" bin))
+            (destination (expand-file-name "destination.git" bin))
+            (exec-path (cons bin exec-path))
+            (process-environment (cons (concat "PATH=" bin ":" (getenv "PATH")) process-environment))
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+            (operation (claude-code-ide-remote-worktree--new-operation 'push "fixture" main nil))
+            before after ancestor publication result)
+       (unwind-protect
+           (progn
+             (with-temp-file ssh
+               (insert "#!/bin/sh\nfor command do :; done\nexec /bin/sh -c \"$command\"\n"))
+             (set-file-modes ssh #o700)
+             (let ((default-directory main))
+               (setq before (claude-code-ide-tests--git "rev-parse" "HEAD"))
+               (claude-code-ide-tests--git "init" "--bare" destination)
+               (claude-code-ide-tests--git "push" destination "HEAD:refs/heads/main")
+               (claude-code-ide-tests--git "tag" "outcome-fixture")
+               (claude-code-ide-tests--git "commit" "--allow-empty" "-m" "local-only")
+               (setq after (claude-code-ide-tests--git "rev-parse" "HEAD")))
+             (setq ancestor (list :kind 'ancestor :older before :newer after)
+                   publication (list :kind 'publication :destination destination
+                                     :refs (list (cons "refs/heads/main" after))))
+             (claude-code-ide-remote-worktree--prepare
+              operation
+              (lambda (snapshot)
+                (setf (claude-code-ide-remote-worktree--operation-steps operation)
+                      (list (list :step-id 1 :kind 'native-push :preconditions (list ancestor)
+                                  :postconditions (list publication)))
+                      (claude-code-ide-remote-worktree--operation-state operation) 'checking)
+                (claude-code-ide-remote-worktree--read-extra-conditions
+                 operation nil
+                 (list :repository (plist-get snapshot :repository)
+                       :tag-absent (claude-code-ide-remote-worktree--condition-result
+                                    '(:kind ref :name "refs/tags/outcome-fixture" :oid nil)
+                                    snapshot nil))
+                 (lambda (fresh) (setq result fresh)))))
+             (let ((deadline (+ (float-time) 10)))
+               (while (and (not result) (< (float-time) deadline))
+                 (accept-process-output nil 0.02)))
+             (should (eq (cdr (assoc ancestor (plist-get result :extra))) t))
+             (should (assoc publication (plist-get result :extra)))
+             (should-not (plist-get result :tag-absent))
+             (should-not (cdr (assoc publication (plist-get result :extra))))
+             (rename-file destination (concat destination ".saved"))
+             (setq result nil)
+             (claude-code-ide-remote-worktree--read-extra-conditions
+              operation nil nil (lambda (fresh) (setq result fresh)))
+             (let ((deadline (+ (float-time) 10)))
+               (while (and (eq (claude-code-ide-remote-worktree--operation-state operation) 'checking)
+                           (< (float-time) deadline))
+                 (accept-process-output nil 0.02)))
+             (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'unknown))
+             (should-not result))
+         (when-let* ((request (claude-code-ide-remote-worktree--operation-request operation))
+                     ((process-live-p request)))
+           (delete-process request))
+         (delete-directory bin t))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-reader-handles-running-and-partial-attempts ()
+  "The real reader accepts absent later receipts without permitting replay."
+  (let* ((root (make-temp-file "cci-reader-states-" t))
+         (runner (expand-file-name "runner.sh" root))
+         (effect (expand-file-name "effect" root))
+         (later (expand-file-name "later" root))
+         (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+         (id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+         (operation (claude-code-ide-remote-worktree--make-operation
+                     :id id :attempt-id attempt :kind 'remove
+                     :steps (list
+                             (list :step-id 1 :kind 'backend-setup
+                                   :postconditions (list (list :kind 'directory :path effect :exists t)))
+                             '(:step-id 2 :kind backend-create :requires (1))
+                             (list :step-id 3 :kind 'record-result :requires '(1)
+                                   :preconditions (list (list :kind 'directory :path effect :exists t))))))
+         submitted)
+    (unwind-protect
+        (progn
+          (copy-file claude-code-ide-remote-worktree--runner-file runner)
+          (with-temp-file (expand-file-name "manifest" root)
+            (insert "protocol=cci-worktree-1\noperation=" id "\nattempt=" attempt
+                    "\nkind=remove\nsteps=3\n"))
+          (with-temp-file (expand-file-name "plan.sh" root)
+            (insert "cci_plan() {\ncci_step 1 backend-setup "
+                    (claude-code-ide-zmx--quote root) " /bin/mkdir "
+                    (claude-code-ide-zmx--quote effect) " || return \"$?\"\n"
+                    "cci_step 2 backend-create " (claude-code-ide-zmx--quote root)
+                    " /bin/sh -c 'sleep 2; echo fixture-backend-failure >&2; exit 7' || return \"$?\"\n"
+                    "cci_step 3 record-result " (claude-code-ide-zmx--quote root)
+                    " /bin/mkdir " (claude-code-ide-zmx--quote later)
+                    "\n}\ncci_plan\n"))
+          (set-file-modes runner #o700)
+          (dolist (name '("manifest" "plan.sh"))
+            (set-file-modes (expand-file-name name root) #o600))
+          (setq submitted t)
+          (should (zerop (call-process "/bin/sh" nil nil nil runner "dispatch" root attempt)))
+          (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "step-2.entered" root))
+          (cl-labels
+              ((read-evidence ()
+                 (with-temp-buffer
+                   (should (zerop (call-process "/bin/sh" nil t nil
+                                                runner "read" root attempt id "3")))
+                   (claude-code-ide-remote-worktree--decode-receipts operation (buffer-string)))))
+            (let* ((evidence (read-evidence))
+                   (result (claude-code-ide-remote-worktree--classify operation evidence nil)))
+              (should-not (plist-get evidence :terminal))
+              (should (eq (plist-get result :outcome) 'still-running))
+              (should-not (plist-get result :retryable)))
+            (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "finished" root))
+            (let* ((evidence (read-evidence))
+                   (fresh (list :paths (list (cons effect (and (file-directory-p effect) 'directory))))))
+              (setq fresh (claude-code-ide-remote-worktree--evaluate-conditions operation evidence fresh))
+              (should (equal (cdr (assoc "step-2.stderr" (plist-get evidence :diagnostics)))
+                             "fixture-backend-failure\n"))
+              (let ((result (claude-code-ide-remote-worktree--classify operation evidence fresh)))
+                (should (eq (plist-get result :outcome) 'partial))
+                (should (equal (plist-get result :verified) '(1)))
+                (should-not (plist-get result :retryable)))
+              (should (equal (mapcar (lambda (step) (plist-get step :exit-code))
+                                     (plist-get evidence :steps))
+                             '(0 7 nil)))))
+          (should-not (file-exists-p later)))
+      (when (and submitted (not (file-exists-p (expand-file-name "finished" root))))
+        (let ((deadline (+ (float-time) 5)))
+          (while (and (not (file-exists-p (expand-file-name "finished" root)))
+                      (< (float-time) deadline))
+            (accept-process-output nil 0.02))))
+      (if (or (not submitted) (file-exists-p (expand-file-name "finished" root)))
+          (delete-directory root t)
+        (message "Retained unfinished reader fixture: %s" root)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-interactive-progress-and-refusal ()
+  "Manager requests expose progress and errors without replacing another result."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (claude-code-ide-remote-worktree--results-buffer nil)
+        (origin (generate-new-buffer " *cci-progress-origin*"))
+        prepared messages)
+    (save-window-excursion
+      (unwind-protect
+          (let ((noninteractive nil))
+            (switch-to-buffer origin)
+            (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--prepare)
+                       (lambda (operation _callback) (setq prepared operation)))
+                      ((symbol-function 'read-string) (lambda (&rest _) "topic"))
+                      ((symbol-function 'message)
+                       (lambda (format-string &rest args)
+                         (let ((text (apply #'format format-string args)))
+                           (push text messages)
+                           text))))
+              (let* ((window (selected-window))
+                     (first (claude-code-ide-manager--request-remote-create "fixture" "/srv/first" t)))
+                (let ((deadline (+ (float-time) 2)))
+                  (while (and (not prepared) (< (float-time) deadline))
+                    (accept-process-output nil 0.01)))
+                (should prepared)
+                (should (buffer-live-p claude-code-ide-remote-worktree--results-buffer))
+                (should (get-buffer-window claude-code-ide-remote-worktree--results-buffer t))
+                (should (eq window (selected-window)))
+                (with-current-buffer claude-code-ide-remote-worktree--results-buffer
+                  (should (equal claude-code-ide-remote-worktree--selected-operation first))
+                  (should (string-match-p "/srv/first" (buffer-string))))
+                (claude-code-ide-remote-worktree--fail prepared "Fixture refusal")
+                (with-current-buffer claude-code-ide-remote-worktree--results-buffer
+                  (should (string-match-p "Host fixture: Fixture refusal" (buffer-string))))
+                (setq prepared nil)
+                (let ((second (claude-code-ide-manager--request-remote-create "fixture" "/srv/second" t)))
+                  (let ((deadline (+ (float-time) 2)))
+                    (while (and (not prepared) (< (float-time) deadline))
+                      (accept-process-output nil 0.01)))
+                  (should prepared)
+                  (setq messages nil)
+                  (claude-code-ide-remote-worktree--fail prepared "Second refusal")
+                  (should (seq-some
+                           (lambda (text)
+                             (and (string-match-p "fixture" text)
+                                  (string-match-p "/srv/second" text)
+                                  (string-match-p (regexp-quote second) text)))
+                           messages))
+                  (with-current-buffer claude-code-ide-remote-worktree--results-buffer
+                    (should (equal claude-code-ide-remote-worktree--selected-operation first)))
+                  (should (eq window (selected-window)))))))
+        (maphash (lambda (id _operation)
+                   (claude-code-ide-remote-worktree-cancel-observation id))
+                 claude-code-ide-remote-worktree--operations)
+        (when (buffer-live-p claude-code-ide-remote-worktree--results-buffer)
+          (kill-buffer claude-code-ide-remote-worktree--results-buffer))
+        (kill-buffer origin)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-results-preserve-selection-without-io ()
+  "Old local results cannot replace another selection or reopen a closed view."
+  (let* ((claude-code-ide-remote-hosts '("alpha" "beta"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (claude-code-ide-remote-worktree--results-buffer nil)
+         (alpha (claude-code-ide-remote-worktree--new-operation 'open "alpha" "/srv/alpha" nil))
+         (beta (claude-code-ide-remote-worktree--new-operation 'open "beta" "/srv/beta" nil))
+         (origin (current-buffer)))
+    (save-window-excursion
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
+                     (lambda (&rest _) (ert-fail "Results display started remote I/O")))
+                    ((symbol-function 'claude-code-ide-zmx-discover-remote)
+                     (lambda (&rest _) (ert-fail "Results display started discovery"))))
+            (claude-code-ide-remote-worktree-show (claude-code-ide-remote-worktree--operation-id alpha))
+            (claude-code-ide-remote-worktree-show (claude-code-ide-remote-worktree--operation-id beta))
+            (with-current-buffer claude-code-ide-remote-worktree--results-buffer
+              (let ((text (buffer-string)))
+                (should (string-match-p (regexp-quote "/srv/beta") text))
+                (claude-code-ide-remote-worktree--local-result alpha :view '(:status failed))
+                (should (equal text (buffer-string)))))
+            (with-current-buffer claude-code-ide-remote-worktree--results-buffer
+              (call-interactively (key-binding (kbd "q"))))
+            (should (eq (claude-code-ide-remote-worktree--operation-state beta) 'canceled-before-dispatch))
+            (should (eq (claude-code-ide-remote-worktree--operation-state alpha) 'preparing))
+            (claude-code-ide-remote-worktree-show (claude-code-ide-remote-worktree--operation-id alpha))
+            (kill-buffer claude-code-ide-remote-worktree--results-buffer)
+            (should (eq (claude-code-ide-remote-worktree--operation-state alpha) 'canceled-before-dispatch))
+            (claude-code-ide-remote-worktree--local-result alpha :view '(:status completed))
+            (should-not (buffer-live-p claude-code-ide-remote-worktree--results-buffer))
+            (let ((hidden (claude-code-ide-remote-worktree--new-operation 'open "alpha" "/srv/hidden" nil)))
+              (claude-code-ide-remote-worktree-show (claude-code-ide-remote-worktree--operation-id hidden))
+              (set-window-buffer (selected-window) origin)
+              (run-hook-with-args 'window-buffer-change-functions (selected-frame))
+              (should (eq (claude-code-ide-remote-worktree--operation-state hidden) 'canceled-before-dispatch))))
+        (when (buffer-live-p claude-code-ide-remote-worktree--results-buffer)
+          (kill-buffer claude-code-ide-remote-worktree--results-buffer))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-retry-only-unentered-work ()
+  "A new approved attempt moves the Worktree without repeating its completed predecessor."
+  (let* ((root (file-truename (make-temp-file "cci-retry-" t)))
+         (main (expand-file-name "repo" root))
+         (linked (expand-file-name "linked" root))
+         (destination (expand-file-name "moved" root))
+         (checkpoint (expand-file-name "checkpoint" root))
+         (marker (expand-file-name "marker" root))
+         (inventory (expand-file-name "inventory" root))
+         (ssh (expand-file-name "ssh" root))
+         (zmx (expand-file-name "zmx" root))
+         (first-command (expand-file-name "first-command" root))
+         (exec-path (cons root exec-path))
+         (process-environment
+          (append (list (concat "PATH=" root ":" (getenv "PATH"))
+                        "GIT_CONFIG_GLOBAL=/dev/null" "GIT_CONFIG_NOSYSTEM=1")
+                  process-environment))
+         (claude-code-ide-zmx-program zmx)
+         (claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (claude-code-ide-remote-worktree--results-buffer nil)
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'move "fixture" main (list :backend 'wt :destination destination)))
+         (id (claude-code-ide-remote-worktree--operation-id operation))
+         (original-token (claude-code-ide-remote-worktree--operation-attempt-id operation))
+         (approval t)
+         prompts acknowledged original-resource resources)
+    (cl-labels
+        ((current () (gethash id claude-code-ide-remote-worktree--operations))
+         (settle ()
+           (let ((deadline (+ (float-time) 15)))
+             (while (and (memq (claude-code-ide-remote-worktree--operation-state (current))
+                               '(preparing checking awaiting-confirmation dispatching))
+                         (< (float-time) deadline))
+               (accept-process-output nil 0.02)))
+           (current)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--ask-approval)
+                     (lambda (_operation prompt) (push prompt prompts) approval))
+                    ;; This test drives explicit reads and tests retained resource tampering.
+                    ((symbol-function 'claude-code-ide-remote-worktree--observe) #'ignore))
+            (make-directory main)
+            (let ((default-directory main))
+              (claude-code-ide-tests--git "init")
+              (claude-code-ide-tests--git "config" "user.name" "Retry Fixture")
+              (claude-code-ide-tests--git "config" "user.email" "fixture@example.invalid")
+              (claude-code-ide-tests--git "commit" "--allow-empty" "-m" "fixture")
+              (claude-code-ide-tests--git "worktree" "add" "-b" "feature" linked))
+            (with-temp-file ssh
+              (insert "#!/bin/sh\nfor command do :; done\nexec /bin/sh -c \"$command\"\n"))
+            (with-temp-file zmx
+              (insert "#!/bin/sh\ncat " (claude-code-ide-zmx--quote inventory) "\n"))
+            (with-temp-file first-command
+              (insert "#!/bin/sh\nprintf x >> " (claude-code-ide-zmx--quote marker)
+                      "\nmkdir " (claude-code-ide-zmx--quote checkpoint)
+                      "\nprintf 'changed inventory\\n' > " (claude-code-ide-zmx--quote inventory) "\n"))
+            (dolist (file (list ssh zmx first-command)) (set-file-modes file #o700))
+            (with-temp-file inventory (insert "no sessions found\n"))
+            (claude-code-ide-remote-worktree--prepare
+             operation
+             (lambda (snapshot)
+               (let ((head (cdr (assoc "refs/heads/feature" (plist-get snapshot :refs)))))
+                 (setf (claude-code-ide-remote-worktree--operation-steps operation)
+                       (list
+                        (list :step-id 1 :kind 'record-result :cwd main :program first-command :argv nil
+                              :postconditions (list (list :kind 'directory :path checkpoint :exists t)))
+                        (list :step-id 2 :kind 'native-move :cwd main
+                              :program (alist-get 'git (plist-get snapshot :tools))
+                              :argv (list "worktree" "move" linked destination)
+                              :requires '(1) :protected-targets (list linked)
+                              :preconditions
+                              (list (list :kind 'worktree :path linked :branch "feature" :head head)
+                                    (list :kind 'directory :path destination :exists nil))
+                              :postconditions
+                              (list (list :kind 'worktree :path destination :branch "feature" :head head)
+                                    (list :kind 'worktree :path linked :absent t)
+                                    (list :kind 'directory :path linked :exists nil))))))
+               (claude-code-ide-remote-worktree--admit
+                operation
+                (lambda (approved)
+                  (claude-code-ide-remote-worktree--stage
+                   approved
+                   (lambda (staged)
+                     (setq original-resource
+                           (claude-code-ide-remote-worktree--operation-receipt-directory staged))
+                     (claude-code-ide-remote-worktree--dispatch
+                      staged (lambda (_) (setq acknowledged t)))))))))
+            (settle)
+            (should acknowledged)
+            (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "finished" original-resource))
+            (claude-code-ide-remote-worktree-check-outcome id)
+            (settle)
+            (should (eq (claude-code-ide-remote-worktree--operation-state (current)) 'confirmed-unfinished))
+            (should-not (file-exists-p (expand-file-name "step-2.entered" original-resource)))
+            ;; A stale eligible result cannot authorize a now-colliding destination.
+            (make-directory destination)
+            (claude-code-ide-remote-worktree-retry-remaining id)
+            (settle)
+            (should (eq (claude-code-ide-remote-worktree--operation-state (current)) 'partial))
+            (should (equal original-token
+                           (claude-code-ide-remote-worktree--operation-attempt-id (current))))
+            (should (file-directory-p linked))
+            (delete-directory destination)
+            (claude-code-ide-remote-worktree-check-outcome id)
+            (settle)
+            (should (eq (claude-code-ide-remote-worktree--operation-state (current)) 'confirmed-unfinished))
+            ;; A new, declined confirmation cannot execute the remaining move.
+            (with-temp-file inventory (insert "no sessions found\n"))
+            (setq approval nil prompts nil)
+            (claude-code-ide-remote-worktree-retry-remaining id)
+            (settle)
+            (should (eq (claude-code-ide-remote-worktree--operation-state (current)) 'refused))
+            (should prompts)
+            (should (file-directory-p linked))
+            (should-not (file-exists-p destination))
+            ;; The declined attempt does not erase the eligible terminal predecessor.
+            (setq approval t prompts nil)
+            (claude-code-ide-remote-worktree-retry-remaining id)
+            (should-error (claude-code-ide-remote-worktree-retry-remaining id) :type 'user-error)
+            (settle)
+            (ert-info ((format "Retry result: %S, %s"
+                               (claude-code-ide-remote-worktree--operation-state (current))
+                               (claude-code-ide-remote-worktree--operation-error (current))))
+              (should (memq (claude-code-ide-remote-worktree--operation-state (current))
+                            '(observing still-running completed))))
+            (should prompts)
+            (should-not (equal original-token
+                               (claude-code-ide-remote-worktree--operation-attempt-id (current))))
+            (should (equal original-token
+                           (claude-code-ide-remote-worktree--operation-parent-attempt (current))))
+            (claude-code-ide-tests--remote-worktree-wait-file
+             (expand-file-name "finished" (claude-code-ide-remote-worktree--operation-receipt-directory (current))))
+            (claude-code-ide-remote-worktree-check-outcome id)
+            (settle)
+            (should (eq (claude-code-ide-remote-worktree--operation-state (current)) 'completed))
+            (should-not (file-exists-p linked))
+            (should (file-directory-p destination))
+            (with-temp-buffer
+              (insert-file-contents-literally marker)
+              (should (equal (buffer-string) "x")))
+            (let ((released-resource
+                   (claude-code-ide-remote-worktree--operation-receipt-directory (current))))
+              (with-temp-file (expand-file-name "runner.sh" released-resource)
+                (insert "#!/bin/sh\nprintf y >> " (claude-code-ide-zmx--quote marker) "\n"))
+              (claude-code-ide-remote-worktree--release (current))
+              (let ((deadline (+ (float-time) 10)))
+                (while (and (claude-code-ide-remote-worktree--operation-request (current))
+                            (< (float-time) deadline))
+                  (accept-process-output nil 0.02)))
+              (ert-info ((format "Resource release: %S, %s"
+                                 (plist-get (claude-code-ide-remote-worktree--operation-results (current)) :resource-status)
+                                 (plist-get (claude-code-ide-remote-worktree--operation-results (current)) :resource-error)))
+                (should-not (file-exists-p released-resource)))
+              (should (file-exists-p original-resource))
+              (with-temp-buffer
+                (insert-file-contents-literally marker)
+                (should (equal (buffer-string) "x")))
+              (claude-code-ide-remote-worktree-check-outcome id)
+              (settle)
+              (should (eq (claude-code-ide-remote-worktree--operation-state (current)) 'completed))
+              ;; Retained execution proof cannot replace fresh Worktree postconditions.
+              (let ((default-directory main))
+                (claude-code-ide-tests--git "worktree" "move" destination linked))
+              (claude-code-ide-remote-worktree-check-outcome id)
+              (settle)
+              (should (eq (claude-code-ide-remote-worktree--operation-state (current)) 'unknown))
+              (should-not (claude-code-ide-remote-worktree--release (current))))
+            (should-error (claude-code-ide-remote-worktree-retry-remaining id) :type 'user-error))
+        (dolist (attempt (cons (current) (plist-get
+                                          (claude-code-ide-remote-worktree--operation-results (current))
+                                          :attempts)))
+          (when-let* ((request (claude-code-ide-remote-worktree--operation-request attempt))
+                      ((process-live-p request)))
+            (delete-process request))
+          (when-let* ((resource (claude-code-ide-remote-worktree--operation-receipt-directory attempt)))
+            (cl-pushnew resource resources :test #'equal)))
+        (let ((deadline (+ (float-time) 35)))
+          (while (and (seq-some (lambda (resource)
+                                  (not (file-exists-p (expand-file-name "finished" resource)))) resources)
+                      (< (float-time) deadline))
+            (accept-process-output nil 0.02)))
+        (if (cl-every (lambda (resource) (file-exists-p (expand-file-name "finished" resource))) resources)
+            (progn
+              (dolist (resource resources) (delete-directory resource t))
+              (delete-directory root t))
+          (message "Retained unfinished retry fixture: %s, %S" root resources))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-release-preserves-live-wrapper ()
+  "Terminal and Agent-exit receipts cannot authorize release while an owned wrapper lives."
+  (let* ((parent (file-truename (make-temp-file "cci-release-" t)))
+         (root (expand-file-name "resource" parent))
+         (sibling (expand-file-name "unrelated" parent))
+         (runner (expand-file-name "runner.sh" root))
+         (wrapper (expand-file-name "bootstrap.sh" root))
+         (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+         (id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+         process expected)
+    (unwind-protect
+        (progn
+          (make-directory root)
+          (set-file-modes root #o700)
+          (with-temp-file sibling (insert "retain"))
+          (copy-file claude-code-ide-remote-worktree--runner-file runner)
+          (with-temp-file (expand-file-name "manifest" root)
+            (insert "protocol=cci-worktree-1\noperation=" id "\nattempt=" attempt "\nkind=open\nsteps=1\n"))
+          (with-temp-file (expand-file-name "plan.sh" root)
+            (insert "cci_step 1 record-result " (claude-code-ide-zmx--quote root)
+                    " /bin/mkdir effect\n"))
+          (dolist (file '("manifest" "plan.sh")) (set-file-modes (expand-file-name file root) #o600))
+          (set-file-modes runner #o700)
+          (should (zerop (call-process "/bin/sh" nil nil nil runner "run" root attempt)))
+          (with-temp-file (expand-file-name "bootstrap-owned" root)
+            (insert "attempt=" attempt "\nname=fixture\ndirectory=" root "\ntoken=" attempt "\n"))
+          (with-temp-file (expand-file-name "agent-exit" root)
+            (insert "attempt=" attempt "\nname=fixture\nstatus=0\n"))
+          (dolist (file '("bootstrap-owned" "agent-exit"))
+            (set-file-modes (expand-file-name file root) #o600))
+          (with-temp-file wrapper
+            (insert "#!/bin/sh\nsleep 2\nprintf done > "
+                    (claude-code-ide-zmx--quote (expand-file-name "wrapper-finished" root)) "\n"))
+          (set-file-modes wrapper #o700)
+          (setq process (make-process :name "cci-release-wrapper" :buffer nil :noquery t
+                                      :command (list "/bin/sh" wrapper attempt) :sentinel #'ignore))
+          (with-temp-buffer
+            (should (zerop (call-process "/bin/sh" nil t nil
+                                         claude-code-ide-remote-worktree--runner-file "read" root attempt id "1")))
+            (setq expected
+                  (base64-encode-string
+                   (mapconcat #'identity
+                              (seq-filter (lambda (line) (string-prefix-p "file=" line))
+                                          (split-string (buffer-string) "\n")) "\n") t)))
+          (should-not (zerop (call-process "/bin/sh" nil nil nil
+                                           claude-code-ide-remote-worktree--runner-file
+                                           "release" root attempt id "1" expected)))
+          (should (process-live-p process))
+          (should (file-directory-p root))
+          (while (process-live-p process) (accept-process-output process 0.05))
+          (should (file-exists-p (expand-file-name "wrapper-finished" root)))
+          (should (zerop (call-process "/bin/sh" nil nil nil
+                                       claude-code-ide-remote-worktree--runner-file
+                                       "release" root attempt id "1" expected)))
+          (should-not (file-exists-p root))
+          (with-temp-buffer
+            (insert-file-contents-literally sibling)
+            (should (equal (buffer-string) "retain"))))
+      (when process
+        (while (process-live-p process) (accept-process-output process 0.05)))
+      (delete-directory parent t))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-explicit-refresh-reuses-native-view ()
+  "Mutation completion publishes surviving rows before refreshing existing views."
+  (let ((load-path (cons (expand-file-name "../magit-worktrunk"
+                                           (file-name-directory (locate-library "claude-code-ide-zmx")))
+                         load-path)))
+    (require 'magit-worktrunk-section))
+  (claude-code-ide-remote-project--reset-state)
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (file-name-handler-alist nil)
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (claude-code-ide-remote-worktree--snapshots (make-hash-table :test #'equal))
+        (claude-code-ide-remote-worktree--results-buffer nil)
+        (buffer (generate-new-buffer " *cci-refresh-survivor*"))
+        (origin (generate-new-buffer " *cci-refresh-origin*"))
+        (sibling (generate-new-buffer " *cci-refresh-sibling*"))
+        (key '("fixture" git "/rpc:fixture:/srv/main"))
+        request)
+    (unwind-protect
+        (save-window-excursion
+          (puthash key
+                   (claude-code-ide-remote-project--make-view
+                    :key key :buffer buffer :origin 'preexisting)
+                   claude-code-ide-remote-project--views)
+          (let ((sibling-key '("fixture" git "/rpc:fixture:/srv/other")))
+            (puthash sibling-key
+                     (claude-code-ide-remote-project--make-view
+                      :key sibling-key :buffer sibling :origin 'preexisting)
+                     claude-code-ide-remote-project--views))
+          (with-current-buffer sibling
+            (setq major-mode 'magit-status-mode
+                  default-directory "/rpc:fixture:/srv/other/"))
+          (with-current-buffer buffer
+            (setq major-mode 'magit-status-mode
+                  default-directory "/rpc:fixture:/srv/main/"))
+          (with-current-buffer origin
+            (setq major-mode 'magit-status-mode
+                  default-directory "/rpc:fixture:/gone/"))
+          (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                     (lambda () t))
+                    ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                     (lambda (attempt _label)
+                       (setq request attempt)
+                       (let* ((view-key (list "fixture" 'git
+                                              (string-remove-suffix
+                                               "/" (claude-code-ide-remote-project--attempt-directory attempt))))
+                              (result (claude-code-ide-remote-project--prepare-view attempt view-key)))
+                         (funcall (claude-code-ide-remote-project--attempt-callback attempt)
+                                  (list :status 'completed :buffer (plist-get result :buffer))))))
+                    ((symbol-function 'magit-refresh-buffer)
+                     (lambda ()
+                       (let ((inhibit-read-only t)
+                             (magit-root-section nil))
+                         (erase-buffer)
+                         (magit-insert-section (root)
+                                               (magit-worktrunk-section--insert-remote-body default-directory))
+                         (set-buffer-modified-p nil))))
+                    ((symbol-function 'process-file)
+                     (lambda (&rest _) (ert-fail "Rendering contacted a host"))))
+            (dolist (removed-origin '(nil t))
+              (dolist (item (list buffer sibling))
+                (with-current-buffer item
+                  (erase-buffer)
+                  (insert "main\ngone")
+                  (set-buffer-modified-p nil)))
+              (switch-to-buffer (if removed-origin origin buffer))
+              (let* ((operation (claude-code-ide-remote-worktree--new-operation
+                                 'remove "fixture" "/gone" '(:backend wt)))
+                     (snapshot
+                      (list :host "fixture" :backend 'wt :repository "/srv/main/.git"
+                            :main-worktree "/srv/main" :directory "/gone" :worktree "/gone"
+                            :origin-worktree (if removed-origin "/gone" "/srv/main")
+                            :settings '(:backend wt)
+                            :backend-entries '(((branch . "gone") (path . "/gone")))
+                            :worktrees '((:path "/gone" :exists t :branch "gone")
+                                         (:path "/srv/main" :exists t :branch "main")))))
+                (setf (claude-code-ide-remote-worktree--operation-snapshot operation) snapshot
+                      (claude-code-ide-remote-worktree--operation-state operation) 'checking
+                      (claude-code-ide-remote-worktree--operation-steps operation)
+                      '((:step-id 1 :kind named-remove
+                                  :postconditions ((:kind worktree :path "/gone" :absent t)))))
+                (claude-code-ide-remote-worktree--publish-snapshot operation)
+                (claude-code-ide-remote-worktree--publish-check
+                 operation '(:stable t :terminal t :steps ((:step-id 1 :entered t :exit-code 0)))
+                 '(:paths (("/gone" . missing))
+                          :worktrees ((:path "/srv/main" :exists t :branch "main")
+                                      (:path "/srv/other" :exists t :branch "other"))))
+                ;; An outcome check records facts without refreshing or selecting a view.
+                (with-current-buffer buffer (should (equal (buffer-string) "main\ngone")))
+                (claude-code-ide-remote-worktree--finish operation)
+                (should (eq (window-buffer (selected-window)) buffer))
+                (dolist (item (list buffer sibling))
+                  (with-current-buffer item
+                    (should (string-match-p "^main " (buffer-string)))
+                    (should (string-match-p "^other " (buffer-string)))
+                    (should-not (string-match-p "gone" (buffer-string)))
+                    (goto-char (point-min))
+                    (re-search-forward (if (eq item buffer) "^main " "^other "))
+                    (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
+                                'magit-branch-current))))
+                (should (equal snapshot (claude-code-ide-remote-worktree--operation-snapshot operation))))
+              (when request (claude-code-ide-remote-project-cancel-target request)))))
+      (dolist (item (list buffer origin sibling claude-code-ide-remote-worktree--results-buffer))
+        (when (buffer-live-p item) (kill-buffer item)))
+      (claude-code-ide-remote-project--reset-state))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-view-listing-failure-and-cancel ()
+  "A failed or canceled listing preserves mutation proof and does not open a view."
+  (let ((load-path (cons (expand-file-name "../magit-lane"
+                                           (file-name-directory (locate-library "claude-code-ide-zmx")))
+                         load-path)))
+    (require 'magit-lane-core))
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (claude-code-ide-remote-worktree--snapshots (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'remove "fixture" "/gone" '(:backend lane :name "gone")))
+         (id (claude-code-ide-remote-worktree--operation-id operation))
+         response views)
+    (setf (claude-code-ide-remote-worktree--operation-state operation) 'completed
+          (claude-code-ide-remote-worktree--operation-results operation)
+          '(:outcome completed :view-target (:host "fixture" :directory "/srv/main")
+                     :view-snapshot (:host "fixture" :backend lane :repository "/srv/main/.git"
+                                           :main-worktree "/srv/main" :directory "/srv/main" :worktree "/srv/main"
+                                           :lane-store t :tools ((lane . "/bin/lane")))))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-remote-exec)
+               (lambda (_host _purpose _program _args callback &rest _)
+                 (setq response callback) nil))
+              ((symbol-function 'claude-code-ide-remote-project-open-target)
+               (lambda (&rest _) (push 'opened views))))
+      (claude-code-ide-remote-worktree-recover-view id)
+      (funcall response '(:status 255 :stdout "" :stderr "disconnected"))
+      (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+      (should (eq (plist-get (plist-get (claude-code-ide-remote-worktree--operation-results operation) :view)
+                             :status) 'failed))
+      (claude-code-ide-remote-worktree-recover-view id)
+      (claude-code-ide-remote-worktree-cancel-observation id)
+      (funcall response '(:status 0 :stdout "/srv/main/.lane/trees\0[]" :stderr ""))
+      (should (eq (plist-get (plist-get (claude-code-ide-remote-worktree--operation-results operation) :view)
+                             :status) 'stopped))
+      (should (eq (plist-get (claude-code-ide-remote-worktree--operation-results operation) :outcome)
+                  'completed))
+      (should-not views)
+      (should (= (hash-table-count claude-code-ide-remote-worktree--snapshots) 0)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-completion-from-results-or-deferred ()
+  "Results inspection permits completion. Unrelated or canceled views retain recovery."
+  (require 'claude-code-ide-remote-project)
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (claude-code-ide-remote-worktree--results-buffer nil)
+        (origin (generate-new-buffer " *cci-completion-origin*"))
+        (other (generate-new-buffer " *cci-completion-other*"))
+        (view (generate-new-buffer " *cci-completion-view*"))
+        request)
+    (save-window-excursion
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                     (lambda () t))
+                    ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                     (lambda (attempt _label) (setq request attempt))))
+            (switch-to-buffer origin)
+            (let* ((origin-window (selected-window))
+                   (operation (claude-code-ide-remote-worktree--new-operation
+                               'create "fixture" "/srv/repo" '(:name "created" :create-only t)))
+                   (target '(:host "fixture" :directory "/srv/created")))
+              (claude-code-ide-remote-worktree-show
+               (claude-code-ide-remote-worktree--operation-id operation))
+              (claude-code-ide-remote-worktree--complete-read operation target)
+              (should request)
+              (funcall (claude-code-ide-remote-project--attempt-callback request)
+                       (list :status 'completed :buffer view))
+              (should (eq (window-buffer (selected-window)) view))
+              (claude-code-ide-remote-project-cancel-target request)
+              (setq request nil)
+              (switch-to-buffer view)
+              (setq operation (claude-code-ide-remote-worktree--new-operation
+                               'create "fixture" "/srv/repo" '(:name "second" :create-only t)))
+              (claude-code-ide-remote-worktree-show
+               (claude-code-ide-remote-worktree--operation-id operation))
+              (select-window origin-window)
+              (switch-to-buffer other)
+              (claude-code-ide-remote-worktree--complete-read operation target)
+              (should-not request)
+              (should (eq (window-buffer (selected-window)) other))
+              (should (eq (plist-get (plist-get
+                                      (claude-code-ide-remote-worktree--operation-results operation) :view)
+                                     :status) 'deferred))
+              (should (equal (plist-get (claude-code-ide-remote-worktree--operation-results operation)
+                                        :view-target) target))
+              (claude-code-ide-remote-worktree-cancel-observation
+               (claude-code-ide-remote-worktree--operation-id operation))
+              (claude-code-ide-remote-worktree-show
+               (claude-code-ide-remote-worktree--operation-id operation))
+              (claude-code-ide-remote-worktree--finish operation)
+              (should-not request)
+              (should (eq (window-buffer (selected-window))
+                          claude-code-ide-remote-worktree--results-buffer))))
+        (when request (claude-code-ide-remote-project-cancel-target request))
+        (dolist (buffer (list origin other view claude-code-ide-remote-worktree--results-buffer))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-disappeared-origin-recovery ()
+  "Mutation completion recovers an owned remote origin or reports no survivor."
+  (require 'claude-code-ide-remote-project)
+  (let ((claude-code-ide-remote-hosts '("fixture" "other"))
+        (file-name-handler-alist nil)
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (claude-code-ide-remote-worktree--snapshots (make-hash-table :test #'equal))
+        (claude-code-ide-remote-worktree--results-buffer nil)
+        (claude-code-ide-remote-project--views (make-hash-table :test #'equal))
+        (origin (generate-new-buffer " *cci-removed-origin*"))
+        (other (generate-new-buffer " *cci-removed-other*"))
+        (view (generate-new-buffer " *cci-surviving-view*"))
+        (edited (generate-new-buffer " *cci-removed-edits*"))
+        request)
+    (save-window-excursion
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--metadata)
+                     (lambda (_operation directories callback)
+                       (funcall callback
+                                (mapcar
+                                 (lambda (directory)
+                                   (list :kind 'git :common-dir "/repo/.git"
+                                         :project-path "/repo/main" :branch "topic"
+                                         :worktree-path
+                                         (if (equal directory "/alias/sub") "/gone" directory)))
+                                 directories))))
+                    ((symbol-function 'claude-code-ide-remote-worktree--control)
+                     (lambda (_operation _purpose _program _argv callback &rest _)
+                       (funcall callback
+                                (mapconcat #'identity
+                                           '("cci-preparation-1" "/usr/bin/git" "/bin/zmx"
+                                             "/bin/lane" "/bin/wt" "no" "wt" "/repo/main" "" "" ""
+                                             "worktree /gone" "branch refs/heads/topic" "" "")
+                                           (string 0)))))
+                    ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                     (lambda () t))
+                    ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                     (lambda (attempt _label) (setq request attempt))))
+            (with-current-buffer edited
+              (setq buffer-file-name "/rpc:fixture:/gone/notes")
+              (insert "unsaved notes"))
+            (dolist (case '(owned results unavailable local-origin unrelated canceled other-host sibling-prefix))
+              (setq request nil)
+              (switch-to-buffer origin)
+              (setq default-directory
+                    (pcase case
+                      ('other-host "/rpc:other:/gone/")
+                      ('sibling-prefix "/rpc:fixture:/gone-neighbor/")
+                      ('local-origin "/tmp/")
+                      (_ "/rpc:fixture:/alias/sub")))
+              (let* ((operation (claude-code-ide-remote-worktree--new-operation
+                                 (if (eq case 'results) 'move 'remove) "fixture" "/gone"
+                                 (when (eq case 'results) '(:destination "/repo/main"))))
+                     (id (claude-code-ide-remote-worktree--operation-id operation)))
+                (claude-code-ide-remote-worktree--prepare operation #'ignore)
+                (setf (claude-code-ide-remote-worktree--operation-state operation) 'checking
+                      (claude-code-ide-remote-worktree--operation-steps operation)
+                      '((:step-id 1 :kind named-remove
+                                  :postconditions ((:kind worktree :path "/gone" :absent t)))))
+                (pcase case
+                  ('results (claude-code-ide-remote-worktree-show id))
+                  ('unrelated (switch-to-buffer other))
+                  ('canceled
+                   (claude-code-ide-remote-worktree-cancel-observation id)
+                   (claude-code-ide-remote-worktree--transition operation 'checking)))
+                (claude-code-ide-remote-worktree--publish-check
+                 operation
+                 '(:stable t :terminal t :steps ((:step-id 1 :entered t :exit-code 0)))
+                 (list :paths '(("/gone" . missing))
+                       :worktrees (unless (memq case '(unavailable local-origin))
+                                    '((:path "/repo/main" :exists t :branch "topic")))))
+                (claude-code-ide-remote-worktree--finish operation)
+                (cond
+                 ((memq case '(owned results))
+                  (should request)
+                  (funcall (claude-code-ide-remote-project--attempt-callback request)
+                           (list :status 'completed :host "fixture" :directory "/repo/main" :buffer view))
+                  (should (eq (window-buffer (selected-window)) view))
+                  (claude-code-ide-remote-project-cancel-target request))
+                 (t
+                  (should-not request)
+                  (should (eq (window-buffer (selected-window))
+                              (if (eq case 'unrelated) other origin)))))
+                (let ((result (claude-code-ide-remote-worktree--operation-results operation)))
+                  (when (memq case '(unavailable unrelated canceled))
+                    (should (eq (plist-get (plist-get result :view) :status)
+                                (if (eq case 'unavailable) 'unavailable 'deferred))))
+                  (when (eq case 'local-origin)
+                    (should-not (plist-get result :view))
+                    (should-not (plist-get result :view-target)))
+                  (unless (memq case '(unavailable local-origin))
+                    (should (equal (plist-get result :view-target)
+                                   '(:host "fixture" :directory "/repo/main")))))
+                (should (buffer-live-p edited))
+                (with-current-buffer edited
+                  (should (buffer-modified-p))
+                  (should (equal (buffer-string) "unsaved notes"))))))
+        (when request (claude-code-ide-remote-project-cancel-target request))
+        (dolist (buffer (list origin other view edited claude-code-ide-remote-worktree--results-buffer))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer (set-buffer-modified-p nil))
+            (kill-buffer buffer)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-view-recovery-keeps-display-ownership ()
+  "A completed view cannot replace a newer display or an abandoned local continuation."
+  (require 'claude-code-ide-remote-project)
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (claude-code-ide-remote-worktree--results-buffer nil)
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'create "fixture" "/srv/repo" '(:name "created")))
+         (id (claude-code-ide-remote-worktree--operation-id operation))
+         (origin (generate-new-buffer " *cci-recovery-origin*"))
+         (other (generate-new-buffer " *cci-recovery-other*"))
+         (view (generate-new-buffer " *cci-recovery-view*"))
+         request)
+    (setf (claude-code-ide-remote-worktree--operation-state operation) 'completed
+          (claude-code-ide-remote-worktree--operation-results operation)
+          '(:outcome completed :view-target (:host "fixture" :directory "/srv/created")))
+    (save-window-excursion
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                     (lambda () t))
+                    ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                     (lambda (attempt _label) (setq request attempt))))
+            (set-window-buffer (selected-window) origin)
+            (claude-code-ide-remote-worktree-recover-view id)
+            (set-window-buffer (selected-window) other)
+            (funcall (claude-code-ide-remote-project--attempt-callback request)
+                     (list :status 'completed :host "fixture" :directory "/srv/created" :buffer view))
+            (should (eq (window-buffer (selected-window)) other))
+            (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+            (claude-code-ide-remote-project-cancel-target request)
+            (claude-code-ide-remote-worktree-recover-view id)
+            (claude-code-ide-remote-worktree-cancel-observation id)
+            (funcall (claude-code-ide-remote-project--attempt-callback request)
+                     (list :status 'completed :host "fixture" :directory "/srv/created" :buffer view))
+            (should (eq (window-buffer (selected-window)) other))
+            (should (eq (plist-get (plist-get
+                                    (claude-code-ide-remote-worktree--operation-results operation) :view)
+                                   :status) 'stopped))
+            (should (zerop (hash-table-count claude-code-ide--sessions))))
+        (when request (claude-code-ide-remote-project-cancel-target request))
+        (dolist (buffer (list origin other view))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-cancellation-rejects-stale-delivery ()
+  "Cancellation prevents preparation continuations and stale attempt publication."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'create "fixture" "/srv/repo" '(:name "topic")))
+         (id (claude-code-ide-remote-worktree--operation-id operation))
+         callback delivered)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-remote-exec)
+               (lambda (_host _purpose _program _argv continuation &rest _)
+                 (setq callback continuation)
+                 nil)))
+      (claude-code-ide-remote-worktree--control
+       operation "fixture-preparation" "git" '("status")
+       (lambda (_) (setq delivered t)))
+      (claude-code-ide-remote-worktree-cancel-observation id)
+      (funcall callback '(:status 0 :stdout "late preparation"))
+      (should-not delivered)
+      (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                  'canceled-before-dispatch))
+      (let ((replacement (copy-claude-code-ide-remote-worktree--operation operation)))
+        (setf (claude-code-ide-remote-worktree--operation-generation operation) 0
+              (claude-code-ide-remote-worktree--operation-generation replacement) 0
+              (claude-code-ide-remote-worktree--operation-attempt-id replacement)
+              (claude-code-ide-remote-worktree--token))
+        (puthash id replacement claude-code-ide-remote-worktree--operations)
+        (funcall callback '(:status 0 :stdout "old attempt"))
+        (should-not delivered))
+      (puthash id operation claude-code-ide-remote-worktree--operations)
+      (setf (claude-code-ide-remote-worktree--operation-state operation) 'completed
+            (claude-code-ide-remote-worktree--operation-results operation)
+            '(:outcome completed :resource-status releasing
+                       :retained-evidence (:terminal t :stable t)))
+      (claude-code-ide-remote-worktree-cancel-observation id)
+      (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+      (should (eq (plist-get (claude-code-ide-remote-worktree--operation-results operation)
+                             :resource-status) 'unknown))
+      (should (plist-get (claude-code-ide-remote-worktree--operation-results operation)
+                         :retained-evidence)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-view-closure-stops-only-owner ()
+  "Owned view closure cancels its observation, not another view or newer attempt."
+  (require 'claude-code-ide-remote-project)
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (claude-code-ide-remote-project--views (make-hash-table :test #'equal))
+         (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
+         (claude-code-ide-remote-project--incomplete-candidates (make-hash-table :test #'eq))
+         (views (list (generate-new-buffer " *cci-close-first*")
+                      (generate-new-buffer " *cci-close-second*")))
+         (candidate (generate-new-buffer " *cci-close-candidate*"))
+         operations request)
+    (save-window-excursion
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                     (lambda () t))
+                    ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                     (lambda (attempt _label) (setq request attempt)))
+                    ((symbol-function 'claude-code-ide-zmx-remote-exec)
+                     (lambda (&rest _) (ert-fail "View closure started remote I/O"))))
+            (cl-loop
+             for directory in '("/srv/first" "/srv/second" "/srv/candidate")
+             for buffer in (append views (list candidate))
+             do
+             (let ((operation (claude-code-ide-remote-worktree--new-operation
+                               'create "fixture" directory '(:name "topic"))))
+               (setf (claude-code-ide-remote-worktree--operation-state operation) 'observing
+                     (claude-code-ide-remote-worktree--operation-results operation)
+                     (list :view-target (list :host "fixture" :directory directory)))
+               (push operation operations)
+               (claude-code-ide-remote-worktree-recover-view
+                (claude-code-ide-remote-worktree--operation-id operation))
+               (if (eq buffer candidate)
+                   (claude-code-ide-remote-project--track-candidate request buffer 'created-by-feature)
+                 (claude-code-ide-remote-project--finish-success
+                  request (list :key (list "fixture" 'magit (concat "/rpc:fixture:" directory))
+                                :buffer buffer :origin 'created-by-feature :creator request)))))
+            (setq operations (nreverse operations))
+            (kill-buffer (car views))
+            (sleep-for 0.02)
+            (should (eq (claude-code-ide-remote-worktree--operation-state (car operations))
+                        'observation-stopped))
+            (should (eq (claude-code-ide-remote-worktree--operation-state (cadr operations)) 'observing))
+            (should (buffer-live-p (cadr views)))
+            (should (eq (window-buffer (selected-window)) (cadr views)))
+            (let* ((old (cadr operations))
+                   (replacement (copy-claude-code-ide-remote-worktree--operation old)))
+              (setf (claude-code-ide-remote-worktree--operation-attempt-id replacement)
+                    (claude-code-ide-remote-worktree--token))
+              (puthash (claude-code-ide-remote-worktree--operation-id replacement)
+                       replacement claude-code-ide-remote-worktree--operations)
+              (kill-buffer (cadr views))
+              (sleep-for 0.02)
+              (should (eq (claude-code-ide-remote-worktree--operation-state replacement) 'observing)))
+            (kill-buffer candidate)
+            (sleep-for 0.02)
+            (should (eq (claude-code-ide-remote-worktree--operation-state (nth 2 operations))
+                        'observation-stopped)))
+        (when request (claude-code-ide-remote-project-cancel-target request))
+        (dolist (buffer (cons candidate views))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))
+        (sleep-for 0.02)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-request-returns-before-io ()
+  "An immediate ID permits cancellation before preparation contacts a host."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        contacted)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-remote-exec)
+               (lambda (&rest _) (setq contacted t) (ert-fail "Canceled request contacted a host"))))
+      (let* ((id (claude-code-ide-remote-worktree-request 'list "fixture" "/srv/repo"))
+             (operation (gethash id claude-code-ide-remote-worktree--operations)))
+        (should (stringp id))
+        (should-not contacted)
+        (claude-code-ide-remote-worktree-cancel-observation id)
+        (sleep-for 0.02)
+        (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                    'canceled-before-dispatch))
+        (should-not contacted)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-request-runs-admitted-plan ()
+  "The public request creates once, observes receipts, and retains a recoverable target."
+  (require 'claude-code-ide-remote-project)
+  (let ((load-path (cons (expand-file-name "../magit-worktrunk"
+                                           (file-name-directory (locate-library "claude-code-ide-zmx")))
+                         load-path)))
+    (require 'magit-worktrunk-core))
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (let* ((bin (make-temp-file "cci-public-request-" t))
+            (ssh (expand-file-name "ssh" bin))
+            (wt (expand-file-name "wt" bin))
+            (effect (expand-file-name "effect" bin))
+            (resource-record (expand-file-name "resource" bin))
+            (destination (expand-file-name "request-topic" bin))
+            (exec-path (cons bin exec-path))
+            (process-environment (cons (concat "PATH=" bin ":" (getenv "PATH")) process-environment))
+            (magit-worktrunk-wt-executable wt)
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-worktree-backend 'wt)
+            (claude-code-ide-lane-init-protocol t)
+            (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+            operation terminal approved)
+       (unwind-protect
+           (progn
+             (with-temp-file ssh
+               (insert "#!/bin/sh\nfor command do :; done\nexec /bin/sh -c \"$command\"\n"))
+             ;; This fixture tool runs real Git and the planner's owned continuation.
+             (with-temp-file wt
+               (insert "#!/bin/sh\nset -eu\n"
+                       "[ \"$1\" = switch ] && [ \"$2\" = --cd ] && [ \"$3\" = --create ]\n"
+                       "[ \"$4\" = --execute ] && [ \"$6\" = request-topic ]\n"
+                       "printf '%s\\n' \"${5%/*}\" > " (claude-code-ide-zmx--quote resource-record) "\n"
+                       "printf x >> " (claude-code-ide-zmx--quote effect) "\n"
+                       "git worktree add -b \"$6\" " (claude-code-ide-zmx--quote destination) "\n"
+                       "cd " (claude-code-ide-zmx--quote destination) "\nexec \"$5\"\n"))
+             (set-file-modes ssh #o700)
+             (set-file-modes wt #o700)
+             (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                        (lambda () t))
+                       ((symbol-function 'claude-code-ide-remote-project-open-target)
+                        (lambda (_host _directory callback &rest _)
+                          (funcall callback '(:status failed :error "Fixture view unavailable"))
+                          nil))
+                       ((symbol-function 'read-string)
+                        (lambda (&rest _) "request-topic"))
+                       ((symbol-function 'claude-code-ide-remote-worktree--ask-approval)
+                        (lambda (&rest _)
+                          (should-not (file-exists-p effect))
+                          (setq approved t))))
+               (let ((id (claude-code-ide-manager--request-remote-create "fixture" main t)))
+                 (setq operation (gethash id claude-code-ide-remote-worktree--operations))
+                 (should-not (file-exists-p effect))
+                 (let ((deadline (+ (float-time) 15)))
+                   (while (and (or (memq (claude-code-ide-remote-worktree--operation-state operation)
+                                         '(preparing awaiting-confirmation dispatching observing checking still-running))
+                                   (claude-code-ide-remote-worktree--operation-request operation))
+                               (< (float-time) deadline))
+                     (accept-process-output nil 0.02)))
+                 (ert-info ((format "Public request: %S %s"
+                                    (claude-code-ide-remote-worktree--operation-state operation)
+                                    (claude-code-ide-remote-worktree--operation-error operation)))
+                   (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed)))
+                 (should approved)
+                 (setq terminal t)
+                 (with-temp-buffer
+                   (insert-file-contents resource-record)
+                   (should-not (file-exists-p (string-trim (buffer-string)))))
+                 (should (eq (plist-get (claude-code-ide-remote-worktree--operation-results operation)
+                                        :resource-status) 'released))
+                 (should (equal (plist-get
+                                 (plist-get (claude-code-ide-remote-worktree--operation-results operation)
+                                            :view-target) :directory)
+                                (file-truename destination)))
+                 (with-temp-buffer
+                   (insert-file-contents effect)
+                   (should (equal (buffer-string) "x")))
+                 (claude-code-ide-remote-worktree-check-outcome id)
+                 (let ((deadline (+ (float-time) 10)))
+                   (while (and (eq (claude-code-ide-remote-worktree--operation-state operation) 'checking)
+                               (< (float-time) deadline))
+                     (accept-process-output nil 0.02)))
+                 (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+                 (with-temp-buffer
+                   (insert-file-contents effect)
+                   (should (equal (buffer-string) "x"))))))
+         (when operation
+           (claude-code-ide-remote-worktree-cancel-observation
+            (claude-code-ide-remote-worktree--operation-id operation))
+           (when-let* ((resource (claude-code-ide-remote-worktree--operation-receipt-directory operation))
+                       ((or terminal (file-exists-p (expand-file-name "finished" resource)))))
+             (delete-directory resource t)))
+         (unless (and operation (eq (claude-code-ide-remote-worktree--operation-state operation)
+                                    'observation-stopped) (not terminal))
+           (delete-directory bin t)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-runner-preserves-command-environment ()
+  "Detached backend and Agent commands retain locale and umask without exposing receipts."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (setq main (directory-file-name (file-truename main)))
+     (let* ((bin (file-truename (make-temp-file "cci-command-environment-" t)))
+            (probe (expand-file-name "probe" bin))
+            (zmx (expand-file-name "zmx" bin))
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+            resources)
+       (unwind-protect
+           (progn
+             (with-temp-file probe
+               (insert "#!/bin/sh\nprintf '%s\\n' \"${LC_ALL+x}:${LC_ALL-}\" > \"$1\"\numask >> \"$1\"\n"))
+             (with-temp-file zmx
+               (insert "#!/bin/sh\ncase \"$1\" in\nlist) printf 'no sessions found\\n';;\n"
+                       "attach) shift 2; \"$@\" &;;\n*) exit 64;;\nesac\n"))
+             (set-file-modes probe #o700)
+             (set-file-modes zmx #o700)
+             (dolist (locale '(nil "" "en_US.UTF-8"))
+               (let* ((root (expand-file-name (format "resource-%d" (length resources)) bin))
+                      (runner (expand-file-name "runner.sh" root))
+                      (backend-result (concat root "-backend"))
+                      (agent-result (concat root "-agent"))
+                      (process-environment (copy-sequence process-environment))
+                      (operation (claude-code-ide-remote-worktree--new-operation 'open "fixture" main nil))
+                      (attempt (claude-code-ide-remote-worktree--operation-attempt-id operation))
+                      (id (claude-code-ide-remote-worktree--operation-id operation))
+                      (default-directory main))
+                 (setenv "LC_ALL" locale)
+                 (make-directory root)
+                 (set-file-modes root #o700)
+                 (copy-file claude-code-ide-remote-worktree--runner-file runner)
+                 (setf (claude-code-ide-remote-worktree--operation-receipt-directory operation) root
+                       (claude-code-ide-remote-worktree--operation-snapshot operation)
+                       (list :repository (file-truename (expand-file-name ".git" main))
+                             :branch (string-trim (claude-code-ide-tests--git "symbolic-ref" "--short" "HEAD"))
+                             :tools (list (cons 'git (executable-find "git")))
+                             :launch (list :directory main :zmx-name "owned" :executable probe
+                                           :args (list agent-result))))
+                 (with-temp-file (expand-file-name "manifest" root)
+                   (insert "protocol=cci-worktree-1\noperation=" id "\nattempt=" attempt "\nkind=open\nsteps=2\n"))
+                 (with-temp-file (expand-file-name "bootstrap.sh" root)
+                   (insert (claude-code-ide-remote-worktree--render-bootstrap operation)))
+                 (with-temp-file (expand-file-name "plan.sh" root)
+                   (insert "cci_step 1 record-result "
+                           (mapconcat #'claude-code-ide-zmx--quote (list main probe backend-result) " ")
+                           " || return \"$?\"\ncci_step 2 bootstrap "
+                           (mapconcat #'claude-code-ide-zmx--quote
+                                      (list main "/bin/sh" runner "bootstrap" root attempt zmx "owned") " ")
+                           "\n"))
+                 (dolist (file '("manifest" "plan.sh" "bootstrap.sh" "runner.sh"))
+                   (set-file-modes (expand-file-name file root) #o700))
+                 (push root resources)
+                 (should (zerop (call-process "/bin/sh" nil nil nil "-c"
+                                              "umask 022; exec /bin/sh \"$@\"" "cci-environment"
+                                              runner "dispatch" root attempt)))
+                 (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "finished" root))
+                 (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "agent-exit" root))
+                 (dolist (file (list backend-result agent-result))
+                   (with-temp-buffer
+                     (insert-file-contents file)
+                     (let ((lines (split-string (buffer-string) "\n" t)))
+                       (should (equal (car lines) (if locale (concat "x:" locale) ":")))
+                       (should (= (string-to-number (cadr lines) 8) #o022))))
+                   (should (= (logand (file-modes file) #o777) #o644)))
+                 (dolist (file '("worker-started" "finished" "step-1.stdout" "step-1.exit" "agent-exit"))
+                   (should (= (logand (file-modes (expand-file-name file root)) #o777) #o600)))
+                 (should (= (logand (file-modes (expand-file-name "claimed" root)) #o777) #o700)))))
+         (if (cl-every (lambda (root)
+                         (and (file-exists-p (expand-file-name "finished" root))
+                              (file-exists-p (expand-file-name "agent-exit" root))))
+                       resources)
+             (delete-directory bin t)
+           (message "Retained unfinished command-environment fixture: %s" bin)))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-bootstrap-requires-owned-execution ()
+  "Real runner launch rejects collisions and empty attaches, and never repeats an Agent."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (setq main (directory-file-name (file-truename main)))
+     (let* ((bin (file-truename (make-temp-file "cci-bootstrap-" t)))
+            (zmx (expand-file-name "zmx" bin))
+            (sleep (expand-file-name "sleep" bin))
+            (process-environment
+             (append (list (concat "PATH=" bin ":" (getenv "PATH"))
+                           "ZMX_SESSION=unrelated" "ZMX_SESSION_PREFIX=hidden-")
+                     process-environment))
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal)))
+       (unwind-protect
+           (progn
+             (with-temp-file sleep (insert "#!/bin/sh\nexec /bin/sleep 0.02\n"))
+             (with-temp-file zmx
+               (insert "#!/bin/sh\n"
+                       "[ -z \"$ZMX_SESSION$ZMX_SESSION_PREFIX\" ] || exit 65\n"
+                       "case \"$1\" in\n"
+                       "list) case \"$CCI_FIXTURE_MODE\" in\n"
+                       "collision) printf 'name=owned\\tpid=123\\tcreated=123\\tstart_dir=/fixture\\tcmd=omp\\n';;\n"
+                       "long) printf '  name=other\\tpid=123\\tcreated=123\\tcwd=file://fixture/space%%20percent%%25\\tcmd=omp\\n';;\n"
+                       "encoded-control) printf 'name=other\\tpid=123\\tcreated=123\\tcwd=file://fixture/bad%%0Apath\\tcmd=omp\\n';;\n"
+                       "encoded-malformed) printf 'name=other\\tpid=123\\tcreated=123\\tcwd=file://fixture/bad%%2path\\tcmd=omp\\n';;\n"
+                       "encoded-invalid-utf8) printf 'name=other\\tpid=123\\tcreated=123\\tcwd=file://fixture/bad%%FFpath\\tcmd=omp\\n';;\n"
+                       "*) printf 'no sessions found in /tmp/fixture-zmx\\n' >&2;; esac;;\n"
+                       "attach) printf x >> \"$CCI_FIXTURE_ATTACH\"; shift 2; [ \"$CCI_FIXTURE_MODE\" = empty ] && exit 0; \"$@\" &;;\n"
+                       "*) exit 64;;\nesac\n"))
+             (set-file-modes sleep #o700)
+             (set-file-modes zmx #o700)
+             (dolist (mode '(collision encoded-control encoded-malformed encoded-invalid-utf8 empty immediate long))
+               (let* ((root (expand-file-name (symbol-name mode) bin))
+                      (runner (expand-file-name "runner.sh" root))
+                      (attached (expand-file-name "attach" root))
+                      (effect (expand-file-name "effect" root))
+                      (operation (claude-code-ide-remote-worktree--new-operation 'open "fixture" main nil))
+                      (attempt (claude-code-ide-remote-worktree--operation-attempt-id operation))
+                      (id (claude-code-ide-remote-worktree--operation-id operation))
+                      (default-directory main)
+                      (branch (string-trim (claude-code-ide-tests--git "symbolic-ref" "--short" "HEAD")))
+                      (repository (file-truename (expand-file-name ".git" main)))
+                      (args (list "-c" (concat "printf x >> " (claude-code-ide-zmx--quote effect)
+                                               (if (eq mode 'long) "; /bin/sleep 1; exit 7" "; exit 0"))))
+                      (process-environment
+                       (append (list (concat "CCI_FIXTURE_MODE=" (symbol-name mode))
+                                     (concat "CCI_FIXTURE_ATTACH=" attached))
+                               process-environment)))
+                 (make-directory root)
+                 (set-file-modes root #o700)
+                 (copy-file claude-code-ide-remote-worktree--runner-file runner)
+                 (setf (claude-code-ide-remote-worktree--operation-receipt-directory operation) root
+                       (claude-code-ide-remote-worktree--operation-snapshot operation)
+                       (list :repository repository :branch branch :tools (list (cons 'git (executable-find "git")))
+                             :launch (list :directory main :zmx-name "owned" :executable "/bin/sh" :args args))
+                       (claude-code-ide-remote-worktree--operation-steps operation)
+                       '((:step-id 1 :kind bootstrap :postconditions ((:kind bootstrap)))))
+                 (with-temp-file (expand-file-name "manifest" root)
+                   (insert "protocol=cci-worktree-1\noperation=" id "\nattempt=" attempt "\nkind=open\nsteps=1\n"))
+                 (with-temp-file (expand-file-name "bootstrap.sh" root)
+                   (insert (claude-code-ide-remote-worktree--render-bootstrap operation)))
+                 (with-temp-file (expand-file-name "plan.sh" root)
+                   (insert "cci_step 1 bootstrap "
+                           (mapconcat #'claude-code-ide-zmx--quote
+                                      (list main "/bin/sh" runner "bootstrap" root attempt zmx "owned") " ")
+                           "\n"))
+                 (dolist (file '("manifest" "bootstrap.sh" "plan.sh" "runner.sh"))
+                   (set-file-modes (expand-file-name file root) #o700))
+                 (should (zerop (call-process "/bin/sh" nil nil nil runner "run" root attempt)))
+                 (let ((status (with-temp-buffer
+                                 (should (zerop (call-process "/bin/sh" nil t nil runner "read" root attempt id "1")))
+                                 (plist-get (car (plist-get
+                                                  (claude-code-ide-remote-worktree--decode-receipts operation (buffer-string))
+                                                  :steps)) :exit-code))))
+                   (if (memq mode '(collision encoded-control encoded-malformed encoded-invalid-utf8 empty))
+                       (progn
+                         (should-not (zerop status))
+                         (should-not (file-exists-p effect))
+                         (should-not (file-exists-p (expand-file-name "bootstrap-owned" root)))
+                         (should (eq (file-exists-p attached) (eq mode 'empty))))
+                     (should (zerop status))
+                     (when (eq mode 'long)
+                       (should-not (file-exists-p (expand-file-name "agent-exit" root))))
+                     (let ((deadline (+ (float-time) 5)))
+                       (while (and (not (file-exists-p (expand-file-name "agent-exit" root)))
+                                   (< (float-time) deadline))
+                         (accept-process-output nil 0.02)))
+                     (should (file-exists-p (expand-file-name "agent-exit" root)))
+                     (should (zerop (apply #'call-process "/bin/sh" nil nil nil runner "agent"
+                                           root attempt (executable-find "git") repository main branch "owned" "/bin/sh" args)))
+                     (with-temp-buffer
+                       (insert-file-contents effect)
+                       (should (equal (buffer-string) "x")))
+                     (with-temp-buffer
+                       (should (zerop (call-process "/bin/sh" nil t nil runner "read" root attempt id "1")))
+                       (let ((evidence (claude-code-ide-remote-worktree--decode-receipts operation (buffer-string))))
+                         (should (plist-get evidence :bootstrap))
+                         (should (equal (cdr (assoc "status" (plist-get evidence :agent-exit)))
+                                        (if (eq mode 'long) "7" "0")))
+                         (claude-code-ide-remote-worktree--publish-check
+                          operation evidence
+                          (list :repository repository :worktrees (list (list :path main :branch branch :exists t))))
+                         (let ((result (claude-code-ide-remote-worktree--operation-results operation)))
+                           (should (eq (plist-get result :outcome) 'completed))
+                           (should (eq (plist-get (plist-get result :attachment) :status) 'agent-exited))
+                           (should-not (plist-get result :attachment-target))
+                           (should-not (plist-get result :retryable))))))))))
+         (delete-directory bin t))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-bootstrap-rechecks-zmx-identity ()
+  "Only the captured wrapper and unchanged zmx identity permit attachment."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation 'open "fixture" "/srv/worktree" nil))
+         (attempt (claude-code-ide-remote-worktree--operation-attempt-id operation))
+         (command (format "/bin/sh /private/resource/bootstrap.sh %s" attempt))
+         (session (list :name "owned" :pid 123 :created "1" :cmd command :start_dir "/srv/worktree"))
+         (evidence (list :bootstrap '(("name" . "owned") ("directory" . "/srv/worktree"))))
+         checked)
+    (setf (claude-code-ide-remote-worktree--operation-receipt-directory operation) "/private/resource")
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-discover-remote)
+               (lambda (_host callback &rest _) (funcall callback (list :sessions (list session)))))
+              ((symbol-function 'claude-code-ide-remote-worktree--metadata)
+               (lambda (_operation _paths callback)
+                 (funcall callback '((:kind git :worktree-path "/srv/worktree" :common-dir "/srv/repo/.git"))))))
+      (claude-code-ide-remote-worktree--read-bootstrap
+       operation evidence '(:repository "/srv/repo/.git") (lambda (value) (setq checked value)))
+      (should (plist-get checked :bootstrap-verified))
+      (setf (claude-code-ide-remote-worktree--operation-results operation)
+            (list :bootstrap-identity (plist-get checked :bootstrap-identity)))
+      (setq session (plist-put session :pid 456))
+      (claude-code-ide-remote-worktree--read-bootstrap
+       operation evidence '(:repository "/srv/repo/.git") (lambda (value) (setq checked value)))
+      (should-not (plist-get checked :bootstrap-verified))
+      (setq session (plist-put session :pid 123)
+            session (plist-put session :cmd "omp"))
+      (claude-code-ide-remote-worktree--read-bootstrap
+       operation evidence '(:repository "/srv/repo/.git") (lambda (value) (setq checked value)))
+      (should-not (plist-get checked :bootstrap-verified)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-external-agent-never-replaced ()
+  "Normal open selects an external Agent. Only explicit sibling intent starts another."
+  (save-window-excursion
+    (switch-to-buffer (current-buffer))
+    (let* ((claude-code-ide-remote-hosts '("fixture"))
+           (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+           (operation (claude-code-ide-remote-worktree--new-operation 'open "fixture" "/srv/repo" nil))
+           (agents '((:name "first" :worktree "/srv/repo" :cli-type omp)
+                     (:name "second" :worktree "/srv/repo" :cli-type omp)))
+           attached launched)
+      (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+            (list :host "fixture" :worktree "/srv/repo" :agents agents))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt &rest _)
+                   (should (string-match-p "fixture" prompt))
+                   "second"))
+                ((symbol-function 'claude-code-ide--attach-zmx-entry)
+                 (lambda (entry &rest _)
+                   (push (plist-get entry :name) attached)
+                   (user-error "The attachment is unavailable")))
+                ((symbol-function 'claude-code-ide-remote-worktree--prepare-launch)
+                 (lambda (&rest _) (setq launched t))))
+        (claude-code-ide-remote-worktree--open-inventory operation)
+        (should (equal attached '("second")))
+        (should-not launched)
+        (should (eq (plist-get (plist-get
+                                (claude-code-ide-remote-worktree--operation-results operation)
+                                :attachment) :status) 'failed))
+        (setf (claude-code-ide-remote-worktree--operation-options operation) '(:sibling t))
+        (claude-code-ide-remote-worktree--open-inventory operation)
+        (should launched)
+        (setq launched nil)
+        (setf (plist-get (claude-code-ide-remote-worktree--operation-snapshot operation) :agents)
+              '((:name "unknown" :error "No canonical Worktree identity")))
+        (should-error (claude-code-ide-remote-worktree--open-inventory operation) :type 'user-error)
+        (should-not launched)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-launch-settings-exclude-local-flags ()
+  "Remote launch uses the global Agent type and only exact-host remote overrides."
+  (let ((claude-code-ide-remote-hosts '("alpha" "beta"))
+        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+        (claude-code-ide-cli-path "/local/bin/omp")
+        (claude-code-ide-cli-extra-flags "--mcp-config /local/mcp.json")
+        (claude-code-ide-remote-launch-config
+         '(("alpha" :executable "/remote/agent" :args ("--model" "remote model")))))
+    (with-temp-buffer
+      (setq-local claude-code-ide-cli-path "/buffer/local/codex")
+      (let ((alpha (claude-code-ide-remote-worktree--launch-spec
+                    (claude-code-ide-remote-worktree--new-operation 'open "alpha" "/srv/repo" nil)))
+            (beta (claude-code-ide-remote-worktree--launch-spec
+                   (claude-code-ide-remote-worktree--new-operation 'open "beta" "/srv/repo" nil))))
+        (should (eq (plist-get alpha :cli-type) 'omp))
+        (should (equal (plist-get alpha :executable) "/remote/agent"))
+        (should (equal (plist-get alpha :args) '("--model" "remote model")))
+        (should (equal (plist-get beta :executable) "omp"))
+        (should-not (plist-get beta :args))))
+    (dolist (bad '((:shell "touch effect") (:executable "-unsafe")
+                   (:args "--local-flags") (:args ("ok") :args ("duplicate"))))
+      (let ((claude-code-ide-remote-launch-config (list (cons "alpha" bad))))
+        (should-error
+         (claude-code-ide-remote-worktree--launch-spec
+          (claude-code-ide-remote-worktree--new-operation 'open "alpha" "/srv/repo" nil))
+         :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-canceled-attachment-does-not-create-terminal ()
+  "Cancellation during an existing-target read prevents terminal creation and Agent replacement."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-terminal-backend 'ghostel)
+        (claude-code-ide-cli-terminal-backends nil)
+        (claude-code-ide-cli-path "omp")
+        (valid t)
+        created)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-by-session-key) #'ignore)
+              ((symbol-function 'claude-code-ide--materialize-remote-target) #'ignore)
+              ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+              ((symbol-function 'claude-code-ide-zmx-require-remote-session)
+               (lambda (&rest _) (setq valid nil)))
+              ((symbol-function 'claude-code-ide--create-terminal-with-command)
+               (lambda (&rest _) (setq created t) (ert-fail "Canceled attachment created a terminal"))))
+      (should-error
+       (claude-code-ide--create-remote-session
+        "/srv/repo" "existing-agent" "fixture" "remembered" (lambda () valid))
+       :type 'user-error)
+      (should-not created)
+      (should (= (hash-table-count claude-code-ide--sessions) 0)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-open-reuses-host-qualified-session ()
+  "Worktree selection omits missing directories and reuses the selected host's latest Session."
+  (save-window-excursion
+    (switch-to-buffer (current-buffer))
+    (let* ((claude-code-ide-remote-hosts '("alpha" "beta"))
+           (claude-code-ide--sessions (make-hash-table :test #'equal))
+           (claude-code-ide-remote-worktree--results-buffer nil)
+           (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+           (operation (claude-code-ide-remote-worktree--new-operation
+                       'open "alpha" "/srv/main" '(:select t)))
+           selected choices)
+      (dolist (entry '(("alpha-old" "alpha" 1) ("alpha-new" "alpha" 2)
+                       ("beta" "beta" 8) ("local" nil 9)))
+        (claude-code-ide--put-session
+         (claude-code-ide-session-create
+          :id (car entry) :host (cadr entry) :directory "/srv/linked"
+          :last-accessed-at (nth 2 entry) :zmx-name (car entry) :cli-type 'omp)))
+      (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+            '(:host "alpha" :repository "/srv/main/.git" :worktree "/srv/main"
+                    :tools ((git . "/usr/bin/git") (zmx . "/usr/bin/zmx"))
+                    :worktrees ((:path "/srv/main" :branch "main" :exists t)
+                                (:path "/srv/linked" :branch "topic" :exists t)
+                                (:path "/srv/missing" :branch "gone" :exists nil))))
+      (unwind-protect
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _)
+                       (setq choices collection) "/srv/linked"))
+                    ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                     (lambda (id &rest _) (setq selected id)))
+                    ((symbol-function 'claude-code-ide-zmx-remote-exec)
+                     (lambda (&rest _) (ert-fail "Existing Session reuse contacted a host")))
+                    ((symbol-function 'claude-code-ide-remote-worktree--prepare-launch)
+                     (lambda (&rest _) (ert-fail "Existing Session reuse launched another Agent"))))
+            (claude-code-ide-remote-worktree-show (claude-code-ide-remote-worktree--operation-id operation))
+            (claude-code-ide-remote-worktree--open operation)
+            (should (equal choices '("/srv/main" "/srv/linked")))
+            (should (equal selected "alpha-new"))
+            (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+            (should-not (claude-code-ide-remote-worktree--operation-steps operation)))
+        (when (buffer-live-p claude-code-ide-remote-worktree--results-buffer)
+          (kill-buffer claude-code-ide-remote-worktree--results-buffer))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-remembered-alias-never-replaced ()
+  "A failed attachment to a canonicalized remembered target never authorizes replacement."
+  (save-window-excursion
+    (switch-to-buffer (current-buffer))
+    (let* ((claude-code-ide-remote-hosts '("fixture"))
+           (claude-code-ide--sessions (make-hash-table :test #'equal))
+           (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+           (operation (claude-code-ide-remote-worktree--new-operation 'open "fixture" "/srv/repo" nil))
+           (item (make-claude-code-ide-manager-item
+                  :session-key "remembered" :host "fixture" :directory "/alias/repo"
+                  :zmx-name "old-agent" :cli-type 'omp))
+           (other (make-claude-code-ide-manager-item
+                   :session-key "other" :host "fixture" :directory "/alias/other"
+                   :zmx-name "other-agent" :cli-type 'omp)))
+      (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+            '(:host "fixture" :repository "/srv/repo/.git" :worktree "/srv/repo"))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--scope-state-entry) (lambda (_) t))
+                ((symbol-function 'claude-code-ide-manager--all-items) (lambda () (list item other)))
+                ((symbol-function 'claude-code-ide-remote-worktree--metadata)
+                 (lambda (_operation _directories callback)
+                   (funcall callback '((:kind git :worktree-path "/srv/repo" :common-dir "/srv/repo/.git")
+                                       (:kind git :worktree-path "/srv/repo" :common-dir "/srv/repo/.git")))))
+                ((symbol-function 'completing-read)
+                 (lambda (prompt &rest _)
+                   (should (string-match-p "fixture" prompt))
+                   "old-agent"))
+                ((symbol-function 'claude-code-ide--attach-zmx-entry)
+                 (lambda (entry &rest _)
+                   (should (equal (plist-get entry :name) "old-agent"))
+                   (user-error "The remembered Agent is unavailable")))
+                ((symbol-function 'claude-code-ide-remote-worktree--inventory)
+                 (lambda (&rest _) (ert-fail "Remembered attachment fell through to new-Agent discovery")))
+                ((symbol-function 'claude-code-ide-remote-worktree--prepare-launch)
+                 (lambda (&rest _) (ert-fail "Failed remembered attachment launched a replacement"))))
+        (claude-code-ide-remote-worktree--open-selected operation)
+        (sleep-for 0.2)
+        (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+        (should (eq (plist-get
+                     (plist-get (claude-code-ide-remote-worktree--operation-results operation) :attachment)
+                     :status) 'failed))
+        (should-not (claude-code-ide-remote-worktree--operation-steps operation))
+        (should-not (claude-code-ide-remote-worktree--operation-receipt-directory operation))))))
+
+
+
+(ert-deftest claude-code-ide-test-remote-worktree-safe-git-read-p-allowlist ()
+  "The native capture's low-level Git read advice allows only a fixed
+set of read-only command shapes and rejects every mutating shape, even
+for a subcommand that is only sometimes safe."
+  (dolist (case '((("symbolic-ref" "--short" "HEAD") . t)
+                  (("symbolic-ref" "refs/heads/x" "y") . nil)
+                  (("remote") . t)
+                  (("remote" "add" "x" "y") . nil)
+                  (("config" "--get-all" "--include" "x") . t)
+                  (("config" "--local" "--list") . t)
+                  (("config" "--list" "-z") . t)
+                  (("config" "--local" "--list" "--edit") . nil)
+                  (("config" "x" "y") . nil)
+                  (("config" "--bool" "--include" "cci.enabled") . t)
+                  (("config" "--bool" "cci.enabled" "true") . nil)
+                  (("config" "--get" "cci.enabled" "--unset" "cci.other") . nil)
+                  (("log" "--output=/tmp/cci-forbidden-write" "HEAD") . nil)
+                  (("rev-list" "--count" "HEAD") . t)
+                  (("for-each-ref" "--format=%(symref)\f%(refname:short)" "refs/heads") . t)
+                  (("ls-remote" "--symref" "origin" "HEAD") . t)
+                  (("ls-remote" "--upload-pack=touch /tmp/forbidden" "origin") . nil)
+                  (("ls-remote" "--upload-pack" "touch /tmp/forbidden" "origin") . nil)
+                  (("ls-remote" "--server-option=unsafe" "origin") . nil)
+                  (("ls-remote" "--server-option" "unsafe" "origin") . nil)
+                  (("ls-remote" "ext::touch /tmp/forbidden") . nil)
+                  (("rev-parse" "HEAD\0other") . nil)
+                  (("worktree" "add" "x" "y") . nil)
+                  (("branch" "x") . nil)
+                  (("push" "-v" "origin" "x") . nil)))
+    (if (cdr case)
+        (should (claude-code-ide-remote-worktree--safe-git-read-p (car case)))
+      (should-not (claude-code-ide-remote-worktree--safe-git-read-p (car case))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-native-read-preserves-format-arguments ()
+  "Native Git queries preserve format delimiters without shell evaluation."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (let ((default-directory main))
+       (with-temp-buffer
+         (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--bounded-read)
+                    (lambda (_operation _purpose program argv)
+                      (unless (cl-every #'claude-code-ide-zmx--valid-argument-p argv)
+                        (error "The query violated the literal control transport"))
+                      (with-temp-buffer
+                        (unless (zerop (apply #'process-file program nil t nil argv))
+                          (error "The native query wrapper failed"))
+                        (buffer-string)))))
+           (should
+            (zerop (claude-code-ide-remote-worktree--capture-git-read
+                    nil '("for-each-ref" "--format=%(refname:short)\f$(printf injected)\n"
+                          "refs/heads/main"))))
+           (should (equal (buffer-string) "main\f$(printf injected)\n\n"))))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-capture-executor-scoped-to-active-capture ()
+  "The shared executor advice only redirects `magit-call-git' and
+`magit-run-git-async' inside the exact thread and call that owns a
+native capture scope.  Outside that scope the real command still
+runs; inside it, the literal argv is captured with no process and the
+caller's own credential hook is suppressed for that extent."
+  (require 'magit-process)
+  (should (integerp (magit-call-git "--version")))
+  (let ((magit-credential-hook
+         (list (lambda () (ert-fail "Credential hook ran during capture")))))
+    (should (equal (claude-code-ide-remote-worktree--capture-native
+                    (claude-code-ide-remote-worktree--make-operation :kind 'move)
+                    (lambda () (magit-run-git-async "push" "-v" "origin" "x")))
+                   '("push" "-v" "origin" "x"))))
+  (should (integerp (magit-call-git "--version"))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-capture-native-fails-closed ()
+  "`--capture-native' never returns a plausible-looking argv for a thunk
+that never reaches the executor advice, that reaches it with a
+non-literal argument, or that reaches it under a foreign token."
+  (require 'magit-process)
+  (dolist (thunk
+           (list #'ignore
+                 (lambda () (magit-call-git "push" (current-buffer)))
+                 (lambda () (read-string "Select a target: "))
+                 (lambda () (signal 'claude-code-ide-remote-worktree--captured
+                                    (cons "foreign-token" '("worktree" "move" "a" "b"))))))
+    (should-error
+     (claude-code-ide-remote-worktree--capture-native
+      (claude-code-ide-remote-worktree--make-operation :kind 'move) thunk)
+     :type 'user-error)))
+
+(ert-deftest claude-code-ide-test-remote-worktree-native-move-fails-closed-for-unapproved-hosts ()
+  "Native movement refuses unknown or mismatched hosts before capture."
+  (let ((claude-code-ide-remote-hosts '("fixture" "other")))
+    (dolist (case '(("/rpc:unknown:/srv/repo/wt1" "/rpc:unknown:/srv/repo/wt2")
+                    ("/rpc:fixture:/srv/repo/wt1" "/rpc:other:/srv/repo/wt2")))
+      (should-error
+       (claude-code-ide-remote-worktree-native-move (car case) (cadr case))
+       :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-worktree-move-advice-runs-real-local-move ()
+  "A local (non-RPC) `magit-worktree-move' call, reached through the
+advice this feature adds, still performs the real move on disk."
+  (require 'magit-worktree)
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main linked)
+     (let* ((claude-code-ide-remote-hosts nil)
+            (destination (expand-file-name "feature-moved"
+                                           (file-name-directory (directory-file-name main))))
+            (default-directory main))
+       (magit-worktree-move (directory-file-name linked) destination)
+       (should (file-directory-p destination))
+       (should-not (file-exists-p linked))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-native-move-captures-and-strips-real-command ()
+  "Native movement preserves host context and captures before mutation."
+  (require 'magit-worktree)
+  (require 'tramp)
+  (cl-letf (((default-value 'tramp-methods)
+             (if (assoc "rpc" (default-value 'tramp-methods))
+                 (default-value 'tramp-methods)
+               (cons '("rpc") (default-value 'tramp-methods)))))
+    (claude-code-ide-tests--with-temp-worktree-repo
+     (lambda (main linked)
+       (let* ((claude-code-ide-remote-hosts '("fixture"))
+              (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+              (source (directory-file-name linked))
+              (destination (expand-file-name
+                            "feature-moved" (file-name-directory (directory-file-name main))))
+              started)
+         (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--start)
+                    (lambda (operation attempt generation)
+                      (setq started
+                            (and (claude-code-ide-remote-worktree--current-p operation attempt generation)
+                                 (claude-code-ide-remote-worktree--operation-options operation)))))
+                   ((symbol-function 'claude-code-ide-remote-worktree--control)
+                    (lambda (operation _purpose program argv callback &rest _)
+                      (claude-code-ide-zmx--validate-host
+                       (plist-get (claude-code-ide-remote-worktree--operation-target operation) :host))
+                      (with-temp-buffer
+                        (apply #'process-file program nil t nil argv)
+                        (funcall callback (buffer-string))))))
+           (let ((id (claude-code-ide-remote-worktree-native-move
+                      (format "/rpc:fixture:%s" source) (format "/rpc:fixture:%s" destination))))
+             (should (stringp id))
+             (let ((deadline (+ (float-time) 5)))
+               (while (and (null started) (< (float-time) deadline))
+                 (accept-process-output nil 0.05)))
+             (should (equal (plist-get started :native-argv)
+                            (list "worktree" "move" source destination)))
+             (should-not (file-exists-p destination))
+             (should (file-directory-p linked)))))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-dispatch-native-push-captures-shape-and-fails-closed ()
+  "`--dispatch-native-push' captures a push suffix's exact command as a
+'push operation with a still-current attempt handed to `--start'.  A
+captured command that does not start with \"push\" fails closed through
+`--fail' instead, and `--start' is never reached for it."
+  (require 'magit-process)
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (default-directory "/rpc:fixture:/srv/repo/wt1/")
+         started failed)
+    (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--start)
+               (lambda (operation attempt generation)
+                 (setq started
+                       (list :options (claude-code-ide-remote-worktree--operation-options
+                                       operation)
+                             :kind (claude-code-ide-remote-worktree--operation-kind operation)
+                             :current (claude-code-ide-remote-worktree--current-p
+                                       operation attempt generation)))))
+              ((symbol-function 'claude-code-ide-remote-worktree--fail)
+               (lambda (_operation diagnostic) (setq failed diagnostic))))
+      (claude-code-ide-remote-worktree--dispatch-native-push
+       (lambda (args) (magit-run-git-async "push" "-v" args "origin" "refs/heads/x:refs/heads/x"))
+       '("--force"))
+      (let ((deadline (+ (float-time) 5)))
+        (while (and (null started) (< (float-time) deadline))
+          (accept-process-output nil 0.05)))
+      (should (plist-get started :current))
+      (should (eq (plist-get started :kind) 'push))
+      (should (equal (plist-get (plist-get started :options) :native-argv)
+                     '("push" "-v" "--force" "origin" "refs/heads/x:refs/heads/x")))
+      (setq started nil)
+      (claude-code-ide-remote-worktree--dispatch-native-push
+       (lambda (_args) (magit-call-git "worktree" "list")) '("x"))
+      (let ((deadline (+ (float-time) 5)))
+        (while (and (null failed) (< (float-time) deadline))
+          (accept-process-output nil 0.05)))
+      (should (string-match-p "unsupported shape" failed))
+      (should-not started))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-push-suffix-read-args-avoids-native-reader-for-rpc ()
+  "The interactive spec every advised push suffix shares uses a fixed
+freeform prompt set for an approved RPC directory, keyed by
+`this-command', and never calls that suffix's own native interactive
+form.  A local directory keeps using the real captured native form."
+  (require 'magit-push)
+  (let ((claude-code-ide-remote-hosts '("fixture")))
+    (let ((this-command 'magit-push-tag)
+          (default-directory "/rpc:fixture:/srv/repo/wt1/")
+          (answers '("v1.2.3" "origin"))
+          native-reader-called)
+      (cl-letf (((symbol-function 'magit-read-tag)
+                 (lambda (&rest _) (setq native-reader-called t) "should-not-be-used"))
+                ((symbol-function 'read-string)
+                 (lambda (prompt &rest _)
+                   (should (string-match-p "fixture" prompt))
+                   (pop answers)))
+                ((symbol-function 'magit-push-arguments) (lambda () '("-f"))))
+        (should (equal (claude-code-ide-remote-worktree--push-suffix-read-args)
+                       '("v1.2.3" "origin" ("-f"))))
+        (should-not native-reader-called)))
+    (let ((this-command 'magit-push-current-to-upstream)
+          (default-directory "/rpc:fixture:/srv/repo/wt1/"))
+      (cl-letf (((symbol-function 'magit-push-arguments) (lambda () '("--dry-run"))))
+        (should (equal (claude-code-ide-remote-worktree--push-suffix-read-args)
+                       '(("--dry-run"))))))
+    (load "claude-code-ide-remote-worktree.el" nil t)
+    (let ((this-command 'magit-push-tag)
+          (default-directory "/tmp/some/local/repo/")
+          native-reader-called)
+      (cl-letf (((symbol-function 'magit-read-tag))
+                ((symbol-function 'magit-read-remote) (lambda (&rest _) "native-remote"))
+                ((symbol-function 'magit-push-arguments) (lambda () '("-f"))))
+        (setf (symbol-function 'magit-read-tag)
+              (lambda (&rest _) (setq native-reader-called t) "native-tag"))
+        (claude-code-ide-remote-worktree--push-suffix-read-args)
+        (should native-reader-called)))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-host-prompts-native-move ()
+  "Native movement names its captured host without remote listing or mutation."
+  (require 'magit-worktree)
+  (with-temp-buffer
+    (let ((default-directory "/rpc:fixture:/srv/repo/")
+          (claude-code-ide-remote-hosts '("fixture"))
+          (claude-code-ide-remote-worktree--snapshots (make-hash-table :test #'equal)))
+      (puthash '("fixture" "/srv/repo" wt)
+               '(:main-worktree "/srv/repo"
+                                :worktrees ((:path "/srv/repo" :exists t)
+                                            (:path "/srv/repo/feature" :exists t)))
+               claude-code-ide-remote-worktree--snapshots)
+      (cl-letf (((symbol-function 'magit-completing-read)
+                 (lambda (prompt candidates &rest _)
+                   (should (string-match-p "fixture" prompt))
+                   (should (equal candidates '("/srv/repo/feature")))
+                   "/srv/repo/feature"))
+                ((symbol-function 'read-string)
+                 (lambda (prompt &rest _)
+                   (should (string-match-p "fixture" prompt))
+                   (throw 'checked-move-prompts t)))
+                ((symbol-function 'magit-call-git)
+                 (lambda (&rest _) (ert-fail "Canceled movement executed Git"))))
+        (should (catch 'checked-move-prompts
+                  (call-interactively #'magit-worktree-move)
+                  nil))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-publication-confirmation-consequences ()
+  "Approval distinguishes forced history updates from remote ref deletion."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (argv '("push" "--force-with-lease" "origin"
+                 "refs/heads/topic:refs/heads/topic" ":refs/heads/obsolete"))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'push "fixture" "/srv/repo" (list :backend 'wt :native-argv argv)))
+         (publication
+          (claude-code-ide-remote-worktree--publication-preview
+           (concat "To ssh://fixture/publish.git\n"
+                   "+\trefs/heads/topic:refs/heads/topic\t123...456 (forced update)\n"
+                   "-\t:refs/heads/obsolete\t[deleted]\nDone\n")
+           '(("refs/heads/topic" . "0123456789012345678901234567890123456789")))))
+    (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+          (list :repository "/srv/repo/.git" :worktree "/srv/repo"
+                :publication publication :publication-argv argv))
+    (let ((prompt (car (claude-code-ide-remote-worktree--confirmation-prompts operation))))
+      (should (string-match-p "--force-with-lease" prompt))
+      (should (string-match-p "ssh://fixture/publish.git" prompt))
+      (should (string-match-p "rewrite.*refs/heads/topic" (downcase prompt)))
+      (should (string-match-p "delete.*refs/heads/obsolete" (downcase prompt)))
+      (should (equal (plist-get publication :refs)
+                     '(("refs/heads/topic" . "refs/heads/topic")
+                       ("refs/heads/obsolete")))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-approval-keeps-results-observation ()
+  "A small-frame approval preserves results observation and reaches its continuation."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (claude-code-ide-remote-worktree--results-buffer nil)
+         (origin (generate-new-buffer " *cci-approval-origin*"))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'remove "fixture" "/srv/repo" '(:backend wt)))
+         continued)
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (set-window-buffer (selected-window) origin)
+          (setf (claude-code-ide-remote-worktree--operation-state operation) 'awaiting-confirmation
+                (claude-code-ide-remote-worktree--operation-snapshot operation)
+                '(:host "fixture" :repository "/srv/repo/.git" :worktree "/srv/repo"))
+          (let ((results (claude-code-ide-remote-worktree--results-buffer-for operation))
+                (split-height-threshold nil)
+                (split-width-threshold nil))
+            (set-window-buffer (split-window-below) results)
+            (with-current-buffer results
+              (setq claude-code-ide-remote-worktree--results-visible t))
+            (cl-letf (((symbol-function 'yes-or-no-p)
+                       (lambda (&rest _)
+                         (run-hook-with-args 'window-buffer-change-functions (selected-frame))
+                         t)))
+              (claude-code-ide-remote-worktree--confirm-ready
+               operation (lambda (_) (setq continued t))
+               (claude-code-ide-remote-worktree--operation-attempt-id operation)
+               (claude-code-ide-remote-worktree--operation-generation operation)
+               (claude-code-ide-remote-worktree--approval-signature operation)))
+            (should continued)
+            (should (= (claude-code-ide-remote-worktree--operation-generation operation) 0))
+            (should (get-buffer-window results))))
+      (when (buffer-live-p claude-code-ide-remote-worktree--results-buffer)
+        (kill-buffer claude-code-ide-remote-worktree--results-buffer))
+      (kill-buffer origin))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-launch-selection-before-preparation ()
+  "A changed global Agent cannot replace the request's selection during preparation."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-cli-path "omp")
+         (claude-code-ide-remote-launch-config nil)
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'open "fixture" "/srv/repo" nil))
+         requests)
+    (setq claude-code-ide-cli-path "claude")
+    (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
+               (lambda (&rest args) (push args requests))))
+      (should-error (claude-code-ide-remote-worktree--prepare-launch operation #'ignore)
+                    :type 'user-error))
+    (should-not requests)))
+
+(ert-deftest claude-code-ide-test-remote-worktree-launch-selection-after-approval ()
+  "Changed host launch arguments invalidate an already approved dispatch."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-cli-path "omp")
+         (claude-code-ide-remote-launch-config
+          '(("fixture" :executable "/usr/bin/omp" :args ("--old"))))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'open "fixture" "/srv/repo" nil))
+         requests)
+    (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+          (list :launch (claude-code-ide-remote-worktree--launch-spec operation))
+          (claude-code-ide-remote-worktree--operation-steps operation) '((:kind bootstrap))
+          (claude-code-ide-remote-worktree--operation-state operation) 'awaiting-confirmation
+          (claude-code-ide-remote-worktree--operation-receipt-directory operation) "/unallocated/fixture"
+          (claude-code-ide-remote-worktree--operation-approval operation)
+          (claude-code-ide-remote-worktree--approval-signature operation))
+    (setq claude-code-ide-remote-launch-config
+          '(("fixture" :executable "/usr/bin/omp" :args ("--new"))))
+    (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
+               (lambda (&rest args) (push args requests))))
+      (should-error (claude-code-ide-remote-worktree--dispatch operation #'ignore)
+                    :type 'user-error))
+    (should-not requests)))
+
+(ert-deftest claude-code-ide-test-remote-worktree-open-ignores-proven-unrelated-identities ()
+  "Unrelated shell identities do not block open, but possibly matching identities still do."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'open "fixture" "/srv/repo" nil))
+         (shell '(:name "shell" :cmd "bash" :start_dir "/home/user"))
+         launched)
+    (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+          (list :host "fixture" :worktree "/srv/repo"
+                :agents (list (claude-code-ide-remote-worktree--resolve-agent
+                               "fixture" shell
+                               '(:kind non-git :project-path "/home/user")))))
+    (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--prepare-launch)
+               (lambda (&rest _) (setq launched t))))
+      (claude-code-ide-remote-worktree--open-inventory operation)
+      (should launched)
+      (setq launched nil)
+      (setf (claude-code-ide-remote-worktree--operation-options operation) '(:sibling t))
+      (claude-code-ide-remote-worktree--open-inventory operation)
+      (should launched)
+      (setq launched nil)
+      (setf (plist-get (claude-code-ide-remote-worktree--operation-snapshot operation) :agents)
+            (list (claude-code-ide-remote-worktree--resolve-agent
+                   "fixture" shell '(:kind git :worktree-path "/srv/repo" :common-dir "/srv/repo/.git"))))
+      (should-error (claude-code-ide-remote-worktree--open-inventory operation) :type 'user-error)
+      (should-not launched)
+      (setf (plist-get (claude-code-ide-remote-worktree--operation-snapshot operation) :agents)
+            (list (claude-code-ide-remote-worktree--resolve-agent "fixture" shell nil)))
+      (should-error (claude-code-ide-remote-worktree--open-inventory operation) :type 'user-error)
+      (should-not launched))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-remembered-errors-require-targeted-discovery ()
+  "Unmatched stale rows defer to fresh inventory instead of blocking every open."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation
+                     'open "fixture" "/srv/repo" nil))
+         (row (make-claude-code-ide-manager-item
+               :host "fixture" :directory "/srv/old" :zmx-name "old" :cli-type 'omp))
+         inventory launched discovered)
+    (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+          '(:host "fixture" :worktree "/srv/repo" :repository "/srv/repo/.git"))
+    (cl-letf (((symbol-function 'claude-code-ide--preferred-session) #'ignore)
+              ((symbol-function 'claude-code-ide-manager--scope-state-entry) (lambda (_) t))
+              ((symbol-function 'claude-code-ide-manager--all-items) (lambda () (list row)))
+              ((symbol-function 'claude-code-ide-remote-worktree--metadata)
+               (lambda (_operation directories callback)
+                 (funcall callback (list (list :kind 'error :directory (car directories))))))
+              ((symbol-function 'claude-code-ide-remote-worktree--inventory)
+               (lambda (ready callback)
+                 (setq discovered t)
+                 (setf (plist-get (claude-code-ide-remote-worktree--operation-snapshot ready) :agents)
+                       inventory)
+                 (funcall callback ready)))
+              ((symbol-function 'claude-code-ide-remote-worktree--prompt)
+               (lambda (ready callback) (funcall callback ready)))
+              ((symbol-function 'claude-code-ide-remote-worktree--prepare-launch)
+               (lambda (&rest _) (setq launched t))))
+      (claude-code-ide-remote-worktree--open-selected operation)
+      (should discovered)
+      (should launched)
+      (setq launched nil inventory '((:name "unknown" :error "Unresolved directory")))
+      (should-error (claude-code-ide-remote-worktree--open-selected operation) :type 'user-error)
+      (should-not launched)
+      (setq inventory nil)
+      (setf (claude-code-ide-manager-item-directory row) "/srv/repo")
+      (should-error (claude-code-ide-remote-worktree--open-selected operation) :type 'user-error)
+      (should-not launched))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-manager-local-context-wins ()
+  "Local rows and sidebar scopes never inherit another buffer's remote target."
+  (let ((claude-code-ide-remote-hosts '("fixture"))
+        (claude-code-ide-manager--command-scope nil)
+        (local (make-claude-code-ide-manager-item
+                :session-key "/tmp/local/" :directory "/tmp/local/")))
+    (dolist (item (list local nil))
+      (with-temp-buffer
+        (claude-code-ide-manager-mode)
+        (setq default-directory "/rpc:fixture:/srv/repo/"
+              claude-code-ide-manager--scope '(:type repo :git-root "/tmp/local/"))
+        (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point) (lambda () item))
+                  ((symbol-function 'claude-code-ide-remote-worktree-request)
+                   (lambda (&rest _) (ert-fail "A local target became a remote request")))
+                  ((symbol-function 'claude-code-ide-manager--open-target-for-scope)
+                   (lambda (scope) (throw 'local (plist-get scope :git-root))))
+                  ((symbol-function 'claude-code-ide-manager--worktree-root-for-command)
+                   (lambda () (throw 'local "/tmp/local/"))))
+          (should (equal (catch 'local (claude-code-ide-manager-open)) "/tmp/local/"))
+          (should (equal (catch 'local (claude-code-ide-manager-new-worktree)) "/tmp/local/")))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-native-push-existing-destination ()
+  "Native push resolves an existing tracking branch without executing publication."
+  (require 'magit-push)
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (let ((default-directory main)
+           (magit--refresh-cache nil))
+       (claude-code-ide-tests--git "remote" "add" "origin" "/cci-unreachable-publication")
+       (claude-code-ide-tests--git "update-ref" "refs/remotes/origin/main" "HEAD")
+       (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--bounded-read)
+                  (lambda (_operation _purpose program argv)
+                    (with-temp-buffer
+                      (unless (zerop (apply #'process-file program nil t nil argv))
+                        (ert-fail "Native capture read failed"))
+                      (buffer-string)))))
+         (should
+          (equal (claude-code-ide-remote-worktree--capture-native
+                  (claude-code-ide-remote-worktree--make-operation :kind 'push)
+                  (lambda () (magit-git-push "main" "origin/main" '("--force-with-lease"))))
+                 '("push" "-v" "--force-with-lease" "origin" "main:main"))))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-dispatch-waits-for-owned-admission ()
+  "A runner barrier keeps dispatch pending until owned admission and later completion."
+  (claude-code-ide-tests--with-temp-worktree-repo
+   (lambda (main _linked)
+     (let* ((main (file-truename main))
+            (root (file-truename (make-temp-file "cci-admission-" t)))
+            (barrier (expand-file-name "blocked" root))
+            (release (expand-file-name "release" root))
+            (effect (expand-file-name "effect" root))
+            (ssh (expand-file-name "ssh" root))
+            (ps (expand-file-name "ps" root))
+            (real-ps (executable-find "ps"))
+            (exec-path (cons root exec-path))
+            (process-environment (cons (concat "PATH=" root ":" (getenv "PATH")) process-environment))
+            (claude-code-ide-remote-hosts '("fixture"))
+            (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+            (operation (claude-code-ide-remote-worktree--new-operation
+                        'create "fixture" main '(:name "fixture" :create-only t)))
+            resource completed)
+       (unwind-protect
+           (progn
+             (with-temp-file ssh
+               (insert "#!/bin/sh\nfor command do :; done\nexec /bin/sh -c \"$command\"\n"))
+             (with-temp-file ps
+               (insert "#!/bin/sh\ncase \"$*\" in '-o lstart= -p '*)\n"
+                       "  : > " (claude-code-ide-zmx--quote barrier) "\n"
+                       "  while [ ! -f " (claude-code-ide-zmx--quote release)
+                       " ]; do sleep 0.01; done;;\nesac\nexec "
+                       (claude-code-ide-zmx--quote real-ps) " \"$@\"\n"))
+             (dolist (file (list ssh ps)) (set-file-modes file #o700))
+             (setf (claude-code-ide-remote-worktree--operation-display-context operation) nil
+                   (claude-code-ide-remote-worktree--operation-snapshot operation)
+                   (list :host "fixture" :worktree (directory-file-name main)
+                         :repository (expand-file-name ".git" main)
+                         :tools (list (cons 'git (executable-find "git"))))
+                   (claude-code-ide-remote-worktree--operation-steps operation)
+                   (list (list :step-id 1 :kind 'backend-create :cwd root :program "/bin/sh"
+                               :argv '("-c" "printf x >> effect")
+                               :postconditions (list (list :kind 'file :path effect :exists t))))
+                   (claude-code-ide-remote-worktree--operation-approval operation)
+                   (claude-code-ide-remote-worktree--approval-signature operation))
+             (claude-code-ide-remote-worktree--transition operation 'awaiting-confirmation)
+             (claude-code-ide-remote-worktree--stage
+              operation
+              (lambda (staged)
+                (setq resource (claude-code-ide-remote-worktree--operation-receipt-directory staged))
+                (claude-code-ide-remote-worktree--dispatch
+                 staged
+                 (lambda (submitted)
+                   (claude-code-ide-remote-worktree--observe
+                    submitted
+                    (lambda (checked)
+                      (setq completed (claude-code-ide-remote-worktree--operation-state checked))))))))
+             (claude-code-ide-tests--remote-worktree-wait-file barrier)
+             (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'dispatching))
+             (with-temp-buffer
+               (should (zerop
+                        (call-process "/bin/sh" nil t nil
+                                      (expand-file-name "runner.sh" resource) "read" resource
+                                      (claude-code-ide-remote-worktree--operation-attempt-id operation)
+                                      (claude-code-ide-remote-worktree--operation-id operation) "1")))
+               (should-not (string-match-p "^file=worker-started\t" (buffer-string))))
+             (should-not (file-exists-p effect))
+             (should-not completed)
+             (with-temp-file release)
+             (let ((deadline (+ (float-time) 10)))
+               (while (and (not completed) (< (float-time) deadline))
+                 (accept-process-output nil 0.02)))
+             (should (eq completed 'completed))
+             (with-temp-buffer
+               (insert-file-contents-literally effect)
+               (should (equal (buffer-string) "x"))))
+         (with-temp-file release)
+         (claude-code-ide-remote-worktree-cancel-observation
+          (claude-code-ide-remote-worktree--operation-id operation))
+         (when resource
+           (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "finished" resource)))
+         (when (or (not resource) (file-exists-p (expand-file-name "finished" resource)))
+           (when resource (delete-directory resource t))
+           (delete-directory root t)))))))
 
 (provide 'claude-code-ide-tests)
 

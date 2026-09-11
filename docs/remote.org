@@ -3,8 +3,9 @@
 
 * Purpose
 
-Remote mode connects Emacs to an existing zmx Session through SSH.
-It never starts an Agent or creates a persistent remote zmx Session.
+Remote attachment connects Emacs to an existing zmx Session through SSH.
+Attachment never starts a replacement Agent.
+Explicit [[*Worktree Management][Worktree management]] can create Worktrees and launch Agents after confirmation.
 
 The terminal path and the optional Project-view path are separate.
 A Project-view failure does not detach or block the terminal.
@@ -16,7 +17,7 @@ For local persistent Sessions, see [[file:zmx.org][Persistent Sessions with zmx]
 Prepare these items outside Emacs:
 
 - Install stock zmx on each remote host.
-- Start the Agent inside an existing zmx Session.
+- For attachment, start the Agent inside an existing zmx Session.
 - Configure SSH authentication, ports, jump hosts, and trusted host keys.
 - Install and select the Ghostel terminal backend.
 - Add each exact SSH destination to =claude-code-ide-remote-hosts=.
@@ -80,6 +81,174 @@ Individual attachment permits manual Agent selection and absolute remote-directo
 Fresh attachment uses the discovery result.
 Remembered reattachment first checks the exact target with =zmx list --short=.
 Both paths use =zmx attach NAME false= as the final disappearance guard.
+
+* Worktree Management
+
+Worktree management adds explicit remote launch, creation, and lifecycle
+operations beside the attachment above.
+It targets one exact Configured host and one absolute remote repository
+path, and it never scans a host for repositories.
+See the [[file:../README.org::*Remote Worktree Management][Remote Worktree
+Management section of the README]] for the manager =W= menu, the
+=claude-code-ide-remote-launch-config= option, and the results-buffer
+keys. This section covers the guarantees behind those commands.
+
+** Preparation and Admission
+
+Every mutation captures the exact host, repository, action, and
+originating context first.
+It re-verifies host approval before preparation and again before
+dispatch.
+It resolves Worktrees, branch identities, and executable paths on that
+host, validates names and collisions before creating anything, and
+queries fresh remote Agent inventory.
+It then shows a confirmation naming the exact host, targets, and
+consequences before it sends anything.
+A declined confirmation makes no mutation.
+
+Inventory accepts both =start_dir= and the zmx 0.8
+=cwd=file://HOST/PATH= format.
+URI paths decode percent escapes and UTF-8 without changing literal plus signs.
+Encoded control characters, malformed escapes, and invalid UTF-8 remain unresolved.
+Missing or malformed identity fields block protected operations.
+
+Manager creation omits the initialization option when the Lane setting is disabled.
+An explicit Lane initialization option on Worktrunk fails before mutation.
+
+** Agent Bootstrap
+
+Creation with Agent launch owns a generated zmx name and a unique
+token before any request leaves Emacs.
+The Agent runs inside an owned zmx wrapper.
+That wrapper writes an ownership receipt in the private operation resource.
+A name collision never runs a replacement command or stops the existing Agent.
+Missing ownership proof leaves launch unverified.
+
+Launch failure preserves an already-created Worktree.
+Attachment failure after a verified launch preserves the Agent and
+offers explicit attachment instead of another launch.
+Reattachment reuses the same =zmx attach NAME false= guard used by
+[[*Attach Existing Agents][existing attachment]].
+
+** Agent Protection
+
+Before removal, movement, history rewriting, or cleanup, Emacs runs a
+fresh, bounded Agent-inventory check on the affected Worktree.
+A running, detached, or idle Agent blocks the action.
+Failed discovery, or an Agent whose affected Worktree cannot be
+resolved, blocks the action too: absent local manager rows never imply
+safety.
+A merge check covers the source and the destination Worktree.
+
+The action never stops a blocking Agent itself.
+Stop it explicitly, then retry: the retry re-checks from scratch.
+A force choice never bypasses this check.
+
+** Results, Check Outcome, and Retry
+
+Every operation stays in the local results buffer until Emacs exits,
+even after its results window closes.
+Check outcome is an explicit, read-only action against the exact
+captured host and target.
+It never writes, removes a resource, signals a process, starts an
+Agent, or approves a hook.
+
+Check outcome classifies each operation as completed, still running,
+confirmed unfinished, partially completed, or still unknown.
+An entered step without an exit receipt is =pending= only when fresh
+evidence verifies that its worker still runs. Uncertain worker state
+leaves that step =unknown=.
+A matching directory, or a missing response, is never proof of
+completion by itself.
+Retry stays unavailable for an unknown or still-running step.
+It can offer only a step Check outcome proved both unfinished and
+safe, as a new mutation with its own confirmation, never a replay of a
+completed or uncertain step.
+
+** Cancellation and Observation
+
+A remote mutation has no fixed execution deadline once dispatched.
+Its pending state stays visible while other editor and terminal work
+continues.
+
+Cancel before dispatch prevents the mutation.
+Cancel after dispatch stops local observation only: the remote
+operation and its worker continue.
+Closing the results view does the same.
+Neither sends a remote signal, kills an Agent, removes receipts, or
+closes a shared RPC connection.
+
+A completed remote sequence can finish after observation stops.
+The local completion handler does not steal focus, open a new view, or
+attach a terminal after cancellation.
+Check outcome can offer those actions later, explicitly.
+A lost connection stops automatic observation without starting a
+reconnect loop.
+
+** Views After Directory Changes
+
+Preparation captures the current remote directory and resolves its
+Worktree identity on the selected host. This also covers Magit views
+opened outside the Project-view registry.
+
+When that directory disappears, completion opens a verified same-host
+survivor only while the operation retains display ownership.
+Unrelated navigation or cancellation leaves explicit recovery available.
+When no Worktree survives, results report =Project view: unavailable=.
+Edited file buffers remain intact.
+
+Completion also refreshes safe existing survivor views when the origin
+Worktree remains. It publishes fresh backend rows before native refresh.
+Ordinary section rendering reads only the cached snapshot.
+Edited or shared views retain their contents.
+
+Retained, unmodified Magit and Dired views show an unavailable header with
+the host and removed path. This includes known subdirectories of that
+Worktree, but not sibling-prefix paths or paths on another host.
+The feature preserves uncertain paths without resolving aliases.
+It does not reuse unavailable views without fresh preparation,
+even if another Worktree later uses the same path.
+
+** Optional Dependencies
+
+Remote creation and its Magit-driven follow-on actions need =magit-lane=
+or =magit-worktrunk= loaded, with that backend's binary resolved on the
+selected host.
+Neither backend package requires =claude-code-ide= at load time; a
+remote-aware backend command reports a missing package instead of
+doing partial work.
+
+Remote views opened by create-only or Magit actions need the same
+optional =tramp-rpc= client as [[*Optional Project Views][Optional
+Project Views]], currently Emacs 30.1 or later.
+Remote listing, creation, and launch through the results buffer still
+target Emacs 28.1 or later without that client.
+
+** Operation Boundaries
+
+The manager provides list, open, and create.
+Backend lifecycle commands run from remote Magit through =magit-lane=
+or =magit-worktrunk= when =default-directory= names an approved remote Worktree.
+Native Magit move and push commands use capture before process creation
+or native cleanup, then enter the same admission boundary.
+Capture preserves destination interpretation, force flags, and resolved refspecs.
+Unsupported command shapes fail without execution.
+See [[file:../../magit-lane/README.org::*Remote Worktrees][the magit-lane
+remote operation table]] and
+[[file:../../magit-worktrunk/README.org::*Remote Worktrees][the
+magit-worktrunk remote operation table]] for the exact behavior of each
+action.
+Lane never moves a Worktree, on any host, because it owns a fixed tree
+location.
+No backend moves a Worktree between hosts.
+
+Worktrunk merge records landing and cleanup as separate steps.
+Landing uses =wt merge --no-remove= toward the confirmed target.
+Cleanup checks source identity, cleanliness, and Agent inventory again.
+A new Agent can block cleanup without undoing or repeating landing.
+An explicit retry can run only the proved, unentered remainder.
+Invocation-only target overrides preserve existing Git environment entries
+and never change persistent default-branch settings.
 
 * Manager Lifecycle
 
@@ -168,8 +337,14 @@ One exact host and remote Git Worktree share one Project-view buffer.
 Different hosts and different Worktrees use different buffers.
 Non-Git views use the exact host and directory identity.
 
-The feature reuses a surviving matching buffer without refreshing it.
-Use the view's native =g= command when you want fresh contents.
+Ordinary Session reuse keeps a matching buffer without a refresh.
+Explicit Worktree refresh and recovery refresh safe native views.
+Recovery rejects a native view if its current host or directory no longer matches its registered identity.
+It preserves views with uncertain native state, temporary files, or unknown local kill or query hooks.
+Fresh preparation checks unavailable native views before the provider can reuse them.
+It refuses reuse when edits, shared ownership, or uncertain state require preservation.
+Remote Worktrunk marks the current row from each view's directory, not the shared snapshot's original query.
+Use the view's native =g= command for other manual refreshes.
 
 Bulk attachment does not prepare every project.
 Each Session starts preparation only when its managed layout first appears.
@@ -212,7 +387,7 @@ Terminal close, network loss, Stop, and Emacs exit do not run Project-view clean
 
 Remote mode does not provide these features:
 
-- Remote Agent launch.
+- Automatic Agent replacement for a missing or failed attachment.
 - Automatic reconnect.
 - Remote host discovery.
 - Remote Treemacs actions or project launch commands.

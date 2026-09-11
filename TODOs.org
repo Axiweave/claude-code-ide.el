@@ -58,9 +58,15 @@ Done in [[file:../../specs/002-magit-worktree-launch/quickstart.md][specs/002-ma
 =claude-code-ide-manager-new-worktree= (=w=), =claude-code-ide-worktree-backend=,
 =claude-code-ide-manager-open-directory=.
 
-* TODO remote worktree open and create
-=claude-code-ide-manager-open-directory= refuses remote paths. Needs the RPC
-file names from spec 005.
+* DONE remote worktree acceptance
+Manager =W= provides remote open, create, and retained results.
+Remote Magit routes supported remove, move, merge, push, and prune actions
+through the shared admission and receipt protocol.
+Native move and push capture and isolated lifecycle checks pass.
+T064/T075 record completed authorized real-host acceptance.
+The accepted compatibility scope is Emacs 31/32. Emacs 28.1, 29.4,
+30.1, and other native-compilation combinations remain unverified. See
+[[file:../../specs/003-remote-worktree-management/tasks.md][specs/003-remote-worktree-management/tasks.md]].
 
 * TODO checkout an existing branch into a new worktree
 The new-worktree command refuses names that already exist as a branch.

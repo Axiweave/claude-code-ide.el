@@ -26,6 +26,7 @@ This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manz
 - Session state indicators in the [[*CC Manager][CC Manager]]: Oh My Pi reports idle, working, needs-input, done, and failed over MCP; other agents use output-driven idle and working detection
 - [[*Terminal Backend Configuration][Ghostel and per-CLI terminal backend selection]]
 - Expanded transient navigation and file-reference workflows; see [[*Basic Commands][Basic Commands]] and [[*Session Customization][Session Customization]]
+- [[*Remote Worktree Management][Remote Worktree Management]]: explicit remote Worktree list, open, and create through the manager, plus remove/move/merge/push/prune through remote Magit
 
 ** Features
 
@@ -315,6 +316,116 @@ It also retains buffers with unknown local kill or query hooks.
 Cleanup never saves, prompts, makes a remote request, or closes an RPC connection.
 Terminal close, network loss, Stop, and Emacs exit do not run this cleanup.
 
+** Remote Worktree Management
+
+Remote Worktree management extends [[*Existing Remote Agents][remote Agent attachment]] with explicit remote Worktree list, open, and create actions, plus the remove, move, merge, push, and prune actions available through remote Magit. Every action targets one exact Configured host and one absolute remote repository path. It never scans a host for repositories and never substitutes a local target when an action refuses.
+
+*** Terms
+
+- *Worktree*: a main or linked working directory of one Git repository on one host.
+- *Worktree backend*: =lane= or =wt= (Worktrunk), selected per repository the same way as [[*Worktree Creation][local worktree creation]].
+- *Remote agent* and *Session*: as defined in [[*Existing Remote Agents][Existing Remote Agents]].
+- *Worktree operation*: one requested action (list, open, create, remove, move, merge, push, or prune) with a captured host, targets, and reported steps. Its result can remain unknown after observation ends.
+- *Outcome check*: an explicit, read-only re-examination of an operation's remote state.
+
+See [[file:CONTEXT.md][CONTEXT.md]] for the full glossary.
+
+*** Manager Commands
+
+Press =W= in the sidebar, or in the main transient's manager section, to open the Remote Worktree menu (=claude-code-ide-manager-remote-worktree-menu=):
+
+| Key | Command | Effect |
+|-----+---------+--------|
+| =o= | =claude-code-ide-manager-open-remote= | Choose a Configured host and repository, select a Worktree, then reuse/attach/start its Agent. A prefix argument starts an explicit sibling Agent. |
+| =w= | =claude-code-ide-manager-new-remote-worktree= | Choose a Configured host and repository, ask one new name, create the Worktree, and start the configured Agent. A prefix argument creates only, then opens remote Magit without an Agent. |
+| =r= | =claude-code-ide-remote-worktree-show= | Display a retained operation's result. Makes no remote request. |
+
+On an existing remote Session row or inside an existing remote Magit buffer, plain =o= (=claude-code-ide-manager-open=) and =w= (=claude-code-ide-manager-new-worktree=) already use that context's exact host and repository, skipping the extra prompts. =C-u o= there starts an explicit sibling Agent; =C-u w= there creates the Worktree only.
+
+Each command returns an operation ID rather than a path or session object. Every result stays attached to its captured host, so identical paths on two hosts never share a Session match or a result.
+
+*** Remote Launch Configuration
+
+=claude-code-ide-remote-launch-config= is an alist keyed by exact Configured host. Each value is a property list with optional =:executable= and =:args=:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-remote-launch-config
+      '(("my-agent-host" :executable "claude" :args ("--model" "sonnet"))))
+#+end_src
+
+The default executable is the globally selected Agent's standard command name, resolved on that host's =PATH=. Remote arguments default to an empty list. Local executable paths, local CLI flags, and local MCP settings are never inherited by a remote launch.
+
+Backend commands and Agents keep the host's locale and umask.
+The runner uses private permissions and fixed protocol parsing only for its own work.
+
+*** Explicit Refresh
+
+Remote Lane and Worktrunk sections in Magit render an explicit snapshot; they never run a synchronous backend command while rendering. Request a fresh snapshot with =M-x claude-code-ide-remote-worktree-refresh=, or the corresponding refresh key in the =magit-lane= or =magit-worktrunk= transient on a remote Worktree. Ordinary manager navigation, automatic idle refresh, and startup never contact a host for this listing.
+
+*** Lifecycle Boundaries
+
+The manager provides list, open, and create only.
+Remote Magit supplies the supported remove, move, merge, push, and prune actions.
+Backend commands and native Magit move/push capture use the same protected operation boundary.
+Native capture preserves selected force flags, destination interpretation, and resolved publication refs before execution.
+See [[file:../magit-lane/README.org][magit-lane]] and [[file:../magit-worktrunk/README.org][magit-worktrunk]] for each backend's operation table and prerequisites.
+Lane refuses movement because it owns a fixed tree location.
+No backend moves a Worktree between hosts.
+
+Worktrunk merge records landing and cleanup separately.
+A new blocking Agent can prevent cleanup after successful landing.
+Results retain that landing, and an explicit retry never repeats it.
+
+Only a selected Lane backend uses the Lane initialization setting.
+Its instruction-file change still requires separate approval.
+Worktrunk rejects explicit Lane-only initialization options.
+
+*** Agent Protection
+
+A known Agent in an affected Worktree blocks removal, movement, history rewriting, and cleanup, even when idle or detached. A merge check covers both the source and destination Worktree. Failed Agent discovery, or an affected Agent whose identity cannot be resolved, blocks the action instead of assuming it is safe. Stop the Agent explicitly first, then retry: no Worktree action stops an Agent as a side effect, and force never bypasses this check.
+
+Protection includes canonical descendant directories, including nested repositories and submodules.
+Sibling paths with the same prefix do not match.
+
+*** Check Outcome and Retry
+
+Progress appears without a focus change.
+Messages identify requests that cannot replace the selected result.
+Every result stays available through =r= in the Remote Worktree menu or =M-x claude-code-ide-remote-worktree-show=.
+
+The results buffer provides these controls:
+
+| Key | Effect |
+|-----+--------|
+| =g= | Check outcome: an explicit, read-only re-examination of the captured host and target. Never mutates, retries, launches an Agent, or approves a hook. |
+| =r= | Retry: submits only a step Check outcome proved both unfinished and safe to attempt. Disabled otherwise. This is a new mutation with fresh confirmation, never a replay of a completed or uncertain step. |
+| =c= | Cancel observation: stops local observation. It never stops or rolls back an already-submitted remote operation. |
+| =a= | Recover attachment: attaches the Agent an operation already started, when only that step remains. |
+| =v= | Recover view: reopens the remote view an operation already produced. |
+| =s= | Select: choose which retained operation the buffer displays. |
+| =q= | Close: closes the results buffer. The operation record and any remote work continue. |
+
+Check outcome distinguishes completed, still running, confirmed unfinished, partially completed, and still unknown results.
+A matching directory or a missing response alone never proves completion.
+An entered command with a nonzero exit shows =failed=, even when its effects leave the overall outcome unknown.
+Retry never repeats an entered failed step.
+
+You can inspect the same operation's results while its owned attachment or Project-view completion continues.
+If an unrelated view owns focus at completion, the results show a deferred continuation and retain its recovery target.
+After you close results or cancel observation, only an explicit recovery action can attach a terminal or change the Project view.
+
+Normal completion requests removal of an eligible completed operation resource after it retains terminal proof.
+It keeps unknown, partial, running, and live-bootstrap resources.
+Check outcome never removes resources.
+
+*** Optional Dependencies
+
+Remote Worktree management lives in =claude-code-ide.el= and calls into =magit-lane= or =magit-worktrunk= only when that package is loaded and its binary resolves on the selected host. Neither backend package requires =claude-code-ide= at load time; a remote-aware backend command reports that =claude-code-ide= is not loaded instead of doing partial work.
+
+Remote Project views opened by create-only or remote Magit actions need the same optional =tramp-rpc= client as [[*Optional Remote Project Views][Optional Remote Project Views]], currently Emacs 30.1 or later. Remote listing, creation, and launch through the results buffer still target Emacs 28.1 or later without that client.
+
+Local worktree, Agent, and Magit workflows keep their existing behavior. No new host prompt, confirmation, or launch step is inserted into a local action.
+
 ** CC Manager
 
 =claude-code-ide-manager-toggle-sidebar= opens a dedicated left sidebar for Sessions.
@@ -501,6 +612,7 @@ When point is in the manager buffer:
 - =s= starts a sibling session with the current CLI; =S= starts one with explicit permissions bypass
 - =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
 - =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
+- =W= opens the [[*Remote Worktree Management][Remote Worktree menu]] for a Configured host
 - =D= or =X= detaches the selected zmx-backed session and removes its row without stopping the agent, even when disconnected
 - =c= explicitly reattaches the selected disconnected remote target
 - =K= confirms Stop for the exact selected target

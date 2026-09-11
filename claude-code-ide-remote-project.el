@@ -19,10 +19,17 @@
 ;; owns asynchronous preparation and view lifetime.  The manager owns
 ;; window layout.  The optional RPC client loads only for an admitted
 ;; preparation attempt.
+;;
+;; `claude-code-ide-remote-project-open-target' prepares the same kind
+;; of view for an explicit host and directory with no Session.  It
+;; shares every guard above and never fabricates a Session or enables
+;; automatic display.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'warnings)
+(require 'claude-code-ide-zmx)
 
 (defgroup claude-code-ide-remote-project nil
   "Remote Project views for managed Sessions."
@@ -53,6 +60,8 @@
 (declare-function dired-find-buffer-nocreate "dired" (dirname &optional mode))
 (declare-function magit-get-mode-buffer "magit-mode"
                   (mode &optional value frame))
+(declare-function magit-refresh-buffer "magit-mode"
+                  (&optional created &key initial-section select-section))
 
 
 (declare-function tramp-dissect-file-name "tramp" (name))
@@ -78,15 +87,18 @@
 
 (cl-defstruct (claude-code-ide-remote-project--attempt
                (:constructor claude-code-ide-remote-project--make-attempt))
-  "One asynchronous Project-view preparation attempt."
+  "One asynchronous Project-view preparation attempt.
+CALLBACK is non-nil only for an explicit no-Session target attempt
+from `claude-code-ide-remote-project-open-target'.  REQUESTED-DIRECTORY
+then holds its exact requested directory for the callback result."
   id session-id attachment host admitted-host directory frame reason
   state worker connecting timer route-key view-key candidate
-  candidate-origin abandon-reason)
+  candidate-origin abandon-reason callback requested-directory on-close)
 
 (cl-defstruct (claude-code-ide-remote-project--view
                (:constructor claude-code-ide-remote-project--make-view))
   "One shared Project view."
-  key buffer origin creator writer sessions)
+  key buffer origin creator writer sessions close-callbacks)
 
 (cl-defstruct
     (claude-code-ide-remote-project--cleanup-snapshot
@@ -113,6 +125,9 @@
 
 (defvar-local claude-code-ide-remote-project--candidate-attempt nil
   "Attempt that owns this unpublished candidate buffer.")
+
+(defvar-local claude-code-ide-remote-project--unavailable-header nil
+  "Original and unavailable header formats for an invalidated Project view.")
 
 (defvar claude-code-ide-remote-project--worker-attempt nil
   "Dynamically bound attempt owned by the current feature worker.")
@@ -198,44 +213,58 @@
                claude-code-ide-remote-project--intents))
     intent))
 
-(defun claude-code-ide-remote-project--attempt-admission-current-p
-    (attempt)
+(defun claude-code-ide-remote-project--attempt-admission-current-p (attempt)
   "Return non-nil when ATTEMPT retains its original host admission."
-  (or
-   (null
-    (claude-code-ide-remote-project--attempt-admitted-host attempt))
-   (claude-code-ide-manager--remote-project-enabled-p
-    (claude-code-ide-remote-project--attempt-session-id attempt)
-    (claude-code-ide-remote-project--attempt-admitted-host attempt))))
+  (let ((host (claude-code-ide-remote-project--attempt-admitted-host attempt)))
+    (if (claude-code-ide-remote-project--attempt-callback attempt)
+        (and (equal host (claude-code-ide-remote-project--attempt-host attempt))
+             (member host claude-code-ide-remote-hosts))
+      (or (null host)
+          (claude-code-ide-manager--remote-project-enabled-p
+           (claude-code-ide-remote-project--attempt-session-id attempt) host)))))
 
 (defun claude-code-ide-remote-project--attempt-current-p (attempt)
-  "Return non-nil when ATTEMPT retains Session, attachment, and admission."
-  (when-let* ((intent
-               (and attempt
-                    (gethash
-                     (claude-code-ide-remote-project--attempt-session-id attempt)
-                     claude-code-ide-remote-project--intents))))
-    (and
-     (eq attempt
-         (claude-code-ide-remote-project--intent-attempt intent))
-     (eq (claude-code-ide-remote-project--attempt-attachment attempt)
-         (claude-code-ide-remote-project--intent-attachment intent))
-     (equal (claude-code-ide-remote-project--attempt-host attempt)
-            (claude-code-ide-remote-project--intent-host intent))
-     (claude-code-ide-remote-project--attempt-admission-current-p
-      attempt))))
+  "Return non-nil when ATTEMPT retains its owner and host admission."
+  (and
+   attempt
+   (not (eq (claude-code-ide-remote-project--attempt-state attempt) 'abandoned))
+   (claude-code-ide-remote-project--attempt-admission-current-p attempt)
+   (if (claude-code-ide-remote-project--attempt-callback attempt)
+       (not (memq (claude-code-ide-remote-project--attempt-state attempt)
+                  '(abandoned ready failed)))
+     (when-let* ((intent
+                  (gethash
+                   (claude-code-ide-remote-project--attempt-session-id attempt)
+                   claude-code-ide-remote-project--intents)))
+       (and
+        (eq attempt (claude-code-ide-remote-project--intent-attempt intent))
+        (eq (claude-code-ide-remote-project--attempt-attachment attempt)
+            (claude-code-ide-remote-project--intent-attachment intent))
+        (equal (claude-code-ide-remote-project--attempt-host attempt)
+               (claude-code-ide-remote-project--intent-host intent)))))))
 
-(defun claude-code-ide-remote-project--invalidate-lost-admission
-    (attempt)
+(defun claude-code-ide-remote-project--invalidate-lost-admission (attempt)
   "Invalidate ATTEMPT and return non-nil when its host admission changed."
-  (when
-      (and
-       (claude-code-ide-remote-project--attempt-admitted-host attempt)
-       (not
-        (claude-code-ide-remote-project--attempt-admission-current-p
-         attempt)))
-    (claude-code-ide-remote-project--abandon-attempt
-     attempt 'host-admission-lost)))
+  (when (and (not (memq (claude-code-ide-remote-project--attempt-state attempt)
+                        '(abandoned ready failed)))
+             (claude-code-ide-remote-project--attempt-admitted-host attempt)
+             (not (claude-code-ide-remote-project--attempt-admission-current-p attempt)))
+    (when-let* ((callback (claude-code-ide-remote-project--attempt-callback attempt)))
+      (run-at-time
+       0 nil
+       (lambda ()
+         (when (and (eq callback
+                        (claude-code-ide-remote-project--attempt-callback attempt))
+                    (eq 'host-admission-lost
+                        (claude-code-ide-remote-project--attempt-abandon-reason attempt)))
+           (setf (claude-code-ide-remote-project--attempt-callback attempt) nil)
+           (funcall callback
+                    (list :status 'failed :error "Host approval was removed"
+                          :host (claude-code-ide-remote-project--attempt-host attempt)
+                          :directory
+                          (claude-code-ide-remote-project--attempt-requested-directory
+                           attempt)))))))
+    (claude-code-ide-remote-project--abandon-attempt attempt 'host-admission-lost)))
 
 (defun claude-code-ide-remote-project--cancel-timer (attempt)
   "Cancel ATTEMPT's feature deadline timer."
@@ -259,6 +288,7 @@
     (setf (claude-code-ide-remote-project--attempt-state attempt) 'abandoned
           (claude-code-ide-remote-project--attempt-abandon-reason attempt)
           reason)
+    (setf (claude-code-ide-remote-project--attempt-on-close attempt) nil)
     (claude-code-ide-remote-project--cancel-timer attempt)
     (claude-code-ide-remote-project--abandon-candidate attempt)
     (claude-code-ide-remote-project--release-view attempt)
@@ -396,6 +426,9 @@
        (claude-code-ide-remote-project--attempt-candidate attempt) nil
        (claude-code-ide-remote-project--attempt-candidate-origin attempt)
        nil)
+      (when-let* ((on-close (claude-code-ide-remote-project--attempt-on-close attempt)))
+        (setf (claude-code-ide-remote-project--attempt-on-close attempt) nil)
+        (run-at-time 0 nil on-close))
       (claude-code-ide-remote-project--abandon-attempt
        attempt 'candidate-killed))))
 
@@ -735,14 +768,17 @@ the transport encoding themselves."
 
 
 (defun claude-code-ide-remote-project--registered-view (key)
-  "Return KEY's live registered view, or remove its dead buffer record."
+  "Return KEY's reusable view.
+Keep unavailable owners, but discard records for dead buffers."
   (when-let* ((view
                (gethash key claude-code-ide-remote-project--views)))
-    (if (buffer-live-p
-         (claude-code-ide-remote-project--view-buffer view))
-        view
-      (remhash key claude-code-ide-remote-project--views)
-      nil)))
+    (let ((buffer (claude-code-ide-remote-project--view-buffer view)))
+      (if (buffer-live-p buffer)
+          (unless (buffer-local-value
+                   'claude-code-ide-remote-project--unavailable-header buffer)
+            view)
+        (remhash key claude-code-ide-remote-project--views)
+        nil))))
 
 (defun claude-code-ide-remote-project--dired-view-p
     (buffer directory)
@@ -758,8 +794,9 @@ the transport encoding themselves."
        (claude-code-ide-remote-project--trim-directory
         directory))))))
 
-(defun claude-code-ide-remote-project--lookup-native-view (key)
-  "Return a surviving native buffer for view KEY without refreshing it."
+(defun claude-code-ide-remote-project--lookup-native-view (key &optional include-unavailable)
+  "Return KEY's native buffer without refresh.
+INCLUDE-UNAVAILABLE permits inspection before fresh provider preparation."
   (let* ((kind (nth 1 key))
          (directory (nth 2 key))
          (magit-buffer
@@ -780,7 +817,10 @@ the transport encoding themselves."
         magit-buffer
         claude-code-ide-remote-project--incomplete-candidates))
       (with-current-buffer magit-buffer
-        (and (eq major-mode 'magit-status-mode) magit-buffer)))
+        (and (eq major-mode 'magit-status-mode)
+             (or include-unavailable
+                 (not claude-code-ide-remote-project--unavailable-header))
+             magit-buffer)))
      (when (fboundp 'dired-find-buffer-nocreate)
        (let ((buffer
               (ignore-errors
@@ -794,22 +834,71 @@ the transport encoding themselves."
             claude-code-ide-remote-project--incomplete-candidates))
           (claude-code-ide-remote-project--dired-view-p
            buffer directory)
+          (or include-unavailable
+              (not (buffer-local-value
+                    'claude-code-ide-remote-project--unavailable-header buffer)))
           buffer))))))
 
-(defun claude-code-ide-remote-project--find-view (key)
-  "Return KEY's registered or native Project view without refreshing."
+(defun claude-code-ide-remote-project--find-view (key &optional check-unavailable)
+  "Return KEY's reusable Project view without refreshing.
+CHECK-UNAVAILABLE rejects unsafe native reuse before provider preparation."
   (or
    (claude-code-ide-remote-project--registered-view key)
    (when-let* ((buffer
-                (claude-code-ide-remote-project--lookup-native-view key)))
-     (let ((view
-            (claude-code-ide-remote-project--make-view
-             :key key :buffer buffer :origin 'preexisting)))
-       (puthash key view claude-code-ide-remote-project--views)
-       view))))
+                (claude-code-ide-remote-project--lookup-native-view key check-unavailable)))
+     (let* ((registered (gethash key claude-code-ide-remote-project--views))
+            (view (if (and registered
+                           (eq buffer (claude-code-ide-remote-project--view-buffer registered)))
+                      registered
+                    (claude-code-ide-remote-project--make-view
+                     :key key :buffer buffer :origin 'preexisting))))
+       (if (buffer-local-value 'claude-code-ide-remote-project--unavailable-header buffer)
+           (unless (and (equal (claude-code-ide-remote-project--trim-directory
+                                (buffer-local-value 'default-directory buffer))
+                               (nth 2 key))
+                        (claude-code-ide-remote-project--view-refreshable-p view))
+             (error "The unavailable Project view has edits, shared ownership, or uncertain state"))
+         (puthash key view claude-code-ide-remote-project--views)
+         view)))))
 
-(defun claude-code-ide-remote-project--view-result (view)
-  "Return a worker result for published VIEW."
+(defun claude-code-ide-remote-project--view-refreshable-p (view)
+  "Return non-nil when VIEW's current ownership and buffer state permit refresh."
+  (with-current-buffer (claude-code-ide-remote-project--view-buffer view)
+    (and (memq major-mode '(magit-status-mode dired-mode))
+         (pcase (claude-code-ide-remote-project--view-origin view)
+           ('preexisting t)
+           ('created-by-feature
+            (eq major-mode
+                (pcase (claude-code-ide-remote-project--view-creator view)
+                  ('magit 'magit-status-mode)
+                  ('dired 'dired-mode)))))
+         (not (cdr (claude-code-ide-remote-project--reconcile-live-sessions
+                    (claude-code-ide-remote-project--view-key view) view)))
+         (not (buffer-modified-p))
+         (not buffer-file-name)
+         (not (get-buffer-process (current-buffer)))
+         (not (and (local-variable-p 'tramp-temp-buffer-file-name)
+                   tramp-temp-buffer-file-name))
+         (not (claude-code-ide-remote-project--unknown-local-hook-p
+               (current-buffer) 'kill-buffer-hook '(claude-code-ide-remote-project--view-killed)))
+         (not (claude-code-ide-remote-project--unknown-local-hook-p
+               (current-buffer) 'kill-buffer-query-functions nil)))))
+
+(defun claude-code-ide-remote-project--view-result (view &optional attempt)
+  "Return VIEW's worker result, honoring ATTEMPT's explicit recovery."
+  (when (and attempt
+             (eq (claude-code-ide-remote-project--attempt-reason attempt)
+                 'worktree-recovery))
+    (with-current-buffer (claude-code-ide-remote-project--view-buffer view)
+      (when (and (memq major-mode '(magit-status-mode dired-mode))
+                 (not (equal (claude-code-ide-remote-project--trim-directory default-directory)
+                             (nth 2 (claude-code-ide-remote-project--view-key view)))))
+        (error "The Project view no longer matches the requested directory"))
+      (when (claude-code-ide-remote-project--view-refreshable-p view)
+        (let ((inhibit-interaction t))
+          (if (eq major-mode 'magit-status-mode)
+              (magit-refresh-buffer)
+            (revert-buffer nil t))))))
   (list
    :key (claude-code-ide-remote-project--view-key view)
    :buffer (claude-code-ide-remote-project--view-buffer view)
@@ -871,8 +960,8 @@ the transport encoding themselves."
   "Return an unpublished Project-view result for ATTEMPT and KEY."
   (claude-code-ide-remote-project--checkpoint attempt)
   (if-let* ((view
-             (claude-code-ide-remote-project--find-view key)))
-      (claude-code-ide-remote-project--view-result view)
+             (claude-code-ide-remote-project--find-view key t)))
+      (claude-code-ide-remote-project--view-result view attempt)
     (if
         (not
          (claude-code-ide-remote-project--claim-view attempt key))
@@ -888,8 +977,8 @@ the transport encoding themselves."
           (claude-code-ide-remote-project--prepare-view attempt key))
       (unwind-protect
           (if-let* ((view
-                     (claude-code-ide-remote-project--find-view key)))
-              (claude-code-ide-remote-project--view-result view)
+                     (claude-code-ide-remote-project--find-view key t)))
+              (claude-code-ide-remote-project--view-result view attempt)
             (setf
              (claude-code-ide-remote-project--attempt-state attempt)
              'preparing)
@@ -933,7 +1022,7 @@ the transport encoding themselves."
 
 (defun claude-code-ide-remote-project--finish-success
     (attempt result)
-  "Publish ATTEMPT's current RESULT and notify the manager."
+  "Publish ATTEMPT's current RESULT and notify its owner."
   (unless
       (claude-code-ide-remote-project--invalidate-lost-admission
        attempt)
@@ -955,71 +1044,115 @@ the transport encoding themselves."
                  (puthash key new
                           claude-code-ide-remote-project--views)
                  new)))
-             (intent
-              (gethash
-               (claude-code-ide-remote-project--attempt-session-id
-                attempt)
-               claude-code-ide-remote-project--intents))
              (published
-              (claude-code-ide-remote-project--view-buffer view)))
+              (claude-code-ide-remote-project--view-buffer view))
+             (callback
+              (claude-code-ide-remote-project--attempt-callback attempt))
+             (on-close
+              (claude-code-ide-remote-project--attempt-on-close attempt)))
+        (with-current-buffer published
+          (when claude-code-ide-remote-project--unavailable-header
+            (when (eq header-line-format
+                      (cdr claude-code-ide-remote-project--unavailable-header))
+              (setq header-line-format
+                    (car claude-code-ide-remote-project--unavailable-header)))
+            (setq claude-code-ide-remote-project--unavailable-header nil)))
         (if (eq buffer published)
             (claude-code-ide-remote-project--publish-candidate
              attempt)
           (claude-code-ide-remote-project--abandon-candidate
            attempt))
-        (when
-            (eq
-             (claude-code-ide-remote-project--view-origin view)
-             'created-by-feature)
+        (when on-close
+          (push on-close (claude-code-ide-remote-project--view-close-callbacks view))
+          (setf (claude-code-ide-remote-project--attempt-on-close attempt) nil))
+        (when (or on-close
+                  (eq (claude-code-ide-remote-project--view-origin view)
+                      'created-by-feature))
           (with-current-buffer published
             (add-hook
              'kill-buffer-hook
              #'claude-code-ide-remote-project--view-killed nil t)))
-        (cl-pushnew
-         (claude-code-ide-remote-project--attempt-session-id attempt)
-         (claude-code-ide-remote-project--view-sessions view)
-         :test #'equal)
         (setf
-         (claude-code-ide-remote-project--intent-view-key intent) key
-         (claude-code-ide-remote-project--intent-view-buffer intent)
-         published
-         (claude-code-ide-remote-project--intent-captured-view-name
-          intent)
-         (buffer-name published)
-         (claude-code-ide-remote-project--intent-outcome intent) 'ready
-         (claude-code-ide-remote-project--intent-attempt intent) nil
          (claude-code-ide-remote-project--attempt-state attempt) 'ready)
-        (claude-code-ide-manager--display-remote-project-view
-         (claude-code-ide-remote-project--attempt-session-id attempt)
-         (claude-code-ide-remote-project--attempt-attachment attempt)
-         (claude-code-ide-remote-project--attempt-frame attempt)
-         published)))))
+        (if callback
+            (funcall
+             callback
+             (list
+              :status 'completed
+              :buffer published
+              :host (claude-code-ide-remote-project--attempt-host
+                     attempt)
+              :directory
+              (claude-code-ide-remote-project--attempt-requested-directory
+               attempt)))
+          (cl-pushnew
+           (claude-code-ide-remote-project--attempt-session-id attempt)
+           (claude-code-ide-remote-project--view-sessions view)
+           :test #'equal)
+          (let ((intent
+                 (gethash
+                  (claude-code-ide-remote-project--attempt-session-id
+                   attempt)
+                  claude-code-ide-remote-project--intents)))
+            (setf
+             (claude-code-ide-remote-project--intent-view-key intent)
+             key
+             (claude-code-ide-remote-project--intent-view-buffer intent)
+             published
+             (claude-code-ide-remote-project--intent-captured-view-name
+              intent)
+             (buffer-name published)
+             (claude-code-ide-remote-project--intent-outcome intent)
+             'ready
+             (claude-code-ide-remote-project--intent-attempt intent)
+             nil))
+          (claude-code-ide-manager--display-remote-project-view
+           (claude-code-ide-remote-project--attempt-session-id attempt)
+           (claude-code-ide-remote-project--attempt-attachment attempt)
+           (claude-code-ide-remote-project--attempt-frame attempt)
+           published))))))
 
 (defun claude-code-ide-remote-project--finish-failure
     (attempt error-data)
-  "Record and report ERROR-DATA when ATTEMPT still owns its Session."
+  "Record and report ERROR-DATA when ATTEMPT still owns its Session or target."
   (unless
       (claude-code-ide-remote-project--invalidate-lost-admission
        attempt)
     (when
         (claude-code-ide-remote-project--attempt-current-p attempt)
-      (let ((failure-message
-             (claude-code-ide-remote-project--failure-message
-              attempt error-data)))
+      (let* ((callback
+              (claude-code-ide-remote-project--attempt-callback attempt))
+             (failure-message
+              (if callback
+                  (error-message-string error-data)
+                (claude-code-ide-remote-project--failure-message
+                 attempt error-data))))
         (claude-code-ide-remote-project--cancel-timer attempt)
         (claude-code-ide-remote-project--abandon-candidate attempt)
-        (when-let* ((intent
-                     (gethash
-                      (claude-code-ide-remote-project--attempt-session-id
-                       attempt)
-                      claude-code-ide-remote-project--intents)))
-          (setf
-           (claude-code-ide-remote-project--intent-outcome intent)
-           'failed
-           (claude-code-ide-remote-project--intent-attempt intent) nil
-           (claude-code-ide-remote-project--attempt-state attempt)
-           'failed))
-        (message "%s" failure-message)))))
+        (setf
+         (claude-code-ide-remote-project--attempt-state attempt) 'failed)
+        (if callback
+            (funcall
+             callback
+             (list
+              :status 'failed
+              :error failure-message
+              :host (claude-code-ide-remote-project--attempt-host
+                     attempt)
+              :directory
+              (claude-code-ide-remote-project--attempt-requested-directory
+               attempt)))
+          (when-let* ((intent
+                       (gethash
+                        (claude-code-ide-remote-project--attempt-session-id
+                         attempt)
+                        claude-code-ide-remote-project--intents)))
+            (setf
+             (claude-code-ide-remote-project--intent-outcome intent)
+             'failed
+             (claude-code-ide-remote-project--intent-attempt intent)
+             nil))
+          (message "%s" failure-message))))))
 
 (defun claude-code-ide-remote-project--worker (attempt)
   "Run remote preparation for ATTEMPT."
@@ -1064,6 +1197,35 @@ the transport encoding themselves."
         #'claude-code-ide-remote-project--finish-failure
         attempt error-data)))))
 
+(defun claude-code-ide-remote-project--spawn-worker (attempt label)
+  "Start ATTEMPT's worker thread named LABEL.
+Return ATTEMPT, or abandon it when the thread cannot start."
+  (let (;; The NS event loop can hold the Lisp lock while idle.
+        ;; Yield on the main thread until this worker exits.
+        (yield-timer
+         (when (featurep 'ns)
+           (run-at-time 0 0.05 #'thread-yield)))
+        worker)
+    (unwind-protect
+        (progn
+          (claude-code-ide-remote-project--start-health-deadline attempt)
+          (setq worker
+                (make-thread
+                 (lambda ()
+                   (unwind-protect
+                       (claude-code-ide-remote-project--worker attempt)
+                     (when yield-timer
+                       (cancel-timer yield-timer))))
+                 label))
+          (setf (claude-code-ide-remote-project--attempt-worker attempt)
+                worker)
+          attempt)
+      (unless worker
+        (claude-code-ide-remote-project--abandon-attempt
+         attempt 'worker-unavailable)
+        (when yield-timer
+          (cancel-timer yield-timer))))))
+
 (defun claude-code-ide-remote-project-prepare
     (session-id host attachment frame reason)
   "Prepare SESSION-ID's remote Project view without blocking its terminal.
@@ -1083,41 +1245,83 @@ display ownership.  REASON identifies first display, reattach, or reset."
           (setf
            (claude-code-ide-remote-project--intent-suppressed intent)
            nil))
-        (let* ((attempt
-                (claude-code-ide-remote-project--begin-attempt
-                 intent
-                 (claude-code-ide-remote-project--rpc-directory
-                  host
-                  (claude-code-ide-manager--session-directory
-                   session-id))
-                 frame reason host))
-               ;; The NS event loop can hold the Lisp lock while idle.
-               ;; Yield on the main thread until this worker exits.
-               (yield-timer
-                (when (featurep 'ns)
-                  (run-at-time 0 0.05 #'thread-yield)))
-               worker)
-          (unwind-protect
-              (progn
-                (claude-code-ide-remote-project--start-health-deadline
-                 attempt)
-                (setq worker
-                      (make-thread
-                       (lambda ()
-                         (unwind-protect
-                             (claude-code-ide-remote-project--worker attempt)
-                           (when yield-timer
-                             (cancel-timer yield-timer))))
-                       (format "remote-project-%s" session-id)))
-                (setf
-                 (claude-code-ide-remote-project--attempt-worker attempt)
-                 worker)
-                attempt)
-            (unless worker
-              (claude-code-ide-remote-project--abandon-attempt
-               attempt 'worker-unavailable)
-              (when yield-timer
-                (cancel-timer yield-timer)))))))))
+        (let ((attempt
+               (claude-code-ide-remote-project--begin-attempt
+                intent
+                (claude-code-ide-remote-project--rpc-directory
+                 host
+                 (claude-code-ide-manager--session-directory
+                  session-id))
+                frame reason host)))
+          (claude-code-ide-remote-project--spawn-worker
+           attempt (format "remote-project-%s" session-id)))))))
+
+(defconst claude-code-ide-remote-project--minimum-emacs-version "30.1"
+  "Earliest Emacs version the optional RPC client supports.")
+
+(defun claude-code-ide-remote-project-target-available-p ()
+  "Return non-nil when this Emacs can prepare an explicit remote target.
+Check the Emacs version and the optional RPC client's safety seams.
+Never connect, prompt for credentials, or start remote work."
+  (and
+   (version<=
+    claude-code-ide-remote-project--minimum-emacs-version
+    emacs-version)
+   (claude-code-ide-remote-project--load-client)))
+
+(defun claude-code-ide-remote-project-open-target
+    (host directory callback &optional reason on-close)
+  "Prepare an explicit remote Project view for DIRECTORY on HOST.
+Reject an unapproved HOST or a non-absolute DIRECTORY before any
+remote work.  Never attach an existing Session and never enable
+automatic display for HOST.
+
+This shares every guard `claude-code-ide-remote-project-prepare' uses:
+the RPC client gate, the health check, the 30-second deadline, and the
+shared view registry that lets a matching Session-owned view reuse the
+same native buffer.  It never fabricates a Session.
+
+Call CALLBACK exactly once, on the main thread, with a plist:
+:status `completed' or `failed', :host, :directory, and either
+:buffer (on success) or :error (on failure).  REASON identifies why
+this attempt started, for example a create-only view or a
+user-requested mutation refresh; it defaults to `explicit-target'.
+ON-CLOSE, when supplied, runs on the main thread after its candidate
+or published view closes.  It does not own the shared connection.
+
+Return the owned attempt.  Cancel it with
+`claude-code-ide-remote-project-cancel-target'."
+  (claude-code-ide-zmx--validate-host host)
+  (unless (claude-code-ide-zmx--valid-directory-p directory)
+    (user-error "Host %s requires an absolute remote directory" host))
+  (unless (functionp callback)
+    (user-error "The remote Project view callback must be a function"))
+  (unless (or (null on-close) (functionp on-close))
+    (user-error "The Project-view close callback must be a function"))
+  (unless (claude-code-ide-remote-project-target-available-p)
+    (user-error "Remote Project views require Emacs 30.1 and a compatible RPC client"))
+  (let ((attempt
+         (claude-code-ide-remote-project--make-attempt
+          :id (make-symbol "remote-project-target-attempt")
+          :host (copy-sequence host)
+          :admitted-host (copy-sequence host)
+          :requested-directory (copy-sequence directory)
+          :directory
+          (claude-code-ide-remote-project--rpc-directory host directory)
+          :callback callback
+          :on-close on-close
+          :reason (or reason 'explicit-target)
+          :state 'checking-client)))
+    (claude-code-ide-remote-project--spawn-worker
+     attempt (format "remote-project-target-%s" host))))
+
+(defun claude-code-ide-remote-project-cancel-target (attempt)
+  "Cancel explicit ATTEMPT from `claude-code-ide-remote-project-open-target'.
+Before dispatch this prevents any remote work.  After dispatch this
+only stops local observation: ATTEMPT's callback never runs, and a
+remote read or Project-view provider call already started still
+finishes on its own."
+  (claude-code-ide-remote-project--abandon-attempt attempt 'cancel))
 
 (defun claude-code-ide-remote-project-record-display
     (session-id attachment view-buffer)
@@ -1147,6 +1351,10 @@ display ownership.  REASON identifies first display, reattach, or reset."
               ((eq attachment
                    (claude-code-ide-remote-project--intent-attachment
                     intent)))
+              ((not
+                (eq
+                 (claude-code-ide-remote-project--intent-outcome intent)
+                 'unavailable)))
               (buffer
                (claude-code-ide-remote-project--intent-view-buffer
                 intent)))
@@ -1214,17 +1422,22 @@ display ownership.  REASON identifies first display, reattach, or reset."
 (defun claude-code-ide-remote-project--view-killed ()
   "Remove the current dead Project view from local feature records."
   (let ((buffer (current-buffer))
-        dead-keys)
+        dead-keys close-callbacks)
     (maphash
      (lambda (key view)
        (when
            (eq
             buffer
             (claude-code-ide-remote-project--view-buffer view))
-         (push key dead-keys)))
+         (push key dead-keys)
+         (setq close-callbacks
+               (nconc (claude-code-ide-remote-project--view-close-callbacks view) close-callbacks))
+         (setf (claude-code-ide-remote-project--view-close-callbacks view) nil)))
      claude-code-ide-remote-project--views)
     (dolist (key dead-keys)
       (remhash key claude-code-ide-remote-project--views))
+    (dolist (callback close-callbacks)
+      (run-at-time 0 nil callback))
     (maphash
      (lambda (_session-id intent)
        (when
@@ -1382,16 +1595,11 @@ display ownership.  REASON identifies first display, reattach, or reset."
         (null attachment)
         (not (buffer-live-p attachment))))))))
 
-(defun claude-code-ide-remote-project--cleanup-retention-reason
-    (snapshot view)
-  "Return why SNAPSHOT must retain VIEW, or nil when it may kill it."
+(defun claude-code-ide-remote-project--view-retention-reason (view)
+  "Return why VIEW's own buffer state blocks reclaiming it, or nil."
   (let ((buffer
          (claude-code-ide-remote-project--view-buffer view)))
     (cond
-     ((not
-       (claude-code-ide-remote-project--cleanup-token-current-p
-        snapshot))
-      'newer-attachment)
      ((not (buffer-live-p buffer)) 'dead)
      ((not
        (eq
@@ -1436,10 +1644,18 @@ display ownership.  REASON identifies first display, reattach, or reset."
       'kill-hook)
      ((claude-code-ide-remote-project--unknown-local-hook-p
        buffer 'kill-buffer-query-functions nil)
-      'query-hook)
-     ((claude-code-ide-remote-project--sharing-reason
-       snapshot view))
-     (nil))))
+      'query-hook))))
+
+(defun claude-code-ide-remote-project--cleanup-retention-reason
+    (snapshot view)
+  "Return why SNAPSHOT must retain VIEW, or nil when it may kill it."
+  (if (not
+       (claude-code-ide-remote-project--cleanup-token-current-p
+        snapshot))
+      'newer-attachment
+    (or
+     (claude-code-ide-remote-project--view-retention-reason view)
+     (claude-code-ide-remote-project--sharing-reason snapshot view))))
 
 (defun claude-code-ide-remote-project-cleanup (snapshot)
   "Apply SNAPSHOT's conservative local-only explicit-detach cleanup."
@@ -1471,5 +1687,203 @@ display ownership.  REASON identifies first display, reattach, or reset."
       (list
        :killed (nreverse killed)
        :retained (nreverse retained)))))
+
+(defun claude-code-ide-remote-project--reconcile-live-sessions (key view)
+  "Return VIEW's sessions whose intent still owns exact KEY."
+  (cl-remove-if-not
+   (lambda (session-id)
+     (when-let*
+         ((intent
+           (gethash
+            session-id claude-code-ide-remote-project--intents)))
+       (equal
+        (claude-code-ide-remote-project--intent-view-key intent)
+        key)))
+   (claude-code-ide-remote-project--view-sessions view)))
+
+(defun claude-code-ide-remote-project--reconcile-reason
+    (view live-sessions)
+  "Return why VIEW must survive reconciliation among LIVE-SESSIONS."
+  (if (cdr live-sessions)
+      'shared
+    (pcase (claude-code-ide-remote-project--view-retention-reason view)
+      ('modified 'modified)
+      ('source-file 'source-file)
+      ((or 'nil 'dead 'replaced) nil)
+      (_ 'uncertain))))
+
+(defun claude-code-ide-remote-project--reconcile-destination
+    (surviving moved-to)
+  "Return the best surviving Worktree plist for MOVED-TO in SURVIVING."
+  (let ((target
+         (and
+          moved-to
+          (claude-code-ide-remote-project--trim-directory moved-to))))
+    (or
+     (and
+      target
+      (cl-find-if
+       (lambda (worktree)
+         (and
+          (plist-get worktree :exists)
+          (equal
+           (claude-code-ide-remote-project--trim-directory
+            (plist-get worktree :path))
+           target)))
+       surviving))
+     (cl-find-if
+      (lambda (worktree) (plist-get worktree :exists)) surviving))))
+
+(defun claude-code-ide-remote-project--affected-path-p (path affected)
+  "Return non-nil for a known PATH at or below an AFFECTED Worktree."
+  (and (claude-code-ide-zmx--valid-directory-p path)
+       (not (string-match-p "/\\.\\.?\\(?:/\\|\\'\\)\\|//" path))
+       (seq-some (lambda (root)
+                   (or (equal path root) (string-prefix-p (concat root "/") path)))
+                 affected)))
+
+(defun claude-code-ide-remote-project--mark-unavailable (buffer host path)
+  "Mark safe native BUFFER unavailable for exact HOST and PATH."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and (memq major-mode '(magit-status-mode dired-mode))
+                 (not buffer-file-name)
+                 (not (buffer-modified-p))
+                 (not (get-buffer-process buffer))
+                 (not (claude-code-ide-remote-project--unknown-local-hook-p
+                       buffer 'kill-buffer-hook '(claude-code-ide-remote-project--view-killed)))
+                 (not (claude-code-ide-remote-project--unknown-local-hook-p
+                       buffer 'kill-buffer-query-functions nil))
+                 (string-prefix-p (format "/rpc:%s:" host) default-directory)
+                 (equal path (claude-code-ide-remote-project--local-view-path
+                              host default-directory)))
+        (unless claude-code-ide-remote-project--unavailable-header
+          (let ((label (format "Worktree unavailable on %s: %s" host path)))
+            (setq claude-code-ide-remote-project--unavailable-header
+                  (cons header-line-format label)
+                  header-line-format label)))
+        t))))
+
+(defun claude-code-ide-remote-project-reconcile-worktrees
+    (host affected surviving &optional moved-to)
+  "Reconcile HOST's Project views after a Worktree change.
+AFFECTED lists the exact canonical paths a Worktree mutation removed
+or moved.  SURVIVING lists fresh validated Git worktree plists for
+HOST.  MOVED-TO is the mutation's verified destination path, or nil.
+
+Invalidate only a View whose exact HOST and known canonical path lie at
+or below an AFFECTED entry and whose owners and buffer state permit it.
+Require at most one owning Session and an unmodified, feature-created
+Magit or Dired buffer with a matching mode and no file, process, or
+custom hook of its own.  Clear only the intents of the sessions that
+still own an invalidated View; an intent already pointing elsewhere is
+left untouched.
+
+Retain every other matching View's contents and owning intents'
+view-key, view-buffer, and captured-view-name.  Never retarget such a
+buffer.  Mark each retained intent unavailable so
+`claude-code-ide-remote-project-surviving-view' stops returning it.
+
+Mark unmodified matching Magit and Dired buffers with a host-qualified
+unavailable header.  Fresh explicit preparation clears that header.
+Do not contact a host, edit or save buffer contents, or select a window.
+
+Return a plist:
+:invalidated and :retained are lists of plists with :path, :buffer,
+and :sessions (its live owning session IDs).  A :retained entry also
+has :reason, one of `modified', `source-file', `shared', or
+`uncertain'.
+:destination is MOVED-TO's SURVIVING plist when verified, otherwise
+the first surviving Worktree plist, or nil when none survives."
+  (let ((affected
+         (mapcar
+          #'claude-code-ide-remote-project--trim-directory affected))
+        invalidated retained dead-keys registered-buffers)
+    (maphash
+     (lambda (key view)
+       (push (claude-code-ide-remote-project--view-buffer view) registered-buffers)
+       (when
+           (and
+            (equal (nth 0 key) host)
+            (claude-code-ide-remote-project--affected-path-p
+             (claude-code-ide-remote-project--local-view-path
+              host (nth 2 key))
+             affected))
+         (let*
+             ((path
+               (claude-code-ide-remote-project--local-view-path
+                host (nth 2 key)))
+              (live-sessions
+               (claude-code-ide-remote-project--reconcile-live-sessions
+                key view))
+              (reason
+               (claude-code-ide-remote-project--reconcile-reason
+                view live-sessions)))
+           (claude-code-ide-remote-project--mark-unavailable
+            (claude-code-ide-remote-project--view-buffer view) host path)
+           (if reason
+               (progn
+                 (dolist (session-id live-sessions)
+                   (when-let*
+                       ((intent
+                         (gethash
+                          session-id
+                          claude-code-ide-remote-project--intents)))
+                     (setf
+                      (claude-code-ide-remote-project--intent-outcome
+                       intent)
+                      'unavailable)))
+                 (push
+                  (list
+                   :path path
+                   :buffer
+                   (claude-code-ide-remote-project--view-buffer view)
+                   :sessions live-sessions
+                   :reason reason)
+                  retained))
+             (dolist (session-id live-sessions)
+               (when-let*
+                   ((intent
+                     (gethash
+                      session-id
+                      claude-code-ide-remote-project--intents)))
+                 (setf
+                  (claude-code-ide-remote-project--intent-view-key
+                   intent)
+                  nil
+                  (claude-code-ide-remote-project--intent-view-buffer
+                   intent)
+                  nil
+                  (claude-code-ide-remote-project--intent-captured-view-name
+                   intent)
+                  nil
+                  (claude-code-ide-remote-project--intent-outcome
+                   intent)
+                  nil)))
+             (push key dead-keys)
+             (push
+              (list
+               :path path
+               :buffer (claude-code-ide-remote-project--view-buffer view)
+               :sessions live-sessions)
+              invalidated)))))
+     claude-code-ide-remote-project--views)
+    (dolist (key dead-keys)
+      (remhash key claude-code-ide-remote-project--views))
+    (dolist (buffer (buffer-list))
+      (unless (memq buffer registered-buffers)
+        (let ((path (claude-code-ide-remote-project--local-view-path
+                     host (buffer-local-value 'default-directory buffer))))
+          (when (and (claude-code-ide-remote-project--affected-path-p path affected)
+                     (claude-code-ide-remote-project--mark-unavailable
+                      buffer host path))
+            (push (list :path path :buffer buffer :sessions nil :reason 'uncertain)
+                  retained)))))
+    (list
+     :invalidated (nreverse invalidated)
+     :retained (nreverse retained)
+     :destination
+     (claude-code-ide-remote-project--reconcile-destination
+      surviving moved-to))))
 (provide 'claude-code-ide-remote-project)
 ;;; claude-code-ide-remote-project.el ends here

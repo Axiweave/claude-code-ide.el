@@ -94,6 +94,9 @@
 (declare-function claude-code-ide-manager-move-group-up "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-move-group-down "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-session-titles "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-open-remote "claude-code-ide-manager" (&optional sibling))
+(declare-function claude-code-ide-manager-new-remote-worktree "claude-code-ide-manager" (&optional create-only))
+(declare-function claude-code-ide-remote-worktree-show "claude-code-ide-remote-worktree" (&optional operation-id))
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-port "claude-code-ide-mcp" (session))
@@ -695,6 +698,15 @@ Otherwise, if multiple sessions exist, prompt for selection."
     ("y" "Path" claude-code-ide-manager-copy-path-at-point)
     ("z" "Zmx name" claude-code-ide-manager-copy-zmx-name-at-point)]])
 
+;;;###autoload (autoload 'claude-code-ide-manager-remote-worktree-menu "claude-code-ide-transient" "Open, create, or show results for a remote Worktree." t)
+(transient-define-prefix claude-code-ide-manager-remote-worktree-menu ()
+  "Open, create, or show results for a remote Worktree.
+This never contacts a host while the menu itself is displayed."
+  [["Remote Worktree"
+    ("o" "Open remote worktree" claude-code-ide-manager-open-remote)
+    ("w" "New remote worktree" claude-code-ide-manager-new-remote-worktree)
+    ("r" "Remote operation results" claude-code-ide-remote-worktree-show)]])
+
 ;;;###autoload (autoload 'claude-code-ide-manager-dispatch "claude-code-ide-transient" "Dispatch a manager sidebar command." t)
 (transient-define-prefix claude-code-ide-manager-dispatch ()
   "Dispatch a manager sidebar command."
@@ -719,6 +731,7 @@ Otherwise, if multiple sessions exist, prompt for selection."
      claude-code-ide-manager-cancel-project-view-at-point)
     ("o" "Open project/worktree" claude-code-ide-manager-open)
     ("w" "New worktree" claude-code-ide-manager-new-worktree)
+    ("W" "Remote worktrees" claude-code-ide-manager-remote-worktree-menu)
     ("r" "Rename session" claude-code-ide-manager-rename-at-point)
     ("R" "Reset layout" claude-code-ide-manager-reset-layout-at-point)]
    ["Arrange"

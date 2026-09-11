@@ -18,6 +18,14 @@ local file predicate.
 A working directory of a Git repository, including its main working directory
 and linked worktrees. Multiple Sessions can use the same Worktree.
 
+### Worktree operation
+A user-requested action with a captured host, targets, intended effects, and reported steps.
+Its result can remain unknown after observation ends.
+
+### Outcome check
+An explicit read-only examination of a Worktree operation's remote state.
+It can establish safe remaining work or leave retry unavailable.
+
 ### Worktree backend
 The tool that creates a new Worktree for the manager: `lane` or `wt`.
 Resolved per repository in this order: a `.lane/` store, a directory-local
@@ -82,6 +90,13 @@ One of the supported CLIs: Claude Code, Codex, OpenCode, Pi, Oh My Pi.
 ### Remote agent
 An Agent that runs inside a zmx session on another machine owned by the user.
 The user accesses it through an attached terminal in local Emacs.
+
+### Agent bootstrap
+The remote launch step starts an Agent inside an owned zmx wrapper.
+The wrapper records ownership in the private operation resource.
+Emacs requires that receipt and fresh zmx identity before it verifies launch.
+A name collision never authorizes replacement.
+Missing proof leaves launch unverified, not safe to repeat.
 
 ### Configured host
 A user-approved SSH destination for remote Agent access.

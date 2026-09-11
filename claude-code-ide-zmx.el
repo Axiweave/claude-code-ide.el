@@ -227,6 +227,59 @@ seconds.  No request retries."
   (claude-code-ide-zmx--run-remote-command
    host (car args) (claude-code-ide-zmx--remote-command args) callback name))
 
+;;; Remote command execution
+
+(defun claude-code-ide-zmx--valid-argument-p (value)
+  "Return non-nil if VALUE is safe to quote as one literal remote token.
+Only a control character makes an otherwise arbitrary string unsafe
+for `claude-code-ide-zmx--quote' to carry across the wire."
+  (and (stringp value) (not (string-match-p "[[:cntrl:]\u007f-\u009f]" value))))
+
+(defun claude-code-ide-zmx--exec-command (program argv &optional directory)
+  "Return a POSIX command running PROGRAM with literal ARGV.
+`cd' into DIRECTORY first when non-nil, aborting before PROGRAM runs
+if that `cd' fails.  Quote every token with `claude-code-ide-zmx--quote'
+so ARGV reaches PROGRAM exactly as given and never resumes as shell
+syntax."
+  (concat
+   (if directory (concat "cd " (claude-code-ide-zmx--quote directory) " && ") "")
+   "exec "
+   (mapconcat #'claude-code-ide-zmx--quote (cons program argv) " ")))
+
+(defun claude-code-ide-zmx-remote-exec
+    (host operation program argv callback &optional directory name output-limit)
+  "Run literal PROGRAM with ARGV on HOST and return the owned process.
+Reject HOST before any process starts when it is unsafe or
+unconfigured.  PROGRAM and every element of ARGV must be a string
+free of control characters; neither is resolved or checked for
+existence on this machine, since both describe remote-side content,
+never a local executable.  DIRECTORY, when non-nil, must be an
+absolute remote path; the command then changes into it before
+PROGRAM runs.  Omitting DIRECTORY never falls back to this Emacs's
+local `default-directory'.  Every rejection above signals before
+any process is created.
+
+Call CALLBACK once with :host, :operation, :process, :status,
+:stdout, :stderr, :cancelled, :timeout, and :overflow, exactly as
+`claude-code-ide-zmx--run-remote-command' produces them.  NAME
+optionally identifies this request.  OUTPUT-LIMIT bounds retained
+stdout.  The total deadline is thirty seconds and cancellation is
+`delete-process' on the returned process, both unchanged from that
+transport."
+  (claude-code-ide-zmx--validate-host host)
+  (unless (and (claude-code-ide-zmx--valid-argument-p program)
+               (not (string-empty-p program))
+               (not (string-prefix-p "-" program)))
+    (user-error "Host %s remote-exec has an invalid program: %S" host program))
+  (unless (and (proper-list-p argv)
+               (seq-every-p #'claude-code-ide-zmx--valid-argument-p argv))
+    (user-error "Host %s remote-exec has invalid arguments: %S" host argv))
+  (when (and directory (not (claude-code-ide-zmx--valid-directory-p directory)))
+    (user-error "Host %s remote-exec has an invalid directory: %S" host directory))
+  (claude-code-ide-zmx--run-remote-command
+   host operation (claude-code-ide-zmx--exec-command program argv directory)
+   callback name nil output-limit))
+
 ;;; Remote Git metadata
 
 (defconst claude-code-ide-zmx--metadata-version "cci-git-metadata-v1"

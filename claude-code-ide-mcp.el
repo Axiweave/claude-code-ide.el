@@ -57,7 +57,7 @@
 (require 'claude-code-ide-mcp-server)
 
 ;; External declarations
-(declare-function claude-code-ide--preferred-session "claude-code-ide" (directory))
+(declare-function claude-code-ide--preferred-session "claude-code-ide" (directory &optional host))
 (declare-function claude-code-ide--session-for-buffer "claude-code-ide" (&optional buffer))
 (declare-function claude-code-ide-session-id "claude-code-ide" (session))
 (declare-function claude-code-ide-mcp--build-tool-list "claude-code-ide-mcp-handlers" ())

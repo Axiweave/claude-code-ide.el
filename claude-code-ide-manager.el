@@ -31,7 +31,7 @@
 (declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory force-new))
 (declare-function claude-code-ide--set-session-custom-name "claude-code-ide" (session name))
 (declare-function claude-code-ide--set-session-group-metadata "claude-code-ide" (session metadata))
-(declare-function claude-code-ide--preferred-session "claude-code-ide" (directory))
+(declare-function claude-code-ide--preferred-session "claude-code-ide" (directory &optional host))
 (declare-function claude-code-ide--touch-session "claude-code-ide" (session-id))
 (declare-function claude-code-ide-session-buffer "claude-code-ide" (session))
 (declare-function claude-code-ide-session-created-at "claude-code-ide" (session))
@@ -93,6 +93,15 @@
 (declare-function claude-code-ide-remote-project-cleanup
                   "claude-code-ide-remote-project"
                   (snapshot))
+(declare-function claude-code-ide-remote-worktree-request
+                  "claude-code-ide-remote-worktree"
+                  (action host directory &optional options))
+(declare-function claude-code-ide-remote-worktree-show
+                  "claude-code-ide-remote-worktree" (&optional operation-id))
+(declare-function claude-code-ide-remote-worktree-target-for-file
+                  "claude-code-ide-remote-worktree" (filename))
+(declare-function claude-code-ide-manager-remote-worktree-menu
+                  "claude-code-ide-transient" ())
 
 (defvar claude-code-ide--session-cli-type)
 (defvar claude-code-ide-cli-path)
@@ -1283,6 +1292,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "C-k") #'claude-code-ide-manager-previous-project-group)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
 (define-key claude-code-ide-manager-mode-map (kbd "w") #'claude-code-ide-manager-new-worktree)
+(define-key claude-code-ide-manager-mode-map (kbd "W") #'claude-code-ide-manager-remote-worktree-menu)
 (define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
 (define-key claude-code-ide-manager-mode-map (kbd "a") #'claude-code-ide-attach)
@@ -3829,6 +3839,58 @@ Repeat to walk further back.  The uncleared pass keeps its visits, so
   (interactive)
   (claude-code-ide-manager-toggle-repo-sidebar 1))
 
+;;; Remote Worktree launch
+
+(defun claude-code-ide-manager--ensure-remote-worktree ()
+  "Load `claude-code-ide-remote-worktree' on demand, or signal it is missing."
+  (or (featurep 'claude-code-ide-remote-worktree)
+      (require 'claude-code-ide-remote-worktree nil t)
+      (user-error "The claude-code-ide-remote-worktree feature is not available")))
+
+(defun claude-code-ide-manager--remote-worktree-target (directory)
+  "Return DIRECTORY's remote Worktree target plist, or nil when local.
+Recognize RPC paths before TRAMP registers its handler.
+Reject unsupported or unapproved remote paths without a local fallback."
+  (claude-code-ide-manager--ensure-remote-worktree)
+  (claude-code-ide-remote-worktree-target-for-file directory))
+
+(defun claude-code-ide-manager--remote-row-context (item)
+  "Return (HOST . DIRECTORY) for a remote-hosted manager ITEM, or nil."
+  (let* ((session-key (claude-code-ide-manager-item-session-key item))
+         (host (claude-code-ide-manager--session-host session-key)))
+    (when host
+      (cons host (claude-code-ide-manager--session-directory session-key)))))
+
+(defun claude-code-ide-manager--remote-worktree-context ()
+  "Return the explicit row's remote context or a non-Manager buffer's RPC context.
+Local rows and Manager scopes never inherit another buffer's remote directory.
+Unsupported or unapproved remote routes fail without a local fallback."
+  (if-let* ((item (claude-code-ide-manager--item-at-point)))
+      (claude-code-ide-manager--remote-row-context item)
+    (unless (claude-code-ide-manager--manager-buffer-p)
+      (when-let* ((target (claude-code-ide-manager--remote-worktree-target
+                           default-directory)))
+        (cons (plist-get target :host) (plist-get target :directory))))))
+
+(defun claude-code-ide-manager--read-remote-repository (host)
+  "Read an absolute repository path on HOST as plain host-labeled text.
+This is never a remote directory browser."
+  (let (path)
+    (while (not (claude-code-ide-zmx--valid-directory-p path))
+      (setq path (read-string (format "Repository on %s (absolute path): " host))))
+    path))
+
+(defun claude-code-ide-manager--request-remote-open (host directory sibling &optional select)
+  "Request a remote open for exact HOST and DIRECTORY, and return its ID.
+SIBLING requests an explicit sibling Agent instead of reuse/attach/start.
+SELECT lets the request resolve DIRECTORY as a repository that may
+still need a Worktree chosen."
+  (claude-code-ide-manager--ensure-remote-worktree)
+  (claude-code-ide-remote-worktree-request
+   'open host directory
+   (if select (list :select t :sibling (and sibling t))
+     (list :sibling (and sibling t)))))
+
 ;;;###autoload
 (defun claude-code-ide-manager-open-directory (directory &optional force-new)
   "Switch to the session for DIRECTORY, or start the default agent there.
@@ -3837,44 +3899,77 @@ With a session and FORCE-NEW nil, switch to it.  Otherwise start a session
 in DIRECTORY: a sibling when FORCE-NEW is non-nil, the first one when no
 session exists.  This never shows the Start/Continue/Resume menu, so it
 is the entry that Magit worktree rows and worktree transients call.
+
+An approved RPC DIRECTORY -- its exact host and absolute remote path --
+is requested as a remote open instead, with FORCE-NEW then requesting
+an explicit sibling Agent; this returns the new operation ID rather
+than a session.  Any other remote DIRECTORY signals its unsupported
+route, with no local fallback.
+
 Interactively, DIRECTORY is read and a prefix argument is FORCE-NEW."
   (interactive (list (read-directory-name "Worktree: " nil nil t)
                      current-prefix-arg))
-  (when (file-remote-p directory)
-    (user-error "Remote worktrees are not supported"))
-  (let ((directory (claude-code-ide-manager--normalize-target-directory directory)))
-    (unless (file-directory-p directory)
-      (user-error "Worktree %s is unavailable" directory))
-    (let ((scope (claude-code-ide-manager--scope-for-command))
-          (existing (claude-code-ide--preferred-session directory)))
-      (if (and existing (not force-new))
-          (claude-code-ide-manager-switch-to-session
-           (claude-code-ide-session-id existing) nil scope)
-        (let* ((claude-code-ide--suppress-initial-display t)
-               (session (claude-code-ide--start-session nil nil directory force-new)))
-          (when session
+  (if-let* ((target (claude-code-ide-manager--remote-worktree-target directory)))
+      (claude-code-ide-manager--request-remote-open
+       (plist-get target :host) (plist-get target :directory) force-new)
+    (let ((directory (claude-code-ide-manager--normalize-target-directory directory)))
+      (unless (file-directory-p directory)
+        (user-error "Worktree %s is unavailable" directory))
+      (let ((scope (claude-code-ide-manager--scope-for-command))
+            (existing (claude-code-ide--preferred-session directory)))
+        (if (and existing (not force-new))
             (claude-code-ide-manager-switch-to-session
-             (claude-code-ide-session-id session) nil scope))
-          session)))))
+             (claude-code-ide-session-id existing) nil scope)
+          (let* ((claude-code-ide--suppress-initial-display t)
+                 (session (claude-code-ide--start-session nil nil directory force-new)))
+            (when session
+              (claude-code-ide-manager-switch-to-session
+               (claude-code-ide-session-id session) nil scope))
+            session))))))
 
 (defun claude-code-ide-manager-open (&optional force-new)
   "Open a project or worktree relevant to the current manager scope.
 
 A target with a session switches to it.  With FORCE-NEW (the prefix
 argument) a sibling session starts at once.  A target without a session
-shows the Start/Continue/Resume menu."
+shows the Start/Continue/Resume menu.
+
+From a remote Session row or remote Magit buffer, use its exact host
+and repository instead, selecting a Worktree if needed and reusing,
+attaching, or starting its Agent normally.  FORCE-NEW requests an explicit
+sibling Agent.  This returns the new operation ID rather than a
+session."
   (interactive "P")
-  (when-let* ((item (claude-code-ide-manager--item-at-point))
-              (host (claude-code-ide-manager--session-host
-                     (claude-code-ide-manager-item-session-key item))))
-    (user-error "Remote project access on %s is not available in attach mode" host))
-  (let* ((scope (claude-code-ide-manager--scope-for-command))
-         (target (claude-code-ide-manager--open-target-for-scope scope)))
-    (if (or force-new (claude-code-ide--preferred-session target))
-        (claude-code-ide-manager-open-directory target force-new)
-      (setq claude-code-ide-manager--open-target target)
-      (setq claude-code-ide-manager--open-scope scope)
-      (claude-code-ide-manager-open-menu))))
+  (if-let* ((context (claude-code-ide-manager--remote-worktree-context)))
+      (claude-code-ide-manager--request-remote-open
+       (car context) (cdr context) force-new t)
+    (let* ((scope (claude-code-ide-manager--scope-for-command))
+           (target (claude-code-ide-manager--open-target-for-scope scope)))
+      (if (or force-new (claude-code-ide--preferred-session target))
+          (claude-code-ide-manager-open-directory target force-new)
+        (setq claude-code-ide-manager--open-target target)
+        (setq claude-code-ide-manager--open-scope scope)
+        (claude-code-ide-manager-open-menu)))))
+
+;;;###autoload
+(defun claude-code-ide-manager-open-remote (&optional sibling)
+  "Open a remote Worktree chosen by exact host and repository.
+
+Choose a Configured host from `claude-code-ide-remote-hosts', then
+enter its absolute repository path as plain host-labeled text, never a
+remote directory browser.  A known context already set by
+`default-directory' -- for example inside an existing remote Magit
+buffer -- skips both prompts.  Select a Worktree under that repository
+and open it.  With a prefix argument, SIBLING requests an explicit
+sibling Agent instead of reuse/attach/start.  Return the new operation
+ID."
+  (interactive "P")
+  (claude-code-ide-manager--ensure-remote-worktree)
+  (let* ((context (claude-code-ide-manager--remote-worktree-context))
+         (host (or (car context) (claude-code-ide--read-remote-host)))
+         (repository (or (cdr context)
+                         (claude-code-ide-manager--read-remote-repository host))))
+    (claude-code-ide-manager--request-remote-open host repository sibling t)))
 
 ;;; Worktree creation
 
@@ -3994,6 +4089,16 @@ remote root is refused before any backend work."
       (user-error "Remote worktrees are not supported"))
     root))
 
+(defun claude-code-ide-manager--request-remote-create (host repository create-only)
+  "Request a remote Worktree creation in exact HOST/REPOSITORY.
+Ask for one new name and return the new operation ID.  CREATE-ONLY
+skips the Agent and opens remote Magit instead."
+  (claude-code-ide-manager--ensure-remote-worktree)
+  (let ((name (read-string (format "New worktree on %s (branch) name: " host))))
+    (claude-code-ide-remote-worktree-request
+     'create host repository
+     (list :name name :create-only (and create-only t)))))
+
 ;;;###autoload
 (defun claude-code-ide-manager-new-worktree (&optional arg)
   "Create a worktree and start the default Agent in it.
@@ -4001,18 +4106,43 @@ remote root is refused before any backend work."
 The name is asked once, with no default, and names both the branch and
 the tree.  The backend comes from `claude-code-ide-worktree-backend'
 resolution and its binary is checked before the name prompt.  With a
-prefix ARG the tree is created and shown in Magit, and no Agent starts."
+prefix ARG the tree is created and shown in Magit, and no Agent starts.
+
+On a remote Session row or in remote Magit, use that exact host and
+repository.  Ask one name and start the selected Agent.  With ARG,
+create only and open remote Magit.  Return the operation ID."
   (interactive "P")
-  (let* ((root (claude-code-ide-manager--worktree-root-for-command))
-         (backend (claude-code-ide-manager--ensure-worktree-backend
-                   (claude-code-ide-manager--worktree-backend root)))
-         (name (claude-code-ide-manager--check-worktree-name
-                root backend (read-string "New worktree (branch) name: ")))
-         (path (claude-code-ide-manager--create-worktree root backend name)))
-    (if arg
-        (magit-status path)
-      (claude-code-ide-manager-open-directory path))
-    path))
+  (if-let* ((context (claude-code-ide-manager--remote-worktree-context)))
+      (claude-code-ide-manager--request-remote-create
+       (car context) (cdr context) arg)
+    (let* ((root (claude-code-ide-manager--worktree-root-for-command))
+           (backend (claude-code-ide-manager--ensure-worktree-backend
+                     (claude-code-ide-manager--worktree-backend root)))
+           (name (claude-code-ide-manager--check-worktree-name
+                  root backend (read-string "New worktree (branch) name: ")))
+           (path (claude-code-ide-manager--create-worktree root backend name)))
+      (if arg
+          (magit-status path)
+        (claude-code-ide-manager-open-directory path))
+      path)))
+
+;;;###autoload
+(defun claude-code-ide-manager-new-remote-worktree (&optional create-only)
+  "Create a remote Worktree chosen by exact host and repository.
+
+Choose a Configured host from `claude-code-ide-remote-hosts', then
+enter its absolute repository path as plain host-labeled text.  A
+known context already set by `default-directory' skips both prompts.
+Ask one new Worktree name and create it, starting the selected Agent.
+With a prefix argument, CREATE-ONLY creates the Worktree only, then
+opens it in remote Magit.  Return the new operation ID."
+  (interactive "P")
+  (claude-code-ide-manager--ensure-remote-worktree)
+  (let* ((context (claude-code-ide-manager--remote-worktree-context))
+         (host (or (car context) (claude-code-ide--read-remote-host)))
+         (repository (or (cdr context)
+                         (claude-code-ide-manager--read-remote-repository host))))
+    (claude-code-ide-manager--request-remote-create host repository create-only)))
 
 (defun claude-code-ide-manager-rename-session (session-key name)
   "Rename SESSION-KEY to NAME, or clear its name when NAME is empty."
