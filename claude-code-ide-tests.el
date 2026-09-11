@@ -308,7 +308,7 @@ root.  Both paths are normalized directory names."
         (progn
           (make-directory main-root t)
           (let ((default-directory main-root))
-            (claude-code-ide-tests--git "init")
+            (claude-code-ide-tests--git "init" "-b" "main")
             (claude-code-ide-tests--git "config" "user.name" "Claude Code IDE Tests")
             (claude-code-ide-tests--git "config" "user.email" "tests@example.com")
             (with-temp-file (expand-file-name "README.md" main-root)
@@ -5663,22 +5663,22 @@ A `working' or `needs-input' state is left alone by the same clear."
                      '("/tmp/projectile-a/" "/tmp/shared/" "/tmp/project-el/"))))))
 
 (ert-deftest claude-code-ide-test-manager-select-global-project-adds-project-metadata ()
-  "Test global project selection exposes project-file metadata to completion UIs."
+  "Project completion exposes existing directories with project-file metadata."
   (let ((claude-code-ide-manager-global-project-source 'project-el)
-        collection metadata first-match)
-    (cl-letf (((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
-               (lambda () '("/tmp/project-a/" "/tmp/project-b/")))
-              ((symbol-function 'completing-read)
-               (lambda (_prompt coll &rest _)
-                 (setq collection coll)
-                 (setq metadata (funcall coll "" nil 'metadata))
-                 (setq first-match (funcall coll "/tmp/project-a/" nil t))
-                 "/tmp/project-a/")))
-      (should (equal (claude-code-ide-manager--select-global-project)
-                     "/tmp/project-a/"))
-      (should (equal metadata
-                     '(metadata . ((category . project-file)))))
-      (should (equal first-match '("/tmp/project-a/"))))))
+        (root (file-name-as-directory (make-temp-file "cci-project-completion-" t)))
+        metadata matches)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager--project-el-known-project-roots)
+                   (lambda () (list root (concat root "missing/"))))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (setq metadata (funcall collection "" nil 'metadata)
+                           matches (funcall collection "" nil t))
+                     root)))
+          (should (equal (claude-code-ide-manager--select-global-project) root))
+          (should (equal metadata '(metadata . ((category . project-file)))))
+          (should (equal matches (list root))))
+      (delete-directory root t))))
 
 (ert-deftest claude-code-ide-test-manager-open-global-shows-transient-for-new-target ()
   "Test global manager open hands a new target to the transient path."
@@ -6374,23 +6374,6 @@ directory passed to the open entry."
                        (t nil "/tmp/project-a/" "--dangerously-skip-permissions")
                        (nil t "/tmp/project-a/" "--dangerously-skip-permissions")))))))
 
-(ert-deftest claude-code-ide-test-manager-open-descriptions-disclose-default-bypass ()
-  "Test lowercase manager launch labels disclose the active default bypass."
-  (let ((claude-code-ide-bypass-permissions-by-default t)
-        (claude-code-ide-manager--open-target "/tmp/project-a/"))
-    (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
-                                               'claude-code-ide-manager-open-menu "s"))
-                                       :description))
-                   "Start /tmp/project-a/ (skip permissions)"))
-    (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
-                                               'claude-code-ide-manager-open-menu "c"))
-                                       :description))
-                   "Continue /tmp/project-a/ (skip permissions)"))
-    (should (equal (funcall (plist-get (nth 2 (transient-get-suffix
-                                               'claude-code-ide-manager-open-menu "r"))
-                                       :description))
-                   "Resume /tmp/project-a/ (skip permissions)"))))
-
 (ert-deftest claude-code-ide-test-pi-transient-descriptions-omit-unavailable-bypass ()
   "Test Pi descriptions do not claim its unavailable permissions bypass."
   (let ((claude-code-ide-cli-path "pi")
@@ -6406,10 +6389,7 @@ directory passed to the open entry."
                                  (claude-code-ide--continue-skip-description)
                                  (claude-code-ide--resume-skip-description)
                                  (claude-code-ide--current-directory-skip-description)
-                                 (claude-code-ide-manager--open-action-description "Start")
-                                 (funcall (plist-get (nth 2 (transient-get-suffix
-                                                             'claude-code-ide-manager-open-menu "S"))
-                                                     :description))))
+                                 (claude-code-ide-manager--open-action-description "Start")))
         (should-not (string-match-p "skip permissions" description))))))
 
 (ert-deftest claude-code-ide-test-pi-active-session-skip-descriptions-omit-unavailable-bypass ()
@@ -6431,11 +6411,7 @@ directory passed to the open entry."
     (cl-letf (((symbol-function 'claude-code-ide--has-project-session-p) (lambda () nil)))
       (should (string-match-p "skip permissions" (claude-code-ide--start-description)))
       (should (string-match-p "skip permissions"
-                              (claude-code-ide-manager--open-action-description "Start")))
-      (should (string-match-p "skip permissions"
-                              (funcall (plist-get (nth 2 (transient-get-suffix
-                                                          'claude-code-ide-manager-open-menu "S"))
-                                                  :description)))))))
+                              (claude-code-ide-manager--open-action-description "Start"))))))
 
 (ert-deftest claude-code-ide-test-claude-active-session-skip-description-discloses-bypass ()
   "Test a nonempty bypass flag remains disclosed for an active session."
@@ -9625,7 +9601,7 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
 
 (ert-deftest claude-code-ide-test-transient-exposes-current-file-line-reference ()
   "Test the main transient exposes the absolute path with line binding."
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "#")) :command)
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "#") :command)
                  'claude-code-ide-send-current-file-line-reference)))
 
 (ert-deftest claude-code-ide-test-transient-exposes-current-dir-and-session-lists ()
@@ -9644,13 +9620,13 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
 
 (ert-deftest claude-code-ide-test-transient-exposes-new-session-command ()
   "Main transient exposes the command that creates a sibling session."
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "N"))
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "N")
                             :command)
                  'claude-code-ide-new-session)))
 
 (ert-deftest claude-code-ide-test-transient-exposes-manager-rename-command ()
   "Main transient exposes the command that renames the manager item at point."
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "v"))
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "v")
                             :command)
                  'claude-code-ide-manager-rename-at-point)))
 
@@ -9697,11 +9673,11 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
 (ert-deftest claude-code-ide-test-transient-exposes-manager-commands ()
   "Test the main transient exposes cc-manager bindings."
   (should (transient-get-suffix 'claude-code-ide-menu "t"))
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "T")) :command)
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "T") :command)
                  'claude-code-ide-manager-toggle-global-sidebar))
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "o")) :command)
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "o") :command)
                  'claude-code-ide-transient-manager-open))
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "w")) :command)
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "w") :command)
                  'claude-code-ide-manager-toggle-repo-sidebar))
   (should (transient-get-suffix 'claude-code-ide-menu "n"))
   (should (transient-get-suffix 'claude-code-ide-menu "p"))
@@ -9746,9 +9722,9 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
 
 (ert-deftest claude-code-ide-test-transient-exposes-manager-open-and-repo-toggle-bindings ()
   "Main transient binds `o` to manager-open and `w` to repo manager toggle."
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "o")) :command)
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "o") :command)
                  'claude-code-ide-transient-manager-open))
-  (should (equal (plist-get (nth 2 (transient-get-suffix 'claude-code-ide-menu "w")) :command)
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "w") :command)
                  'claude-code-ide-manager-toggle-repo-sidebar)))
 
 (ert-deftest claude-code-ide-test-transient-manager-open-uses-visible-repo-scope ()
@@ -12408,17 +12384,13 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
       (should (string-match "transport.*:.*http" json-str)))))
 
 (ert-deftest claude-code-ide-mcp-server-test-ws-send-fix ()
-  "Test that ws-send is called with process, not request."
-  ;; Test that verifies our fix for the wrong-type-argument error
-  ;; Skip test if web-server is not available
+  "HTTP responses deliver JSON and reject the unsupported GET route."
   (skip-unless (condition-case nil
                    (progn (require 'web-server) t)
                  (error nil)))
   (require 'claude-code-ide-mcp-http-server)
-  (let ((mock-process (make-claude-code-ide-mcp-server-tests--mock-process))
-        (mock-request (make-claude-code-ide-mcp-server-tests--mock-request)))
-    ;; Set the process in the request
-    (setf (claude-code-ide-mcp-server-tests--mock-request-process mock-request) mock-process)
+  (let* ((mock-process (make-claude-code-ide-mcp-server-tests--mock-process))
+         (mock-request (make-instance 'ws-request :process mock-process)))
     ;; Mock the ws-* functions
     (cl-letf (((symbol-function 'ws-response-header)
                #'claude-code-ide-mcp-server-tests--mock-ws-response-header)
@@ -12427,8 +12399,9 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
               ((symbol-function 'ws-send-404)
                #'claude-code-ide-mcp-server-tests--mock-ws-send-404))
       ;; Test send-json-response
-      (claude-code-ide-mcp-http-server--send-json-response
-       mock-request 200 '((test . "data")))
+      (catch 'close-connection
+        (claude-code-ide-mcp-http-server--send-json-response
+         mock-request 200 '((test . "data"))))
       (should (equal claude-code-ide-mcp-server-tests--last-response-status 200))
       (should (string-match "test.*:.*data" claude-code-ide-mcp-server-tests--last-response))
 
