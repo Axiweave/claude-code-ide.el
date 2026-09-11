@@ -32,6 +32,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'url-util)
 
 (defvar claude-code-ide-agent-definitions)
 (defvar claude-code-ide-cli-path)
@@ -548,8 +549,12 @@ Return nil for lines without a name field."
     ;; zmx 0.8 replaced start_dir with cwd=file://HOST/PATH.
     (when-let* ((cwd (and (not (plist-get plist :start_dir)) (plist-get plist :cwd)))
                 (path (and (string-match "\\`file://[^/]*\\(/.*\\)\\'" cwd)
-                           (match-string 1 cwd))))
-      (setq plist (plist-put plist :start_dir path)))
+                           (match-string 1 cwd)))
+                ((string-match-p "\\`\\(?:[^%]\\|%[[:xdigit:]][[:xdigit:]]\\)*\\'" path))
+                (decoded (claude-code-ide-zmx--metadata-utf8
+                          (url-unhex-string (encode-coding-string path 'utf-8) t)))
+                ((claude-code-ide-zmx--valid-directory-p decoded)))
+      (setq plist (plist-put plist :start_dir decoded)))
     (and (plist-get plist :name) plist)))
 
 (defun claude-code-ide-zmx-list-sessions ()

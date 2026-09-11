@@ -18388,9 +18388,14 @@ Return a plist with :killed-zmx and :killed-buffer."
 (ert-deftest claude-code-ide-test-remote-discovery-accepts-zmx-0-8-rows ()
   "Indented zmx 0.8 rows with cwd=file://HOST/PATH yield :start_dir."
   (let ((entries (claude-code-ide-zmx--parse-remote-list
-                  "host" "  name=one\tpid=4\tcwd=file://host/home/u/proj\tcmd=omp\n" "")))
-    (should (equal (plist-get (car entries) :start_dir) "/home/u/proj"))
-    (should (equal (plist-get (car entries) :cmd) "omp"))))
+                  "host" "  name=one\tpid=4\tcwd=file://host/home/u/proj%20%25%20caf%C3%A9+literal\tcmd=omp\n" "")))
+    (should (equal (plist-get (car entries) :start_dir) "/home/u/proj % café+literal"))
+    (should (equal (plist-get (car entries) :cmd) "omp")))
+  (dolist (path '("/bad%0Apath" "/bad%00path" "/bad%FFpath" "/bad%2path"))
+    (should-not
+     (plist-get (claude-code-ide-zmx--parse-list-line
+                 (concat "name=one\tcwd=file://host" path))
+                :start_dir))))
 
 (ert-deftest claude-code-ide-test-remote-discovery-reports-failed-hosts ()
   "Failed hosts never look like empty discovery."
