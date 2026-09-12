@@ -45,6 +45,10 @@
 (declare-function claude-code-ide-session-host "claude-code-ide" (session))
 (declare-function claude-code-ide-session-group-metadata "claude-code-ide" (session))
 (declare-function claude-code-ide-session-cli-type "claude-code-ide" (session))
+(declare-function claude-code-ide-session--companion-shell-live-p
+                  "claude-code-ide-session" (buffer))
+(declare-function claude-code-ide-session--create-companion-shell
+                  "claude-code-ide-session" (directory name))
 (declare-function claude-code-ide--show-session-buffer "claude-code-ide" (buffer))
 (declare-function claude-code-ide-attach "claude-code-ide" (&optional host))
 (declare-function claude-code-ide-attach-select "claude-code-ide" (&optional host))
@@ -65,7 +69,12 @@
 (declare-function claude-code-ide--read-remote-host "claude-code-ide" ())
 (declare-function claude-code-ide-remote-project-prepare
                   "claude-code-ide-remote-project"
-                  (session-id host attachment frame reason))
+                  (session-id host attachment frame reason layout-request))
+(declare-function claude-code-ide-remote-project-resume-layout-request
+                  "claude-code-ide-remote-project"
+                  (session-id attachment frame preset))
+(declare-function claude-code-ide-remote-project-rpc-directory
+                  "claude-code-ide-remote-project" (host directory))
 (declare-function claude-code-ide-remote-project-record-display
                   "claude-code-ide-remote-project"
                   (session-id attachment view-buffer))
@@ -154,14 +163,56 @@ the last saved value."
   :type 'integer
   :group 'claude-code-ide-manager)
 
-(defcustom claude-code-ide-manager-session-window-side 'right
-  "Side of the content area where the default layout puts the session window.
-`right' places the session window at the far right of the frame.
-`left' places it in the middle, between the manager sidebar and the
-status buffer."
-  :type '(choice (const :tag "Right" right)
-                 (const :tag "Left (middle)" left))
+
+(defcustom claude-code-ide-manager-layout-preset 'magit-left
+  "Preset for new manager layouts and explicit resets.
+Changing this option does not change saved layouts or running shells."
+  :type '(choice (const :tag "Magit left" magit-left)
+                 (const :tag "Magit right" magit-right)
+                 (const :tag "Shell left" shell-left)
+                 (const :tag "Shell right" shell-right)
+                 (const :tag "Dired left" dired-left)
+                 (const :tag "Dired right" dired-right))
   :group 'claude-code-ide-manager)
+
+(defconst claude-code-ide-manager--layout-presets
+  '((magit-left git left) (magit-right git right)
+    (shell-left shell left) (shell-right shell right)
+    (dired-left dired left) (dired-right dired right))
+  "Fixed preset names, companion kinds, and companion sides.")
+
+(defun claude-code-ide-manager--layout-preset (&optional preset)
+  "Resolve PRESET or the configured preset, rejecting unknown values."
+  (let ((preset (or preset claude-code-ide-manager-layout-preset)))
+    (or (assq preset claude-code-ide-manager--layout-presets)
+        (user-error "Unknown layout preset: %S" preset))))
+
+(defun claude-code-ide-manager--make-layout-request
+    (session-key &optional preset allow-create frame)
+  "Capture SESSION-KEY's PRESET and ALLOW-CREATE permission for FRAME."
+  (let* ((descriptor (claude-code-ide-manager--layout-preset preset))
+         (kind (nth 1 descriptor))
+         (directory (claude-code-ide-manager--session-directory session-key))
+         (host (claude-code-ide-manager--session-host session-key)))
+    (unless (and (stringp directory) (not (string-empty-p directory)))
+      (user-error "Session %s has no directory" session-key))
+    (when (and host
+               (claude-code-ide-manager--remote-project-enabled-p session-key))
+      (unless (or (fboundp 'claude-code-ide-remote-project-rpc-directory)
+                  (require 'claude-code-ide-remote-project nil t))
+        (user-error "Remote project support is unavailable for %s" host))
+      (setq directory
+            (claude-code-ide-remote-project-rpc-directory host directory)))
+    (list :preset (car descriptor) :companion-kind kind
+          :companion-side (nth 2 descriptor)
+          :provider (pcase kind
+                      ('git claude-code-ide-manager-status-buffer-function)
+                      ('dired #'dired-noselect))
+          :directory directory :allow-create allow-create
+          :epoch (or (frame-parameter
+                      (or frame (selected-frame))
+                      'claude-code-ide-manager-remote-project-epoch)
+                     0))))
 
 (defcustom claude-code-ide-manager-status-buffer-function
   #'claude-code-ide-manager-magit-status-buffer
@@ -405,6 +456,9 @@ Those commands write their own :history stack, so
 
 (defvar claude-code-ide-manager--layouts (make-hash-table :test 'equal)
   "Saved layouts keyed by session key.")
+
+(defvar claude-code-ide-manager--companion-shells (make-hash-table :test 'equal)
+  "Runtime shell buffer objects keyed by canonical Session ID.")
 
 (defvar claude-code-ide-manager--legacy-adopted-p nil
   "Non-nil when the current item rebuild adopted directory-keyed state.")
@@ -801,6 +855,7 @@ When EXPECTED-HOST is non-nil, require that exact current host."
     (session-key attachment frame reason)
   "Prepare SESSION-KEY's enabled remote Project view.
 ATTACHMENT, FRAME, and REASON establish exact display ownership.
+Saved shell layouts restore their existing windows without preparation.
 Return nil without loading the feature when the host is not admitted."
   (when-let* ((host
                (claude-code-ide-manager--session-host session-key))
@@ -808,8 +863,24 @@ Return nil without loading the feature when the host is not admitted."
                 session-key))
               ((or (featurep 'claude-code-ide-remote-project)
                    (require 'claude-code-ide-remote-project nil t))))
-    (claude-code-ide-remote-project-prepare
-     session-key host attachment frame reason)
+    (let* ((intent (frame-parameter
+                    (or frame (selected-frame))
+                    'claude-code-ide-manager-remote-project-display))
+           (request
+            (or (and (equal session-key (plist-get intent :session-key))
+                     (eq attachment (plist-get intent :attachment))
+                     (plist-get intent :layout-request))
+                (claude-code-ide-manager--make-layout-request
+                 session-key
+                 (when (memq reason '(replacement reattach))
+                   (or (plist-get (gethash session-key claude-code-ide-manager--layouts)
+                                  :preset)
+                       'magit-left))
+                 (memq reason '(first-display reset)) frame)))
+           (shell-p (eq (plist-get request :companion-kind) 'shell)))
+      (unless (and shell-p (not (plist-get request :allow-create)))
+        (claude-code-ide-remote-project-prepare
+         session-key host attachment frame reason request)))
     t))
 
 (defun claude-code-ide-manager--session-directory (session-or-key)
@@ -1072,9 +1143,25 @@ Append the current branch when SESSION-KEY is on a named branch."
      frame 'claude-code-ide-manager-remote-project-command nil)))
 
 (defun claude-code-ide-manager--set-remote-project-frame-intent
-    (session-key terminal view view-window &optional frame)
-  "Record SESSION-KEY's TERMINAL, VIEW, and VIEW-WINDOW on FRAME."
-  (let ((frame (or frame (selected-frame))))
+    (session-key terminal view view-window &optional frame request)
+  "Record SESSION-KEY's TERMINAL, VIEW, VIEW-WINDOW, and REQUEST on FRAME."
+  (let* ((frame (or frame (selected-frame)))
+         (previous (frame-parameter frame 'claude-code-ide-manager-remote-project-display))
+         (request (or request
+                      (and (equal session-key (plist-get previous :session-key))
+                           (eq terminal (plist-get previous :attachment))
+                           (plist-get previous :layout-request))
+                      (and (featurep 'claude-code-ide-remote-project)
+                           (claude-code-ide-remote-project-resume-layout-request
+                            session-key terminal frame
+                            (plist-get (gethash session-key claude-code-ide-manager--layouts)
+                                       :preset)))
+                      (claude-code-ide-manager--make-layout-request
+                       session-key
+                       (or (plist-get (gethash session-key claude-code-ide-manager--layouts)
+                                      :preset)
+                           'magit-left)
+                       nil frame))))
     (set-frame-parameter
      frame 'claude-code-ide-manager-remote-project-display
      (list
@@ -1082,6 +1169,7 @@ Append the current branch when SESSION-KEY is on a named branch."
       :attachment terminal
       :view view
       :view-window view-window
+      :layout-request request
       :epoch
       (or
        (frame-parameter
@@ -1445,7 +1533,7 @@ under the ESC prefix, so iterate that sub-keymap."
                         (plist-get data :group-metadata) host directory)))))
 
 (defun claude-code-ide-manager--persistable-layout (layout)
-  "Return LAYOUT without memory-only Project-view identity."
+  "Return LAYOUT without memory-only companion identity."
   (if (not (listp layout))
       layout
     (let (persistable)
@@ -1454,7 +1542,7 @@ under the ESC prefix, so iterate that sub-keymap."
               (value (pop layout)))
           (unless
               (memq key
-                    '(:project-view-buffer :project-view-name))
+                    '(:project-view-buffer :project-view-name :shell-buffer))
             (push key persistable)
             (push value persistable))))
       (nreverse persistable))))
@@ -1594,6 +1682,7 @@ under the ESC prefix, so iterate that sub-keymap."
   (setq claude-code-ide-manager--priority-visits (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--uncleared-visits (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--layouts (make-hash-table :test 'equal))
+  (setq claude-code-ide-manager--companion-shells (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--current-session-key nil)
   (setq claude-code-ide-manager--persisted-state
         `(:version ,claude-code-ide-manager--state-version
@@ -3258,7 +3347,8 @@ BASELINE and ORDERED contain Session IDs. GROUPS maps each ID to its group."
 
 (defun claude-code-ide-manager-session-ended (session-key &optional forget)
   "Retain a disconnected remote SESSION-KEY, or remove an ended local row.
-With FORGET, remove the remote row after verified Stop or explicit detach."
+With FORGET, remove the remote row after verified Stop or explicit detach.
+Released shells remain ordinary terminals."
   (when (featurep 'claude-code-ide-remote-project)
     (claude-code-ide-remote-project-invalidate
      session-key nil
@@ -3286,6 +3376,7 @@ With FORGET, remove the remote row after verified Stop or explicit detach."
          (setq claude-code-ide-manager--items (plist-get state :items))))
      claude-code-ide-manager--scope-state)
     (unless retain
+      (remhash session-key claude-code-ide-manager--companion-shells)
       (setq claude-code-ide-manager--items
             (cl-remove session-key claude-code-ide-manager--items
                        :key #'claude-code-ide-manager-item-session-key :test #'equal))
@@ -4303,34 +4394,44 @@ opens it in remote Magit.  Return the new operation ID."
 
 (defun claude-code-ide-manager--capture-layout (session-key)
   "Capture current frame layout for SESSION-KEY."
-  (let ((layout
-         (list
-          :session-key session-key
-          :window-state
-          (window-state-get (frame-root-window) t)
-          :selected-buffer-name
-          (buffer-name (window-buffer (selected-window)))))
-        (session-buffer
-         (claude-code-ide-manager--session-buffer session-key)))
+  (let* ((previous (gethash session-key claude-code-ide-manager--layouts))
+         (shell (gethash (claude-code-ide-manager--shell-owner-key session-key)
+                         claude-code-ide-manager--companion-shells))
+         (layout
+          (list :session-key session-key
+                :preset (plist-get previous :preset)
+                :companion-kind (plist-get previous :companion-kind)
+                :window-state (window-state-get (frame-root-window) t)
+                :selected-buffer-name (buffer-name (window-buffer (selected-window)))))
+         (session-buffer (claude-code-ide-manager--session-buffer session-key)))
+    (when (or (and (buffer-live-p shell) (get-buffer-window shell (selected-frame)))
+              (and (not (buffer-live-p shell)) (plist-get previous :shell-buffer-name)))
+      (setq layout (plist-put layout :shell-buffer shell)
+            layout (plist-put layout :shell-buffer-name
+                              (if (buffer-live-p shell)
+                                  (buffer-name shell)
+                                (plist-get previous :shell-buffer-name)))))
     (when (claude-code-ide-manager--session-host session-key)
-      (setq
-       layout
-       (plist-put
-        layout :terminal-buffer-name
-        (and
-         (buffer-live-p session-buffer)
-         (buffer-name session-buffer))))
+      (setq layout
+            (plist-put layout :terminal-buffer-name
+                       (and (buffer-live-p session-buffer) (buffer-name session-buffer))))
       (when (featurep 'claude-code-ide-remote-project)
-        (when-let* ((view
-                     (claude-code-ide-remote-project-surviving-view
-                      session-key session-buffer))
-                    ((get-buffer-window view (selected-frame))))
-          (setq
-           layout
-           (plist-put layout :project-view-buffer view)
-           layout
-           (plist-put
-            layout :project-view-name (buffer-name view))))))
+        (let ((current-view (claude-code-ide-remote-project-surviving-view
+                             session-key session-buffer)))
+          (when-let* ((view
+                       (or current-view
+                           (let ((intent (frame-parameter
+                                          nil 'claude-code-ide-manager-remote-project-display)))
+                             (and (equal session-key (plist-get intent :session-key))
+                                  (eq session-buffer (plist-get intent :attachment))
+                                  (plist-get intent :view)))))
+                      ((not (eq view shell)))
+                      ((get-buffer-window view (selected-frame))))
+            ;; Persist no window snapshot that contains an obsolete Project view.
+            (unless (eq view current-view)
+              (setq layout (plist-put layout :window-state nil)))
+            (setq layout (plist-put layout :project-view-buffer view)
+                  layout (plist-put layout :project-view-name (buffer-name view)))))))
     layout))
 
 (defun claude-code-ide-manager-magit-status-buffer (directory)
@@ -4344,109 +4445,132 @@ opens it in remote Magit.  Return the new operation ID."
 Call `claude-code-ide-manager-status-buffer-function' and fall back to
 Dired when it fails or returns a non-buffer."
   (let ((buffer (condition-case nil
-                    (funcall claude-code-ide-manager-status-buffer-function
-                             directory)
+                    (save-window-excursion
+                      (funcall claude-code-ide-manager-status-buffer-function
+                               directory))
                   (error nil))))
     (if (buffer-live-p buffer)
         buffer
       (dired-noselect directory))))
 
+(defun claude-code-ide-manager--shell-owner-key (session-key)
+  "Resolve SESSION-KEY's legacy local directory before shell ownership lookup."
+  (if-let* ((session
+             (or (claude-code-ide--get-session session-key)
+                 (and (stringp session-key)
+                      (file-name-absolute-p session-key)
+                      (not (file-remote-p session-key))
+                      (claude-code-ide--preferred-session session-key)))))
+      (claude-code-ide-session-id session)
+    session-key))
+
+(defun claude-code-ide-manager--owned-companion-shell (session-key)
+  "Return SESSION-KEY's exact live companion shell, or nil."
+  (let ((buffer (gethash (claude-code-ide-manager--shell-owner-key session-key)
+                         claude-code-ide-manager--companion-shells)))
+    (and (claude-code-ide-session--companion-shell-live-p buffer) buffer)))
+
+(defun claude-code-ide-manager--companion-shell (session-key request)
+  "Return SESSION-KEY's shell, creating only when REQUEST permits it."
+  (let* ((owner (claude-code-ide-manager--shell-owner-key session-key))
+         (session (claude-code-ide--get-session owner))
+         (owned (gethash owner claude-code-ide-manager--companion-shells)))
+    (unless session
+      (user-error "Session %s is no longer available" session-key))
+    (cond
+     ((claude-code-ide-session--companion-shell-live-p owned) owned)
+     ((not (plist-get request :allow-create))
+      (user-error "Companion shell is missing or exited. Press R with a shell preset to replace it"))
+     (t
+      (let* ((frame (selected-frame))
+             (attachment (claude-code-ide-manager--session-buffer owner))
+             (directory (claude-code-ide-session-directory session))
+             (host (claude-code-ide-session-host session))
+             (created
+              (claude-code-ide-session--create-companion-shell
+               (plist-get request :directory) (format "*cc-shell:%s*" owner))))
+        (unless (and (eq session (claude-code-ide--get-session owner))
+                     (eq attachment (claude-code-ide-manager--session-buffer owner))
+                     (equal directory (claude-code-ide-session-directory session))
+                     (equal host (claude-code-ide-session-host session))
+                     (frame-live-p frame)
+                     (equal (plist-get request :epoch)
+                            (or (frame-parameter
+                                 frame 'claude-code-ide-manager-remote-project-epoch)
+                                0)))
+          (user-error "Layout changed during startup. The ordinary shell remains in %s"
+                      (buffer-name created)))
+        (puthash owner created claude-code-ide-manager--companion-shells))))))
+
+(defun claude-code-ide-manager--layout-companion-buffer (session-key request)
+  "Return SESSION-KEY's companion using the captured REQUEST."
+  (let ((directory (plist-get request :directory)))
+    (pcase (plist-get request :companion-kind)
+      ('git
+       (let ((claude-code-ide-manager-status-buffer-function
+              (plist-get request :provider)))
+         (claude-code-ide-manager--open-status-buffer directory)))
+      ('dired
+       (unless (file-accessible-directory-p directory)
+         (user-error "Session directory is not accessible: %s" directory))
+       (dired-noselect directory))
+      ('shell
+       (claude-code-ide-manager--companion-shell session-key request)))))
+
 (defun claude-code-ide-manager--restore-layout (session-key)
   "Restore SESSION-KEY's layout with exact current owned buffers."
-  (let* ((layout
-          (gethash session-key claude-code-ide-manager--layouts))
+  (let* ((layout (gethash session-key claude-code-ide-manager--layouts))
          (window-state (plist-get layout :window-state))
-         (remote
-          (claude-code-ide-manager--session-host session-key))
-         (session-buffer
-          (claude-code-ide-manager--session-buffer session-key))
-         (saved-view
-          (plist-get layout :project-view-buffer))
-         (current-view
-          (and
-           (featurep 'claude-code-ide-remote-project)
-           (claude-code-ide-remote-project-surviving-view
-            session-key session-buffer)))
-         (enabled
-          (and
-           remote
-           (claude-code-ide-manager--remote-project-enabled-p
-            session-key))))
-    (when
-        (and
-         window-state
-         (or (not remote) (buffer-live-p session-buffer))
-         (or
-          (null saved-view)
-          (and
-           enabled
-           (buffer-live-p saved-view)
-           (eq saved-view current-view))))
-      (when-let* ((remote)
-                  (old-name
-                   (plist-get layout :terminal-buffer-name)))
-        (setq
-         window-state
-         (cl-subst
-          (buffer-name session-buffer)
-          old-name window-state :test #'equal)))
-      (when-let* ((saved-view)
-                  (old-name
-                   (plist-get layout :project-view-name)))
-        (setq
-         window-state
-         (cl-subst
-          (buffer-name saved-view)
-          old-name window-state :test #'equal)))
+         (remote (claude-code-ide-manager--session-host session-key))
+         (session-buffer (claude-code-ide-manager--session-buffer session-key))
+         (saved-view (plist-get layout :project-view-buffer))
+         (current-view (and (featurep 'claude-code-ide-remote-project)
+                            (claude-code-ide-remote-project-surviving-view
+                             session-key session-buffer)))
+         (enabled (and remote
+                       (claude-code-ide-manager--remote-project-enabled-p session-key)))
+         (shell (gethash (claude-code-ide-manager--shell-owner-key session-key)
+                         claude-code-ide-manager--companion-shells))
+         (shell-name (plist-get layout :shell-buffer-name))
+         (selected-name (plist-get layout :selected-buffer-name))
+         replacements)
+    (when (and window-state
+               (or (not remote) (buffer-live-p session-buffer))
+               (or (null saved-view)
+                   (and enabled (buffer-live-p saved-view) (eq saved-view current-view))))
+      (when-let* ((remote) (old-name (plist-get layout :terminal-buffer-name)))
+        (push (cons old-name (buffer-name session-buffer)) replacements))
+      (when-let* ((saved-view) (old-name (plist-get layout :project-view-name)))
+        (push (cons old-name (buffer-name saved-view)) replacements))
+      (when shell-name
+        (push (cons shell-name
+                    (if (buffer-live-p shell)
+                        (buffer-name shell)
+                      (unless (buffer-live-p session-buffer)
+                        (user-error "The saved shell is missing and its Agent is unavailable"))
+                      (buffer-name session-buffer)))
+              replacements))
+      (when replacements
+        (setq window-state (cl-sublis replacements window-state :test #'equal)
+              selected-name (or (cdr (assoc selected-name replacements)) selected-name)))
       (claude-code-ide-manager--advance-layout-epoch)
-      (window-state-put
-       window-state (frame-root-window) 'safe)
-      (setq
-       claude-code-ide-manager--current-session-key session-key)
-      (let* ((selected-buffer-name
-              (plist-get layout :selected-buffer-name))
-             (selected-buffer-name
-              (if
-                  (and
-                   saved-view
-                   (equal
-                    selected-buffer-name
-                    (plist-get layout :project-view-name)))
-                  (buffer-name saved-view)
-                selected-buffer-name))
-             (selected-buffer
-              (and selected-buffer-name
-                   (when-let* ((buffer
-                                (get-buffer
-                                 selected-buffer-name)))
-                     (unless
-                         (claude-code-ide-manager--manager-buffer-p
-                          buffer)
-                       buffer))))
+      (window-state-put window-state (frame-root-window) 'safe)
+      (setq claude-code-ide-manager--current-session-key session-key)
+      (let* ((selected-buffer (and selected-name (get-buffer selected-name)))
              (target-window
-              (if remote
-                  (or
-                   (get-buffer-window session-buffer)
-                   (claude-code-ide--show-session-buffer
-                    session-buffer))
-                (or
-                 (and
-                  selected-buffer
-                  (get-buffer-window selected-buffer))
-                 (and
-                  session-buffer
-                  (get-buffer-window session-buffer))))))
-        (when target-window
-          (select-window target-window))
+              (or (and selected-buffer
+                       (get-buffer-window selected-buffer))
+                  (and session-buffer (get-buffer-window session-buffer))
+                  (and remote (claude-code-ide--show-session-buffer session-buffer)))))
+        (when target-window (select-window target-window))
         (when enabled
           (claude-code-ide-manager--set-remote-project-frame-intent
            session-key session-buffer
-           (and
-            current-view
-            (get-buffer-window current-view)
-            current-view)
-           (and current-view
-                (get-buffer-window current-view))))
+           (and current-view (get-buffer-window current-view) current-view)
+           (and current-view (get-buffer-window current-view))))
+        (when (and (or shell-name (eq (plist-get layout :companion-kind) 'shell))
+                   (not (claude-code-ide-session--companion-shell-live-p shell)))
+          (message "Companion shell is missing or exited. Press R with a shell preset to replace it"))
         target-window))))
 
 (defun claude-code-ide-manager--session-active-file (session-key)
@@ -4495,133 +4619,167 @@ Dired when it fails or returns a non-buffer."
 
 (defun claude-code-ide-manager--record-remote-project-display
     (session-key attachment frame view-buffer view-window)
-  "Record a displayed VIEW-BUFFER and VIEW-WINDOW for SESSION-KEY."
-  (claude-code-ide-manager--advance-layout-epoch frame)
-  (claude-code-ide-manager--set-remote-project-frame-intent
-   session-key attachment view-buffer view-window frame)
-  (claude-code-ide-remote-project-record-display
-   session-key attachment view-buffer))
+  "Record SESSION-KEY's displayed companion without reusing the old request."
+  (let* ((request
+          (copy-sequence
+           (plist-get (frame-parameter frame 'claude-code-ide-manager-remote-project-display)
+                      :layout-request)))
+         (shell-p (eq (plist-get request :companion-kind) 'shell)))
+    (claude-code-ide-manager--advance-layout-epoch frame)
+    (setq request (plist-put request :epoch
+                             (frame-parameter frame 'claude-code-ide-manager-remote-project-epoch)))
+    (setq request (plist-put request :allow-create nil))
+    (claude-code-ide-manager--set-remote-project-frame-intent
+     session-key attachment view-buffer view-window frame request)
+    (if shell-p
+        (puthash (claude-code-ide-manager--shell-owner-key session-key)
+                 view-buffer claude-code-ide-manager--companion-shells)
+      (claude-code-ide-remote-project-record-display
+       session-key attachment view-buffer))
+    (let ((layout (copy-sequence (gethash session-key claude-code-ide-manager--layouts))))
+      (setq layout (plist-put layout :preset (plist-get request :preset))
+            layout (plist-put layout :companion-kind (plist-get request :companion-kind)))
+      (when shell-p
+        (setq layout (plist-put layout :shell-buffer view-buffer)
+              layout (plist-put layout :shell-buffer-name (buffer-name view-buffer))))
+      (puthash session-key layout claude-code-ide-manager--layouts))))
+
+(defun claude-code-ide-manager--remote-layout-request-current-p
+    (session-key attachment frame request)
+  "Return non-nil when REQUEST still owns SESSION-KEY's layout on FRAME.
+Check the exact SESSION-KEY, its ATTACHMENT, the admitted host and
+requested directory, a live FRAME, and REQUEST's identity against
+FRAME's current layout epoch.  A remote worker calls this before
+adopting or displaying any remote result, including before starting
+a companion shell."
+  (and
+   request
+   (frame-live-p frame)
+   (claude-code-ide-manager--remote-project-enabled-p session-key)
+   (eq attachment (claude-code-ide-manager--session-buffer session-key))
+   (claude-code-ide-remote-project-display-allowed-p session-key attachment)
+   (equal (plist-get request :directory)
+          (claude-code-ide-remote-project-rpc-directory
+           (claude-code-ide-manager--session-host session-key)
+           (claude-code-ide-manager--session-directory session-key)))
+   (let ((intent (frame-parameter
+                  frame 'claude-code-ide-manager-remote-project-display)))
+     (and (equal session-key (plist-get intent :session-key))
+          (eq attachment (plist-get intent :attachment))
+          (eq request (plist-get intent :layout-request))
+          (equal (plist-get request :epoch) (plist-get intent :epoch))
+          (equal (plist-get request :epoch)
+                 (or (frame-parameter frame 'claude-code-ide-manager-remote-project-epoch) 0))))))
 
 (defun claude-code-ide-manager--display-remote-project-view
-    (session-key attachment frame view-buffer)
-  "Display VIEW-BUFFER beside SESSION-KEY's exact ATTACHMENT on FRAME.
-Preserve keyboard focus.  Return non-nil only after display."
+    (session-key attachment frame view-buffer &optional request)
+  "Display the captured companion VIEW-BUFFER without changing keyboard focus.
+REQUEST identifies SESSION-KEY's exact ATTACHMENT and layout on FRAME.
+A replay uses FRAME's current request.  Adopt a shell only after display."
   (when (frame-live-p frame)
-    (let ((intent
-           (frame-parameter
-            frame 'claude-code-ide-manager-remote-project-display)))
-      (when
-          (and
-           (claude-code-ide-manager--remote-project-enabled-p
-            session-key)
-           (equal session-key (plist-get intent :session-key))
-           (eq attachment (plist-get intent :attachment))
-           (eq attachment
-               (claude-code-ide-manager--session-buffer session-key))
-           (buffer-live-p view-buffer))
-        (let ((terminal-window
-               (get-buffer-window attachment frame)))
-          (cond
-           ((when-let* ((view-window
-                         (get-buffer-window view-buffer frame)))
+    (let* ((request
+            (or request
+                (plist-get (frame-parameter frame 'claude-code-ide-manager-remote-project-display)
+                           :layout-request)))
+           (shell-p (eq (plist-get request :companion-kind) 'shell))
+           (selected (selected-window))
+           created-window displayed)
+      (when (and (buffer-live-p view-buffer)
+                 (or (not shell-p)
+                     (and (claude-code-ide-session--companion-shell-live-p view-buffer)
+                          (or (plist-get request :allow-create)
+                              (eq view-buffer
+                                  (claude-code-ide-manager--owned-companion-shell session-key)))))
+                 (claude-code-ide-manager--remote-layout-request-current-p
+                  session-key attachment frame request))
+        (condition-case err
+            (let ((view-window
+                   (or (get-buffer-window view-buffer frame)
+                       (let ((terminal-window (get-buffer-window attachment frame)))
+                         (unless (and (window-live-p terminal-window)
+                                      (not (window-parameter terminal-window 'window-side)))
+                           (user-error "The Agent has no ordinary window for its companion"))
+                         (setq created-window
+                               (split-window terminal-window nil
+                                             (plist-get request :companion-side)))))))
+              (unless (claude-code-ide-manager--remote-layout-request-current-p
+                       session-key attachment frame request)
+                (user-error "The layout changed before companion display"))
+              (when created-window
+                (set-window-buffer view-window view-buffer))
+              (unless (claude-code-ide-manager--remote-layout-request-current-p
+                       session-key attachment frame request)
+                (user-error "The layout changed before companion adoption"))
               (claude-code-ide-manager--record-remote-project-display
                session-key attachment frame view-buffer view-window)
-              t))
-           ((and
-             (window-live-p terminal-window)
-             (not
-              (window-parameter terminal-window 'window-side)))
-            (let ((selected (selected-window)))
-              (condition-case nil
-                  (let ((view-window
-                         (split-window
-                          terminal-window nil
-                          (if
-                              (eq
-                               claude-code-ide-manager-session-window-side
-                               'right)
-                              'left
-                            'right))))
-                    (set-window-buffer view-window view-buffer)
-                    (claude-code-ide-manager--record-remote-project-display
-                     session-key attachment frame view-buffer view-window)
-                    (when (window-live-p selected)
-                      (select-window selected))
-                    t)
-                (error
-                 (when (window-live-p selected)
-                   (select-window selected))
-                 (message
-                  "Project view is ready for %s but the terminal cannot split. Press R"
-                  session-key)
-                 nil))))
-           (t
-            (message
-             "Project view is ready for %s but its terminal is not an ordinary window. Press R"
-             session-key)
-            nil)))))))
+              (setq displayed t))
+          (error
+           (when (window-live-p created-window)
+             (delete-window created-window))
+           (message "Cannot display companion: %s. Press R to retry%s"
+                    (error-message-string err)
+                    (if (and shell-p (buffer-live-p view-buffer))
+                        (format ". The ordinary shell remains in %s" (buffer-name view-buffer))
+                      "")))))
+      (when (window-live-p selected) (select-window selected))
+      displayed)))
 
-(defun claude-code-ide-manager--build-default-layout (session-key &optional scope)
-  "Build the default layout for SESSION-KEY in SCOPE and return the session window."
+(defun claude-code-ide-manager--build-default-layout
+    (session-key &optional scope request)
+  "Apply SESSION-KEY's REQUEST in SCOPE and return the Agent window."
   (let* ((scope (or scope '(:type global)))
-         (directory (claude-code-ide-manager--session-directory session-key))
-         (session-buffer (claude-code-ide-manager--session-buffer session-key)))
+         (session-buffer (claude-code-ide-manager--session-buffer session-key))
+         (request (or request
+                      (claude-code-ide-manager--make-layout-request session-key nil t)))
+         (remote (claude-code-ide-manager--session-host session-key))
+         (project-enabled (claude-code-ide-manager--remote-project-enabled-p session-key))
+         window)
     (unless (buffer-live-p session-buffer)
       (claude-code-ide-manager-refresh)
       (user-error "No live session buffer for %s" session-key))
     (claude-code-ide-manager--advance-layout-epoch)
-    (if (claude-code-ide-manager--session-host session-key)
-        (if
-            (claude-code-ide-manager--remote-project-enabled-p
-             session-key)
-            (progn
-              (when-let* ((old-window
-                           (get-buffer-window session-buffer))
-                          ((window-parameter old-window 'window-side)))
-                (delete-window old-window))
-              (select-window
-               (claude-code-ide-manager--content-window))
-              (delete-other-windows)
-              (let ((window (selected-window)))
-                (set-window-buffer window session-buffer)
-                (claude-code-ide-manager--set-remote-project-frame-intent
-                 session-key session-buffer nil nil)
-                (setq
-                 claude-code-ide-manager--current-session-key
-                 session-key)
-                (claude-code-ide-manager--set-scope-active-session-key
-                 scope session-key)
-                (claude-code-ide-manager--save-state)
-                (claude-code-ide-manager--show-sidebar scope)
-                (select-window window)
-                window))
-          (let ((window
-                 (claude-code-ide--show-session-buffer
-                  session-buffer)))
-            (setq
-             claude-code-ide-manager--current-session-key
-             session-key)
-            (claude-code-ide-manager--set-scope-active-session-key
-             scope session-key)
-            (claude-code-ide-manager--save-state)
-            (claude-code-ide-manager--show-sidebar scope)
-            window))
-      (let ((status-buffer (claude-code-ide-manager--open-status-buffer directory)))
-        (select-window (claude-code-ide-manager--content-window))
-        (delete-other-windows)
-        (let ((status-window (selected-window))
-              (session-window nil))
-          (set-window-buffer status-window status-buffer)
-          (setq session-window
-                (split-window status-window nil
-                              claude-code-ide-manager-session-window-side))
-          (set-window-buffer session-window session-buffer)
-          (setq claude-code-ide-manager--current-session-key session-key)
-          (claude-code-ide-manager--set-scope-active-session-key scope session-key)
-          (claude-code-ide-manager--save-state)
-          (claude-code-ide-manager--show-sidebar scope)
-          (select-window session-window)
-          session-window)))))
+    (setq request
+          (plist-put request :epoch
+                     (frame-parameter nil 'claude-code-ide-manager-remote-project-epoch)))
+    (if (and remote (not project-enabled))
+        (setq window (claude-code-ide--show-session-buffer session-buffer))
+      (when-let* ((old-window (get-buffer-window session-buffer))
+                  ((window-parameter old-window 'window-side)))
+        (delete-window old-window))
+      (select-window (claude-code-ide-manager--content-window))
+      (delete-other-windows)
+      (setq window (selected-window))
+      (set-window-buffer window session-buffer)
+      (if remote
+          (claude-code-ide-manager--set-remote-project-frame-intent
+           session-key session-buffer nil nil nil request)
+        (let (companion-window)
+          (condition-case err
+              (progn
+                (setq companion-window
+                      (split-window window nil (plist-get request :companion-side)))
+                (set-window-buffer
+                 companion-window
+                 (claude-code-ide-manager--layout-companion-buffer session-key request)))
+            (error
+             (when (window-live-p companion-window)
+               (delete-window companion-window))
+             (message "Cannot open companion: %s. Press R to retry"
+                      (error-message-string err)))))))
+    (let ((layout (list :preset (plist-get request :preset)
+                        :companion-kind (plist-get request :companion-kind)))
+          (shell (gethash (claude-code-ide-manager--shell-owner-key session-key)
+                          claude-code-ide-manager--companion-shells)))
+      (when (and (buffer-live-p shell) (get-buffer-window shell (selected-frame)))
+        (setq layout (plist-put layout :shell-buffer shell)
+              layout (plist-put layout :shell-buffer-name (buffer-name shell))))
+      (puthash session-key layout claude-code-ide-manager--layouts))
+    (setq claude-code-ide-manager--current-session-key session-key)
+    (claude-code-ide-manager--set-scope-active-session-key scope session-key)
+    (claude-code-ide-manager--save-state)
+    (claude-code-ide-manager--show-sidebar scope)
+    (select-window window)
+    window))
 
 (defun claude-code-ide-manager--ensure-live-target (session-key &optional _scope)
   "Return non-nil for a live SESSION-KEY, with guidance for disconnected targets."
@@ -4665,13 +4823,15 @@ session layout is updated."
   (unless (claude-code-ide-manager--ensure-live-target session-key scope)
     (user-error "No live session buffer for %s" session-key))
   (claude-code-ide--touch-session session-key)
-  (let ((scope (or scope (claude-code-ide-manager--scope-for-command)))
-        (visible-sidebar-scopes
-         (claude-code-ide-manager--visible-sidebar-scopes))
-        (first-managed-switch
-         (not (claude-code-ide-manager--session-managed-p session-key)))
-        (claude-code-ide-manager--command-scope
-         (or scope (claude-code-ide-manager--scope-for-command))))
+  (let* ((layout (gethash session-key claude-code-ide-manager--layouts))
+         (scope (or scope (claude-code-ide-manager--scope-for-command)))
+         (visible-sidebar-scopes
+          (claude-code-ide-manager--visible-sidebar-scopes))
+         (new-attachment (not (claude-code-ide-manager--session-managed-p session-key)))
+         (first-managed-switch
+          (and (not layout) new-attachment))
+         (claude-code-ide-manager--command-scope
+          (or scope (claude-code-ide-manager--scope-for-command))))
     (claude-code-ide-manager--record-switch-history scope session-key)
     (when claude-code-ide-manager--current-session-key
       (puthash claude-code-ide-manager--current-session-key
@@ -4682,11 +4842,27 @@ session layout is updated."
     (let ((target-window
            (if first-managed-switch
                (claude-code-ide-manager--build-default-layout session-key scope)
-             (or (claude-code-ide-manager--restore-layout session-key)
-                 (claude-code-ide-manager--build-default-layout session-key scope)))))
-      (let ((preferred-window (if (window-live-p target-window)
-                                  target-window
-                                (selected-window))))
+             (or (condition-case err
+                     (claude-code-ide-manager--restore-layout session-key)
+                   (error
+                    (message "Cannot restore saved layout: %s. Press R to reset"
+                             (error-message-string err))
+                    nil))
+                 (and (not (or (eq (plist-get layout :companion-kind) 'shell)
+                               (plist-get layout :shell-buffer-name)))
+                      (claude-code-ide-manager--build-default-layout session-key scope))
+                 (let ((window (claude-code-ide-manager--content-window)))
+                   (claude-code-ide-manager--advance-layout-epoch)
+                   (setq claude-code-ide-manager--current-session-key session-key)
+                   (set-window-buffer window (claude-code-ide-manager--session-buffer session-key))
+                   (when (claude-code-ide-manager--session-host session-key)
+                     (claude-code-ide-manager--set-remote-project-frame-intent
+                      session-key (claude-code-ide-manager--session-buffer session-key) nil nil))
+                   window)))))
+      (let* ((preferred-window (if (window-live-p target-window)
+                                   target-window
+                                 (selected-window)))
+             (preferred-buffer (window-buffer preferred-window)))
         (claude-code-ide-manager--set-scope-active-session-key scope session-key)
         (claude-code-ide-manager--save-state)
         (claude-code-ide-manager--mark-session-managed session-key)
@@ -4696,6 +4872,12 @@ session layout is updated."
         (when (claude-code-ide-manager--treemacs-window)
           (claude-code-ide-manager--sync-treemacs-to-session session-key))
         (claude-code-ide-manager--refresh-sidebar-state scope nil)
+        (unless (window-live-p preferred-window)
+          (setq preferred-window
+                (or (get-buffer-window preferred-buffer (selected-frame))
+                    (get-buffer-window
+                     (claude-code-ide-manager--session-buffer session-key) (selected-frame)))
+                target-window preferred-window))
         (if keep-manager-focus
             (when-let* ((window (claude-code-ide-manager--sidebar-window scope)))
               (select-window window)
@@ -4718,6 +4900,10 @@ session layout is updated."
          (claude-code-ide-manager--session-buffer session-key)
          (selected-frame)
          'first-display))
+       ((and new-attachment (claude-code-ide-manager--session-host session-key))
+        (claude-code-ide-manager--maybe-prepare-remote-project
+         session-key (claude-code-ide-manager--session-buffer session-key)
+         (selected-frame) 'reattach))
        ((and
          (claude-code-ide-manager--remote-project-enabled-p
           session-key)
@@ -4742,12 +4928,13 @@ default layout is rebuilt."
     (setq scope '(:type global)))
   (unless (claude-code-ide-manager--ensure-live-target session-key scope)
     (user-error "No live session buffer for %s" session-key))
-  (claude-code-ide--touch-session session-key)
-  (let* ((scope (or scope (claude-code-ide-manager--scope-for-command)))
+  (let* ((request (claude-code-ide-manager--make-layout-request session-key nil t))
+         (scope (or scope (claude-code-ide-manager--scope-for-command)))
          (visible-sidebar-scopes
           (claude-code-ide-manager--visible-sidebar-scopes))
          (claude-code-ide-manager--command-scope
           (or scope (claude-code-ide-manager--scope-for-command))))
+    (claude-code-ide--touch-session session-key)
     (when (and claude-code-ide-manager--current-session-key
                (not (equal claude-code-ide-manager--current-session-key session-key)))
       (puthash claude-code-ide-manager--current-session-key
@@ -4757,7 +4944,7 @@ default layout is rebuilt."
     (remhash session-key claude-code-ide-manager--layouts)
     (claude-code-ide-manager--save-state)
     (let ((target-window
-           (claude-code-ide-manager--build-default-layout session-key scope)))
+           (claude-code-ide-manager--build-default-layout session-key scope request)))
       (let ((preferred-window (if (window-live-p target-window)
                                   target-window
                                 (selected-window))))

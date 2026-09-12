@@ -63,6 +63,21 @@ title keeps a single line. `V` in the sidebar switches the running Emacs
 between the two, and `claude-code-ide-manager-show-session-titles` decides
 which one a fresh Emacs starts with.
 
+### Layout preset
+A named definition of the content and window arrangement for a managed Session.
+It is distinct from a Saved layout.
+
+### Saved layout
+A Session's retained window arrangement and selected window, which take precedence over its default Layout preset.
+An explicit reset or restoration failure can replace it, but an exited or missing companion alone cannot.
+
+### Custom layout
+A user-defined Layout preset that specifies the whole arrangement, not only the non-Agent window's content.
+
+### Companion shell
+An ordinary interactive shell that accompanies exactly one Session, never a shared directory or Worktree.
+Within a running Emacs instance, the shell remains an ordinary terminal after its Session ends or is removed.
+
 ### Zmx session
 A backend-owned persistent PTY managed by the external `zmx` program.
 It survives Emacs restarts and buffer kills. Emacs is one attach client

@@ -264,7 +264,7 @@ The manager uses these remote lifecycle keys:
 | =c= | Reattach a disconnected row explicitly. |
 | =D= or =X= | Detach and remove the local row without stopping the Agent. |
 | =K= | Confirm and Stop the exact remote zmx target. |
-| =R= | Reset the Session layout and retry an enabled Project view. |
+| =R= | Reset the Session layout to the selected preset and retry its companion. |
 | =? C= | Cancel the pending Project-view attempt. |
 | =? m= | Refresh cached Git metadata for one Configured host. |
 
@@ -279,6 +279,11 @@ Output silence alone does not prove disconnection or Agent completion.
 Stop sends one remote kill request after confirmation.
 The package requires the exact zmx acknowledgment and a separate absence check.
 An ambiguous result keeps the row and does not retry the kill.
+
+A shell preset's companion is an ordinary Ghostel shell, not a Project view.
+Ordinary reattachment, restoration, and navigation reuse a live owned shell but never start or replace one.
+=R= is the only action that can start a replacement shell, and only when no live shell remains.
+Detach (=D= or =X=) and Stop (=K=) release the manager's ownership record without closing a live shell, its process, or its connection.
 
 * Remote Git Metadata
 
@@ -296,8 +301,9 @@ Ordinary manager =G=, startup, restoration, navigation, and redraw make no metad
 
 * Optional Project Views
 
-Remote Project views add Magit or Dired beside a managed remote terminal.
-They use the installed =tramp-rpc= client and its configured remote server.
+Remote layouts support six presets: =magit-left=, =magit-right=, =dired-left=, =dired-right=, =shell-left=, and =shell-right=.
+They place a Git view, direct Dired buffer, or ordinary Ghostel shell beside the existing Agent.
+All three share the same preparation worker, the installed =tramp-rpc= client, and its configured remote server.
 The optional client currently requires Emacs 30.1 or later.
 
 Install and configure the client and server separately.
@@ -316,6 +322,9 @@ A host must occur in both the access list and the Project-view list.
 The Project-view list does not grant remote access by itself.
 Changing either option starts no connection or window change.
 
+This same two-list admission covers every preset, including both shell presets.
+Preset selection never adds a host to either list.
+
 ** Preparation
 
 The first managed display shows the terminal before it starts Project-view preparation.
@@ -323,19 +332,31 @@ Preparation runs in a worker and keeps the terminal interactive.
 On macOS, a temporary timer gives the worker execution time while the GUI is idle.
 The timer stops when the worker exits.
 
-Each fresh attempt requires a current RPC health response.
+Each fresh worker requires a current RPC health response.
 The health phase has a 30-second feature deadline.
 A failure reports the host, phase, and corrective action while it retains the terminal.
 
-The default provider opens Magit for a Git Worktree.
+Preparation captures the preset, companion kind, provider, exact Session directory, companion side, and shell creation permission.
+An explicit reset supersedes the older request. A stale result cannot control a newer layout.
+
+For a Git-based preset, the default provider opens Magit for a Git Worktree.
 It falls back to Dired for a non-Git directory or unavailable Magit.
-The existing =claude-code-ide-manager-status-buffer-function= remains authoritative.
+The existing =claude-code-ide-manager-status-buffer-function= remains authoritative and receives the RPC-qualified Session directory.
+
+For a Dired preset, preparation opens Dired directly for the exact requested Session directory.
+It never calls the configured Git provider and never substitutes a Magit buffer.
+
+For a shell preset, preparation creates or reuses one ordinary Ghostel shell for the Session in its exact requested directory.
+Shell creation uses the Session helper, not the shared Project-view registry.
+It follows the installed RPC client's PTY policy and Ghostel's remote shell preferences.
 
 ** Identity and Reuse
 
-One exact host and remote Git Worktree share one Project-view buffer.
-Different hosts and different Worktrees use different buffers.
-Non-Git views use the exact host and directory identity.
+Project-view identity includes the exact host, canonical Worktree or directory, companion kind, captured provider object, and requested directory.
+
+This identity governs only Magit and Dired views.
+Distinct provider objects remain separate even when their Lisp representations compare equal.
+A Dired request never reuses a cached Magit buffer, and a custom Git provider never reuses an unrelated Magit view.
 
 Ordinary Session reuse keeps a matching buffer without a refresh.
 Explicit Worktree refresh and recovery refresh safe native views.
@@ -349,17 +370,29 @@ Use the view's native =g= command for other manual refreshes.
 Bulk attachment does not prepare every project.
 Each Session starts preparation only when its managed layout first appears.
 
+A companion shell uses a separate ownership model from Magit and Dired views.
+Each Session owns at most one live shell, tracked by its exact Session ID rather than by directory, Worktree, host, or buffer name.
+Different Sessions in the same directory never share a shell.
+Reset to a shell preset reuses that Session's live owned shell without a new RPC connection.
+Only an explicit reset starts a replacement, and only when no live shell exists.
+A shell from a superseded or no-longer-current request stays alive as an ordinary terminal.
+It never joins the shared Magit/Dired registry above and is never adopted into a newer request.
+
 ** Dismissal, Reset, and Cancellation
 
 Closing a Project-view window suppresses automatic display for that Session.
 The suppression survives navigation and remote reattachment during the current Emacs process.
 Other Sessions that share the buffer keep their own display intent.
 An ordinary manager switch, including a switch to a local Session, does not suppress the view.
-Returning to the remote Session displays its ready view even without a saved layout.
+Returning to the remote Session displays its ready Magit or Dired view even without a saved layout.
+Ordinary return never starts or replaces a companion shell.
+It preserves retained output and shows reset guidance when the shell has exited or is missing.
 
 Press manager =R= to clear that Session's suppression.
-This command resets the full default layout and starts a fresh health-gated attempt.
+This command resets the layout to the configured preset.
+Git, Dired, and new shells use fresh health-gated preparation.
 It does not restart the Agent.
+A live owned shell returns without a worker, health check, or new connection.
 
 Open the manager menu with =?= and press =C= to cancel a pending attempt.
 Cancellation blocks stale results from changing a newer Session or attachment.
@@ -382,6 +415,11 @@ It also retains buffers with unknown local kill or query hooks.
 Cleanup never saves, prompts, makes a remote request, or closes an RPC connection.
 
 Terminal close, network loss, Stop, and Emacs exit do not run Project-view cleanup.
+
+Cleanup never applies to a companion shell.
+Confirmed removal releases the shell ownership record without closing the shell buffer, process, or connection.
+Temporary disconnection preserves ownership for explicit reattachment.
+See [[*Manager Lifecycle][Manager Lifecycle]] for the exact shell-survival rules.
 
 * Scope Limits
 

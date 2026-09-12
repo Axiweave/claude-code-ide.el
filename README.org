@@ -269,7 +269,7 @@ Emacs never retries a kill.
 Remote attachment supports the Ghostel backend only. Future versions will deprecate vterm and Eat.
 Remote layouts show only the terminal unless you enable optional remote Project views.
 Remote project launch, Treemacs actions, text transfer, MCP, and SSE setup remain outside this mode.
-Remote Project views support Magit or Dired. Use their normal commands for interactive Git and file access.
+Remote companions support Magit, Dired, or an ordinary Ghostel shell, matching the selected layout preset. Use their normal commands for interactive Git, file access, or shell commands.
 
 If attachment fails, inspect the host-qualified error. Check SSH authentication, trusted host keys, and remote =PATH=. A missing target remains disconnected. Emacs never replaces it with a new agent session. See the [[file:specs/003-attach-remote-agents/quickstart.md][validation guide]] for backend coverage and the live acceptance procedure.
 
@@ -297,14 +297,22 @@ The feature checks the current RPC connection and remote directory before it use
 The provider uses Magit when available and its normal Dired fallback otherwise.
 A failure leaves the terminal usable and reports the host, failed phase, and corrective action.
 
-One exact host and Git Worktree share one Project-view buffer.
-Non-Git directories use their exact directory identity.
+=shell-left= and =shell-right= use these same two host lists. There is no separate remote-shell approval list.
+Remote shells follow the installed RPC client's PTY policy and Ghostel's remote shell preferences.
+That policy can use a direct SSH PTY or an RPC PTY.
+An unsupported remote host produces an explanation instead of a local shell.
+See [[file:docs/remote.org][the remote guide]] for exact host admission, companion identity, and lifecycle details.
+
+Project-view identity includes the exact host, canonical Worktree or directory, companion kind, captured provider, and requested directory.
+Different provider identities can share a native buffer. Cleanup preserves that buffer while another registered owner uses it.
 The feature reuses every surviving matching buffer without refreshing it.
 Use the view's native =g= command when you want a refresh.
 
 Close a Project-view window to suppress its automatic display for that Session.
 This suppression survives navigation and remote reattachment in the current Emacs process.
-Press manager =R= to reset the full layout, clear suppression, and run a fresh health check.
+Press manager =R= to reset the full layout and clear suppression.
+A fresh preparation worker runs a health check.
+A reset or mirror that reuses a live companion shell starts no worker or connection.
 Open the manager menu with =?=, then press =C= to cancel only the pending Project-view attempt.
 Cancellation does not detach the terminal or close a shared RPC connection.
 
@@ -447,7 +455,27 @@ The manager can:
 - Edit and pin the complete session order for one manager scope
 - Restore per-session window layouts when you switch back
 
-When a session is opened through the manager for the first time, the content area defaults to a two-column layout with =magit-status= on the left and the Claude session on the right. If =magit= is unavailable, it falls back to =dired=. Manager state can persist across Emacs restarts through =persist.el=.
+New manager layouts and explicit resets use =claude-code-ide-manager-layout-preset=.
+Each preset selects the companion type and side. The old separate side preference no longer controls layouts.
+
+| Preset | Companion | Side |
+|--------+-----------+------|
+| =magit-left= (default) | Configured Git view | Left |
+| =magit-right= | Configured Git view | Right |
+| =dired-left= | Dired | Left |
+| =dired-right= | Dired | Right |
+| =shell-left= | Ordinary Ghostel shell | Left |
+| =shell-right= | Ordinary Ghostel shell | Right |
+
+The Agent stays on the other side with its existing buffer and backend.
+The default Git provider uses Magit when available, with Dired as its fallback.
+The Dired presets always open the exact Session directory directly.
+The shell presets create ordinary terminals, not additional managed Agent Sessions.
+Manager state can persist across Emacs restarts through =persist.el=.
+See [[*Switching Behavior][Switching Behavior]] for saved-layout precedence and shell lifetime.
+
+The Magit presets temporarily retain =claude-code-ide-manager-status-buffer-function= for custom Git content.
+Dired and shell presets ignore this setting.
 
 *** Entry Points
 
@@ -616,6 +644,7 @@ When point is in the manager buffer:
 - =D= or =X= detaches the selected zmx-backed session and removes its row without stopping the agent, even when disconnected
 - =c= explicitly reattaches the selected disconnected remote target
 - =K= confirms Stop for the exact selected target
+- =R= resets the selected session to the configured layout preset, replacing a missing or exited companion shell
 - =M-p= moves the selected row up within its current pinned or unpinned group
 - =M-n= moves the selected row down within its current pinned or unpinned group
 - =M-p= or =M-n= moves the project group instead when the row is its group's only row
@@ -665,14 +694,21 @@ When you switch from one managed session to another:
 
 1. The current layout is captured for the session you are leaving
 2. If the target session already has a saved layout, that layout is restored
-3. Otherwise a default layout is created:
-   - left content window: =magit-status=
-   - right content window: Claude session buffer
-   - if =magit= cannot open, =dired= is used instead
+3. Otherwise the manager builds the configured =claude-code-ide-manager-layout-preset= (see [[*CC Manager][CC Manager]] for the six preset values)
 4. Focus returns to the last selected window for that session when possible
 5. If the previous focused window no longer exists, focus falls back to the Claude session buffer
 
 If the target session buffer is gone by the time you switch, the manager refreshes itself and aborts cleanly instead of leaving stale sidebar state behind.
+
+A saved layout always wins over the configured preset. Changing =claude-code-ide-manager-layout-preset= never touches an existing saved layout or a running companion shell.
+
+Press =R= to discard the saved layout and rebuild the current preset explicitly. Only this explicit reset, or a brand-new session with no saved layout, starts a new companion shell.
+
+Saved shell layouts and explicit shell resets reuse the Session's live owned Ghostel shell.
+The shell survives navigation, Agent Stop, and detach.
+If an exited shell buffer remains, restoration preserves its output.
+If the buffer is missing, restoration keeps the Agent usable without starting a replacement.
+Both cases show reset guidance. Press =R= with a shell preset to start a replacement.
 
 *** Persistence
 
@@ -704,6 +740,8 @@ Manager-specific options:
 | ~claude-code-ide-manager-repo-label-strategy~ | Visible label strategy for repo-local rows | ~branch-or-basename~ |
 | ~claude-code-ide-manager-repo-include-nested~ | Include nested git roots in repo-local scope | ~nil~ |
 | ~claude-code-ide-manager-default-target~ | Default target for generic manager commands | ~global~ |
+| ~claude-code-ide-manager-layout-preset~ | Layout preset for new and explicitly reset layouts | ~magit-left~ |
+| ~claude-code-ide-manager-status-buffer-function~ | Custom content provider used by =magit-left= and =magit-right= | ~claude-code-ide-manager-magit-status-buffer~ |
 
 ** Diff Viewing with Ediff
 

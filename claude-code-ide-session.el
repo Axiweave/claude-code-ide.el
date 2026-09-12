@@ -39,6 +39,9 @@
 (defvar claude-code-ide-vterm-anti-flicker)
 (defvar claude-code-ide-vterm-render-delay)
 (defvar ghostel-enable-url-detection)
+(defvar ghostel--process)
+(defvar ghostel-mode-hook)
+(defvar ghostel-module-auto-install)
 
 (declare-function vterm "vterm" (&optional arg))
 (declare-function vterm-send-string "vterm" (string &optional paste))
@@ -58,6 +61,7 @@
 (declare-function eat--filter "eat" (process input))
 
 (declare-function ghostel-mode "ghostel" ())
+(declare-function ghostel-create "ghostel" (&optional name display identity))
 (declare-function ghostel--send-string "ghostel" (string))
 (declare-function ghostel-paste-string "ghostel" (string))
 (declare-function ghostel-send-C-c "ghostel" ())
@@ -179,6 +183,41 @@ return the string to insert."
         (user-error "The package ghostel is not installed.  Please install the ghostel package or change the terminal backend configuration to 'vterm")))
      (t
       (user-error "Invalid terminal backend: %s.  Valid options are 'vterm, 'eat, or 'ghostel" backend)))))
+
+(defun claude-code-ide-session--companion-shell-live-p (buffer)
+  "Return non-nil when BUFFER has its own live Ghostel process."
+  (and (buffer-live-p buffer)
+       (local-variable-p 'ghostel--process buffer)
+       (let ((process (buffer-local-value 'ghostel--process buffer)))
+         (and (processp process) (process-live-p process)))))
+
+(defun claude-code-ide-session--create-companion-shell (directory name)
+  "Start an ordinary Ghostel shell in DIRECTORY with a unique NAME."
+  (unless (and (stringp directory)
+               (file-name-absolute-p directory)
+               (file-accessible-directory-p directory))
+    (user-error "Session directory is not accessible: %s" directory))
+  (let ((ghostel-module-auto-install nil))
+    (unless (require 'ghostel nil t)
+      (user-error "Shell layouts require Ghostel. Install Ghostel before resetting this layout"))
+    (unless (fboundp 'ghostel--new)
+      (user-error "Ghostel native support is unavailable. Install its native module before resetting this layout"))
+    (let* ((default-directory (file-name-as-directory directory))
+           buffer
+           (ghostel-mode-hook
+            (cons (lambda () (unless buffer (setq buffer (current-buffer))))
+                  ghostel-mode-hook)))
+      (condition-case err
+          (let ((created (ghostel-create (generate-new-buffer-name name) nil)))
+            (unless (claude-code-ide-session--companion-shell-live-p created)
+              (user-error "Ghostel did not start a live shell"))
+            created)
+        ((error quit)
+         (when (buffer-live-p buffer)
+           (if (claude-code-ide-session--companion-shell-live-p buffer)
+               (message "Shell startup stopped. The live shell remains in %s" (buffer-name buffer))
+             (kill-buffer buffer)))
+         (signal (car err) (cdr err)))))))
 
 (defun claude-code-ide-session--vterm-copy-mode-hook ()
   "Keep the cursor visible in `vterm-copy-mode'."

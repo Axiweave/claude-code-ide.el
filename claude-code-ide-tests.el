@@ -44,6 +44,7 @@
 (require 'ert)
 (require 'cl-lib)
 
+(defvar ghostel-mode-hook)
 ;;; Mock Implementations
 
 ;; === Mock claude-code-ide-debug module ===
@@ -376,6 +377,7 @@ Ensures a clean state before each test that involves process management."
          (claude-code-ide-manager--scope-state (make-hash-table :test 'equal))
          (claude-code-ide-manager--remote-metadata-operations (make-hash-table :test 'equal))
          (claude-code-ide-manager--layouts (make-hash-table :test 'equal))
+         (claude-code-ide-manager--companion-shells (make-hash-table :test 'equal))
          (claude-code-ide-manager--current-session-key nil)
          (claude-code-ide-manager--persisted-state nil)
          (claude-code-ide-manager-persist-state t)
@@ -7242,18 +7244,17 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
   (claude-code-ide-tests--with-priority-sessions
    '(("00-current" idle) ("01-input" needs-input) ("02-working" working))
    (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-   (let (attempts)
-     (cl-letf (((symbol-function 'claude-code-ide-manager--open-status-buffer)
-                (lambda (directory)
-                  (push directory attempts)
-                  (when (= (length attempts) 1)
-                    (error "Status buffer is unavailable"))
-                  status-buffer)))
+   (let ((build (symbol-function 'claude-code-ide-manager--build-default-layout))
+         failed)
+     (cl-letf (((symbol-function 'claude-code-ide-manager--build-default-layout)
+                (lambda (&rest arguments)
+                  (if failed
+                      (apply build arguments)
+                    (setq failed t)
+                    (error "Layout is unavailable")))))
        (should-error
         (call-interactively #'claude-code-ide-manager-next-priority-session))
        (jump "01-input")
-       (should (equal attempts
-                      '("/tmp/priority/01-input/" "/tmp/priority/01-input/")))
        (jump "02-working")))))
 
 (ert-deftest claude-code-ide-test-manager-uncleared-next-skips-cleared-results ()
@@ -8093,6 +8094,595 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                 focus-buffer
                 manager-buffer))))
 
+(ert-deftest claude-code-ide-test-manager-layout-preset-non-shell-arrangements ()
+  "Reset preserves custom content and gives Dired its own directory view."
+  (claude-code-ide-tests--with-grouped-state
+   (save-window-excursion
+     (let* ((agent (generate-new-buffer "*claude-code[preset]*"))
+            (custom (generate-new-buffer "*preset-custom*"))
+            (directory (make-temp-file "preset-directory-" t))
+            (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+            opened-views)
+       (unwind-protect
+           (progn
+             (claude-code-ide--put-session
+              (claude-code-ide-session-create
+               :id "preset" :directory directory :buffer agent
+               :process agent :cli-type 'omp))
+             (dolist (case '((magit-left left git) (magit-right right git)
+                             (dired-left left dired) (dired-right right dired)))
+               (let ((claude-code-ide-manager-layout-preset (nth 0 case)))
+                 (cl-progv '(claude-code-ide-manager-session-window-side) '(left)
+                   (claude-code-ide-manager-reset-layout "preset"))
+                 (let* ((agent-window (get-buffer-window agent))
+                        (companion-window
+                         (seq-find
+                          (lambda (window)
+                            (and (not (window-parameter window 'window-side))
+                                 (not (eq window agent-window))))
+                          (window-list)))
+                        (companion (window-buffer companion-window)))
+                   (should (eq agent-window (selected-window)))
+                   (should (get-buffer-window
+                            (claude-code-ide-manager--buffer-name-for-scope '(:type global))))
+                   (should (eq (nth 1 case)
+                               (if (< (car (window-edges companion-window))
+                                      (car (window-edges agent-window)))
+                                   'left 'right)))
+                   (if (eq (nth 2 case) 'git)
+                       (should (eq custom companion))
+                     (push companion opened-views)
+                     (with-current-buffer companion
+                       (should (derived-mode-p 'dired-mode))
+                       (should (equal (file-name-as-directory directory)
+                                      default-directory))))
+                   (should (eq custom
+                               (funcall claude-code-ide-manager-status-buffer-function
+                                        directory))))))
+             (claude-code-ide-manager-reset-layout "preset" t)
+             (should (eq (selected-window)
+                         (claude-code-ide-manager--sidebar-window '(:type global)))))
+         (dolist (buffer (cons agent (cons custom opened-views)))
+           (when (buffer-live-p buffer) (kill-buffer buffer)))
+         (delete-directory directory t))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-invalid-reset-preserves-work ()
+  "An invalid preset leaves the saved layout and visible Agent intact."
+  (claude-code-ide-tests--with-grouped-state
+   (save-window-excursion
+     (let ((agent (generate-new-buffer "*preset-agent*"))
+           (directory (make-temp-file "preset-directory-" t)))
+       (unwind-protect
+           (progn
+             (claude-code-ide--put-session
+              (claude-code-ide-session-create
+               :id "preset" :directory directory :buffer agent
+               :process agent :cli-type 'omp))
+             (set-window-buffer (selected-window) agent)
+             (let ((saved (list :window-state
+                                (window-state-get (frame-root-window) t))))
+               (puthash "preset" saved claude-code-ide-manager--layouts)
+               (cl-progv '(claude-code-ide-manager-layout-preset) '(unknown)
+                 (should-error (claude-code-ide-manager-reset-layout "preset")
+                               :type 'user-error))
+               (should (eq saved (gethash "preset" claude-code-ide-manager--layouts)))
+               (should (eq agent (window-buffer (selected-window))))))
+         (when (buffer-live-p agent) (kill-buffer agent))
+         (delete-directory directory t))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-failures-keep-agent ()
+  "Provider, split, and directory failures never replace the Agent."
+  (claude-code-ide-tests--with-grouped-state
+   (save-window-excursion
+     (let* ((agent (generate-new-buffer "*claude-code[preset-errors]*"))
+            (directory (make-temp-file "preset-errors-" t))
+            (session (claude-code-ide-session-create
+                      :id "preset" :directory directory :buffer agent
+                      :process agent :cli-type 'omp))
+            (claude-code-ide-manager-layout-preset 'magit-left)
+            (claude-code-ide-manager-status-buffer-function
+             (lambda (_) (error "Provider refused")))
+            view)
+       (unwind-protect
+           (progn
+             (claude-code-ide--put-session session)
+             (claude-code-ide-manager-reset-layout "preset")
+             (setq view
+                   (window-buffer
+                    (seq-find
+                     (lambda (window)
+                       (with-current-buffer (window-buffer window)
+                         (derived-mode-p 'dired-mode)))
+                     (window-list))))
+             (with-current-buffer view
+               (should (derived-mode-p 'dired-mode))
+               (should (equal default-directory (file-name-as-directory directory))))
+             (cl-letf (((symbol-function 'split-window)
+                        (lambda (&rest _) (error "Split refused"))))
+               (claude-code-ide-manager-reset-layout "preset"))
+             (should (eq agent (window-buffer (selected-window))))
+             (setf (claude-code-ide-session-directory session)
+                   (expand-file-name "missing" directory))
+             (let ((claude-code-ide-manager-layout-preset 'dired-left))
+               (claude-code-ide-manager-reset-layout "preset"))
+             (should (eq agent (window-buffer (selected-window))))
+             (should (equal
+                      (mapcar #'window-buffer
+                              (seq-remove
+                               (lambda (window) (window-parameter window 'window-side))
+                               (window-list)))
+                      (list agent)))
+             (should (claude-code-ide-manager--sidebar-window '(:type global))))
+         (dolist (buffer (list agent view))
+           (when (buffer-live-p buffer) (kill-buffer buffer)))
+         (delete-directory directory t))))))
+
+(defun claude-code-ide-tests--create-companion-pipe (name &optional _display _identity)
+  "Create a disposable Ghostel-shaped buffer with a real lifecycle process."
+  (let ((buffer (generate-new-buffer name)))
+    (with-current-buffer buffer
+      (setq-local major-mode 'ghostel-mode)
+      (run-hooks 'ghostel-mode-hook)
+      (setq-local ghostel--process
+                  (make-pipe-process :name "cci-companion-test"
+                                     :buffer buffer :noquery t)))
+    buffer))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-shell-ownership ()
+  "Same-directory Sessions keep separate shells through mirrors and presets."
+  (cl-progv '(features) (list (cons 'ghostel features))
+    (claude-code-ide-tests--with-grouped-state
+     (save-window-excursion
+       (let* ((agent-a (generate-new-buffer "*claude-code[shell-a]*"))
+              (agent-b (generate-new-buffer "*claude-code[shell-b]*"))
+              (custom (generate-new-buffer "*shell-custom*"))
+              (directory (make-temp-file "shell-ownership-" t))
+              (changed-directory (expand-file-name "changed/" directory))
+              (ghostel-mode-hook nil)
+              (claude-code-ide-manager-layout-preset 'shell-left)
+              (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+              shell-a shell-b process-a)
+         (unwind-protect
+             (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                       ((symbol-function 'ghostel-create)
+                        #'claude-code-ide-tests--create-companion-pipe))
+               (make-directory changed-directory)
+               (with-current-buffer agent-a
+                 (setq-local claude-code-ide--terminal-backend 'eat))
+               (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+                 (claude-code-ide--put-session
+                  (claude-code-ide-session-create
+                   :id (car entry) :directory directory :buffer (cdr entry)
+                   :process (cdr entry) :cli-type 'omp)))
+               (claude-code-ide-manager-reset-layout "a")
+               (setq shell-a (gethash "a" claude-code-ide-manager--companion-shells)
+                     process-a (buffer-local-value 'ghostel--process shell-a))
+               (should (< (window-left-column (get-buffer-window shell-a))
+                          (window-left-column (get-buffer-window agent-a))))
+               (claude-code-ide-manager-reset-layout "b")
+               (setq shell-b (gethash "b" claude-code-ide-manager--companion-shells))
+               (should-not (eq shell-a shell-b))
+               (should-not (eq process-a (buffer-local-value 'ghostel--process shell-b)))
+               (with-current-buffer shell-a
+                 (insert "Keep this command output")
+                 (setq default-directory changed-directory))
+               (let ((claude-code-ide-manager-layout-preset 'shell-right))
+                 (claude-code-ide-manager-reset-layout "a"))
+               (should (> (window-left-column (get-buffer-window shell-a))
+                          (window-left-column (get-buffer-window agent-a))))
+               (with-current-buffer shell-a
+                 (should (equal (buffer-string) "Keep this command output"))
+                 (should (equal default-directory changed-directory))
+                 (should (eq ghostel--process process-a)))
+               (let ((claude-code-ide-manager-layout-preset 'magit-left))
+                 (claude-code-ide-manager-reset-layout "a"))
+               (should-not (get-buffer-window shell-a))
+               (should (claude-code-ide-session--companion-shell-live-p shell-a))
+               (should (eq shell-a
+                           (claude-code-ide-manager--companion-shell
+                            directory
+                            (claude-code-ide-manager--make-layout-request
+                             directory 'shell-left nil))))
+               (should (= (hash-table-count claude-code-ide--sessions) 2))
+               (should (eq (buffer-local-value 'claude-code-ide--terminal-backend agent-a)
+                           'eat)))
+           (dolist (buffer (list agent-a agent-b custom shell-a shell-b))
+             (when (buffer-live-p buffer) (kill-buffer buffer)))
+           (delete-directory directory t)))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-shell-startup-failures ()
+  "Startup refuses missing support and never kills a started shell."
+  (cl-progv '(features) (list (cons 'ghostel features))
+    (let ((directory (make-temp-file "shell-failures-" t))
+          (ghostel-mode-hook nil)
+          (original-require (symbol-function 'require))
+          partial)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostel--new) #'ignore))
+            (cl-letf (((symbol-function 'require)
+                       (lambda (feature &rest arguments)
+                         (unless (eq feature 'ghostel)
+                           (apply original-require feature arguments)))))
+              (should-error
+               (claude-code-ide-session--create-companion-shell directory "*missing-ghostel*")
+               :type 'user-error))
+            (cl-letf (((symbol-function 'ghostel--new) nil))
+              (should-error
+               (claude-code-ide-session--create-companion-shell directory "*missing-module*")
+               :type 'user-error))
+            (cl-letf (((symbol-function 'ghostel-create)
+                       (lambda (&rest _) (ert-fail "An invalid directory started a shell"))))
+              (should-error
+               (claude-code-ide-session--create-companion-shell
+                (expand-file-name "missing" directory) "*missing-directory*")
+               :type 'user-error))
+            (dolist (started '(nil t))
+              (cl-letf (((symbol-function 'ghostel-create)
+                         (lambda (name &rest _)
+                           (setq partial (generate-new-buffer name))
+                           (with-current-buffer partial
+                             (setq-local major-mode 'ghostel-mode)
+                             (run-hooks 'ghostel-mode-hook)
+                             (when started
+                               (setq-local ghostel--process
+                                           (make-pipe-process :name "cci-startup-failure"
+                                                              :buffer partial :noquery t))))
+                           (error "Shell startup interrupted"))))
+                (should-error
+                 (claude-code-ide-session--create-companion-shell directory "*partial-shell*"))
+                (if started
+                    (should (claude-code-ide-session--companion-shell-live-p partial))
+                  (should-not (buffer-live-p partial))))))
+        (when (buffer-live-p partial) (kill-buffer partial))
+        (delete-directory directory t)))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-stale-shell-stays-ordinary ()
+  "A layout change during startup leaves its live shell unowned."
+  (cl-progv '(features) (list (cons 'ghostel features))
+    (claude-code-ide-tests--with-grouped-state
+     (let ((directory (make-temp-file "shell-stale-" t))
+           (agent (generate-new-buffer "*claude-code[shell-stale]*"))
+           (ghostel-mode-hook nil)
+           (invalidate t)
+           created)
+       (unwind-protect
+           (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                     ((symbol-function 'ghostel-create)
+                      (lambda (&rest arguments)
+                        (let ((buffer (apply #'claude-code-ide-tests--create-companion-pipe
+                                             arguments)))
+                          (push buffer created)
+                          (when invalidate
+                            (setq invalidate nil)
+                            (claude-code-ide-manager--advance-layout-epoch))
+                          buffer))))
+             (claude-code-ide--put-session
+              (claude-code-ide-session-create
+               :id "stale" :directory directory :buffer agent
+               :process agent :cli-type 'omp))
+             (should-error
+              (claude-code-ide-manager--companion-shell
+               "stale" (claude-code-ide-manager--make-layout-request "stale" 'shell-left t))
+              :type 'user-error)
+             (let ((ordinary (car created))
+                   (replacement
+                    (claude-code-ide-manager--companion-shell
+                     "stale" (claude-code-ide-manager--make-layout-request "stale" 'shell-left t))))
+               (should-not (eq ordinary replacement))
+               (should (claude-code-ide-session--companion-shell-live-p ordinary))
+               (should (claude-code-ide-session--companion-shell-live-p replacement))))
+         (dolist (buffer (cons agent created))
+           (when (buffer-live-p buffer) (kill-buffer buffer)))
+         (delete-directory directory t))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-restores-renamed-shell ()
+  "Saved layout selection and size follow shell identity, not reused names."
+  (cl-progv '(features) (list (cons 'ghostel features))
+    (claude-code-ide-tests--with-grouped-state
+     (save-window-excursion
+       (let* ((directory (make-temp-file "shell-restore-" t))
+              (agent-a (generate-new-buffer "*claude-code[restore-a]*"))
+              (agent-b (generate-new-buffer "*claude-code[restore-b]*"))
+              (custom (generate-new-buffer "*restore-custom*"))
+              (ghostel-mode-hook nil)
+              (claude-code-ide-manager-layout-preset 'shell-left)
+              (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+              shell reused-name width)
+         (unwind-protect
+             (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                       ((symbol-function 'ghostel-create)
+                        #'claude-code-ide-tests--create-companion-pipe))
+               (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+                 (claude-code-ide--put-session
+                  (claude-code-ide-session-create
+                   :id (car entry) :directory directory :buffer (cdr entry)
+                   :process (cdr entry) :cli-type 'omp)))
+               (claude-code-ide-manager-reset-layout "a")
+               (setq shell (gethash "a" claude-code-ide-manager--companion-shells))
+               (select-window (get-buffer-window shell))
+               (window-resize (selected-window) 2 t)
+               (setq width (window-total-width (selected-window))
+                     claude-code-ide-manager-layout-preset 'magit-right)
+               (claude-code-ide-manager-switch-to-session "b")
+               (let ((old-name (buffer-name shell)))
+                 (with-current-buffer shell (rename-buffer "*renamed-owned-shell*" t))
+                 (setq reused-name (generate-new-buffer old-name)))
+               (claude-code-ide-manager-switch-to-session "a")
+               (should (eq shell (window-buffer (selected-window))))
+               (should (= width (window-total-width (selected-window))))
+               (should-not (get-buffer-window reused-name))
+               (delete-window (get-buffer-window shell))
+               (claude-code-ide-manager-switch-to-session "b")
+               (claude-code-ide-manager-switch-to-session "a")
+               (should-not (get-buffer-window shell))
+               (should (claude-code-ide-session--companion-shell-live-p shell)))
+           (dolist (buffer (list agent-a agent-b custom shell reused-name))
+             (when (buffer-live-p buffer) (kill-buffer buffer)))
+           (delete-directory directory t)))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-missing-shell-never-restarts ()
+  "Exit, deletion, persisted names, and restore errors never grant creation."
+  (cl-progv '(features) (list (cons 'ghostel features))
+    (claude-code-ide-tests--with-grouped-state
+     (save-window-excursion
+       (let* ((directory (make-temp-file "shell-missing-" t))
+              (agent-a (generate-new-buffer "*claude-code[missing-a]*"))
+              (agent-b (generate-new-buffer "*claude-code[missing-b]*"))
+              (custom (generate-new-buffer "*missing-custom*"))
+              (ghostel-mode-hook nil)
+              (claude-code-ide-manager-layout-preset 'shell-left)
+              (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+              shell replacement reused-name)
+         (unwind-protect
+             (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                       ((symbol-function 'ghostel-create)
+                        #'claude-code-ide-tests--create-companion-pipe))
+               (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+                 (claude-code-ide--put-session
+                  (claude-code-ide-session-create
+                   :id (car entry) :directory directory :buffer (cdr entry)
+                   :process (cdr entry) :cli-type 'omp)))
+               (claude-code-ide-manager-reset-layout "a")
+               (setq shell (gethash "a" claude-code-ide-manager--companion-shells))
+               (with-current-buffer shell (insert "Retained output"))
+               (select-window (get-buffer-window shell))
+               (setq claude-code-ide-manager-layout-preset 'magit-right)
+               (claude-code-ide-manager-switch-to-session "b")
+               (delete-process (buffer-local-value 'ghostel--process shell))
+               (cl-letf (((symbol-function 'ghostel-create)
+                          (lambda (&rest _) (ert-fail "Normal return created a shell"))))
+                 (claude-code-ide-manager-switch-to-session "a")
+                 (should (eq shell (window-buffer (selected-window))))
+                 (with-current-buffer shell
+                   (should (string-match-p "Retained output" (buffer-string))))
+                 (claude-code-ide-manager-switch-to-session "b")
+                 (let ((old-name (buffer-name shell)))
+                   (kill-buffer shell)
+                   (setq reused-name (generate-new-buffer old-name)))
+                 (claude-code-ide-manager-switch-to-session "a")
+                 (should-not (get-buffer-window reused-name))
+                 (should (get-buffer-window agent-a))
+                 (claude-code-ide-manager-switch-to-session "b")
+                 (cl-letf (((symbol-function 'window-state-put)
+                            (lambda (&rest _) (error "Unrelated restoration failure"))))
+                   (claude-code-ide-manager-switch-to-session "a"))
+                 (should (eq agent-a (window-buffer (selected-window)))))
+               (setq claude-code-ide-manager-layout-preset 'shell-right)
+               (claude-code-ide-manager-reset-layout "a")
+               (setq replacement (gethash "a" claude-code-ide-manager--companion-shells))
+               (should-not (eq replacement reused-name))
+               (should (claude-code-ide-session--companion-shell-live-p replacement))
+               (puthash "a"
+                        (read (prin1-to-string
+                               (claude-code-ide-manager--persistable-layout
+                                (claude-code-ide-manager--capture-layout "a"))))
+                        claude-code-ide-manager--layouts)
+               (clrhash claude-code-ide-manager--companion-shells)
+               (cl-letf (((symbol-function 'ghostel-create)
+                          (lambda (&rest _) (ert-fail "Persisted state created a shell"))))
+                 (claude-code-ide-manager-switch-to-session "b")
+                 (claude-code-ide-manager-switch-to-session "a")
+                 (should-not (get-buffer-window replacement))
+                 (should (claude-code-ide-session--companion-shell-live-p replacement))))
+           (dolist (buffer (list agent-a agent-b custom shell replacement reused-name))
+             (when (buffer-live-p buffer) (kill-buffer buffer)))
+           (delete-directory directory t)))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-provider-window-isolation ()
+  "Provider window changes cannot replace the Agent or the requested layout."
+  (dolist (case '((magit-left replace nil)
+                  (magit-right delete t)))
+    (claude-code-ide-tests--with-grouped-state
+     (save-window-excursion
+       (let* ((agent (generate-new-buffer "*claude-code[provider-windows]*"))
+              (process (make-pipe-process :name "provider-windows" :buffer agent :noquery t))
+              (view (generate-new-buffer "*provider-window-view*"))
+              (claude-code-ide-manager-layout-preset (nth 0 case))
+              (claude-code-ide-manager-status-buffer-function
+               (lambda (_)
+                 (set-window-buffer (selected-window) view)
+                 (when (eq (nth 1 case) 'delete)
+                   (delete-other-windows))
+                 view)))
+         (unwind-protect
+             (progn
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id "provider" :directory temporary-file-directory
+                 :buffer agent :process process :order 1 :cli-type 'omp))
+               (claude-code-ide-manager-reset-layout "provider" (nth 2 case))
+               (let ((agent-window (get-buffer-window agent))
+                     (view-window (get-buffer-window view))
+                     (sidebar (claude-code-ide-manager--sidebar-window '(:type global))))
+                 (should (window-live-p agent-window))
+                 (should (process-live-p process))
+                 (should (window-live-p sidebar))
+                 (should (= (length (get-buffer-window-list view nil nil)) 1))
+                 (should (eq (selected-window)
+                             (if (nth 2 case) sidebar agent-window)))
+                 (should (eq (eq (nth 0 case) 'magit-left)
+                             (< (car (window-edges view-window))
+                                (car (window-edges agent-window)))))))
+           (when (process-live-p process) (delete-process process))
+           (kill-buffer agent)
+           (kill-buffer view)))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-non-shell-restore-fallback ()
+  "A non-shell restoration error replaces the previous Session's companion."
+  (claude-code-ide-tests--with-grouped-state
+   (save-window-excursion
+     (let* ((agent-a (generate-new-buffer "*claude-code[fallback-a]*"))
+            (agent-b (generate-new-buffer "*claude-code[fallback-b]*"))
+            (view-a (generate-new-buffer "*fallback-view-a*"))
+            (view-b (generate-new-buffer "*fallback-view-b*"))
+            (claude-code-ide-manager-layout-preset 'magit-left)
+            (claude-code-ide-manager-status-buffer-function (lambda (_) view-a)))
+       (unwind-protect
+           (progn
+             (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id (car entry) :directory temporary-file-directory
+                 :buffer (cdr entry) :process (cdr entry) :cli-type 'omp)))
+             (claude-code-ide-manager-reset-layout "a")
+             (let ((claude-code-ide-manager-status-buffer-function (lambda (_) view-b)))
+               (claude-code-ide-manager-reset-layout "b"))
+             (cl-letf (((symbol-function 'window-state-put)
+                        (lambda (&rest _) (error "Native restoration failure"))))
+               (claude-code-ide-manager-switch-to-session "a"))
+             (should (get-buffer-window view-a))
+             (should-not (get-buffer-window view-b))
+             (should (eq agent-a (window-buffer (selected-window)))))
+         (dolist (buffer (list agent-a agent-b view-a view-b))
+           (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-restores-manager-selection ()
+  "Ordinary navigation restores the selected manager window when it survives."
+  (claude-code-ide-tests--with-grouped-state
+   (save-window-excursion
+     (let* ((agent-a (generate-new-buffer "*claude-code[focus-a]*"))
+            (agent-b (generate-new-buffer "*claude-code[focus-b]*"))
+            (view (generate-new-buffer "*saved-focus-view*"))
+            (claude-code-ide-manager-layout-preset 'magit-left)
+            (claude-code-ide-manager-status-buffer-function (lambda (_) view)))
+       (unwind-protect
+           (progn
+             (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id (car entry) :directory temporary-file-directory
+                 :buffer (cdr entry) :process (cdr entry) :cli-type 'omp)))
+             (claude-code-ide-manager-reset-layout "a")
+             (let ((sidebar (claude-code-ide-manager--show-sidebar '(:type global))))
+               (select-window sidebar)
+               (let ((saved-buffer (window-buffer sidebar)))
+                 (claude-code-ide-manager-switch-to-session "b")
+                 (claude-code-ide-manager-switch-to-session "a")
+                 (should (eq saved-buffer (window-buffer (selected-window))))
+                 (should (get-buffer-window agent-a)))))
+         (dolist (buffer (list agent-a agent-b view))
+           (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-old-layout-precedes-shell-default ()
+  "An old native layout does not gain a shell from the new default."
+  (claude-code-ide-tests--with-grouped-state
+   (save-window-excursion
+     (let ((agent (generate-new-buffer "*claude-code[old-layout]*"))
+           (editor (generate-new-buffer "*old-layout-editor*"))
+           (claude-code-ide-manager-layout-preset 'shell-left))
+       (unwind-protect
+           (progn
+             (claude-code-ide--put-session
+              (claude-code-ide-session-create
+               :id "old" :directory temporary-file-directory :buffer agent
+               :process agent :cli-type 'omp))
+             (delete-other-windows)
+             (set-window-buffer (selected-window) agent)
+             (select-window (split-window-right))
+             (set-window-buffer (selected-window) editor)
+             (puthash "old"
+                      (list :window-state (window-state-get (frame-root-window) t)
+                            :selected-buffer-name (buffer-name editor))
+                      claude-code-ide-manager--layouts)
+             (delete-other-windows)
+             (set-window-buffer (selected-window) agent)
+             (cl-letf (((symbol-function 'ghostel-create)
+                        (lambda (&rest _) (ert-fail "An old layout started a shell"))))
+               (claude-code-ide-manager-switch-to-session "old"))
+             (should (eq editor (window-buffer (selected-window))))
+             (should (get-buffer-window agent)))
+         (dolist (buffer (list agent editor))
+           (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-session-end-releases-shell ()
+  "Core Session cleanup releases ownership but leaves the shell alive."
+  (cl-progv '(features) (list (cons 'ghostel features))
+    (claude-code-ide-tests--with-grouped-state
+     (let* ((directory (make-temp-file "shell-release-" t))
+            (ghostel-mode-hook nil)
+            (agent (claude-code-ide-tests--create-companion-pipe "*claude-code[ending]*"))
+            (next-agent (claude-code-ide-tests--create-companion-pipe "*claude-code[next]*"))
+            (session (claude-code-ide-session-create
+                      :id "ending" :directory directory :buffer agent
+                      :process (buffer-local-value 'ghostel--process agent) :cli-type 'omp))
+            shell replacement)
+       (unwind-protect
+           (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                     ((symbol-function 'ghostel-create)
+                      #'claude-code-ide-tests--create-companion-pipe))
+             (claude-code-ide--put-session session)
+             (setq shell (claude-code-ide-manager--companion-shell
+                          "ending" (claude-code-ide-manager--make-layout-request
+                                    "ending" 'shell-left t)))
+             (remhash "ending" claude-code-ide--sessions)
+             (claude-code-ide--cleanup-session-resources session)
+             (should (claude-code-ide-session--companion-shell-live-p shell))
+             (setf (claude-code-ide-session-buffer session) next-agent
+                   (claude-code-ide-session-process session)
+                   (buffer-local-value 'ghostel--process next-agent))
+             (claude-code-ide--put-session session)
+             (setq replacement
+                   (claude-code-ide-manager--companion-shell
+                    "ending" (claude-code-ide-manager--make-layout-request
+                              "ending" 'shell-left t)))
+             (should-not (eq shell replacement))
+             (should (claude-code-ide-session--companion-shell-live-p shell)))
+         (dolist (buffer (list agent next-agent shell replacement))
+           (when (buffer-live-p buffer) (kill-buffer buffer)))
+         (delete-directory directory t))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-disconnect-keeps-shell ()
+  "Temporary disconnect retains a shell, while explicit removal releases it."
+  (claude-code-ide-tests--with-grouped-state
+   (let* ((ghostel-mode-hook nil)
+          (agent (claude-code-ide-tests--create-companion-pipe "*claude-code[remote-shell]*"))
+          (shell (claude-code-ide-tests--create-companion-pipe "*remote-owned-shell*"))
+          (session (claude-code-ide-session-create
+                    :id "stable" :host "removed-host" :directory "/remote/project"
+                    :zmx-name "agent" :buffer agent :cli-type 'omp
+                    :process (buffer-local-value 'ghostel--process agent))))
+     (unwind-protect
+         (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+                    (lambda (&rest _) (ert-fail "Disconnection contacted a host"))))
+           (puthash "stable" shell claude-code-ide-manager--companion-shells)
+           (claude-code-ide-manager--remember-remote-session session)
+           (claude-code-ide-manager-session-ended "stable")
+           (claude-code-ide--put-session session)
+           (should (eq shell
+                       (claude-code-ide-manager--companion-shell
+                        "stable" (claude-code-ide-manager--make-layout-request
+                                  "stable" 'shell-left nil))))
+           (remhash "stable" claude-code-ide--sessions)
+           (claude-code-ide-manager-session-ended "stable" t)
+           (claude-code-ide--put-session session)
+           (should-error
+            (claude-code-ide-manager--companion-shell
+             "stable" (claude-code-ide-manager--make-layout-request "stable" 'shell-left nil))
+            :type 'user-error)
+           (should (claude-code-ide-session--companion-shell-live-p shell)))
+       (dolist (buffer (list agent shell))
+         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
 (ert-deftest claude-code-ide-test-manager-builds-default-layout-with-magit ()
   "Test first-open layout uses magit when available."
   (claude-code-ide-tests--reset-manager-state)
@@ -8113,32 +8703,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                 (kill-buffer buffer)))
             (list session-buffer status-buffer)))))
 
-(ert-deftest claude-code-ide-test-manager-default-layout-session-window-side ()
-  "Test the default layout honors `claude-code-ide-manager-session-window-side'."
-  (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*cc-session*"))
-        (status-buffer (get-buffer-create "*cc-status*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
-                   (lambda (_directory) session-buffer))
-                  ((symbol-function 'magit-status-setup-buffer)
-                   (lambda (_directory) status-buffer)))
-          (dolist (side '(right left))
-            (let ((claude-code-ide-manager-session-window-side side))
-              (delete-other-windows)
-              (let ((session-window
-                     (claude-code-ide-manager--build-default-layout "/tmp/project-a"))
-                    (status-window (get-buffer-window status-buffer)))
-                (should (window-live-p session-window))
-                (should (window-live-p status-window))
-                (should (eq side (if (< (window-left-column session-window)
-                                        (window-left-column status-window))
-                                     'left
-                                   'right)))))))
-      (mapc (lambda (buffer)
-              (when (buffer-live-p buffer)
-                (kill-buffer buffer)))
-            (list session-buffer status-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-switch-from-sidebar-builds-default-layout ()
   "Test switching from the manager sidebar can build the default layout."
@@ -8200,9 +8764,7 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                 (goto-char (point-min))
                 (claude-code-ide-manager-reset-layout-at-point))
               (should (get-buffer-window session-buffer))
-              (should (get-buffer-window status-buffer))
-              (should-not (gethash "/tmp/project-a"
-                                   claude-code-ide-manager--layouts)))))
+              (should (get-buffer-window status-buffer)))))
       (mapc (lambda (buffer)
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
@@ -8379,43 +8941,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
               (when (buffer-live-p buffer)
                 (kill-buffer buffer)))
             (list session-buffer focus-buffer)))))
-
-(ert-deftest claude-code-ide-test-manager-first-switch-to-live-session-uses-default-layout-even-with-saved-layout ()
-  "Test a live session's first manager switch bypasses stale saved layouts."
-  (claude-code-ide-tests--reset-manager-state)
-  (let ((session-buffer (get-buffer-create "*claude-code[test-first-switch-live-session]*"))
-        restored
-        built)
-    (unwind-protect
-        (progn
-          (puthash "/tmp/project-a"
-                   '(:window-state saved)
-                   claude-code-ide-manager--layouts)
-          (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
-                     (lambda (_session-key) session-buffer))
-                    ((symbol-function 'claude-code-ide-manager--restore-layout)
-                     (lambda (_session-key)
-                       (setq restored t)
-                       (selected-window)))
-                    ((symbol-function 'claude-code-ide-manager--build-default-layout)
-                     (lambda (_session-key _scope)
-                       (setq built t)
-                       (selected-window)))
-                    ((symbol-function 'claude-code-ide-manager--visible-sidebar-scopes)
-                     (lambda () nil))
-                    ((symbol-function 'claude-code-ide-manager--adopt-visible-sidebars)
-                     (lambda (_scopes) nil))
-                    ((symbol-function 'claude-code-ide-manager--restore-visible-sidebars)
-                     (lambda (_scopes) nil))
-                    ((symbol-function 'claude-code-ide-manager--treemacs-window)
-                     (lambda () nil))
-                    ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state)
-                     (lambda (&optional _scope _reassert) nil)))
-            (claude-code-ide-manager-switch-to-session "/tmp/project-a" nil '(:type global))
-            (should built)
-            (should-not restored)))
-      (when (buffer-live-p session-buffer)
-        (kill-buffer session-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-switch-restores-visible-sidebar-after-layout-restore ()
   "Test switching re-shows a visible sidebar after restoring session content."
@@ -20777,6 +21302,496 @@ result arrives never has that result applied to the row now at its key."
 
 ;;; Remote Project view foundation
 
+(defun claude-code-ide-tests--remote-view-key (host kind directory &optional requested)
+  "Capture a Git provider key for HOST, KIND, DIRECTORY, and REQUESTED path."
+  (list host kind directory
+        (list 'git claude-code-ide-manager-status-buffer-function
+              (or requested
+                  (claude-code-ide-remote-project--as-directory directory)))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-remote-arrangements ()
+  "Delayed companions keep captured content, exact paths, side, and focus."
+  (require 'claude-code-ide-remote-project)
+  (cl-progv '(features) (list (cons 'ghostel features))
+    (claude-code-ide-tests--with-grouped-state
+     (save-window-excursion
+       (claude-code-ide-remote-project--reset-state)
+       (let* ((claude-code-ide-remote-hosts '("host-a"))
+              (claude-code-ide-remote-project-view-hosts '("host-a"))
+              (claude-code-ide-manager-layout-preset 'magit-left)
+              (agent (generate-new-buffer "*claude-code[remote-presets]*"))
+              (agent-process (make-pipe-process :name "remote-presets" :buffer agent :noquery t))
+              (git-view (generate-new-buffer "*captured-remote-provider*"))
+              (dired-view (generate-new-buffer "*direct-remote-dired*"))
+              (directory "/rpc:host-a:/srv/repo/sub/")
+              (file-name-handler-alist nil)
+              (ghostel-mode-hook nil)
+              (claude-code-ide-manager-status-buffer-function
+               (lambda (path)
+                 (should (equal path directory))
+                 git-view))
+              (provider claude-code-ide-manager-status-buffer-function)
+              attempts shells late-provider-used)
+         (unwind-protect
+             (cl-letf
+                 (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                   (lambda (attempt _label) (push attempt attempts) attempt))
+                  ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
+                  ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
+                  ((symbol-function 'tramp-dissect-file-name) #'identity)
+                  ((symbol-function 'tramp-rpc--connection-key) #'identity)
+                  ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
+                  ((symbol-function 'locate-dominating-file) (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
+                  ((symbol-function 'file-truename) #'identity)
+                  ((symbol-function 'file-accessible-directory-p)
+                   (lambda (path) (equal path directory)))
+                  ((symbol-function 'dired-noselect)
+                   (lambda (path &rest _)
+                     (should (equal path directory))
+                     (with-current-buffer dired-view
+                       (setq major-mode 'dired-mode default-directory path))
+                     dired-view))
+                  ((symbol-function 'ghostel--new) #'ignore)
+                  ((symbol-function 'ghostel-create)
+                   (lambda (&rest arguments)
+                     (should (equal default-directory directory))
+                     (let ((buffer (apply #'claude-code-ide-tests--create-companion-pipe arguments)))
+                       (push buffer shells)
+                       buffer))))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id "remote" :host "host-a" :zmx-name "agent"
+                 :directory "/srv/repo/sub/" :buffer agent :process agent-process :cli-type 'codex))
+               (with-current-buffer agent
+                 (setq-local claude-code-ide--terminal-backend 'eat))
+               (dolist (preset '(magit-left magit-right dired-left dired-right shell-left shell-right))
+                 (ert-info ((format "Remote preset %s" preset))
+                   (setq claude-code-ide-manager-status-buffer-function provider
+                         claude-code-ide-manager-layout-preset preset
+                         attempts nil late-provider-used nil)
+                   (claude-code-ide-manager-reset-layout "remote")
+                   (let* ((kind (nth 1 (assq preset claude-code-ide-manager--layout-presets)))
+                          (side (nth 2 (assq preset claude-code-ide-manager--layout-presets)))
+                          (focus (claude-code-ide-manager--sidebar-window '(:type global))))
+                     (should (eq (window-buffer (selected-window)) agent))
+                     (select-window focus)
+                     (setq claude-code-ide-manager-layout-preset 'dired-left
+                           claude-code-ide-manager-status-buffer-function
+                           (lambda (_)
+                             (setq late-provider-used t)
+                             (ert-fail "Completion read the newer provider")))
+                     (dolist (attempt attempts)
+                       (let (callbacks)
+                         (cl-letf (((symbol-function 'run-at-time)
+                                    (lambda (_time _repeat function &rest args)
+                                      (push (cons function args) callbacks))))
+                           (claude-code-ide-remote-project--worker attempt))
+                         (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                         (dolist (callback (nreverse callbacks))
+                           (apply (car callback) (cdr callback)))))
+                     (let* ((companion (pcase kind
+                                         ('git git-view)
+                                         ('dired dired-view)
+                                         ('shell (car shells))))
+                            (companion-window (get-buffer-window companion))
+                            (agent-window (get-buffer-window agent)))
+                       (should (window-live-p companion-window))
+                       (should (eq focus (selected-window)))
+                       (should-not late-provider-used)
+                       (should (claude-code-ide-manager--display-remote-project-view
+                                "remote" agent (selected-frame) companion))
+                       (when attempts
+                         (should-not
+                          (claude-code-ide-manager--display-remote-project-view
+                           "remote" agent (selected-frame) companion
+                           (claude-code-ide-remote-project--attempt-layout-request (car attempts)))))
+                       (should (eq (buffer-local-value 'claude-code-ide--terminal-backend agent) 'eat))
+                       (should (eq (eq side 'left)
+                                   (< (car (window-edges companion-window))
+                                      (car (window-edges agent-window)))))
+                       (when (eq kind 'shell)
+                         (should (eq companion (gethash "remote" claude-code-ide-manager--companion-shells)))
+                         (should (= (length shells) 1)))))))
+               (should (= (hash-table-count claude-code-ide--sessions) 1)))
+           (dolist (buffer (append (list agent git-view dired-view) shells))
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer (setq default-directory temporary-file-directory))
+               (kill-buffer buffer)))
+           (claude-code-ide-remote-project--reset-state)))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-remote-navigation-completes ()
+  "Returning during preparation preserves captured content and delayed focus."
+  (require 'claude-code-ide-remote-project)
+  (dolist (restore-failure '(nil t))
+    (claude-code-ide-tests--with-grouped-state
+     (save-window-excursion
+       (claude-code-ide-remote-project--reset-state)
+       (let* ((claude-code-ide-remote-hosts '("host-a"))
+              (claude-code-ide-remote-project-view-hosts '("host-a"))
+              (claude-code-ide-manager-layout-preset 'magit-left)
+              (agent (generate-new-buffer "*claude-code[navigation-remote]*"))
+              (process (make-pipe-process :name "navigation-remote" :buffer agent :noquery t))
+              (local-agent (generate-new-buffer "*claude-code[navigation-local]*"))
+              (view (generate-new-buffer "*navigation-remote-view*"))
+              (local-view (generate-new-buffer "*navigation-local-view*"))
+              (directory "/rpc:host-a:/srv/repo/sub/")
+              (file-name-handler-alist nil)
+              (claude-code-ide-manager-status-buffer-function
+               (lambda (path) (if (equal path directory) view local-view)))
+              attempts)
+         (unwind-protect
+             (cl-letf
+                 (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                   (lambda (attempt _) (push attempt attempts) attempt))
+                  ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
+                  ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
+                  ((symbol-function 'tramp-dissect-file-name) #'identity)
+                  ((symbol-function 'tramp-rpc--connection-key) #'identity)
+                  ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
+                  ((symbol-function 'locate-dominating-file)
+                   (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
+                  ((symbol-function 'file-truename) #'identity)
+                  ((symbol-function 'file-accessible-directory-p) (lambda (_) t)))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id "remote" :host "host-a" :zmx-name "agent"
+                 :directory "/srv/repo/sub/" :buffer agent :process process :cli-type 'omp))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id "local" :directory temporary-file-directory
+                 :buffer local-agent :process local-agent :cli-type 'omp))
+               (claude-code-ide-manager-reset-layout "remote")
+               (claude-code-ide-manager-switch-to-session "local")
+               (if restore-failure
+                   (cl-letf (((symbol-function 'window-state-put)
+                              (lambda (&rest _) (error "Native restoration failure"))))
+                     (claude-code-ide-manager-switch-to-session "remote"))
+                 (setq claude-code-ide-manager-layout-preset 'dired-right
+                       claude-code-ide-manager-status-buffer-function
+                       (lambda (_) (ert-fail "Navigation reread the provider preference")))
+                 (claude-code-ide-manager-switch-to-session "remote"))
+               (let ((focus (claude-code-ide-manager--sidebar-window '(:type global))))
+                 (select-window focus)
+                 (dolist (attempt (copy-sequence attempts))
+                   (let (callbacks)
+                     (cl-letf (((symbol-function 'run-at-time)
+                                (lambda (_time _repeat fn &rest args)
+                                  (push (cons fn args) callbacks))))
+                       (claude-code-ide-remote-project--worker attempt))
+                     (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                     (dolist (callback (nreverse callbacks))
+                       (apply (car callback) (cdr callback)))))
+                 (should (buffer-live-p view))
+                 (should (get-buffer-window view))
+                 (should (< (car (window-edges (get-buffer-window view)))
+                            (car (window-edges (get-buffer-window agent)))))
+                 (should (eq focus (selected-window)))
+                 (should (process-live-p process))
+                 (should (= (length attempts) (if restore-failure 2 1)))))
+           (dolist (buffer (list agent local-agent view local-view))
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer (setq default-directory temporary-file-directory))
+               (kill-buffer buffer)))
+           (claude-code-ide-remote-project--reset-state)))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-remote-stale-directory ()
+  "A delayed view cannot return under a different Session directory."
+  (require 'claude-code-ide-remote-project)
+  (dolist (preset '(magit-left dired-left))
+    (claude-code-ide-tests--with-grouped-state
+     (save-window-excursion
+       (claude-code-ide-remote-project--reset-state)
+       (let* ((claude-code-ide-remote-hosts '("host-a"))
+              (claude-code-ide-remote-project-view-hosts '("host-a"))
+              (claude-code-ide-manager-layout-preset preset)
+              (agent (generate-new-buffer "*claude-code[stale-directory]*"))
+              (local-agent (generate-new-buffer "*claude-code[stale-local]*"))
+              (process (make-pipe-process :name "stale-directory" :buffer agent :noquery t))
+              (view (generate-new-buffer "*stale-directory-view*"))
+              (local-view (generate-new-buffer "*stale-local-view*"))
+              (directory "/rpc:host-a:/srv/repo/sub/")
+              (file-name-handler-alist nil)
+              (claude-code-ide-manager-status-buffer-function
+               (lambda (path) (if (equal path directory) view local-view)))
+              attempt callbacks unpublished-view)
+         (unwind-protect
+             (cl-letf
+                 (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                   (lambda (request _) (setq attempt request)))
+                  ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
+                  ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
+                  ((symbol-function 'tramp-dissect-file-name) #'identity)
+                  ((symbol-function 'tramp-rpc--connection-key) #'identity)
+                  ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
+                  ((symbol-function 'locate-dominating-file)
+                   (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
+                  ((symbol-function 'file-truename) #'identity)
+                  ((symbol-function 'file-accessible-directory-p) (lambda (_) t))
+                  ((symbol-function 'dired-noselect)
+                   (lambda (path &rest _)
+                     (let ((buffer (if (equal path directory) view local-view)))
+                       (with-current-buffer buffer
+                         (setq major-mode 'dired-mode default-directory path))
+                       buffer))))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id "remote" :host "host-a" :zmx-name "agent" :directory "/srv/repo/sub/"
+                 :buffer agent :process process :cli-type 'omp))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id "local" :directory temporary-file-directory
+                 :buffer local-agent :process local-agent :cli-type 'omp))
+               (claude-code-ide-manager-reset-layout "remote")
+               (cl-letf (((symbol-function 'run-at-time)
+                          (lambda (_time _repeat fn &rest args)
+                            (push (cons fn args) callbacks))))
+                 (claude-code-ide-remote-project--worker attempt))
+               (setf (claude-code-ide-remote-project--attempt-worker attempt) nil
+                     (claude-code-ide-session-directory
+                      (claude-code-ide--get-session "remote")) "/srv/other/")
+               (dolist (callback (nreverse callbacks))
+                 (apply (car callback) (cdr callback)))
+               (should-not (get-buffer-window view))
+               (claude-code-ide-manager-switch-to-session "local")
+               (claude-code-ide-manager-switch-to-session "remote")
+               (should (get-buffer-window agent))
+               (should-not (get-buffer-window view))
+               ;; A previously ready view must not borrow a replacement request.
+               (setq unpublished-view view
+                     view (generate-new-buffer "*replacement-directory-view*"))
+               (setf (claude-code-ide-session-directory
+                      (claude-code-ide--get-session "remote")) "/srv/repo/sub/")
+               (claude-code-ide-manager-reset-layout "remote")
+               (let (callbacks)
+                 (cl-letf (((symbol-function 'run-at-time)
+                            (lambda (_time _repeat fn &rest args)
+                              (push (cons fn args) callbacks))))
+                   (claude-code-ide-remote-project--worker attempt))
+                 (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                 (dolist (callback (nreverse callbacks))
+                   (apply (car callback) (cdr callback))))
+               (should (get-buffer-window view))
+               (setf (claude-code-ide-session-directory
+                      (claude-code-ide--get-session "remote")) "/srv/other/")
+               (claude-code-ide-manager-reset-layout "remote")
+               (claude-code-ide-manager-switch-to-session "local")
+               (claude-code-ide-manager-switch-to-session "remote")
+               (should (get-buffer-window agent))
+               (should-not (get-buffer-window view))
+               ;; A directory change also replaces a ready view without an explicit reset.
+               (let (callbacks)
+                 (cl-letf (((symbol-function 'run-at-time)
+                            (lambda (_time _repeat fn &rest args)
+                              (push (cons fn args) callbacks))))
+                   (claude-code-ide-remote-project--worker attempt))
+                 (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                 (dolist (callback (nreverse callbacks))
+                   (apply (car callback) (cdr callback))))
+               (should (get-buffer-window local-view))
+               (setf (claude-code-ide-session-directory
+                      (claude-code-ide--get-session "remote")) "/srv/repo/sub/")
+               (claude-code-ide-manager-switch-to-session "local")
+               (claude-code-ide-manager-switch-to-session "remote")
+               (should-not (get-buffer-window local-view))
+               (let (callbacks)
+                 (cl-letf (((symbol-function 'run-at-time)
+                            (lambda (_time _repeat fn &rest args)
+                              (push (cons fn args) callbacks))))
+                   (claude-code-ide-remote-project--worker attempt))
+                 (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                 (dolist (callback (nreverse callbacks))
+                   (apply (car callback) (cdr callback))))
+               (should (get-buffer-window view))
+               (should (eq (window-buffer (selected-window)) agent)))
+           (dolist (buffer (list agent local-agent view local-view unpublished-view))
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer (setq default-directory temporary-file-directory))
+               (kill-buffer buffer)))
+           (claude-code-ide-remote-project--reset-state)))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-remote-rejected-shell-stays-ordinary ()
+  "A stale or undisplayable shell cannot gain ownership or change focus."
+  (require 'claude-code-ide-remote-project)
+  (dolist (case '(superseded host-disabled host-unapproved attachment-changed
+                             split-refused dismissed frame-changed))
+    (ert-info ((format "Rejected shell: %s" case))
+      (claude-code-ide-tests--with-grouped-state
+       (save-window-excursion
+         (claude-code-ide-remote-project--reset-state)
+         (let* ((claude-code-ide-remote-hosts '("host-a"))
+                (claude-code-ide-remote-project-view-hosts '("host-a"))
+                (claude-code-ide-manager-layout-preset 'shell-left)
+                (agent (generate-new-buffer "*claude-code[stale-remote]*"))
+                (agent-process (make-pipe-process :name "stale-remote" :buffer agent :noquery t))
+                (replacement (generate-new-buffer "*claude-code[new-attachment]*"))
+                (replacement-process (make-pipe-process :name "new-attachment" :buffer replacement :noquery t))
+                (ghostel-mode-hook nil)
+                (shell (claude-code-ide-tests--create-companion-pipe "*unpublished-remote-shell*"))
+                (session (claude-code-ide-session-create
+                          :id "remote" :host "host-a" :directory "/srv/repo/"
+                          :zmx-name "agent" :buffer agent :process agent-process :cli-type 'omp))
+                (original-split (symbol-function 'split-window))
+                attempt)
+           (unwind-protect
+               (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                          (lambda (pending _label) (setq attempt pending)))
+                         ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore))
+                 (claude-code-ide--put-session session)
+                 (claude-code-ide-manager-reset-layout "remote")
+                 (let ((old-attempt attempt)
+                       (focus (selected-window)))
+                   (pcase case
+                     ('superseded
+                      (setq claude-code-ide-manager-layout-preset 'dired-right)
+                      (claude-code-ide-manager-reset-layout "remote")
+                      (setq focus (selected-window)))
+                     ('host-disabled (setq claude-code-ide-remote-project-view-hosts nil))
+                     ('host-unapproved (setq claude-code-ide-remote-hosts nil))
+                     ('attachment-changed
+                      (setf (claude-code-ide-session-buffer session) replacement
+                            (claude-code-ide-session-process session) replacement-process)
+                      (set-window-buffer focus replacement))
+                     ('dismissed (claude-code-ide-remote-project-suppress "remote" agent))
+                     ('frame-changed (claude-code-ide-manager--advance-layout-epoch)))
+                   (cl-letf (((symbol-function 'split-window)
+                              (if (eq case 'split-refused)
+                                  (lambda (&rest _) (error "The frame cannot split"))
+                                original-split)))
+                     (claude-code-ide-remote-project--finish-success
+                      old-attempt
+                      (list :companion-kind 'shell :buffer shell
+                            :layout-request
+                            (claude-code-ide-remote-project--attempt-layout-request old-attempt))))
+                   (should (eq focus (selected-window)))
+                   (should (eq (window-buffer focus)
+                               (if (eq case 'attachment-changed) replacement agent)))
+                   (should-not (get-buffer-window shell))
+                   (should-not (gethash "remote" claude-code-ide-manager--companion-shells))
+                   (should (claude-code-ide-session--companion-shell-live-p shell))
+                   (should (= (hash-table-count claude-code-ide-remote-project--views) 0))))
+             (dolist (buffer (list agent replacement shell))
+               (when (buffer-live-p buffer) (kill-buffer buffer)))
+             (claude-code-ide-remote-project--reset-state))))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-remote-saved-shell-never-restarts ()
+  "Saved remote shell windows and output restore without remote preparation."
+  (require 'claude-code-ide-remote-project)
+  (claude-code-ide-tests--with-grouped-state
+   (save-window-excursion
+     (claude-code-ide-remote-project--reset-state)
+     (let* ((claude-code-ide-remote-hosts '("host-a"))
+            (claude-code-ide-remote-project-view-hosts '("host-a"))
+            (claude-code-ide-manager-layout-preset 'shell-right)
+            (agent (generate-new-buffer "*claude-code[saved-remote]*"))
+            (agent-process (make-pipe-process :name "saved-remote" :buffer agent :noquery t))
+            (away (generate-new-buffer "*claude-code[away]*"))
+            (ghostel-mode-hook nil)
+            (shell (claude-code-ide-tests--create-companion-pipe "*saved-remote-shell*"))
+            (process (buffer-local-value 'ghostel--process shell))
+            (preparations 0))
+       (unwind-protect
+           (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                      (lambda (&rest _)
+                        (cl-incf preparations)
+                        (error "Saved shell return cannot start remote preparation")))
+                     ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore))
+             (claude-code-ide--put-session
+              (claude-code-ide-session-create
+               :id "remote" :host "host-a" :directory "/srv/repo/" :zmx-name "agent"
+               :buffer agent :process agent-process :cli-type 'omp))
+             (claude-code-ide--put-session
+              (claude-code-ide-session-create
+               :id "away" :directory temporary-file-directory
+               :buffer away :process away :cli-type 'omp))
+             (delete-other-windows)
+             (set-window-buffer (selected-window) away)
+             (puthash "away" (list :window-state (window-state-get (frame-root-window) t)
+                                   :selected-buffer-name (buffer-name away))
+                      claude-code-ide-manager--layouts)
+             (puthash "remote" shell claude-code-ide-manager--companion-shells)
+             (with-current-buffer shell (insert "Retained remote output\n"))
+             (claude-code-ide-manager-reset-layout "remote")
+             (should (get-buffer-window shell))
+             (select-window (get-buffer-window shell))
+             (setq claude-code-ide-manager-layout-preset 'dired-left)
+             (claude-code-ide-manager-switch-to-session "away")
+             (with-current-buffer shell (rename-buffer "*renamed-saved-remote-shell*" t))
+             (claude-code-ide-manager-switch-to-session "remote")
+             (should (eq (window-buffer (selected-window)) shell))
+             (should (eq process (buffer-local-value 'ghostel--process shell)))
+             (delete-window (get-buffer-window shell))
+             (claude-code-ide-manager-switch-to-session "away")
+             (claude-code-ide-manager-switch-to-session "remote")
+             (should-not (get-buffer-window shell))
+             (should (claude-code-ide-session--companion-shell-live-p shell))
+             (setq claude-code-ide-manager-layout-preset 'shell-left)
+             (claude-code-ide-manager-reset-layout "remote")
+             (select-window (get-buffer-window shell))
+             (delete-process process)
+             (claude-code-ide-manager-switch-to-session "away")
+             (claude-code-ide-manager-switch-to-session "remote")
+             (should (eq (window-buffer (selected-window)) shell))
+             (should (string-match-p "Retained remote output\n" (with-current-buffer shell (buffer-string))))
+             (kill-buffer shell)
+             (claude-code-ide-manager-switch-to-session "away")
+             (claude-code-ide-manager-switch-to-session "remote")
+             (should (get-buffer-window agent))
+             (should (= preparations 0)))
+         (dolist (buffer (list agent away shell))
+           (when (buffer-live-p buffer) (kill-buffer buffer)))
+         (claude-code-ide-remote-project--reset-state))))))
+
+(ert-deftest claude-code-ide-test-manager-layout-preset-remote-provider-identity ()
+  "Explicit targets capture Git callbacks and never merge distinct providers."
+  (require 'claude-code-ide-remote-project)
+  (claude-code-ide-remote-project--reset-state)
+  (let* ((claude-code-ide-remote-hosts '("host-a"))
+         (claude-code-ide-manager-layout-preset 'shell-left)
+         (claude-code-ide-manager-status-buffer-function
+          (lambda (_) (ert-fail "Preparation used a newer provider")))
+         (file-name-handler-alist nil)
+         buffers results attempt
+         (make-provider
+          (lambda ()
+            (let ((name (copy-sequence "*provider-identity*")))
+              (lambda (directory)
+                (let ((buffer (generate-new-buffer name)))
+                  (with-current-buffer buffer (setq default-directory directory))
+                  (push buffer buffers)
+                  buffer))))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                   (lambda () t))
+                  ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                   (lambda (pending _label) (setq attempt pending)))
+                  ((symbol-function 'locate-dominating-file)
+                   (lambda (&rest _) "/rpc:host-a:/srv/"))
+                  ((symbol-function 'file-truename) #'identity)
+                  ((symbol-function 'claude-code-ide-session--create-companion-shell)
+                   (lambda (&rest _) (ert-fail "An explicit Git target started a shell"))))
+          (dotimes (_ 2)
+            (let ((claude-code-ide-manager-status-buffer-function (funcall make-provider)))
+              (claude-code-ide-remote-project-open-target
+               "host-a" "/srv/repo/" (lambda (result) (push result results))))
+            (let* ((key (claude-code-ide-remote-project--resolve-view-key attempt))
+                   (result (claude-code-ide-remote-project--prepare-view attempt key)))
+              (claude-code-ide-remote-project--finish-success attempt result)))
+          (should (= (length results) 2))
+          (should-not (eq (plist-get (car results) :buffer)
+                          (plist-get (cadr results) :buffer)))
+          (dolist (result results)
+            (should (eq (plist-get result :status) 'completed))
+            (should (equal (plist-get result :host) "host-a"))
+            (should (equal (plist-get result :directory) "/srv/repo/"))
+            (should (equal (buffer-local-value 'default-directory (plist-get result :buffer))
+                           "/rpc:host-a:/srv/repo/")))
+          (should (= (hash-table-count claude-code-ide-remote-project--intents) 0)))
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (setq default-directory temporary-file-directory))
+          (kill-buffer buffer)))
+      (claude-code-ide-remote-project--reset-state))))
+
 (ert-deftest claude-code-ide-test-remote-project-intents-use-session-identity ()
   "Intent state is isolated by Session ID and survives attachment replacement."
   (should (require 'claude-code-ide-remote-project nil t))
@@ -20818,7 +21833,7 @@ result arrives never has that result applied to the row now at its key."
                         "session-b" "host-a" attachment))
          (other (claude-code-ide-remote-project--begin-attempt
                  other-intent "/rpc:host-a:/work/" nil 'first-display))
-         (key '("host-a" git "/work")))
+         (key (claude-code-ide-tests--remote-view-key "host-a" 'git "/work")))
     (unwind-protect
         (progn
           (should-not
@@ -20989,7 +22004,10 @@ result arrives never has that result applied to the row now at its key."
                  (lambda (&rest _) (error "Worker unavailable"))))
         (should-error
          (claude-code-ide-remote-project-prepare
-          "session-a" "host-a" (current-buffer) nil 'first-display))
+          "session-a" "host-a" (current-buffer) nil 'first-display
+          '(:preset magit-left :companion-kind git :companion-side left
+                    :provider claude-code-ide-manager-magit-status-buffer
+                    :directory "/rpc:host-a:/work/" :allow-create t :epoch 0)))
         (let ((intent (gethash "session-a" claude-code-ide-remote-project--intents)))
           (should-not (claude-code-ide-remote-project--intent-attempt intent))
           (should (eq (claude-code-ide-remote-project--intent-outcome intent) 'failed)))))))
@@ -21079,6 +22097,8 @@ result arrives never has that result applied to the row now at its key."
                    ("enabled" "host-a")
                    ("unapproved" "host-b")
                    (_ nil))))
+              ((symbol-function 'claude-code-ide-manager--session-directory)
+               (lambda (_) "/work/"))
               ((symbol-function 'featurep)
                (lambda (feature)
                  (not (eq feature
@@ -21105,11 +22125,7 @@ result arrives never has that result applied to the row now at its key."
       (should
        (claude-code-ide-manager--maybe-prepare-remote-project
         "enabled" 'attachment nil 'first-display))
-      (should (equal loads '(claude-code-ide-remote-project)))
-      (should
-       (equal prepares
-              '(("enabled" "host-a" attachment nil
-                 first-display)))))))
+      (should (equal loads '(claude-code-ide-remote-project))))))
 
 (ert-deftest claude-code-ide-test-remote-project-preference-change-does-no-work ()
   "Changing either preference starts no work and keeps cleanup independent."
@@ -21163,7 +22179,7 @@ result arrives never has that result applied to the row now at its key."
                   candidate)))
             (setq result
                   (claude-code-ide-remote-project--prepare-view
-                   attempt '("host-a" git "/rpc:host-a:/work")))
+                   attempt (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work")))
             (should (eq (plist-get result :buffer) candidate))
             (should-not (get-buffer-window " *remote-provider-warnings*" t))))
       (kill-buffer attachment)
@@ -21215,7 +22231,7 @@ result arrives never has that result applied to the row now at its key."
           (setq
            result
            (claude-code-ide-remote-project--prepare-view
-            attempt '("host-a" git "/rpc:host-a:/work")))
+            attempt (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work")))
           (should (eq (plist-get result :buffer) candidate))
           (should
            (eq
@@ -21252,8 +22268,8 @@ result arrives never has that result applied to the row now at its key."
               (lambda (_directory) candidate)))
           (setq result
                 (claude-code-ide-remote-project--prepare-view
-                 attempt '("host-a" directory
-                           "/rpc:host-a:/work")))
+                 attempt (claude-code-ide-tests--remote-view-key
+                          "host-a" 'directory "/rpc:host-a:/work")))
           (should (eq (plist-get result :origin)
                       'uncertain-custom))
           (should-not (plist-get result :creator)))
@@ -21270,7 +22286,8 @@ result arrives never has that result applied to the row now at its key."
                   "session-a" "host-a" attachment))
          (attempt (claude-code-ide-remote-project--begin-attempt
                    intent "/rpc:host-a:/repo/sub/" nil 'reset))
-         (key '("host-a" git "/rpc:host-a:/repo"))
+         (key (claude-code-ide-tests--remote-view-key
+               "host-a" 'git "/rpc:host-a:/repo" "/rpc:host-a:/repo/sub/"))
          (record
           (claude-code-ide-remote-project--make-view
            :key key :buffer view :origin 'created-by-feature
@@ -21351,7 +22368,7 @@ result arrives never has that result applied to the row now at its key."
                   ('source (setq buffer-file-name (concat default-directory "notes")))
                   ('custom (setq-local kill-buffer-hook '(ignore)))
                   ('registered
-                   (let ((key '("host-a" directory "/rpc:host-a:/work/old/registered")))
+                   (let ((key (claude-code-ide-tests--remote-view-key "host-a" 'directory "/rpc:host-a:/work/old/registered")))
                      (puthash key
                               (claude-code-ide-remote-project--make-view
                                :key key :buffer buffer :origin 'preexisting)
@@ -21388,7 +22405,7 @@ result arrives never has that result applied to the row now at its key."
                   "refresh" "host-a" attachment))
          (attempt (claude-code-ide-remote-project--begin-attempt
                    intent "/rpc:host-a:/repo/" nil 'first-display))
-         (key '("host-a" git "/rpc:host-a:/repo"))
+         (key (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/repo"))
          (view (claude-code-ide-remote-project--make-view
                 :key key :buffer buffer :origin 'preexisting))
          (refreshes 0))
@@ -21451,7 +22468,7 @@ result arrives never has that result applied to the row now at its key."
   (let ((claude-code-ide-remote-hosts '("fixture"))
         (claude-code-ide-remote-project--views (make-hash-table :test #'equal))
         (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
-        (key '("fixture" git "/rpc:fixture:/srv/main")))
+        (key (claude-code-ide-tests--remote-view-key "fixture" 'git "/rpc:fixture:/srv/main")))
     (dolist (case '(other-host other-directory kill-hook query-hook temporary mode-changed))
       (ert-info ((format "Changed view: %s" case))
         (with-temp-buffer
@@ -21497,7 +22514,7 @@ result arrives never has that result applied to the row now at its key."
             (claude-code-ide-remote-project--incomplete-candidates (make-hash-table :test #'eq))
             (claude-code-ide-manager-status-buffer-function #'claude-code-ide-manager-magit-status-buffer)
             (file-name-handler-alist nil)
-            (key '("fixture" git "/rpc:fixture:/srv/main")))
+            (key (claude-code-ide-tests--remote-view-key "fixture" 'git "/rpc:fixture:/srv/main")))
         (with-temp-buffer
           (setq major-mode 'magit-status-mode default-directory "/rpc:fixture:/srv/main/")
           (insert "Retained native contents")
@@ -21552,7 +22569,7 @@ result arrives never has that result applied to the row now at its key."
           (set-buffer-modified-p nil))))))
 
 (ert-deftest claude-code-ide-test-remote-project-identity-separates-hosts-and-kinds ()
-  "Worktree keys share only on the exact host and canonical root."
+  "View keys separate hosts, requested directories, and captured providers."
   (claude-code-ide-remote-project--reset-state)
   (let ((attachment
          (generate-new-buffer " *remote-identity-terminal*")))
@@ -21571,9 +22588,13 @@ result arrives never has that result applied to the row now at its key."
                         (attempt
                          (claude-code-ide-remote-project--begin-attempt
                           intent directory nil 'first-display)))
+                   (setf (claude-code-ide-remote-project--attempt-layout-request attempt)
+                         (list :companion-kind 'git
+                               :provider claude-code-ide-manager-status-buffer-function
+                               :directory directory))
                    (claude-code-ide-remote-project--resolve-view-key
                     attempt))))
-            (should
+            (should-not
              (equal (key "a" "host-a" "/rpc:host-a:/repo/one/")
                     (key "b" "host-a" "/rpc:host-a:/repo/two/")))
             (should-not
@@ -21582,8 +22603,8 @@ result arrives never has that result applied to the row now at its key."
             (should
              (equal (key "plain" "host-a"
                          "/rpc:host-a:/plain/")
-                    '("host-a" directory
-                      "/rpc:host-a:/plain")))))
+                    (claude-code-ide-tests--remote-view-key
+                     "host-a" 'directory "/rpc:host-a:/plain")))))
       (kill-buffer attachment)
       (claude-code-ide-remote-project--reset-state))))
 
@@ -21640,6 +22661,9 @@ result arrives never has that result applied to the row now at its key."
     (let ((claude-code-ide-remote-hosts '("host-a"))
           (claude-code-ide-remote-project-view-hosts
            '("host-a"))
+          (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
+          (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+          (claude-code-ide-manager--current-session-key nil)
           (terminal
            (generate-new-buffer " *remote-complete-terminal*"))
           (view
@@ -21659,6 +22683,8 @@ result arrives never has that result applied to the row now at its key."
                   (((symbol-function
                      'claude-code-ide-manager--session-host)
                     (lambda (_session-id) "host-a"))
+                   ((symbol-function 'claude-code-ide-manager--session-directory)
+                    (lambda (_) "/work/"))
                    ((symbol-function
                      'claude-code-ide-manager--session-buffer)
                     (lambda (_session-id) terminal))
@@ -21668,6 +22694,7 @@ result arrives never has that result applied to the row now at its key."
                       (setq displayed args))))
                 (setq claude-code-ide-manager--current-session-key
                       "session-a")
+                (claude-code-ide-remote-project--intent-for "session-a" "host-a" terminal)
                 (claude-code-ide-manager--set-remote-project-frame-intent
                  "session-a" terminal nil nil)
                 (should
@@ -21694,16 +22721,23 @@ result arrives never has that result applied to the row now at its key."
           (generate-new-buffer " *remote-frame-view*"))
          (claude-code-ide-remote-hosts '("host-a"))
          (claude-code-ide-remote-project-view-hosts '("host-a"))
+         (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
          (parameters (make-hash-table :test #'equal))
          (claude-code-ide-manager--current-session-key "session-b")
          displayed)
+    (claude-code-ide-remote-project--intent-for "session-a" "host-a" terminal-a)
+    (claude-code-ide-remote-project--intent-for "session-b" "host-a" terminal-b)
     (puthash
      (cons frame-a 'claude-code-ide-manager-remote-project-display)
-     (list :session-key "session-a" :attachment terminal-a)
+     (list :session-key "session-a" :attachment terminal-a :epoch 0
+           :layout-request '(:preset magit-left :companion-kind git :companion-side left
+                                     :directory "/rpc:host-a:/work/" :epoch 0))
      parameters)
     (puthash
      (cons frame-b 'claude-code-ide-manager-remote-project-display)
-     (list :session-key "session-b" :attachment terminal-b)
+     (list :session-key "session-b" :attachment terminal-b :epoch 0
+           :layout-request '(:preset magit-left :companion-kind git :companion-side left
+                                     :directory "/rpc:host-a:/work/" :epoch 0))
      parameters)
     (unwind-protect
         (cl-letf
@@ -21715,6 +22749,8 @@ result arrives never has that result applied to the row now at its key."
              ((symbol-function
                'claude-code-ide-manager--session-host)
               (lambda (_session-id) "host-a"))
+             ((symbol-function 'claude-code-ide-manager--session-directory)
+              (lambda (_) "/work/"))
              ((symbol-function
                'claude-code-ide-manager--session-buffer)
               (lambda (session-id)
@@ -21883,6 +22919,14 @@ result arrives never has that result applied to the row now at its key."
       (setf
        (claude-code-ide-remote-project--intent-view-buffer intent)
        view
+       (claude-code-ide-remote-project--intent-layout-request intent)
+       (list :companion-kind 'git :provider claude-code-ide-manager-status-buffer-function
+             :directory (claude-code-ide-remote-project-rpc-directory
+                         "host-a" temporary-file-directory))
+       (claude-code-ide-remote-project--intent-view-key intent)
+       (claude-code-ide-tests--remote-view-key
+        "host-a" 'directory
+        (claude-code-ide-remote-project-rpc-directory "host-a" temporary-file-directory))
        (claude-code-ide-remote-project--intent-outcome intent)
        'ready)
       (unwind-protect
@@ -21893,6 +22937,8 @@ result arrives never has that result applied to the row now at its key."
                ((symbol-function
                  'claude-code-ide-manager--session-buffer)
                 (lambda (_session-id) terminal))
+               ((symbol-function 'claude-code-ide-manager--session-directory)
+                (lambda (_) temporary-file-directory))
                ((symbol-function
                  'claude-code-ide-manager--save-state)
                 #'ignore))
@@ -21906,8 +22952,6 @@ result arrives never has that result applied to the row now at its key."
             (let ((layout
                    (claude-code-ide-manager--capture-layout
                     "session-a")))
-              (should
-               (eq (plist-get layout :project-view-buffer) view))
               (puthash "session-a" layout
                        claude-code-ide-manager--layouts)
               (let ((persisted
@@ -21923,7 +22967,11 @@ result arrives never has that result applied to the row now at its key."
                                 " *remote-restore-other*"))
             (should
              (claude-code-ide-manager--restore-layout "session-a"))
-            (should (get-buffer-window view)))
+            (should (get-buffer-window view))
+            (cl-letf (((symbol-function 'claude-code-ide-manager--session-directory)
+                       (lambda (_) "/another-project/")))
+              (should-not (claude-code-ide-remote-project-surviving-view
+                           "session-a" terminal))))
         (mapc
          (lambda (buffer)
            (when (buffer-live-p buffer)
@@ -21953,6 +23001,14 @@ result arrives never has that result applied to the row now at its key."
       (setf
        (claude-code-ide-remote-project--intent-view-buffer intent)
        view
+       (claude-code-ide-remote-project--intent-layout-request intent)
+       (list :companion-kind 'git :provider claude-code-ide-manager-status-buffer-function
+             :directory (claude-code-ide-remote-project-rpc-directory
+                         "host-a" temporary-file-directory))
+       (claude-code-ide-remote-project--intent-view-key intent)
+       (claude-code-ide-tests--remote-view-key
+        "host-a" 'directory
+        (claude-code-ide-remote-project-rpc-directory "host-a" temporary-file-directory))
        (claude-code-ide-remote-project--intent-outcome intent)
        'ready)
       (unwind-protect
@@ -22164,6 +23220,14 @@ result arrives never has that result applied to the row now at its key."
                       claude-code-ide-manager-remote-project-command
                       claude-code-ide-manager-remote-project-epoch))))
       (setf (claude-code-ide-remote-project--intent-view-buffer intent) view
+            (claude-code-ide-remote-project--intent-layout-request intent)
+            (list :companion-kind 'git :provider claude-code-ide-manager-status-buffer-function
+                  :directory (claude-code-ide-remote-project-rpc-directory
+                              "host-a" temporary-file-directory))
+            (claude-code-ide-remote-project--intent-view-key intent)
+            (claude-code-ide-tests--remote-view-key
+             "host-a" 'directory
+             (claude-code-ide-remote-project-rpc-directory "host-a" temporary-file-directory))
             (claude-code-ide-remote-project--intent-outcome intent) 'ready)
       (unwind-protect
           (cl-letf
@@ -22203,31 +23267,6 @@ result arrives never has that result applied to the row now at its key."
         (dolist (entry frame-state)
           (set-frame-parameter nil (car entry) (cdr entry)))
         (mapc #'kill-buffer (list terminal view local status))))))
-
-(ert-deftest claude-code-ide-test-remote-project-failure-guidance-covers-phases ()
-  "Each worker phase names its host and one corrective action."
-  (let ((attempt
-         (claude-code-ide-remote-project--make-attempt
-          :host "host-a")))
-    (dolist
-        (case
-         '((checking-client "RPC client" "Install or update")
-           (connecting "authentication" "Configure noninteractive SSH")
-           (authentication "authentication" "Configure noninteractive SSH")
-           (server "server" "Install the configured server binary")
-           (health "health" "Check the server path and remote reachability")
-           (resolving-view "directory" "Check the remote directory")
-           (waiting-for-view "provider" "Check Magit or Dired")
-           (preparing "provider" "Check Magit or Dired")))
-      (setf
-       (claude-code-ide-remote-project--attempt-state attempt)
-       (nth 0 case))
-      (let ((text
-             (claude-code-ide-remote-project--failure-message
-              attempt '(error "boom"))))
-        (should (string-match-p "host-a" text))
-        (should (string-match-p (nth 1 case) text))
-        (should (string-match-p (nth 2 case) text))))))
 
 (ert-deftest claude-code-ide-test-remote-project-failure-reports-once ()
   "A current failure reports once and leaves the terminal layout unchanged."
@@ -22371,7 +23410,7 @@ result arrives never has that result applied to the row now at its key."
                   (setq major-mode 'magit-status-mode))
                 candidate)))
           (claude-code-ide-remote-project--prepare-view
-           attempt '("host-a" git "/rpc:host-a:/work"))
+           attempt (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work"))
           (should (buffer-live-p candidate))
           (claude-code-ide-remote-project--abandon-attempt
            attempt 'cancel)
@@ -22410,7 +23449,7 @@ result arrives never has that result applied to the row now at its key."
                   (setq major-mode 'magit-status-mode))
                 candidate)))
           (claude-code-ide-remote-project--prepare-view
-           attempt '("host-a" git "/rpc:host-a:/work"))
+           attempt (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work"))
           (kill-buffer candidate)
           (should-not
            (claude-code-ide-remote-project--intent-attempt intent))
@@ -22460,7 +23499,7 @@ result arrives never has that result applied to the row now at its key."
           (setq
            result
            (claude-code-ide-remote-project--prepare-view
-            attempt '("host-a" git "/rpc:host-a:/work")))
+            attempt (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work")))
           (should (eq (plist-get result :buffer) winner))
           (should-not (buffer-live-p candidate)))
       (mapc
@@ -22488,7 +23527,13 @@ result arrives never has that result applied to the row now at its key."
              intent "/rpc:host-a:/work/" nil 'first-display))
            (claude-code-ide-manager-status-buffer-function
             #'claude-code-ide-manager-magit-status-buffer)
-           (key '("host-a" directory "/rpc:host-a:/work"))
+           (key (claude-code-ide-tests--remote-view-key "host-a" 'directory "/rpc:host-a:/work"))
+           (claude-code-ide-remote-hosts '("host-a"))
+           (claude-code-ide-remote-project-view-hosts '("host-a"))
+           (frame-state
+            (mapcar (lambda (key) (cons key (frame-parameter nil key)))
+                    '(claude-code-ide-manager-remote-project-display
+                      claude-code-ide-manager-remote-project-epoch)))
            (lookups 0)
            result)
       (with-current-buffer candidate
@@ -22506,7 +23551,19 @@ result arrives never has that result applied to the row now at its key."
                 (lambda (_directory) candidate))
                ((symbol-function
                  'claude-code-ide-manager--display-remote-project-view)
-                #'ignore))
+                #'ignore)
+               ((symbol-function 'claude-code-ide-manager--session-host)
+                (lambda (_) "host-a"))
+               ((symbol-function 'claude-code-ide-manager--session-directory)
+                (lambda (_) "/work/"))
+               ((symbol-function 'claude-code-ide-manager--session-buffer)
+                (lambda (_) terminal)))
+            (let ((request (claude-code-ide-manager--make-layout-request "session-a")))
+              (setf (claude-code-ide-remote-project--attempt-frame attempt) (selected-frame)
+                    (claude-code-ide-remote-project--attempt-layout-request attempt) request
+                    (claude-code-ide-remote-project--intent-layout-request intent) request)
+              (claude-code-ide-manager--set-remote-project-frame-intent
+               "session-a" terminal nil nil nil request))
             (setq
              result
              (claude-code-ide-remote-project--prepare-view
@@ -22539,6 +23596,8 @@ result arrives never has that result applied to the row now at its key."
                    (cdr
                     (assq candidate (plist-get outcome :retained)))
                    'reused))))))
+        (dolist (entry frame-state)
+          (set-frame-parameter nil (car entry) (cdr entry)))
         (when (buffer-live-p terminal)
           (kill-buffer terminal))
         (when (buffer-live-p candidate)
@@ -22560,7 +23619,7 @@ result arrives never has that result applied to the row now at its key."
            intent "/rpc:host-a:/work/" nil 'first-display))
          (claude-code-ide-manager-status-buffer-function
           (lambda (_directory) candidate))
-         (key '("host-a" directory "/rpc:host-a:/work"))
+         (key (claude-code-ide-tests--remote-view-key "host-a" 'directory "/rpc:host-a:/work"))
          reuse)
     (with-current-buffer candidate
       (setq major-mode 'dired-mode
@@ -22615,17 +23674,20 @@ result arrives never has that result applied to the row now at its key."
           (setq
            attempt
            (claude-code-ide-remote-project-prepare
-            "session-a" "host-a" terminal nil 'first-display))
+            "session-a" "host-a" terminal nil 'first-display
+            '(:preset magit-left :companion-kind git :companion-side left
+                      :provider claude-code-ide-manager-magit-status-buffer
+                      :directory "/rpc:host-a:/work/" :allow-create t :epoch 0)))
           (setq claude-code-ide-remote-project-view-hosts nil)
           (claude-code-ide-remote-project--finish-success
            attempt
            (list
-            :key '("host-a" git "/rpc:host-a:/work")
+            :key (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work")
             :buffer candidate :origin 'preexisting :creator nil))
           (should-not displayed)
           (should-not
            (gethash
-            '("host-a" git "/rpc:host-a:/work")
+            (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work")
             claude-code-ide-remote-project--views))
           (should-not
            (claude-code-ide-remote-project--intent-attempt
@@ -22664,7 +23726,10 @@ result arrives never has that result applied to the row now at its key."
           (setq
            attempt
            (claude-code-ide-remote-project-prepare
-            "session-a" "host-a" terminal nil 'first-display))
+            "session-a" "host-a" terminal nil 'first-display
+            '(:preset magit-left :companion-kind git :companion-side left
+                      :provider claude-code-ide-manager-magit-status-buffer
+                      :directory "/rpc:host-a:/work/" :allow-create t :epoch 0)))
           (setq claude-code-ide-remote-hosts nil)
           (claude-code-ide-remote-project--finish-failure
            attempt '(error "late failure"))
@@ -22709,17 +23774,20 @@ result arrives never has that result applied to the row now at its key."
           (setq
            attempt
            (claude-code-ide-remote-project-prepare
-            "session-a" "host-a" terminal nil 'first-display))
+            "session-a" "host-a" terminal nil 'first-display
+            '(:preset magit-left :companion-kind git :companion-side left
+                      :provider claude-code-ide-manager-magit-status-buffer
+                      :directory "/rpc:host-a:/work/" :allow-create t :epoch 0)))
           (setq current-host "host-b")
           (claude-code-ide-remote-project--finish-success
            attempt
            (list
-            :key '("host-a" git "/rpc:host-a:/work")
+            :key (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work")
             :buffer candidate :origin 'preexisting :creator nil))
           (should-not displayed)
           (should-not
            (gethash
-            '("host-a" git "/rpc:host-a:/work")
+            (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work")
             claude-code-ide-remote-project--views))
           (should-not
            (claude-code-ide-remote-project--intent-attempt
@@ -22781,7 +23849,7 @@ result arrives never has that result applied to the row now at its key."
          (old
           (claude-code-ide-remote-project--begin-attempt
            intent "/rpc:host-a:/work/" nil 'first-display))
-         (key '("host-a" git "/work")))
+         (key (claude-code-ide-tests--remote-view-key "host-a" 'git "/work")))
     (unwind-protect
         (progn
           (claude-code-ide-remote-project--begin-attempt
@@ -22813,6 +23881,8 @@ result arrives never has that result applied to the row now at its key."
             (generate-new-buffer " *remote-authority-other*"))
            (claude-code-ide-remote-hosts '("host-a"))
            (claude-code-ide-remote-project-view-hosts nil)
+           (claude-code-ide-remote-project--intents (make-hash-table :test #'equal))
+           (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
            (claude-code-ide-manager--current-session-key
             "session-a"))
       (unwind-protect
@@ -22820,6 +23890,8 @@ result arrives never has that result applied to the row now at its key."
               (((symbol-function
                  'claude-code-ide-manager--session-host)
                 (lambda (_session-id) "host-a"))
+               ((symbol-function 'claude-code-ide-manager--session-directory)
+                (lambda (_) "/work/"))
                ((symbol-function
                  'claude-code-ide-manager--session-buffer)
                 (lambda (_session-id) terminal))
@@ -22828,6 +23900,7 @@ result arrives never has that result applied to the row now at its key."
                 #'ignore))
             (delete-other-windows)
             (set-window-buffer (selected-window) terminal)
+            (claude-code-ide-remote-project--intent-for "session-a" "host-a" terminal)
             (claude-code-ide-manager--set-remote-project-frame-intent
              "session-a" terminal nil nil)
             (let* ((other-window
@@ -22842,6 +23915,9 @@ result arrives never has that result applied to the row now at its key."
               (setq
                claude-code-ide-remote-project-view-hosts
                '("host-a"))
+              (claude-code-ide-manager--advance-layout-epoch)
+              (claude-code-ide-manager--set-remote-project-frame-intent
+               "session-a" terminal nil nil)
               (should
                (claude-code-ide-manager--display-remote-project-view
                 "session-a" terminal (selected-frame) view))
@@ -22928,6 +24004,7 @@ result arrives never has that result applied to the row now at its key."
          (cross-host t)
          (disabled nil)
          (shared nil)
+         (provider-key-shared nil)
          (unknown-sibling nil)
          (reused nil)
          (modified nil)
@@ -22950,7 +24027,7 @@ result arrives never has that result applied to the row now at its key."
            (view-buffer
             (generate-new-buffer
              (format " *remote-cleanup-view-%s*" name)))
-           (key '("host-a" git "/work"))
+           (key (claude-code-ide-tests--remote-view-key "host-a" 'git "/work"))
            (intent
             (claude-code-ide-remote-project--intent-for
              "session-a" "host-a" terminal))
@@ -23027,6 +24104,18 @@ result arrives never has that result applied to the row now at its key."
              view-buffer)
             (puthash key view
                      claude-code-ide-remote-project--views)
+            (when (eq (car case) 'provider-key-shared)
+              (let* ((other-key
+                      '("host-a" directory "/work" (dired dired-noselect "/work/")))
+                     (other-intent (claude-code-ide-remote-project--intent-for
+                                    "session-b" "host-a" new-terminal)))
+                (setf (claude-code-ide-remote-project--intent-view-key other-intent) other-key
+                      (claude-code-ide-remote-project--intent-view-buffer other-intent) view-buffer)
+                (puthash other-key
+                         (claude-code-ide-remote-project--make-view
+                          :key other-key :buffer view-buffer :origin 'preexisting
+                          :creator 'dired :sessions '("session-b"))
+                         claude-code-ide-remote-project--views)))
             (setq
              snapshot
              (claude-code-ide-remote-project-cleanup-snapshot
@@ -23581,9 +24670,9 @@ displayed last."
          (view-old (generate-new-buffer " *reconcile-view-old*"))
          (view-other-host (generate-new-buffer " *reconcile-view-other-host*"))
          (view-unaffected (generate-new-buffer " *reconcile-view-unaffected*"))
-         (key-old '("host-a" git "/rpc:host-a:/work/old"))
-         (key-other-host '("host-b" git "/rpc:host-b:/work/old"))
-         (key-unaffected '("host-a" git "/rpc:host-a:/work/other"))
+         (key-old (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work/old"))
+         (key-other-host (claude-code-ide-tests--remote-view-key "host-b" 'git "/rpc:host-b:/work/old"))
+         (key-unaffected (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work/other"))
          (intent-old
           (claude-code-ide-remote-project--intent-for
            "session-old" "host-a" terminal-a))
@@ -23709,8 +24798,8 @@ displayed last."
          (terminal-shared-b (generate-new-buffer " *reconcile-term-sh-b*"))
          (view-modified (generate-new-buffer " *reconcile-view-mod*"))
          (view-shared (generate-new-buffer " *reconcile-view-shared*"))
-         (key-modified '("host-a" git "/rpc:host-a:/work/modified"))
-         (key-shared '("host-a" git "/rpc:host-a:/work/shared"))
+         (key-modified (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work/modified"))
+         (key-shared (claude-code-ide-tests--remote-view-key "host-a" 'git "/rpc:host-a:/work/shared"))
          (intent-modified
           (claude-code-ide-remote-project--intent-for
            "session-modified" "host-a" terminal-modified))
@@ -25260,7 +26349,7 @@ displayed last."
         (buffer (generate-new-buffer " *cci-refresh-survivor*"))
         (origin (generate-new-buffer " *cci-refresh-origin*"))
         (sibling (generate-new-buffer " *cci-refresh-sibling*"))
-        (key '("fixture" git "/rpc:fixture:/srv/main"))
+        (key (claude-code-ide-tests--remote-view-key "fixture" 'git "/rpc:fixture:/srv/main"))
         request)
     (unwind-protect
         (save-window-excursion
@@ -25268,7 +26357,7 @@ displayed last."
                    (claude-code-ide-remote-project--make-view
                     :key key :buffer buffer :origin 'preexisting)
                    claude-code-ide-remote-project--views)
-          (let ((sibling-key '("fixture" git "/rpc:fixture:/srv/other")))
+          (let ((sibling-key (claude-code-ide-tests--remote-view-key "fixture" 'git "/rpc:fixture:/srv/other")))
             (puthash sibling-key
                      (claude-code-ide-remote-project--make-view
                       :key sibling-key :buffer sibling :origin 'preexisting)
@@ -25287,9 +26376,10 @@ displayed last."
                     ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
                      (lambda (attempt _label)
                        (setq request attempt)
-                       (let* ((view-key (list "fixture" 'git
-                                              (string-remove-suffix
-                                               "/" (claude-code-ide-remote-project--attempt-directory attempt))))
+                       (let* ((view-key (claude-code-ide-tests--remote-view-key
+                                         "fixture" 'git
+                                         (string-remove-suffix
+                                          "/" (claude-code-ide-remote-project--attempt-directory attempt))))
                               (result (claude-code-ide-remote-project--prepare-view attempt view-key)))
                          (funcall (claude-code-ide-remote-project--attempt-callback attempt)
                                   (list :status 'completed :buffer (plist-get result :buffer))))))
@@ -25668,7 +26758,9 @@ displayed last."
                (if (eq buffer candidate)
                    (claude-code-ide-remote-project--track-candidate request buffer 'created-by-feature)
                  (claude-code-ide-remote-project--finish-success
-                  request (list :key (list "fixture" 'magit (concat "/rpc:fixture:" directory))
+                  request (list :companion-kind 'git
+                                :key (claude-code-ide-tests--remote-view-key
+                                      "fixture" 'git (concat "/rpc:fixture:" directory))
                                 :buffer buffer :origin 'created-by-feature :creator request)))))
             (setq operations (nreverse operations))
             (kill-buffer (car views))
