@@ -17,22 +17,22 @@
 
 Claude Code IDE for Emacs provides project-aware terminal sessions for Claude Code, Codex, OpenCode, Pi, and Oh My Pi, with shared session management, terminal integration, and window workflows. Claude Code additionally has native integration through the Model Context Protocol (MCP), creating a bidirectional bridge between Claude and Emacs that can leverage Emacs features—from LSP and project management to custom Elisp functions.
 
-This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manzaltu/claude-code-ide.el]] and has substantially diverged with a session sidebar/manager, persistent layouts, activity tracking, expanded transient workflows, and Ghostel support. The project name is provisional; please open an issue with naming suggestions.
+This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manzaltu/claude-code-ide.el]] and has substantially diverged with a session sidebar/manager, persistent layouts, activity tracking, expanded transient workflows, and Ghostel-only terminal support. The project name is provisional; please open an issue with naming suggestions.
 
 ** What This Fork Adds
 
 - [[*CC Manager][CC Manager]] global and repo-local sidebars, quick slots, and persistent per-session layouts
 - CLI-aware start, continue, and resume workflows for Claude Code, Codex, OpenCode, Pi, and Oh My Pi; see [[*Basic Commands][Basic Commands]]
 - Session state indicators in the [[*CC Manager][CC Manager]]: Oh My Pi reports idle, working, needs-input, done, and failed over MCP; other agents use output-driven idle and working detection
-- [[*Terminal Backend Configuration][Ghostel and per-CLI terminal backend selection]]
+- Ghostel-only terminal integration, with =vterm= and =eat= support removed; see [[*Terminal Backend Configuration][Terminal Backend Configuration]]
 - Expanded transient navigation and file-reference workflows; see [[*Basic Commands][Basic Commands]] and [[*Session Customization][Session Customization]]
 - [[*Remote Worktree Management][Remote Worktree Management]]: explicit remote Worktree list, open, and create through the manager, plus remove/move/merge/push/prune through remote Magit
 
 ** Features
 
 - Automatic project detection and session management
-- Terminal integration with full color support using =vterm= or =eat=
-- Image-aware =s-v= / =H-v= paste for Claude Code, Codex, and Oh My Pi across =vterm=, =eat=, and =ghostel=
+- Terminal integration with full color support using =ghostel=
+- Image-aware =s-v= / =H-v= paste for Claude Code, Codex, and Oh My Pi through =ghostel=
 - CLI-specific start, continue, and resume commands for Claude Code, Codex, OpenCode, Pi, and Oh My Pi
 - Claude Code MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
@@ -90,7 +90,7 @@ This deep integration means Claude Code understands your project context and can
 
 - Emacs 28.1 or higher
 - A supported coding-agent CLI installed and available in PATH: Claude Code (=claude=, the default), Codex (=codex=), OpenCode (=opencode=), Pi (=pi=), or Oh My Pi (=omp=)
-- =vterm= or =eat= package (for terminal support)
+- =ghostel= package (for terminal support)
 
 ** Installing Claude Code CLI
 
@@ -266,7 +266,7 @@ After Stop, Emacs removes the row only when zmx confirms the kill and a separate
 A timeout or ambiguous result leaves the row intact.
 Emacs never retries a kill.
 
-Remote attachment supports the Ghostel backend only. Future versions will deprecate vterm and Eat.
+Remote attachment uses the Ghostel backend, the package's only terminal backend.
 Remote layouts show only the terminal unless you enable optional remote Project views.
 Remote project launch, Treemacs actions, text transfer, MCP, and SSE setup remain outside this mode.
 Remote companions support Magit, Dired, or an ordinary Ghostel shell, matching the selected layout preset. Use their normal commands for interactive Git, file access, or shell commands.
@@ -775,10 +775,6 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-bypass-permissions-by-default~ | Lowercase transient launch actions bypass permissions when available | ~t~ |
 | ~claude-code-ide-use-with-editor~                | Use the current Emacs instance as =$EDITOR= for new sessions | ~t~ |
 | ~claude-code-ide-debug~                         | Enable debug logging                        | ~nil~                                  |
-| ~claude-code-ide-terminal-backend~              | Terminal backend (vterm, eat, or ghostel)   | ~'vterm~                               |
-| ~claude-code-ide-cli-terminal-backends~         | Per-CLI terminal backend overrides          | ~nil~                                  |
-| ~claude-code-ide-vterm-anti-flicker~            | Enable vterm flicker reduction              | ~t~                                    |
-| ~claude-code-ide-vterm-render-delay~            | vterm render batching delay (seconds)       | ~0.005~                                |
 | ~claude-code-ide-terminal-initialization-delay~ | Initialization delay for terminals          | ~0.1~                                  |
 | ~claude-code-ide-log-with-context~              | Include session context in log messages     | ~t~                                    |
 | ~claude-code-ide-debug-buffer~                  | Buffer name for debug output                | ~"*claude-code-ide-debug*"~              |
@@ -799,7 +795,8 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
 
 With =claude-code-ide-use-with-editor= enabled, editor commands such as =C-g= in Claude Code and Codex open their prompt buffer in the current Emacs instance.
-The package routes files matching =claude-code-ide-prompt-buffer-patterns= to the current window. The unbound command =claude-code-ide-session-send-control-g= sends C-g through any supported terminal backend for users who want a dedicated keybinding.
+The package routes files matching =claude-code-ide-prompt-buffer-patterns= to the current window.
+The unbound command =claude-code-ide-session-send-control-g= sends C-g through Ghostel for users who want a dedicated keybinding.
 
 *** Session Customization
 
@@ -884,35 +881,18 @@ Or, if you'd prefer to use a regular window:
 
 *** Terminal Backend Configuration
 
-Claude Code IDE supports =vterm=, =eat=, and =ghostel= as terminal backends. By default, it uses =vterm=, but you can switch to either alternative if preferred:
+Claude Code IDE uses Ghostel as its only terminal backend. There is no setting to choose a different terminal.
 
-#+begin_src emacs-lisp
-;; Use eat instead of vterm
-(setq claude-code-ide-terminal-backend 'eat)
+The =ghostel= backend supports session creation, core input dispatch, idle/working-state tracking, and the resize/reflow guard.
 
-;; Or use ghostel for basic terminal integration
-(setq claude-code-ide-terminal-backend 'ghostel)
+Install Ghostel and its matching native module before creating Agent or companion terminals.
+Other package features do not require Ghostel.
+This package never installs a native module automatically.
 
-;; Or switch back to vterm (default)
-(setq claude-code-ide-terminal-backend 'vterm)
-#+end_src
-
-The =eat= backend is a pure Elisp terminal emulator that may work better in some environments where =vterm= compilation is problematic. The =ghostel= backend currently supports session creation, core input dispatch, idle/working-state tracking, backend selection, and the resize/reflow guard. The =eat=-specific scroll position keeper and terminal filter batching remain backend-specific.
+After the Ghostel-only upgrade, restart Emacs before using terminal commands.
+The package does not convert or reuse buffers from removed terminal integrations.
 
 The =ghostel= backend is tested against Ghostel v0.50.0 (its removed pre-0.50.0 APIs are no longer referenced). To check the installed version, run =M-x ghostel-debug= and read the =Module version:= line, or evaluate ~(ghostel--module-version)~ in a Ghostel buffer. Ghostel checks the Elisp/native-module pairing against =ghostel--minimum-module-version= at load time and warns on mismatch.
-
-You can also override the terminal backend per CLI while keeping a global default for everything else:
-
-#+begin_src emacs-lisp
-(setq claude-code-ide-terminal-backend 'vterm
-      claude-code-ide-cli-terminal-backends '((claude . vterm)
-                                              (codex . ghostel)
-                                              (opencode . vterm)
-                                              (pi . vterm)
-                                              (omp . vterm)))
-#+end_src
-
-If a CLI is not listed in =claude-code-ide-cli-terminal-backends=, Claude Code IDE falls back to =claude-code-ide-terminal-backend=.
 The bypass flags are =--dangerously-skip-permissions= for Claude Code, =--dangerously-bypass-approvals-and-sandbox= for Codex, =--auto= for OpenCode, none for Pi, and =--auto-approve= for Oh My Pi.
 
 For new local =omp= and =omp-dev= processes in Ghostel, the launch frame selects the image protocol:
@@ -920,23 +900,9 @@ For new local =omp= and =omp-dev= processes in Ghostel, the launch frame selects
 - Graphical Emacs sets =PI_FORCE_IMAGE_PROTOCOL=kitty=.
 - Terminal Emacs sets =PI_FORCE_IMAGE_PROTOCOL=off= for readable image descriptions, including inside iTerm2 or tmux.
 
-This policy does not change Pi, Eat, vterm, standalone omp, or the parent Emacs environment.
+This policy does not change Pi, standalone omp, or the parent Emacs environment.
 Moving a buffer, redrawing, or reattaching zmx does not change a running process's protocol.
 Start a fresh omp process to use the current frame's policy.
-
-**** vterm Rendering Optimization
-
-Claude Code IDE includes intelligent flicker reduction for vterm terminals to provide smoother visual output:
-
-#+begin_src emacs-lisp
-;; Enable/disable vterm anti-flicker optimization (enabled by default)
-(setq claude-code-ide-vterm-anti-flicker t)
-
-;; Adjust the render delay for batching updates (default is 0.005 seconds)
-(setq claude-code-ide-vterm-render-delay 0.01)  ; Increase for smoother but less responsive
-#+end_src
-
-This optimization detects rapid terminal redraw sequences (like when Claude expands text areas) and batches them for smoother rendering. The 5ms default delay provides optimal visual quality with imperceptible latency.
 
 **** Terminal Initialization Delay
 
@@ -963,11 +929,11 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 | =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
 | =s-v= / =H-v= | =claude-code-ide-session-paste-clipboard= | Paste text normally, or forward clipboard images to Claude Code, Codex, and Oh My Pi |
 
-These keybindings are automatically set up for =vterm=, =eat=, and =ghostel= backends and only apply within Claude Code terminal buffers.
+These keybindings are automatically set up for the Ghostel backend and only apply within Claude Code terminal buffers.
 
 **** Terminal Reflow Glitch Prevention (Temporary)
 
-Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default for supported terminal backends, including =vterm=, =eat=, and =ghostel=, but can be disabled if needed:
+Claude Code IDE includes a temporary workaround for a known Claude Code bug ([[https://github.com/anthropics/claude-code/issues/1422][#1422]]) where terminal reflows during window resizes can cause uncontrollable scrolling. This workaround is enabled by default for the Ghostel backend, but can be disabled if needed:
 
 #+begin_src emacs-lisp
 ;; Disable the terminal reflow glitch prevention (not recommended until bug is fixed)

@@ -33,6 +33,10 @@
 
 - Items marked incomplete require spec updates before `/speckit.clarify` or `/speckit.plan`
 
+Feature 008 removed the former terminal-neutrality requirement.
+The dated records below describe the earlier policy, not a current support obligation.
+Ghostel-only support now governs this feature.
+
 ### Validation record 2026-09-08
 
 Iteration 1 findings, all resolved in the current spec:

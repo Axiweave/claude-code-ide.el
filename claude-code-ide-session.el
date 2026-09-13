@@ -17,9 +17,8 @@
 ;;; Commentary:
 
 ;; Package-owned session support for Claude Code IDE.
-;; This module owns the session minor mode, session buffer detection,
-;; backend dispatch, and the buffer-local hooks used by vterm/eat
-;; terminal sessions.
+;; This module owns the Session minor mode, Session buffer detection,
+;; Ghostel input, and buffer-local Session hooks.
 
 ;;; Code:
 
@@ -27,38 +26,11 @@
 (require 'subr-x)
 
 ;; External declarations shared with the main package.
-(defvar eat-terminal)
-(defvar eat--synchronize-scroll-function)
-(defvar vterm-copy-mode)
-(defvar vterm-shell)
-(defvar vterm-environment)
-(defvar eat-term-name)
-(defvar vterm--process)
-(defvar claude-code-ide-terminal-backend)
-(defvar claude-code-ide-cli-terminal-backends)
-(defvar claude-code-ide-vterm-anti-flicker)
-(defvar claude-code-ide-vterm-render-delay)
 (defvar ghostel-enable-url-detection)
 (defvar ghostel--process)
 (defvar ghostel-mode-hook)
 (defvar ghostel-module-auto-install)
 
-(declare-function vterm "vterm" (&optional arg))
-(declare-function vterm-send-string "vterm" (string &optional paste))
-(declare-function vterm-send-key "vterm" (key &optional shift meta ctrl))
-(declare-function vterm-send-escape "vterm" ())
-(declare-function vterm-send-return "vterm" ())
-(declare-function vterm-yank "vterm" ())
-(declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
-
-(declare-function eat-mode "eat" ())
-(declare-function eat-exec "eat" (buffer name command startfile &rest switches))
-(declare-function eat-term-send-string "eat" (terminal string))
-(declare-function eat-term-send-string-as-yank "eat" (terminal string))
-(declare-function eat-term-display-cursor "eat" (terminal))
-(declare-function eat-yank "eat" ())
-(declare-function eat--adjust-process-window-size "eat" (process windows))
-(declare-function eat--filter "eat" (process input))
 
 (declare-function ghostel-mode "ghostel" ())
 (declare-function ghostel-create "ghostel" (&optional name display identity))
@@ -68,7 +40,6 @@
 (declare-function ghostel-send-C-g "ghostel" ())
 (declare-function ghostel-yank "ghostel" ())
 
-(declare-function claude-code-ide--current-terminal-backend "claude-code-ide" ())
 (declare-function claude-code-ide--current-cli-type "claude-code-ide" ())
 (declare-function claude-code-ide-session-idle-record-activity
                   "claude-code-ide-session-idle" (&optional buffer))
@@ -134,8 +105,6 @@ return the string to insert."
 (defvar-local claude-code-ide-session--configured-p nil
   "Non-nil when the current session buffer has been configured.")
 
-(defvar-local claude-code-ide--saved-cursor-type nil
-  "Saved cursor-type before entering vterm-copy-mode.")
 
 (defun claude-code-ide-session--default-reader (buffer)
   "Return non-nil when BUFFER has the standard Claude Code session name."
@@ -151,45 +120,38 @@ return the string to insert."
 
 (defalias 'claude-code-ide--session-buffer-p #'claude-code-ide-session-buffer-p)
 
-(defun claude-code-ide-session--current-terminal-backend ()
-  "Return the terminal backend for the current session buffer."
-  (cond
-   ((bound-and-true-p claude-code-ide--terminal-backend)
-    claude-code-ide--terminal-backend)
-   ((derived-mode-p 'vterm-mode) 'vterm)
-   ((derived-mode-p 'eat-mode) 'eat)
-   ((derived-mode-p 'ghostel-mode) 'ghostel)
-   ((fboundp 'claude-code-ide--current-terminal-backend)
-    (claude-code-ide--current-terminal-backend))))
 
-(defun claude-code-ide--terminal-ensure-backend ()
-  "Ensure the selected terminal backend is available."
-  (let ((backend (claude-code-ide-session--current-terminal-backend)))
-    (cond
-     ((eq backend 'vterm)
-      (unless (featurep 'vterm)
-        (require 'vterm nil t))
-      (unless (featurep 'vterm)
-        (user-error "The package vterm is not installed.  Please install the vterm package or change the terminal backend configuration to 'eat")))
-     ((eq backend 'eat)
-      (unless (featurep 'eat)
-        (require 'eat nil t))
-      (unless (featurep 'eat)
-        (user-error "The package eat is not installed.  Please install the eat package or change the terminal backend configuration to 'vterm")))
-     ((eq backend 'ghostel)
-      (unless (featurep 'ghostel)
-        (require 'ghostel nil t))
-      (unless (featurep 'ghostel)
-        (user-error "The package ghostel is not installed.  Please install the ghostel package or change the terminal backend configuration to 'vterm")))
-     (t
-      (user-error "Invalid terminal backend: %s.  Valid options are 'vterm, 'eat, or 'ghostel" backend)))))
+(defun claude-code-ide-session--ensure-ghostel ()
+  "Check Ghostel and its native support without installing software."
+  (let ((ghostel-module-auto-install nil))
+    (unless (condition-case err
+                (require 'ghostel nil t)
+              (error
+               (user-error "Cannot load Ghostel: %s. Check its installation"
+                           (error-message-string err))))
+      (user-error "Install Ghostel before starting a terminal"))
+    (unless (fboundp 'ghostel--new)
+      (user-error "Ghostel native support is unavailable. Install its native module before starting a terminal"))))
+
+(defun claude-code-ide-session--ensure-ghostel-buffer ()
+  "Reject terminal operations outside actual Ghostel mode."
+  (unless (derived-mode-p 'ghostel-mode)
+    (user-error "This command needs a Ghostel terminal. After an upgrade, restart Emacs and open a new Session")))
+
+(defun claude-code-ide-session--live-ghostel-process-p (buffer process)
+  "Return non-nil when PROCESS is BUFFER's own live Ghostel process."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
+       (processp process)
+       (process-live-p process)
+       (eq (process-buffer process) buffer)))
 
 (defun claude-code-ide-session--companion-shell-live-p (buffer)
   "Return non-nil when BUFFER has its own live Ghostel process."
   (and (buffer-live-p buffer)
        (local-variable-p 'ghostel--process buffer)
-       (let ((process (buffer-local-value 'ghostel--process buffer)))
-         (and (processp process) (process-live-p process)))))
+       (claude-code-ide-session--live-ghostel-process-p
+        buffer (buffer-local-value 'ghostel--process buffer))))
 
 (defun claude-code-ide-session--create-companion-shell (directory name)
   "Start an ordinary Ghostel shell in DIRECTORY with a unique NAME."
@@ -198,10 +160,7 @@ return the string to insert."
                (file-accessible-directory-p directory))
     (user-error "Session directory is not accessible: %s" directory))
   (let ((ghostel-module-auto-install nil))
-    (unless (require 'ghostel nil t)
-      (user-error "Shell layouts require Ghostel. Install Ghostel before resetting this layout"))
-    (unless (fboundp 'ghostel--new)
-      (user-error "Ghostel native support is unavailable. Install its native module before resetting this layout"))
+    (claude-code-ide-session--ensure-ghostel)
     (let* ((default-directory (file-name-as-directory directory))
            buffer
            (ghostel-mode-hook
@@ -214,55 +173,15 @@ return the string to insert."
             created)
         ((error quit)
          (when (buffer-live-p buffer)
-           (if (claude-code-ide-session--companion-shell-live-p buffer)
+           (if (process-live-p (get-buffer-process buffer))
                (message "Shell startup stopped. The live shell remains in %s" (buffer-name buffer))
              (kill-buffer buffer)))
          (signal (car err) (cdr err)))))))
 
-(defun claude-code-ide-session--vterm-copy-mode-hook ()
-  "Keep the cursor visible in `vterm-copy-mode'."
-  (if vterm-copy-mode
-      (progn
-        (setq claude-code-ide--saved-cursor-type cursor-type)
-        (when (null cursor-type)
-          (setq cursor-type t)))
-    (setq cursor-type claude-code-ide--saved-cursor-type)))
-
-(defun claude-code-ide-session--configure-vterm-buffer ()
-  "Configure vterm for Claude Code session buffers."
-  (setq-local vterm-scroll-to-bottom-on-output nil)
-  (when (boundp 'vterm--redraw-immididately)
-    (setq-local vterm--redraw-immididately nil))
-  (when (boundp 'vterm--redraw-immediately)
-    (setq-local vterm--redraw-immediately nil))
-  (setq-local cursor-in-non-selected-windows nil)
-  (setq-local blink-cursor-mode nil)
-  (setq-local cursor-type nil)
-  (setq-local global-hl-line-mode nil)
-  (when (featurep 'hl-line)
-    (hl-line-mode -1))
-  (face-remap-add-relative 'nobreak-space :inherit 'default)
-  (add-hook 'vterm-copy-mode-hook #'claude-code-ide-session--vterm-copy-mode-hook nil t)
-  (when-let* ((proc (get-buffer-process (current-buffer))))
-    (set-process-query-on-exit-flag proc nil)
-    (when (fboundp 'process-put)
-      (process-put proc 'read-output-max 4096)))
-  (when (bound-and-true-p claude-code-ide-vterm-anti-flicker)
-    (advice-add 'vterm--filter :around #'claude-code-ide--vterm-smart-renderer)))
-
-(defun claude-code-ide-session--configure-eat-buffer ()
-  "Configure eat for Claude Code session buffers."
-  (setq-local cursor-in-non-selected-windows nil)
-  (setq-local blink-cursor-mode nil)
-  (setq-local cursor-type nil)
-  (when (featurep 'hl-line)
-    (hl-line-mode -1))
-  (face-remap-add-relative 'nobreak-space :inherit 'default)
-  (when (bound-and-true-p claude-code-ide-vterm-anti-flicker)
-    (advice-add 'eat--filter :around #'claude-code-ide--eat-smart-renderer)))
 
 (defun claude-code-ide-session--configure-ghostel-buffer ()
   "Configure ghostel for Claude Code session buffers."
+  (claude-code-ide-session--ensure-ghostel-buffer)
   (setq-local cursor-in-non-selected-windows nil)
   (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)
@@ -273,13 +192,11 @@ return the string to insert."
 
 (defun claude-code-ide-session-setup-buffer ()
   "Apply package-owned session configuration to the current buffer."
-  (when (claude-code-ide-session-buffer-p (current-buffer))
+  (when (and (derived-mode-p 'ghostel-mode)
+             (claude-code-ide-session-buffer-p (current-buffer)))
     (unless claude-code-ide-session--configured-p
       (setq claude-code-ide-session--configured-p t)
-      (pcase (claude-code-ide-session--current-terminal-backend)
-        ('vterm (claude-code-ide-session--configure-vterm-buffer))
-        ('eat (claude-code-ide-session--configure-eat-buffer))
-        ('ghostel (claude-code-ide-session--configure-ghostel-buffer)))
+      (claude-code-ide-session--configure-ghostel-buffer)
       (claude-code-ide-session-setup-terminal-keybindings)
       (run-hooks 'claude-code-ide-session-setup-hook))))
 
@@ -287,6 +204,10 @@ return the string to insert."
   "Minor mode for Claude Code session buffers."
   :lighter " CC-Session"
   :keymap claude-code-ide-session-mode-map
+  (when (and claude-code-ide-session-mode
+             (not (derived-mode-p 'ghostel-mode)))
+    (setq claude-code-ide-session-mode nil)
+    (claude-code-ide-session--ensure-ghostel-buffer))
   (if claude-code-ide-session-mode
       (progn
         (unless (memq 'claude-code-ide-session--emulation-mode-map-alist
@@ -306,14 +227,16 @@ return the string to insert."
 
 (defun claude-code-ide--maybe-enable-session-mode ()
   "Enable session mode in the current buffer when it is package-owned."
-  (when (claude-code-ide-session-buffer-p (current-buffer))
+  (when (and (derived-mode-p 'ghostel-mode)
+             (claude-code-ide-session-buffer-p (current-buffer)))
     (claude-code-ide-session-mode 1)))
 
 (defalias 'claude-code-ide-session--maybe-enable
   #'claude-code-ide--maybe-enable-session-mode)
 
 (defun claude-code-ide-session--ensure-session-buffer ()
-  "Signal a user error unless the current buffer is a session buffer."
+  "Signal an error unless this is a Ghostel Session buffer."
+  (claude-code-ide-session--ensure-ghostel-buffer)
   (unless (claude-code-ide-session-buffer-p (current-buffer))
     (user-error "This command only applies to Claude Code session buffers")))
 
@@ -387,23 +310,13 @@ When REFERENCE is nil, use
       (claude-code-ide-session-send-string text t))))
 
 (defun claude-code-ide-session-send-string (string &optional paste)
-  "Send STRING to the terminal in the current session buffer."
+  "Send STRING to the current Ghostel terminal.
+Use paste input when PASTE is non-nil."
+  (claude-code-ide-session--ensure-ghostel-buffer)
   (prog1
-      (pcase (claude-code-ide-session--current-terminal-backend)
-        ('vterm
-         (vterm-send-string string paste))
-        ('eat
-         (when eat-terminal
-           (if paste
-               (eat-term-send-string-as-yank eat-terminal string)
-             (eat-term-send-string eat-terminal string))))
-        ('ghostel
-         (if paste
-             (ghostel-paste-string string)
-           (ghostel--send-string string)))
-        (_
-         (error "Unknown terminal backend: %s"
-                (claude-code-ide-session--current-terminal-backend))))
+      (if paste
+          (ghostel-paste-string string)
+        (ghostel--send-string string))
     (claude-code-ide-session--record-activity)))
 
 (defun claude-code-ide-session--clipboard-image-p ()
@@ -430,99 +343,40 @@ When REFERENCE is nil, use
 (defun claude-code-ide-session-paste-clipboard ()
   "Paste from the clipboard, forwarding images to Claude, Codex, and Oh My Pi."
   (interactive)
+  (claude-code-ide-session--ensure-ghostel-buffer)
   (if (and (claude-code-ide-session--clipboard-image-p)
            (memq (claude-code-ide--current-cli-type) '(claude codex omp)))
       (claude-code-ide-session-send-string "\026")
-    (pcase (claude-code-ide-session--current-terminal-backend)
-      ('vterm (vterm-yank))
-      ('eat (eat-yank))
-      ('ghostel (ghostel-yank))
-      (_
-       (error "Unknown terminal backend: %s"
-              (claude-code-ide-session--current-terminal-backend))))))
+    (ghostel-yank)))
 
 (defun claude-code-ide-session-send-escape ()
-  "Send escape key to the terminal in the current session buffer."
-  (prog1
-      (pcase (claude-code-ide-session--current-terminal-backend)
-        ('vterm
-         (vterm-send-escape))
-        ('eat
-         (when eat-terminal
-           (eat-term-send-string eat-terminal "\e")))
-        ('ghostel
-         (ghostel--send-string "\e"))
-        (_
-         (error "Unknown terminal backend: %s"
-                (claude-code-ide-session--current-terminal-backend))))
-    (claude-code-ide-session--record-activity)))
+  "Send Escape to the terminal in the current Session buffer."
+  (claude-code-ide-session-send-string "\e"))
 
 (defun claude-code-ide-session-send-return ()
-  "Send return key to the terminal in the current session buffer."
-  (prog1
-      (pcase (claude-code-ide-session--current-terminal-backend)
-        ('vterm
-         (vterm-send-return))
-        ('eat
-         (when eat-terminal
-           (eat-term-send-string eat-terminal "\r")))
-        ('ghostel
-         (ghostel--send-string "\r"))
-        (_
-         (error "Unknown terminal backend: %s"
-                (claude-code-ide-session--current-terminal-backend))))
-    (claude-code-ide-session--record-activity)))
+  "Send Return to the terminal in the current Session buffer."
+  (claude-code-ide-session-send-string "\r"))
 
 (defun claude-code-ide-session-send-interrupt ()
-  "Send an interrupt to the terminal in the current session buffer."
+  "Send an interrupt to the terminal in the current Session buffer."
   (interactive)
   (claude-code-ide-session--ensure-session-buffer)
-  (prog1
-      (pcase (claude-code-ide-session--current-terminal-backend)
-        ('vterm
-         (vterm-send-key "c" nil nil t))
-        ('eat
-         (when eat-terminal
-           (eat-term-send-string eat-terminal "\003")))
-        ('ghostel
-         (ghostel-send-C-c))
-        (_
-         (error "Unknown terminal backend: %s"
-                (claude-code-ide-session--current-terminal-backend))))
+  (prog1 (ghostel-send-C-c)
     (claude-code-ide-session--record-activity)))
 
 (defun claude-code-ide-session-send-control-g ()
-  "Send C-g to the terminal in the current session buffer."
+  "Send C-g to the terminal in the current Session buffer."
   (interactive)
   (claude-code-ide-session--ensure-session-buffer)
-  (prog1
-      (pcase (claude-code-ide-session--current-terminal-backend)
-        ('vterm
-         (vterm-send-key "g" nil nil t))
-        ('eat
-         (when eat-terminal
-           (eat-term-send-string eat-terminal "\007")))
-        ('ghostel
-         (ghostel-send-C-g))
-        (_
-         (error "Unknown terminal backend: %s"
-                (claude-code-ide-session--current-terminal-backend))))
+  (prog1 (ghostel-send-C-g)
     (claude-code-ide-session--record-activity)))
 
 (defun claude-code-ide-session-setup-terminal-keybindings ()
-  "Set up package-owned keybindings for the current session buffer."
-  (pcase (claude-code-ide-session--current-terminal-backend)
-    ((or 'vterm 'eat 'ghostel)
-     (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
-     (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
-    (_
-     (error "Unknown terminal backend: %s"
-            (claude-code-ide-session--current-terminal-backend)))))
+  "Set up package-owned keybindings for the current Session buffer."
+  (claude-code-ide-session--ensure-ghostel-buffer)
+  (local-set-key (kbd "S-<return>") #'claude-code-ide-insert-newline)
+  (local-set-key (kbd "C-<escape>") #'claude-code-ide-send-escape))
 
-(defalias 'claude-code-ide--configure-vterm-buffer
-  #'claude-code-ide-session--configure-vterm-buffer)
-(defalias 'claude-code-ide--configure-eat-buffer
-  #'claude-code-ide-session--configure-eat-buffer)
 (defalias 'claude-code-ide--configure-ghostel-buffer
   #'claude-code-ide-session--configure-ghostel-buffer)
 (defalias 'claude-code-ide--terminal-send-string
@@ -535,11 +389,7 @@ When REFERENCE is nil, use
   #'claude-code-ide-session-setup-terminal-keybindings)
 
 (defun claude-code-ide-session--install-hook-wiring ()
-  "Install package-owned hooks for supported session backends."
-  (with-eval-after-load 'vterm
-    (add-hook 'vterm-mode-hook #'claude-code-ide--maybe-enable-session-mode))
-  (with-eval-after-load 'eat
-    (add-hook 'eat-mode-hook #'claude-code-ide--maybe-enable-session-mode))
+  "Install Ghostel Session hooks."
   (with-eval-after-load 'ghostel
     (add-hook 'ghostel-mode-hook #'claude-code-ide--maybe-enable-session-mode)))
 

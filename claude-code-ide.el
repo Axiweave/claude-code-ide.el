@@ -77,12 +77,6 @@
 (require 'claude-code-ide-zmx)
 
 ;; External variable declarations
-(defvar eat-terminal)
-(defvar eat--synchronize-scroll-function)
-(defvar vterm-shell)
-(defvar vterm-environment)
-(defvar eat-term-name)
-(defvar vterm--process)
 (defvar ghostel-enable-url-detection)
 (defvar ghostel--term)
 (defvar ghostel--term-rows)
@@ -90,21 +84,7 @@
 (defvar ghostel--cursor-char-pos)
 (defvar ghostel--input-mode)
 (defvar ghostel-title)
-
-;; External function declarations for vterm
-(declare-function vterm "vterm" (&optional arg))
-(declare-function vterm-send-string "vterm" (string))
-(declare-function vterm-send-escape "vterm" ())
-(declare-function vterm-send-return "vterm" ())
-(declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
-
-;; External function declarations for eat
-(declare-function eat-mode "eat" ())
-(declare-function eat-exec "eat" (buffer name command startfile &rest switches))
-(declare-function eat-term-send-string "eat" (terminal string))
-(declare-function eat-term-display-cursor "eat" (terminal))
-(declare-function eat--adjust-process-window-size "eat" (process windows))
-(declare-function eat--filter "eat" (process input))
+(defvar ghostel-module-auto-install)
 
 ;; External function declarations for ghostel
 (declare-function ghostel-mode "ghostel" ())
@@ -287,32 +267,6 @@ display-buffer behavior."
   :type 'boolean
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-terminal-backend 'vterm
-  "Terminal backend to use for Claude Code sessions.
-Can be `vterm', `eat', or `ghostel'.  The vterm backend is the
-default and provides a fully-featured terminal emulator.  The eat
-backend is an alternative terminal emulator that may work better
-in some environments.  The ghostel backend currently has only
-basic integration."
-  :type '(choice (const :tag "vterm" vterm)
-                 (const :tag "eat" eat)
-                 (const :tag "ghostel" ghostel))
-  :group 'claude-code-ide)
-
-(defcustom claude-code-ide-cli-terminal-backends nil
-  "Per-CLI terminal backend overrides.
-Each entry maps `claude', `codex', `opencode', `pi', or `omp' to either `vterm'
-`eat', or `ghostel'.  When a CLI has no override,
-`claude-code-ide-terminal-backend' is used."
-  :type '(alist :key-type (choice (const :tag "Claude" claude)
-                                  (const :tag "Codex" codex)
-                                  (const :tag "OpenCode" opencode)
-                                  (const :tag "Pi" pi)
-                                  (const :tag "Oh My Pi" omp))
-                :value-type (choice (const :tag "vterm" vterm)
-                                    (const :tag "eat" eat)
-                                    (const :tag "ghostel" ghostel)))
-  :group 'claude-code-ide)
 
 (defcustom claude-code-ide-prevent-reflow-glitch t
   "Workaround for Claude Code terminal scrolling bug #1422.
@@ -323,33 +277,6 @@ This setting should be removed once the upstream bug is fixed."
   :type 'boolean
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-vterm-anti-flicker t
-  "Enable intelligent flicker reduction for vterm display.
-When enabled, this feature optimizes terminal rendering by detecting
-and batching rapid update sequences.  This provides smoother visual
-output during complex terminal operations such as expanding text areas
-and rapid screen updates.
-
-This optimization applies only to vterm and uses advanced pattern
-matching to maintain responsiveness while improving visual quality."
-  :type 'boolean
-  :group 'claude-code-ide)
-
-(defcustom claude-code-ide-vterm-render-delay 0.005
-  "Rendering optimization delay for batched terminal updates.
-This parameter defines the collection window for related terminal
-update sequences when anti-flicker mode is active.  The timing
-balances visual smoothness with interaction responsiveness.
-
-The 0.005 second (5ms) default delivers optimal rendering quality
-with imperceptible latency."
-  :type 'number
-  :group 'claude-code-ide)
-
-(define-obsolete-variable-alias
-  'claude-code-ide-eat-initialization-delay
-  'claude-code-ide-terminal-initialization-delay
-  "0.2.6")
 
 (defcustom claude-code-ide-terminal-initialization-delay 0.1
   "Initialization delay for terminal stability.
@@ -363,13 +290,6 @@ without noticeable latency."
   :type 'number
   :group 'claude-code-ide)
 
-(defcustom claude-code-ide-eat-preserve-position t
-  "Maintain terminal scroll position when switching windows.
-When enabled, prevents the eat terminal from jumping to the top
-when you switch focus to other windows and return.  This provides
-a more stable viewing experience when working with multiple windows."
-  :type 'boolean
-  :group 'claude-code-ide)
 
 (defconst claude-code-ide--temporary-prompt-buffer-regexp
   "^/\\(?:private/\\)?\\(?:tmp\\|var/folders/.*/T\\)/.*\\.\\(?:zsh\\|md\\)\\'"
@@ -422,24 +342,6 @@ the target window is already visible."
 (defvar claude-code-ide--live-prompt-terminal-window-sync-timer nil
   "Timer used to coalesce deferred live-prompt terminal window sync passes.")
 
-;;; Vterm Rendering Optimization
-
-(defvar-local claude-code-ide--vterm-render-queue nil
-  "List of pending terminal output strings awaiting batched rendering.
-Stored in reverse order for O(1) push, joined at flush time.")
-
-(defvar-local claude-code-ide--vterm-render-timer nil
-  "Timer for executing queued rendering operations.")
-
-(defvar-local claude-code-ide--eat-render-queue nil
-  "List of pending eat output strings awaiting batched rendering.
-Stored in reverse order for O(1) push, joined at flush time.")
-
-(defvar-local claude-code-ide--eat-render-timer nil
-  "Timer for executing queued eat rendering operations.")
-
-(defvar-local claude-code-ide--terminal-backend nil
-  "Resolved terminal backend for the current session buffer.")
 
 (defvar-local claude-code-ide--session-cli-type nil
   "Resolved CLI type for the current session buffer.")
@@ -449,146 +351,6 @@ Stored in reverse order for O(1) push, joined at flush time.")
   (or claude-code-ide--session-cli-type
       (claude-code-ide--configured-cli-type)))
 
-(defun claude-code-ide--resolve-terminal-backend (&optional cli-type)
-  "Resolve the terminal backend for CLI-TYPE.
-Falls back to `claude-code-ide-terminal-backend' when no per-CLI
-override is configured."
-  (or (alist-get (or cli-type (claude-code-ide--current-cli-type))
-                 claude-code-ide-cli-terminal-backends
-                 nil nil #'eq)
-      claude-code-ide-terminal-backend))
-
-(defun claude-code-ide--current-terminal-backend ()
-  "Return the terminal backend for the current buffer or CLI."
-  (or claude-code-ide--terminal-backend
-      (claude-code-ide--resolve-terminal-backend)))
-
-(defun claude-code-ide--count-escape-sequence (sequence input)
-  "Count occurrences of escape SEQUENCE in INPUT.
-More efficient than split-string + cl-count-if for simple counting."
-  (let ((count 0) (start 0))
-    (while (setq start (string-search sequence input start))
-      (cl-incf count)
-      (cl-incf start (length sequence)))
-    count))
-
-(defun claude-code-ide--vterm-smart-renderer (orig-fun process input)
-  "Smart rendering filter for optimized vterm display updates.
-This advanced filter analyzes terminal output patterns to identify
-rapid update sequences that benefit from batched processing.
-It significantly improves visual quality during complex operations.
-
-ORIG-FUN is the underlying filter to enhance.
-PROCESS is the terminal process being optimized.
-INPUT contains the terminal output stream."
-  (if (or (not (eq (claude-code-ide--current-cli-type) 'claude))
-          (not claude-code-ide-vterm-anti-flicker)
-          (not (claude-code-ide--session-buffer-p (process-buffer process))))
-      ;; Feature disabled or not a Claude buffer, pass through normally
-      (funcall orig-fun process input)
-    (with-current-buffer (process-buffer process)
-      ;; Fast path: plain text with no active queue skips all pattern detection
-      ;; This optimizes the common case of typing in the prompt
-      (if (and (not claude-code-ide--vterm-render-queue)
-               (not (string-search "\033" input)))
-          (funcall orig-fun process input)
-        ;; Detect rapid terminal redraw sequences
-        ;; Pattern analysis for complex terminal updates:
-        ;; - Vertical cursor movements (ESC[<n>A)
-        ;; - Line clearing operations (ESC[K)
-        ;; - High escape sequence density
-        (let* ((complex-redraw-detected
-                ;; Pattern: vertical movement + clear, repeated
-                (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
-               (clear-count (claude-code-ide--count-escape-sequence "\033[K" input))
-               (escape-count (cl-count ?\033 input))
-               (input-length (length input))
-               ;; High escape density indicates redrawing, not normal output
-               (escape-density (if (> input-length 0)
-                                   (/ (float escape-count) input-length)
-                                 0)))
-          ;; Optimize rendering for detected patterns:
-          ;; 1. Complex redraw sequence detected, OR
-          ;; 2. Escape sequence density exceeds threshold with line operations
-          ;; 3. OR already queuing (to complete the sequence)
-          (if (or complex-redraw-detected
-                  (and (> escape-density 0.3)
-                       (>= clear-count 2))
-                  claude-code-ide--vterm-render-queue)
-              (progn
-                ;; Add to queue (list for O(1) push, joined at flush time)
-                (push input claude-code-ide--vterm-render-queue)
-                ;; Reset existing render timer
-                (when claude-code-ide--vterm-render-timer
-                  (cancel-timer claude-code-ide--vterm-render-timer))
-                ;; Schedule optimized rendering
-                ;; Timing calibrated for visual quality
-                (setq claude-code-ide--vterm-render-timer
-                      (run-at-time claude-code-ide-vterm-render-delay nil
-                                   (lambda (buf)
-                                     (when (buffer-live-p buf)
-                                       (with-current-buffer buf
-                                         (when claude-code-ide--vterm-render-queue
-                                           (let* ((inhibit-redisplay t)
-                                                  (queue claude-code-ide--vterm-render-queue)
-                                                  ;; Join list in correct order
-                                                  (data (apply #'concat (nreverse queue))))
-                                             ;; Clear queue first to prevent recursion
-                                             (setq claude-code-ide--vterm-render-queue nil
-                                                   claude-code-ide--vterm-render-timer nil)
-                                             ;; Execute queued rendering
-                                             (funcall orig-fun
-                                                      (get-buffer-process buf)
-                                                      data))))))
-                                   (current-buffer))))
-            ;; Standard processing for regular output
-            (funcall orig-fun process input)))))))
-
-(defun claude-code-ide--eat-smart-renderer (orig-fun process input)
-  "Smart rendering filter for optimized eat display updates.
-ORIG-FUN is the underlying filter to enhance.
-PROCESS is the terminal process being optimized.
-INPUT contains the terminal output stream."
-  (if (or (not (eq (claude-code-ide--current-cli-type) 'claude))
-          (not claude-code-ide-vterm-anti-flicker)
-          (not (claude-code-ide--session-buffer-p (process-buffer process))))
-      (funcall orig-fun process input)
-    (with-current-buffer (process-buffer process)
-      (if (and (not claude-code-ide--eat-render-queue)
-               (not (string-search "\033" input)))
-          (funcall orig-fun process input)
-        (let* ((complex-redraw-detected
-                (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
-               (clear-count (claude-code-ide--count-escape-sequence "\033[K" input))
-               (escape-count (cl-count ?\033 input))
-               (input-length (length input))
-               (escape-density (if (> input-length 0)
-                                   (/ (float escape-count) input-length)
-                                 0)))
-          (if (or complex-redraw-detected
-                  (and (> escape-density 0.3)
-                       (>= clear-count 2))
-                  claude-code-ide--eat-render-queue)
-              (progn
-                (push input claude-code-ide--eat-render-queue)
-                (when claude-code-ide--eat-render-timer
-                  (cancel-timer claude-code-ide--eat-render-timer))
-                (setq claude-code-ide--eat-render-timer
-                      (run-at-time claude-code-ide-vterm-render-delay nil
-                                   (lambda (buf)
-                                     (when (buffer-live-p buf)
-                                       (with-current-buffer buf
-                                         (when claude-code-ide--eat-render-queue
-                                           (let* ((inhibit-redisplay t)
-                                                  (queue claude-code-ide--eat-render-queue)
-                                                  (data (apply #'concat (nreverse queue))))
-                                             (setq claude-code-ide--eat-render-queue nil
-                                                   claude-code-ide--eat-render-timer nil)
-                                             (funcall orig-fun
-                                                      (get-buffer-process buf)
-                                                      data))))))
-                                   (current-buffer))))
-            (funcall orig-fun process input)))))))
 
 (defun claude-code-ide--find-prompt-buffer ()
   "Find a visible buffer whose file name matches a prompt/plan pattern.
@@ -691,11 +453,10 @@ referencing a file that is not part of a project."
         (user-error "No Claude Code session or prompt buffer for this project")))))
 
 (defun claude-code-ide--sync-terminal-dimensions (buffer window)
-  "Sync terminal dimensions in BUFFER to match WINDOW size.
-This ensures the terminal process has the correct dimensions after
-the buffer has been displayed in its final window, which may differ
-from the window where it was initially created."
-  (when (and buffer window (buffer-live-p buffer) (window-live-p window))
+  "Synchronize Ghostel process dimensions in BUFFER with WINDOW.
+Final display may use a different window than terminal creation."
+  (when (and buffer window (buffer-live-p buffer) (window-live-p window)
+             (with-current-buffer buffer (derived-mode-p 'ghostel-mode)))
     (with-current-buffer buffer
       (when-let* ((proc (get-buffer-process buffer)))
         (let ((height (window-body-height window))
@@ -710,79 +471,49 @@ from the window where it was initially created."
 ;; the upstream bug is fixed.
 ;; See: https://github.com/anthropics/claude-code/issues/1422
 
-(defun claude-code-ide--terminal-resize-handler (&optional backend)
-  "Retrieve the terminal's resize handling function based on backend."
-  (pcase (or backend (claude-code-ide--current-terminal-backend))
-    ('vterm #'vterm--window-adjust-process-window-size)
-    ('eat #'eat--adjust-process-window-size)
-    ('ghostel #'ghostel--adjust-size)
-    (_ (error "Unsupported terminal backend: %s"
-              (or backend (claude-code-ide--current-terminal-backend))))))
-
-(defun claude-code-ide--terminal-supports-reflow-guard-p (&optional backend)
-  "Return non-nil when BACKEND supports the reflow workaround hooks."
-  (memq (or backend (claude-code-ide--current-terminal-backend))
-        '(vterm eat ghostel)))
-
-(defun claude-code-ide--backend-for-process (process)
-  "Return the terminal backend associated with PROCESS, when known."
-  (when-let* ((buffer (claude-code-ide--session-buffer-from-process process)))
-    (buffer-local-value 'claude-code-ide--terminal-backend buffer)))
 
 (defun claude-code-ide--terminal-scroll-mode-active-p ()
-  "Determine if terminal is currently in scroll/copy mode."
-  (pcase (claude-code-ide--current-terminal-backend)
-    ('vterm (bound-and-true-p vterm-copy-mode))
-    ('eat (not (bound-and-true-p eat--semi-char-mode)))
-    ('ghostel (eq ghostel--input-mode 'copy))
-    (_ nil)))
+  "Return non-nil when the Ghostel terminal is in copy mode."
+  (and (derived-mode-p 'ghostel-mode)
+       (eq ghostel--input-mode 'copy)))
 
 (defun claude-code-ide--terminal-working-resize-observer (original-fn &rest args)
-  "Suppress working detection while ORIGINAL-FN resizes the session."
-  (when (claude-code-ide--session-buffer-p (current-buffer))
+  "Suppress working detection while ORIGINAL-FN resizes the Session."
+  (when (and (derived-mode-p 'ghostel-mode)
+             (claude-code-ide--session-buffer-p (current-buffer)))
     (claude-code-ide-session-working-suppress-after-resize
      (current-buffer)))
   (apply original-fn args))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)
-  "Filter terminal reflows to prevent height-only resize triggers.
-This wraps ORIGINAL-FN to suppress reflow signals unless the terminal
-width has actually changed, working around the scrolling glitch."
+  "Filter Ghostel reflows to prevent height-only resize triggers."
   (let* ((base-result (apply original-fn args))
+         (session-p (and (derived-mode-p 'ghostel-mode)
+                         (claude-code-ide--session-buffer-p (current-buffer))))
          (dimensions-stable t))
-    ;; Only examine windows showing the current buffer, across ALL frames
-    (when (claude-code-ide--session-buffer-p (current-buffer))
+    (when session-p
       (dolist (win (get-buffer-window-list (current-buffer) nil t))
         (let* ((new-width (window-width win))
                (cached-width (window-parameter win 'claude-code-ide-cached-width)))
           (unless (eql new-width cached-width)
             (setq dimensions-stable nil)
             (set-window-parameter win 'claude-code-ide-cached-width new-width)))))
-    ;; Decide whether to allow reflow
     (cond
-     ;; Not in a Claude buffer - pass through
-     ((not (claude-code-ide--session-buffer-p (current-buffer)))
-      base-result)
-     ;; In scroll mode - suppress reflow
-     ((claude-code-ide--terminal-scroll-mode-active-p)
-      nil)
-     ;; Dimensions changed - allow reflow
-     ((not dimensions-stable)
-      base-result)
-     ;; No width change - suppress reflow
+     ((not session-p) base-result)
+     ((claude-code-ide--terminal-scroll-mode-active-p) nil)
+     ((not dimensions-stable) base-result)
      (t nil))))
 
-(defun claude-code-ide--install-terminal-resize-observer (&optional backend)
-  "Install resize observation used by working-state detection."
-  (let ((handler (claude-code-ide--terminal-resize-handler backend)))
-    (unless (advice-member-p #'claude-code-ide--terminal-working-resize-observer
-                             handler)
-      (advice-add handler :around
-                  #'claude-code-ide--terminal-working-resize-observer))))
+(defun claude-code-ide--install-terminal-resize-observer ()
+  "Install Ghostel resize observation for working-state detection."
+  (unless (advice-member-p #'claude-code-ide--terminal-working-resize-observer
+                           'ghostel--adjust-size)
+    (advice-add 'ghostel--adjust-size :around
+                #'claude-code-ide--terminal-working-resize-observer)))
 
-(defun claude-code-ide--remove-terminal-resize-observer (&optional backend)
-  "Remove resize observation used by working-state detection."
-  (advice-remove (claude-code-ide--terminal-resize-handler backend)
+(defun claude-code-ide--remove-terminal-resize-observer ()
+  "Remove Ghostel resize observation for working-state detection."
+  (advice-remove 'ghostel--adjust-size
                  #'claude-code-ide--terminal-working-resize-observer))
 
 
@@ -1196,24 +927,21 @@ range should be attached."
       (and (buffer-live-p buffer) buffer)))))
 
 (defun claude-code-ide--register-session (session)
-  "Register SESSION and install global advice for the first live session."
+  "Register SESSION and install global advice for the first live Session."
   (let* ((process (claude-code-ide-session-process session))
-         (backend (claude-code-ide--backend-for-process process))
          (buffer (or (and (buffer-live-p (claude-code-ide-session-buffer session))
                           (claude-code-ide-session-buffer session))
                      (claude-code-ide--session-buffer-from-process process))))
     (when (= (hash-table-count claude-code-ide--sessions) 0)
-      (claude-code-ide--install-terminal-resize-observer backend)
+      (claude-code-ide--install-terminal-resize-observer)
       (when (and (eq (claude-code-ide--current-cli-type) 'claude)
-                 claude-code-ide-prevent-reflow-glitch
-                 (claude-code-ide--terminal-supports-reflow-guard-p backend))
-        ;; Apply advice globally for the first Claude session when enabled.
-        (advice-add (claude-code-ide--terminal-resize-handler backend)
+                 claude-code-ide-prevent-reflow-glitch)
+        (advice-add 'ghostel--adjust-size
                     :around #'claude-code-ide--terminal-reflow-filter)))
     (prog1 (claude-code-ide--put-session session)
       (when buffer
         (with-current-buffer buffer
-          (when (eq claude-code-ide--terminal-backend 'ghostel)
+          (when (derived-mode-p 'ghostel-mode)
             (claude-code-ide--record-ghostel-title))))
       (claude-code-ide-manager-refresh-all))))
 
@@ -1271,8 +999,6 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
       (set-window-text-height window claude-code-ide-window-height)
       (set-window-dedicated-p window t))
     ;; Sync terminal dimensions with the actual window size
-    ;; This is necessary because vterm/eat may have been created with
-    ;; different dimensions before being displayed in this window
     (when window
       (claude-code-ide--sync-terminal-dimensions buffer window))
     window))
@@ -1306,35 +1032,25 @@ keeps whatever buffer the following kill puts in it."
       (ignore-errors (delete-window window)))))
 
 (defun claude-code-ide--cleanup-session-resources (session &optional keep-buffer disposition)
-  "Clean up resources owned by SESSION after it leaves the live-session table.
-When KEEP-BUFFER is non-nil, let the active buffer kill finish.
-DISPOSITION `verified-stop' means a Stop transport already confirmed
-the remote target is gone: skip remembering a disconnected manager row
-and leave the manager row's own finalization to the caller instead of
-notifying it here."
+  "Clean resources owned by SESSION after it leaves the live registry.
+KEEP-BUFFER lets an active buffer kill finish.
+DISPOSITION `verified-stop' leaves manager finalization to the Stop caller."
   (let* ((session-id (claude-code-ide-session-id session))
          (directory (claude-code-ide-session-directory session))
-         (process (claude-code-ide-session-process session))
          (buffer (claude-code-ide-session-buffer session))
          (cli-type (claude-code-ide-session-cli-type session))
-         (host (claude-code-ide-session-host session))
-         (backend (claude-code-ide--backend-for-process process)))
+         (host (claude-code-ide-session-host session)))
     (when (= (hash-table-count claude-code-ide--sessions) 0)
-      (claude-code-ide--remove-terminal-resize-observer backend)
-      (when (and claude-code-ide-prevent-reflow-glitch
-                 (claude-code-ide--terminal-supports-reflow-guard-p backend))
-        (advice-remove (claude-code-ide--terminal-resize-handler backend)
-                       #'claude-code-ide--terminal-reflow-filter)))
-    (when (and claude-code-ide-vterm-anti-flicker
-               (= (hash-table-count claude-code-ide--sessions) 0))
-      (advice-remove 'vterm--filter #'claude-code-ide--vterm-smart-renderer)
-      (advice-remove 'eat--filter #'claude-code-ide--eat-smart-renderer))
+      (claude-code-ide--remove-terminal-resize-observer)
+      (advice-remove 'ghostel--adjust-size
+                     #'claude-code-ide--terminal-reflow-filter))
     (when (and (eq cli-type 'claude) (not host))
       (claude-code-ide-mcp-stop-session session-id)
       (claude-code-ide-mcp-server-session-ended session-id))
     (unless (eq disposition 'verified-stop)
       (claude-code-ide-manager-session-ended session-id))
-    (when (buffer-live-p buffer)
+    (when (and (buffer-live-p buffer)
+               (with-current-buffer buffer (derived-mode-p 'ghostel-mode)))
       (when (claude-code-ide-session-buffer-p buffer)
         (with-current-buffer buffer
           (claude-code-ide-session-idle-disable)
@@ -1461,7 +1177,7 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
       (when-let* ((config (claude-code-ide-mcp-server-get-config session-id)))
         (let ((json-str (json-encode config)))
           (claude-code-ide-debug "MCP tools config JSON: %s" json-str)
-          ;; For vterm, we need to escape for sh -c context
+          ;; Escape the JSON for the shell command.
           ;; First escape backslashes, then quotes
           (setq json-str (replace-regexp-in-string "\\\\" "\\\\\\\\" json-str))
           (setq json-str (replace-regexp-in-string "\"" "\\\\\"" json-str))
@@ -1542,28 +1258,6 @@ bottom line and need no extra room."
       4
     1))
 
-(defun claude-code-ide--terminal-position-keeper (window-list)
-  "Maintain stable terminal view position across window switches.
-WINDOW-LIST contains windows requiring position synchronization.
-Implements intelligent scroll management to preserve user context
-when navigating between terminal and other buffers."
-  (let* ((terminal-point (eat-term-display-cursor eat-terminal))
-         (visible-windows (get-buffer-window-list (current-buffer) nil t))
-         (sync-windows (cl-remove-duplicates
-                        (append (delq 'buffer (copy-sequence window-list))
-                                visible-windows)
-                        :test #'eq))
-         (recenter-line (- (claude-code-ide--live-prompt-bottom-margin))))
-    (when (memq 'buffer window-list)
-      (goto-char terminal-point))
-    (unless buffer-read-only         ; Skip when terminal is in navigation mode
-      (dolist (win sync-windows)
-        (when (window-live-p win)
-          (with-selected-window win
-            (when (evil-emacs-state-p)
-              (set-window-point win terminal-point)
-              (goto-char terminal-point)
-              (recenter recenter-line))))))))
 
 (defun claude-code-ide--live-prompt-cli-p ()
   "Return non-nil when the current CLI keeps a live prompt at the terminal bottom.
@@ -1597,34 +1291,25 @@ visible prompt has no usable marker."
     (claude-code-ide--live-prompt-terminal-window-target-point))))
 
 (defun claude-code-ide--live-prompt-terminal-window-target-point ()
-  "Return the live prompt position for the current live-prompt terminal buffer."
-  (pcase (claude-code-ide--current-terminal-backend)
-    ('eat
-     (if (and (bound-and-true-p eat-terminal)
-              (fboundp 'eat-term-display-cursor))
-         (eat-term-display-cursor eat-terminal)
-       (point-max)))
-    ('ghostel
-     (cond
-      ;; The native renderer publishes the exact cursor buffer position;
-      ;; prefer it over the viewport-coordinate approximation below.
-      ((and (bound-and-true-p ghostel--term)
-            (bound-and-true-p ghostel--cursor-char-pos)
-            (<= (point-min) ghostel--cursor-char-pos)
-            (<= ghostel--cursor-char-pos (point-max)))
-       ghostel--cursor-char-pos)
-      ((and (bound-and-true-p ghostel--term)
-            (bound-and-true-p ghostel--term-rows)
-            ghostel--cursor-pos)
-       (save-excursion
-         (let ((scrollback (max 0 (- (line-number-at-pos (point-max))
-                                     ghostel--term-rows))))
-           (goto-char (point-min))
-           (forward-line (+ scrollback (cdr ghostel--cursor-pos)))
-           (move-to-column (car ghostel--cursor-pos))
-           (point))))
-      (t (point-max))))
-    (_ (point-max))))
+  "Return the live prompt position for the current Ghostel terminal."
+  (cond
+   ;; Prefer the exact native cursor position over viewport coordinates.
+   ((and (bound-and-true-p ghostel--term)
+         (bound-and-true-p ghostel--cursor-char-pos)
+         (<= (point-min) ghostel--cursor-char-pos)
+         (<= ghostel--cursor-char-pos (point-max)))
+    ghostel--cursor-char-pos)
+   ((and (bound-and-true-p ghostel--term)
+         (bound-and-true-p ghostel--term-rows)
+         ghostel--cursor-pos)
+    (save-excursion
+      (let ((scrollback (max 0 (- (line-number-at-pos (point-max))
+                                  ghostel--term-rows))))
+        (goto-char (point-min))
+        (forward-line (+ scrollback (cdr ghostel--cursor-pos)))
+        (move-to-column (car ghostel--cursor-pos))
+        (point))))
+   (t (point-max))))
 
 (defun claude-code-ide--window-start-for-point-near-bottom (win point &optional bottom-margin)
   "Return a `window-start' that shows POINT near the bottom of WIN.
@@ -1637,37 +1322,28 @@ layout.  Callers pass the per-CLI margin from
     (line-beginning-position)))
 
 (defun claude-code-ide--sync-visible-live-prompt-terminal-windows ()
-  "Keep visible live-prompt terminal windows pinned to the live prompt.
-Perspective/window-state restores can resurrect stale `window-point' values
-without any terminal output event, so synchronize visible live-prompt terminal
-windows after window configuration changes."
+  "Keep visible Ghostel windows at the live prompt after layout changes."
   (dolist (win (window-list nil 'no-minibuf))
     (when-let* ((buffer (window-buffer win)))
       (when (and (window-live-p win)
                  (claude-code-ide--session-buffer-p buffer))
         (with-current-buffer buffer
           (when (and (claude-code-ide--live-prompt-cli-p)
-                     (memq (claude-code-ide--current-terminal-backend)
-                           '(vterm eat ghostel))
+                     (derived-mode-p 'ghostel-mode)
                      (or (not (fboundp 'evil-emacs-state-p))
                          (evil-emacs-state-p)))
             (let ((target-point
                    (claude-code-ide--live-prompt-terminal-window-target-point))
-                  (backend (claude-code-ide--current-terminal-backend))
                   (bottom-margin (claude-code-ide--live-prompt-bottom-margin)))
               (with-selected-window win
                 (set-window-point win target-point)
                 (goto-char target-point)
-                (cond
-                 ((eq backend 'ghostel)
-                  (unless (pos-visible-in-window-p target-point win)
-                    (set-window-start
-                     win
-                     (claude-code-ide--window-start-for-point-near-bottom
-                      win target-point bottom-margin)
-                     t)))
-                 (t
-                  (recenter (- bottom-margin))))))))))))
+                (unless (pos-visible-in-window-p target-point win)
+                  (set-window-start
+                   win
+                   (claude-code-ide--window-start-for-point-near-bottom
+                    win target-point bottom-margin)
+                   t))))))))))
 
 (defun claude-code-ide--run-live-prompt-terminal-window-sync ()
   "Run the deferred live-prompt terminal window sync pass."
@@ -1694,13 +1370,6 @@ pass corrects those late restores without waiting for terminal output."
 
 (claude-code-ide--install-live-prompt-terminal-window-sync)
 
-(defun claude-code-ide--parse-command-string (command-string)
-  "Parse a command string into (program . args) for eat-exec.
-COMMAND-STRING is a shell command line to parse.
-Returns a cons cell (program . args) where program is the executable
-and args is a list of arguments."
-  (let ((parts (split-string-shell-command command-string)))
-    (cons (car parts) (cdr parts))))
 
 
 (defvar claude-code-ide--pending-remote-host nil
@@ -1710,101 +1379,49 @@ buffer configuration can see the pending host before the new Session
 is registered.")
 
 (defun claude-code-ide--create-terminal-with-command (buffer-name working-dir cmd env-vars)
-  "Create a terminal buffer running CMD with ENV-VARS.
-BUFFER-NAME is the name for the terminal buffer.
-WORKING-DIR is the working directory.
-CMD is the shell command string to run.
-ENV-VARS is a list of \"KEY=VALUE\" environment variable strings.
-
-Returns a cons cell of (buffer . process) on success.
-Signals an error if terminal fails to initialize."
-  (when (and claude-code-ide-zmx--pending-name
-             (not claude-code-ide--pending-remote-host))
-    (setq cmd (claude-code-ide-zmx-wrap-command
-               claude-code-ide-zmx--pending-name
-               (unless claude-code-ide-zmx--pending-attach-only cmd))))
-  (let* ((cli-type (claude-code-ide--current-cli-type))
-         (backend (claude-code-ide--resolve-terminal-backend cli-type)))
-    (claude-code-ide--terminal-ensure-backend)
-    (let ((default-directory working-dir))
-      (claude-code-ide-debug "Starting with command: %s" cmd)
-      (claude-code-ide-debug "Working directory: %s" working-dir)
-      (claude-code-ide-debug "Terminal backend: %s" backend)
-
-      (cond
-       ;; vterm backend
-       ((eq backend 'vterm)
-        (let* ((vterm-buffer-name buffer-name)
-               (vterm-shell cmd)
-               (vterm-environment (append env-vars vterm-environment)))
-          (let ((buffer (save-window-excursion
-                          (vterm vterm-buffer-name))))
-            (unless buffer
-              (error "Failed to create vterm buffer.  Please ensure vterm is properly installed and compiled"))
+  "Create a fresh Ghostel buffer running CMD with ENV-VARS.
+BUFFER-NAME supplies the buffer name.  WORKING-DIR must be accessible.
+CMD is a shell command.  ENV-VARS contains \"KEY=VALUE\" strings.
+Return (buffer . process) only for a live, owned terminal process."
+  (unless (and (stringp working-dir)
+               (file-name-absolute-p working-dir)
+               (file-accessible-directory-p working-dir))
+    (user-error "Session directory is not accessible: %s" working-dir))
+  (let ((ghostel-module-auto-install nil))
+    (claude-code-ide-session--ensure-ghostel)
+    (when (and claude-code-ide-zmx--pending-name
+               (not claude-code-ide--pending-remote-host))
+      (setq cmd (claude-code-ide-zmx-wrap-command
+                 claude-code-ide-zmx--pending-name
+                 (unless claude-code-ide-zmx--pending-attach-only cmd))))
+    (let* ((cli-type (claude-code-ide--current-cli-type))
+           (default-directory (file-name-as-directory working-dir))
+           (process-environment (append env-vars process-environment))
+           (buffer (generate-new-buffer buffer-name))
+           process)
+      (condition-case err
+          (progn
+            (claude-code-ide-debug "Starting Ghostel with command: %s" cmd)
+            (claude-code-ide-debug "Working directory: %s" working-dir)
+            (with-current-buffer buffer
+              (setq-local ghostel-enable-url-detection nil))
+            (setq process
+                  (ghostel-exec buffer (or shell-file-name "/bin/sh")
+                                (list "-lc" cmd)))
+            (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
+              (user-error "Ghostel did not start a live process for the new buffer"))
             (with-current-buffer buffer
               (setq-local claude-code-ide--session-cli-type cli-type)
-              (setq-local claude-code-ide--terminal-backend backend)
               (claude-code-ide-session-mode 1)
               (claude-code-ide-session-setup-buffer))
-            (let ((process (get-buffer-process buffer)))
-              (unless process
-                (error "Failed to get vterm process.  The vterm module may not be compiled correctly"))
-              (unless (buffer-live-p buffer)
-                (error "Vterm buffer was killed during initialization"))
-              (cons buffer process)))))
-
-       ;; eat backend
-       ((eq backend 'eat)
-        (let* ((buffer (get-buffer-create buffer-name))
-               ;; (eat-term-name "xterm-256color")
-               (cmd-parts (claude-code-ide--parse-command-string cmd))
-               (program (car cmd-parts))
-               (args (cdr cmd-parts)))
-          (with-current-buffer buffer
-            (setq-local claude-code-ide--session-cli-type cli-type)
-            (setq-local claude-code-ide--terminal-backend backend)
-            (unless (eq major-mode 'eat-mode)
-              (eat-mode))
-            (claude-code-ide-session-mode 1)
-            (claude-code-ide-session-setup-buffer)
-            (when (and claude-code-ide-eat-preserve-position
-                       ;; (eq (claude-code-ide--current-cli-type) 'claude)
-                       (not (eq (claude-code-ide--current-cli-type) 'opencode))
-                       )
-              (setq-local eat--synchronize-scroll-function
-                          #'claude-code-ide--terminal-position-keeper))
-            (setq-local process-environment
-                        (append env-vars process-environment))
-            (eat-exec buffer buffer-name program nil args)
-            (let ((process (get-buffer-process buffer)))
-              (unless process
-                (error "Failed to create eat process.  Please ensure eat is properly installed"))
-              (cons buffer process)))))
-
-       ;; ghostel backend
-       ((eq backend 'ghostel)
-        (let* ((buffer (get-buffer-create buffer-name))
-               (program (or shell-file-name "/bin/sh"))
-               (args (list "-lc" cmd))
-               (process-environment (append env-vars process-environment))
-               process)
-          (with-current-buffer buffer
-            ;; Ghostel may emit an OSC title very early in startup.
-            ;; v0.50.0's default `ghostel-buffer-name-function' nil already
-            ;; keeps buffer names stable; no title hook is set here.
-            (setq-local ghostel-enable-url-detection nil))
-          (setq process (ghostel-exec buffer program args))
-          (unless process
-            (error "Failed to create ghostel process.  Please ensure ghostel is properly installed"))
-          (with-current-buffer buffer
-            (setq-local claude-code-ide--session-cli-type cli-type)
-            (setq-local claude-code-ide--terminal-backend backend)
-            (claude-code-ide-session-mode 1)
-            (claude-code-ide-session-setup-buffer))
-          (cons buffer process)))
-
-       (t
-        (error "Unknown terminal backend: %s" backend))))))
+            (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
+              (user-error "Ghostel terminal exited or changed during Session setup"))
+            (cons buffer process))
+        ((error quit)
+         (when (buffer-live-p buffer)
+           (let ((kill-buffer-query-functions nil))
+             (kill-buffer buffer)))
+         (signal (car err) (cdr err)))))))
 
 (defun claude-code-ide--create-claude-terminal-session (buffer-name working-dir port continue resume session-id)
   "Create a new terminal session for the CLI.
@@ -1864,8 +1481,7 @@ Returns a cons cell of (buffer . process) on success."
   "Create a new terminal session for Pi or Oh My Pi."
   (let ((cmd (claude-code-ide--build-pi-command continue resume session-id))
         (env-vars (list (format "EMACS_BUFFER_NAME=%s" buffer-name))))
-    (when (and (eq (claude-code-ide--current-cli-type) 'omp)
-               (eq (claude-code-ide--resolve-terminal-backend 'omp) 'ghostel))
+    (when (eq (claude-code-ide--current-cli-type) 'omp)
       ;; Outer terminal identifiers do not describe Emacs image support.
       (push (if (display-graphic-p)
                 "PI_FORCE_IMAGE_PROTOCOL=kitty"
@@ -1959,7 +1575,7 @@ machine, so no local process table lookup applies, cached or not.
 Otherwise a zmx-backed session asks zmx, since the agent runs under
 the zmx server rather than under Emacs.  Otherwise use the terminal
 process pid, descending one level when that process is a shell
-wrapper \(vterm and ghostel run the command through `sh -c')."
+wrapper (Ghostel runs the command through a login shell)."
   (unless (claude-code-ide-session-host session)
     (or (claude-code-ide-session-pid session)
         (setf (claude-code-ide-session-pid session)
@@ -2001,11 +1617,15 @@ continue/resume starts offer only sessions with zero attached clients."
             (cons choice t))))))))
 
 (defun claude-code-ide--create-local-session (working-dir continue resume &optional zmx-attach-name)
-  "Create a local terminal session in WORKING-DIR.
+  "Create a local terminal Session in WORKING-DIR.
 CONTINUE and RESUME select the CLI conversation mode.
-ZMX-ATTACH-NAME reattaches to that existing zmx session instead of
+ZMX-ATTACH-NAME reattaches to an existing zmx Session instead of
 running a freshly built CLI command."
-  (claude-code-ide--terminal-ensure-backend)
+  (unless (and (stringp working-dir)
+               (file-name-absolute-p working-dir)
+               (file-accessible-directory-p working-dir))
+    (user-error "Session directory is not accessible: %s" working-dir))
+  (claude-code-ide-session--ensure-ghostel)
   (let* ((session-id
           (make-temp-name
            (format "claude-%s-%s-"
@@ -2037,6 +1657,8 @@ running a freshly built CLI command."
                    buffer-name working-dir port continue resume session-id)))
             (setq buffer (car buffer-and-process)
                   process (cdr buffer-and-process))
+            (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
+              (user-error "Ghostel did not start a live process for the new buffer"))
             (when (eq cli-type 'claude)
               (setq mcp-tools-started-p t)
               (claude-code-ide-mcp-server-session-started
@@ -2069,17 +1691,11 @@ running a freshly built CLI command."
               (add-hook 'kill-buffer-hook
                         (lambda ()
                           (claude-code-ide--cleanup-on-exit session-id t process))
-                        nil t)
-              (pcase (claude-code-ide--current-terminal-backend)
-                ('vterm
-                 (add-hook 'vterm-exit-functions
-                           (lambda (&rest _)
-                             (when (buffer-live-p buffer)
-                               (kill-buffer buffer)))
-                           nil t))
-                ('eat
-                 (setq-local eat-kill-buffer-on-exit t))))
+                        nil t))
             (sleep-for claude-code-ide-terminal-initialization-delay)
+            (unless (and (claude-code-ide-session--live-ghostel-process-p buffer process)
+                         (eq session (claude-code-ide--get-session session-id)))
+              (user-error "The Agent terminal exited or lost Session ownership during initialization"))
             (unless claude-code-ide--suppress-initial-display
               (if (and (cdr zmx-spec)
                        (claude-code-ide-manager--visible-sidebar-scopes))
@@ -2101,19 +1717,31 @@ running a freshly built CLI command."
                                      " (debug mode enabled)"
                                    ""))
             session))
-      (error
-       (if (claude-code-ide--get-session session-id)
-           (claude-code-ide--cleanup-on-exit session-id)
-         (when mcp-tools-started-p
-           (claude-code-ide-mcp-server-session-ended session-id))
-         (when (process-live-p process)
-           (delete-process process))
-         (when (buffer-live-p buffer)
-           (let ((kill-buffer-hook nil)
-                 (kill-buffer-query-functions nil))
-             (kill-buffer buffer)))
-         (when mcp-started-p
-           (claude-code-ide-mcp-stop-session session-id)))
+      ((error quit)
+       (let ((current (claude-code-ide--get-session session-id)))
+         (if (and session (eq session current))
+             (claude-code-ide--cleanup-on-exit session-id nil process)
+           (unless current
+             (when mcp-tools-started-p
+               (claude-code-ide-mcp-server-session-ended session-id)))
+           (when (and (buffer-live-p buffer)
+                      (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
+                      (processp process)
+                      (process-live-p process)
+                      (eq (process-buffer process) buffer)
+                      (not (and current
+                                (eq process (claude-code-ide-session-process current)))))
+             (delete-process process))
+           (when (and (buffer-live-p buffer)
+                      (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
+                      (not (and current
+                                (eq buffer (claude-code-ide-session-buffer current)))))
+             (let ((kill-buffer-hook nil)
+                   (kill-buffer-query-functions nil))
+               (kill-buffer buffer)))
+           (unless current
+             (when mcp-started-p
+               (claude-code-ide-mcp-stop-session session-id)))))
        (signal (car err) (cdr err))))))
 
 (defun claude-code-ide--materialize-remote-target (session-id host zmx-name directory order created-at)
@@ -2135,27 +1763,19 @@ failure still leaves exactly one disconnected row instead of none."
 
 (defun claude-code-ide--create-remote-session
     (working-dir zmx-attach-name host reusable-session-id &optional intent-valid)
-  "Attach a terminal session to an existing remote zmx target.
-WORKING-DIR is the remote project directory, kept as opaque metadata:
-never passed through a local file-name function.  ZMX-ATTACH-NAME is
-the existing zmx session name on HOST.  REUSABLE-SESSION-ID reuses that Session ID instead of
-minting a new one, so a remembered item keeps its identity, order,
-and creation time across a reattach.  Bypasses Agent builders, MCP
-startup, and local zmx wrapping; shared terminal setup, Session
-registration, and cleanup orchestration still run, matching the local
-path.  Materializes a disconnected manager row before the terminal
-exists, so a failed first attach still leaves one row instead of
-none.  INTENT-VALID, when non-nil, must still approve local attachment
-after any remote identity read."
+  "Attach a Ghostel terminal to an existing remote zmx target.
+WORKING-DIR remains opaque remote directory metadata.
+ZMX-ATTACH-NAME identifies the existing target on HOST.
+REUSABLE-SESSION-ID preserves its remembered identity, order, and creation time.
+This path skips Agent builders, MCP startup, and local zmx wrapping.
+It remembers a disconnected row before terminal creation.
+INTENT-VALID must still approve attachment after any remote identity read."
   (when (and intent-valid (not (funcall intent-valid)))
     (user-error "The remote attachment intent was canceled"))
   (unless zmx-attach-name
     (user-error "Remote attachment needs an existing zmx session name"))
   (unless (claude-code-ide-zmx--valid-directory-p working-dir)
     (user-error "Remote project directory must be absolute path text"))
-  (let ((backend (claude-code-ide--current-terminal-backend)))
-    (unless (eq backend 'ghostel)
-      (user-error "Remote attachment supports the ghostel backend only, not %s" backend)))
   (let* ((session-id
           (or reusable-session-id
               (make-temp-name (format "claude-remote-%s-" host))))
@@ -2176,7 +1796,7 @@ after any remote identity read."
      session-id host zmx-attach-name working-dir order created-at)
     (condition-case err
         (progn
-          (claude-code-ide--terminal-ensure-backend)
+          (claude-code-ide-session--ensure-ghostel)
           (when reusable-session-id
             (claude-code-ide-zmx-require-remote-session
              host zmx-attach-name
@@ -2189,6 +1809,8 @@ after any remote identity read."
                    buffer-name temporary-file-directory cmd nil)))
             (setq buffer (car buffer-and-process)
                   process (cdr buffer-and-process))
+            (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
+              (user-error "Ghostel did not start a live process for the new buffer"))
             (setq session
                   (claude-code-ide-session-create
                    :id session-id
@@ -2218,10 +1840,9 @@ after any remote identity read."
                           (claude-code-ide--cleanup-on-exit session-id t process))
                         nil t))
             (sleep-for claude-code-ide-terminal-initialization-delay)
-            (unless (and (process-live-p process)
-                         (buffer-live-p buffer)
+            (unless (and (claude-code-ide-session--live-ghostel-process-p buffer process)
                          (eq session (claude-code-ide--get-session session-id)))
-              (user-error "Cannot attach %s on %s. The attachment process exited"
+              (user-error "Cannot attach %s on %s. The terminal exited or Session ownership changed"
                           zmx-attach-name host))
             (unless claude-code-ide--suppress-initial-display
               (claude-code-ide--display-buffer-in-side-window buffer))
@@ -2233,15 +1854,25 @@ after any remote identity read."
                                     zmx-attach-name host
                                     (error-message-string metadata-error))))
             session))
-      (error
-       (if (claude-code-ide--get-session session-id)
-           (claude-code-ide--cleanup-on-exit session-id)
-         (when (process-live-p process)
-           (delete-process process))
-         (when (buffer-live-p buffer)
-           (let ((kill-buffer-hook nil)
-                 (kill-buffer-query-functions nil))
-             (kill-buffer buffer))))
+      ((error quit)
+       (let ((current (claude-code-ide--get-session session-id)))
+         (if (and session (eq session current))
+             (claude-code-ide--cleanup-on-exit session-id nil process)
+           (when (and (buffer-live-p buffer)
+                      (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
+                      (processp process)
+                      (process-live-p process)
+                      (eq (process-buffer process) buffer)
+                      (not (and current
+                                (eq process (claude-code-ide-session-process current)))))
+             (delete-process process))
+           (when (and (buffer-live-p buffer)
+                      (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
+                      (not (and current
+                                (eq buffer (claude-code-ide-session-buffer current)))))
+             (let ((kill-buffer-hook nil)
+                   (kill-buffer-query-functions nil))
+               (kill-buffer buffer)))))
        (signal (car err) (cdr err))))))
 
 (defun claude-code-ide--create-session
@@ -3019,18 +2650,6 @@ Send LF to Oh My Pi and backslash followed by Enter to other agents."
           (claude-code-ide--terminal-send-return)))
     (user-error "No Claude Code session for this project")))
 
-;;;###autoload
-(defun claude-code-ide-toggle-vterm-optimization ()
-  "Toggle vterm rendering optimization.
-This command switches the advanced rendering optimization on or off.
-Use this to balance between visual smoothness and raw responsiveness."
-  (interactive)
-  (setq claude-code-ide-vterm-anti-flicker
-        (not claude-code-ide-vterm-anti-flicker))
-  (message "Vterm rendering optimization %s"
-           (if claude-code-ide-vterm-anti-flicker
-               "enabled (smoother display with minimal latency)"
-             "disabled (direct rendering, maximum responsiveness)")))
 
 ;;;###autoload
 (cl-defun claude-code-ide-send-prompt (&optional prompt (paste t))

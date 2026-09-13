@@ -19,21 +19,12 @@ Prepare these items outside Emacs:
 - Install stock zmx on each remote host.
 - For attachment, start the Agent inside an existing zmx Session.
 - Configure SSH authentication, ports, jump hosts, and trusted host keys.
-- Install and select the Ghostel terminal backend.
+- Install Ghostel and its required native support.
 - Add each exact SSH destination to =claude-code-ide-remote-hosts=.
 
 Remote attachment supports Ghostel only.
 The remote host does not need the Claude Code IDE Emacs package.
 The local machine does not need a local zmx or Agent executable for remote attachment.
-
-Select Ghostel globally when no per-Agent override applies:
-
-#+begin_src emacs-lisp
-(setq claude-code-ide-terminal-backend 'ghostel)
-#+end_src
-
-A per-Agent entry in =claude-code-ide-cli-terminal-backends= overrides the global setting.
-Set that entry to =ghostel= for an Agent that you attach remotely.
 
 * Configure Hosts
 
@@ -448,9 +439,9 @@ Configure noninteractive credentials and accept the host key before you use remo
 Make =zmx= available in the remote command environment's =PATH=.
 The local =claude-code-ide-zmx-program= option does not control the remote executable.
 
-** Remote attachment reports an unsupported terminal backend
+** Ghostel or its native support is unavailable
 
-Select Ghostel globally or for the target Agent.
+Install Ghostel and its required native support, then retry.
 The check happens before Emacs starts a terminal or SSH attach process.
 
 ** A disconnected target cannot reattach

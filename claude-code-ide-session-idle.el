@@ -562,6 +562,7 @@ ignored entirely; see `claude-code-ide-session-idle--real-activity-p'."
          (target-buffer (or process-buffer (current-buffer))))
     (when (and (claude-code-ide-session-idle--real-activity-p output)
                (buffer-live-p target-buffer)
+               (with-current-buffer target-buffer (derived-mode-p 'ghostel-mode))
                (claude-code-ide-session-buffer-p target-buffer))
       (with-current-buffer target-buffer
         (claude-code-ide-session-idle-record-activity)
@@ -570,7 +571,8 @@ ignored entirely; see `claude-code-ide-session-idle--real-activity-p'."
 
 (defun claude-code-ide-session-working--ghostel-focus-advice (orig-fn &rest args)
   "Suppress working detection while Ghostel reports a focus change."
-  (when (claude-code-ide-session-buffer-p (current-buffer))
+  (when (and (derived-mode-p 'ghostel-mode)
+             (claude-code-ide-session-buffer-p (current-buffer)))
     (claude-code-ide-session-working-suppress-after-resize))
   (apply orig-fn args))
 
@@ -589,25 +591,10 @@ ignored entirely; see `claude-code-ide-session-idle--real-activity-p'."
     (advice-add symbol :around #'claude-code-ide-session-idle--filter-advice)))
 
 (defun claude-code-ide-session-idle--install-output-observers ()
-  "Install output observers for supported terminal backends."
-  (with-eval-after-load 'vterm
-    (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
-  (with-eval-after-load 'eat
-    (claude-code-ide-session-idle--install-output-observer 'eat--filter))
+  "Install both Ghostel output observers and the focus observer."
   (with-eval-after-load 'ghostel
     (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)
-    ;; Native-PTY sessions deliver output as Lisp events through
-    ;; `ghostel--events-filter' instead of `ghostel--filter', so the
-    ;; observer must cover both paths for idle/working detection.
-    (claude-code-ide-session-idle--install-output-observer 'ghostel--events-filter)
-    (claude-code-ide-session-working--install-ghostel-focus-observer))
-  (when (featurep 'vterm)
-    (claude-code-ide-session-idle--install-output-observer 'vterm--filter))
-  (when (featurep 'eat)
-    (claude-code-ide-session-idle--install-output-observer 'eat--filter))
-  (when (featurep 'ghostel)
-    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)
-    ;; See note above: native-PTY ghostel sessions need the events filter.
+    ;; Native PTY Sessions use the events filter instead of the text filter.
     (claude-code-ide-session-idle--install-output-observer 'ghostel--events-filter)
     (claude-code-ide-session-working--install-ghostel-focus-observer)))
 

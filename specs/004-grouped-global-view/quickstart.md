@@ -122,7 +122,7 @@ Expected results:
 - Group jumps retain sidebar focus and wrap across groups.
 - Spacemacs/Evil receives the intended `v`, `C-j`, and `C-k` bindings.
 
-Repeat local manager interactions with vterm, eat, and ghostel where installed.
+Repeat local manager interactions with Ghostel.
 For an unsupported existing remote backend, verify its explicit error instead of claiming remote support.
 
 Capture an actual manager screenshot or accessibility view after the changes.
@@ -272,19 +272,15 @@ Do not mark this feature implemented from the planning experiment or reviewer ap
 
 | Acceptance surface | Actual result |
 |---|---|
-| Local vterm | Native slot `1` displayed the real terminal and its `CHECK:cci-check-vterm` output |
-| Local EAT | Native slot `2` displayed the linked Worktree terminal and its `CHECK:cci-check-eat` output |
 | Local Ghostel | Native slot `3` displayed the independent clone terminal and its `CHECK:cci-check-ghostel` output |
 | Remote Ghostel | Existing ramhorn Agent attached, grouped, refreshed, and detached without Agent input or Stop |
-| Remote vterm/EAT | Existing explicit backend-rejection regressions passed. No unsupported remote terminal started |
 | Native keyboard | View toggle, row slots, group navigation, grouped editor, and chosen-host menu refresh passed |
 | Persistence | Fresh Emacs restored the grouped view and six real host-fixture metadata records after the final source change |
 | Restore isolation | Final restore and render started zero processes and registered zero Agent Sessions |
 | Emacs versions | Full suite and benchmark used Emacs 31.1.50. Native UI used Emacs 32.0.50 |
 
 The local terminals ran disposable shell commands, not Agents.
-The first EAT fixture used a compound command that the existing command parser did not accept.
-An executable fixture script exercised EAT successfully. Loading the installed Evil dependency removed the isolated resize warning.
+Loading the installed Evil dependency removed the isolated resize warning.
 This validation did not run Emacs 28.1. No minimum-version runtime claim is made.
 The fresh native instance avoided changing the user's existing Session structs.
 Restart the user's Emacs before using the changed structs with existing Sessions.

@@ -12,6 +12,11 @@ description: "Implementation tasks for attaching existing remote Agents"
 
 **Organization**: Keep the specification's story identifiers. Execute P1 stories US1, US2, US3, and US5 before P2 story US4.
 
+**Feature 008 removal record**: EAT and vterm support no longer exists.
+The dated Status and T041–T042 entries below record the former rejection path.
+Feature 008 deleted that path, its per-Agent override, and its regression.
+These historical entries are not current configuration instructions.
+
 **Status**: Implementation, automated verification, and the live guide are complete on stock zmx. The repository gate passed with 655 tests, 646 as expected, nine skips, and no failures. On 2026-09-05 the user rejected the patched zmx; T002–T004 were superseded by T040. On 2026-09-06 a live Ghostel lifecycle on `ramhorn` (stock zmx 0.8.0) passed against the disposable target `cci-omp-repo-bsY2O4`: attach, detach, same-ID reattach, persisted restore with zero requests, canceled Stop, verified Stop, and missing-target reattach. Live checks found and fixed two bugs: blank stock `list --short` output was rejected, and repeated unchanged saves deleted the persisted state file. vterm and Eat are rejected at the remote attach entry (T041). See `quickstart.md` for evidence. On 2026-09-06 the two-host walkthroughs (T020, T036, T039) passed live against `ramhorn` and `vps`.
 
 ## Format: `[ID] [P?] [Story] Description`
@@ -90,7 +95,7 @@ T008 must test unsupported help output without executing the new option. Local r
 - [X] T012 [US1] Extend shared Session creation and `claude-code-ide--attach-zmx-entry` in `claude-code-ide.el`. Reuse terminal setup with the SSH command and a valid local working directory. Bypass Agent builders, executable checks, MCP startup, launcher configuration, and local zmx wrapping.
 - [X] T013 [US1] Exclude remote Sessions from local PID queries and zmx title writes in `claude-code-ide.el`. Make `claude-code-ide--session-buffer-for-agent` reject remote Sessions through both zmx-name and buffer-name matches. Update affected callers in `claude-code-ide-mcp-sse-server.el`. Preserve local-only OSC presentation and shared output observation.
 - [X] T014 [P] [US1] Guard remote filesystem and project actions in `claude-code-ide-manager.el`. Use terminal-only first-switch and reset behavior. Reject remote project-open and launch actions before local Git, Magit, Dired, TRAMP, or Treemacs work.
-- [X] T015 [US1] Run focused US1 regressions and its terminal walkthrough from `specs/003-attach-remote-agents/quickstart.md`. Record attachment timing, input/output, and failure messages with Ghostel. Confirm remote attachment without local zmx or an Agent executable. Ghostel attach, detach, and missing-target failure on `ramhorn` passed on 2026-09-06 in a batch Emacs. The user confirmed interactive input and output through `C-u M-x claude-code-ide-attach` in a live Emacs on the same day. vterm and Eat are out of scope (user deprecating them).
+- [X] T015 [US1] Run focused US1 regressions and its terminal walkthrough from `specs/003-attach-remote-agents/quickstart.md`. Record attachment timing, input/output, and failure messages with Ghostel. Confirm remote attachment without local zmx or an Agent executable. Ghostel attach, detach, and missing-target failure on `ramhorn` passed on 2026-09-06 in a batch Emacs. The user confirmed interactive input and output through `C-u M-x claude-code-ide-attach` in a live Emacs on the same day. vterm and Eat were out of scope (feature 008 has since removed them).
 
 **Acceptance details**: Test an empty host, unsupported zmx, an unreachable host, missing metadata, and unknown Agent commands. Distinguish a candidate's own error from malformed protocol output. Verify that bulk attach names skipped entries. Do not turn metadata into launch arguments. Unsupported terminal behavior requires an explicit message at use time.
 

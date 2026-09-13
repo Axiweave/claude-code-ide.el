@@ -88,10 +88,6 @@ if AVY_DIR=$(find_emacs_package "avy"); then
     LOAD_PATH="$LOAD_PATH -L $AVY_DIR"
 fi
 
-if VTERM_DIR=$(find_emacs_package "emacs-libvterm"); then
-    LOAD_PATH="$LOAD_PATH -L $VTERM_DIR"
-fi
-
 # STEP 1: Compile all elisp files
 echo "=== Running byte-compilation check ===" >&2
 emacs -batch $LOAD_PATH \

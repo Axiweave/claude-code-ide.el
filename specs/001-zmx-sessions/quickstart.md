@@ -8,7 +8,7 @@ Data shapes: [data-model.md](./data-model.md).
 - Emacs 28.1+ with this package on `load-path`.
 - `zmx` on PATH for the interactive scenarios (`which zmx`).
   The automated suite does NOT need zmx (SC-003).
-- One terminal backend installed (vterm, eat, or ghostel).
+- Ghostel installed (this package's terminal backend).
 
 ## Automated gate
 

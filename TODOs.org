@@ -70,3 +70,7 @@ The accepted compatibility scope is Emacs 31/32. Emacs 28.1, 29.4,
 
 * TODO checkout an existing branch into a new worktree
 The new-worktree command refuses names that already exist as a branch.
+
+* DONE remove eat and vterm; ghostel only forward
+CLOSED: [2026-09-12 Sat]
+Superseded by [[file:specs/008-remove-legacy-backends/plan.md][specs/008-remove-legacy-backends]] (Ghostel-only terminal cutover).

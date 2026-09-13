@@ -94,7 +94,7 @@ The user runs the stop command on a zmx-backed session. Emacs prompts yes/no, na
 ### Functional Requirements
 
 - **FR-001**: A boolean defcustom `claude-code-ide-use-zmx` (default nil) MUST gate all zmx behavior. Nil MUST preserve current behavior exactly.
-- **FR-002**: With zmx mode on, session start MUST wrap the built agent command as `zmx attach <name> <cmd>` for every agent and every terminal backend (vterm, eat, ghostel).
+- **FR-002**: With zmx mode on, Session start MUST wrap every Agent command as `zmx attach <name> <cmd>` in the Ghostel terminal.
 - **FR-003**: Zmx session names MUST follow `<prefix><agent>-<project>-<id-short>`, with the prefix in defcustom `claude-code-ide-zmx-session-prefix` (default `cci-`). One zmx name maps to one agent process.
 - **FR-004**: Killing the terminal buffer, closing its window, or exiting Emacs MUST detach without killing the zmx session and without prompting.
 - **FR-005**: `claude-code-ide-stop` on a zmx-backed session MUST prompt yes/no naming the zmx session, then run `zmx kill <name>` on confirmation.

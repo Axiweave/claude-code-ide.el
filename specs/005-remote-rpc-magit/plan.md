@@ -39,7 +39,7 @@ Use one feature module for remote preparation, attempt ownership, view identity,
 | I. Shared core, thin adapters | Reuse the existing status provider and layout commands. Add one remote lifecycle module. | PASS |
 | II. Batch-verifiable quality gate | Keep observable ERT coverage for cancellation, stale completion, closure, sharing, and cleanup. Run the required script during implementation. | PASS for planning |
 | III. Optional integrations | Load RPC only on a permitted enabled-host attempt. Missing dependencies retain the terminal. | PASS |
-| IV. Backend neutrality | Do not branch on Agent CLI type or change terminal dispatch. Keep the existing Ghostel remote boundary. | PASS |
+| IV. Ghostel-Only Terminal Support | Do not branch on Agent CLI type or change Ghostel terminal behavior. | PASS |
 | V. Compatibility and dependency justification | The user requested RPC. Dired still needs a remote file backend, so it cannot replace this optional dependency. Keep Emacs 28.1 paths unchanged. | PASS |
 | VI. Local and remote workflow parity | Keep local provider selection, positions, focus rules, and `R` semantics. Limit differences to explicit remote constraints below. | PASS |
 

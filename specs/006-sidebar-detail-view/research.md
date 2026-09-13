@@ -188,9 +188,9 @@ description available, with no new reader and no new dependency.
    already refreshed, and it needs no transcript reader, no timer, and no
    network call. This matches herdr's model exactly and is what cmux and orca
    approximate at higher cost.
-2. **Expect the title to be missing.** Only Ghostel fills it today, so vterm
-   and eat Sessions have none. The spec therefore requires a Session with no
-   title to keep a single row, rather than showing a blank line or an error.
+2. **Expect the title to be missing.** A Session has no title until Ghostel
+   reports one. The spec therefore requires a Session with no title to keep a
+   single row, rather than showing a blank line or an error.
 3. **Copy the orca layout and the cmux dim level.** Title on the row, dim
    secondary line under it, truncated to one line, with the full text in the
    tooltip. The dim level is a blended foreground, so a face inheriting from

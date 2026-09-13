@@ -102,7 +102,7 @@ The user can close an attached terminal without stopping the remote Agent. An ex
 - **EC-01 — Unavailable prerequisites**: Authentication failure, an unreachable host, or missing remote zmx produces a host-specific error with a corrective action. Discovery failure must not look like an empty session list.
 - **EC-02 — Discovery race**: A target can disappear between discovery and attach. The feature reports the missing target without leaving a running shell, Agent, or replacement session. A short-lived empty zmx session that exits at once is accepted.
 - **EC-03 — Remote paths**: A remote project directory need not exist locally. Discovery and attachment must not require a matching local checkout or treat that path as a local project.
-- **EC-04 — Unsupported terminal backend**: Remote attachment supports Ghostel. With vterm or Eat (scheduled for deprecation), it must report that the backend does not support it. It must not silently omit status or interaction behavior.
+- **EC-04 — Missing terminal support**: Remote attachment uses Ghostel only. Missing Ghostel or native support must produce an explicit error before terminal creation. Feature 008 removed the other terminal integrations and their selection-dependent guard.
 - **EC-05 — Silent network loss**: Output silence alone does not prove disconnection. Once the connection reports failure, disconnected status replaces output-idle status. Immediate detection of an unreported network failure is not a promise of this feature.
 - **EC-06 — Removed host configuration**: A remembered row remains visible if its host leaves the configured list. Reattach requires the user to restore that configuration. The feature does not silently connect through a removed destination.
 - **EC-07 — Names and punctuation**: Host, session, and project names must not cause unintended commands or target another session. Unsupported input produces an explicit error before any remote action.
@@ -132,7 +132,7 @@ The user can close an attached terminal without stopping the remote Agent. An ex
 - **FR-018**: Explicit Stop MUST require confirmation naming both the host and zmx session and explaining the effect on all clients. Canceling MUST send no stop request.
 - **FR-019**: Confirmed Stop MUST affect only the selected remote target. The feature MUST report success only after the host confirms it. An unconfirmed result MUST remain explicit and MUST NOT trigger an automatic retry.
 - **FR-020**: Remote failures MUST identify the affected host and provide a corrective action. Failures MUST NOT prevent the user from operating sessions on other hosts or locally.
-- **FR-021**: Terminal backend limitations MUST produce an explicit user-visible message at the point of use. The feature MUST NOT silently provide incomplete remote behavior.
+- **FR-021**: Missing Ghostel or native support MUST produce an explicit user-visible message at the point of use. The feature MUST NOT silently provide incomplete remote behavior.
 - **FR-022**: New discovery, attach, reattach, and Stop requests MUST require a currently configured host. Removing a host MUST NOT erase its remembered rows. Those rows MUST explain that reattach requires the user to restore the host configuration.
 - **FR-023**: Names supplied by users or remote hosts MUST NOT cause unintended remote actions or change the selected target. Unsupported names MUST produce an explicit error before remote action.
 

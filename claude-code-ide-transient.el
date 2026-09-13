@@ -445,7 +445,7 @@ no meaning for a remote Agent (FR-013)."
 
 (defun claude-code-ide-toggle-window ()
   "Toggle visibility of Claude Code window.
-If called from a Claude vterm buffer, toggle that window.
+If called from a Claude terminal buffer, toggle that window.
 Otherwise, if multiple sessions exist, prompt for selection."
   (interactive)
   (claude-code-ide-toggle))

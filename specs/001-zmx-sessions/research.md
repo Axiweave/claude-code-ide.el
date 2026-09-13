@@ -46,8 +46,7 @@ never a dependency (ADR 0001).
 ## R4: Environment propagation
 
 - **Decision**: Keep env handling unchanged. Env vars flow into the terminal
-  process (`vterm-environment` etc.); when `zmx attach` creates the session,
-  the new PTY inherits them.
+  process; when `zmx attach` creates the session, the new PTY inherits them.
 - **Rationale**: First attach is process creation, so inheritance holds. Later
   attaches keep the original environment — the accepted stale-port limitation
   in ADR 0001 and the spec's Edge Cases.
@@ -93,7 +92,7 @@ never a dependency (ADR 0001).
 - **Decision**: Route every subprocess call through one function,
   `claude-code-ide-zmx--call`, and one availability check,
   `claude-code-ide-zmx--ensure`. Tests bind them with `cl-letf` to canned
-  outputs, following the suite's existing vterm/websocket mock pattern.
+  outputs, following the suite's existing websocket mock pattern.
   Parser and name-builder tests are pure-function tests needing no mocks.
 - **Rationale**: Constitution principle II requires batch tests with no
   optional dependency installed. A single choke point makes the mock trivial.

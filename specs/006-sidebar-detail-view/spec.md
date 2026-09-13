@@ -169,7 +169,7 @@ pressing `V`, and confirm detail lines appear.
 
 ### Edge Cases
 
-- A Session has no title, because its terminal backend does not report one:
+- A Session has no title because Ghostel has not reported one:
   the Session keeps a single compact row, and no blank line appears.
 - A Session title is an empty string or only whitespace: treated as no title.
 - Every Session lacks a title: the detail view produces a sidebar identical to
@@ -275,9 +275,8 @@ pressing `V`, and confirm detail lines appear.
   package already records per Session. cmux and orca reach a similar label by
   parsing a transcript, at much higher cost. No surveyed project keeps a
   description separate from its title.
-- A title is available only from terminal backends that report one. This
-  feature adds no new title source and no fallback content. Sessions without a
-  title keep a single row, which is the graceful path rather than an error.
+- Ghostel supplies Session titles. This feature adds no title source or
+  fallback content. Sessions without a title keep a single row.
 - "Dimmer like cmux" means a foreground blended toward the background. The
   Emacs equivalent is a face that inherits from `shadow`, kept customizable so
   a user can match a theme.

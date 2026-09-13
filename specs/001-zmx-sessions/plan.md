@@ -12,7 +12,7 @@ Add an opt-in mode (`claude-code-ide-use-zmx`) in which the agent CLI runs insid
 
 **Language/Version**: Emacs Lisp, Emacs 28.1+ (per `Package-Requires` in `claude-code-ide.el`)
 
-**Primary Dependencies**: No new Elisp dependency. External optional binary: `zmx` (resolved via `executable-find` at point of use). Existing optional terminal backends: vterm, eat, ghostel.
+**Primary Dependencies**: No new Elisp dependency. External optional binary: `zmx` (resolved via `executable-find` at point of use). Terminal backend: Ghostel.
 
 **Storage**: None. zmx owns all session state; Emacs queries `zmx list` on demand.
 
@@ -35,9 +35,9 @@ Add an opt-in mode (`claude-code-ide-use-zmx`) in which the agent CLI runs insid
 | Principle | Verdict | Evidence |
 |---|---|---|
 | I. Shared session core, thin adapters | PASS | Wrapping happens once in `claude-code-ide--create-terminal-with-command` (the shared seam all four agent builders funnel into), not per agent. zmx control calls live in one adapter file. No agent-specific fork. `claude-code-ide-agent-definitions` untouched. |
-| II. Batch-verifiable quality gate | PASS | New logic ships with ERT tests; zmx calls go through one function that tests override, like the existing vterm/websocket mocks. `./scripts/compile-and-test.sh` is the gate. |
+| II. Batch-verifiable quality gate | PASS | New logic ships with ERT tests; zmx calls go through one function that tests override, like the existing websocket mocks. `./scripts/compile-and-test.sh` is the gate. |
 | III. Optional dependencies stay optional | PASS | zmx is an external binary, not an Elisp package: no `require` at all. Missing binary raises `user-error` naming zmx at point of use (FR-009). |
-| IV. Terminal-backend neutrality | PASS | The wrap is a command-string change upstream of backend dispatch, so vterm, eat, and ghostel get identical behavior for free. |
+| IV. Ghostel-Only Terminal Support | PASS | The wrapper changes the command string before Ghostel creates the terminal. All Agents share this path. |
 | V. Simplicity and compatibility | PASS | No new runtime dependency. `refs/emacs-term-sessions` is reference-only, not vendored. Emacs 28.1 APIs only (`executable-find`, `process-file`, `completing-read`). |
 
 No violations. Complexity Tracking is empty.
@@ -77,7 +77,7 @@ README.md                     # EDIT: zmx mode documentation (if README exists)
 
 Integration points, all verified in source this session:
 
-1. **Wrap seam**: `claude-code-ide--create-terminal-with-command` (claude-code-ide.el:1525) receives the final `cmd` string from every agent builder. With zmx mode on, replace `cmd` with `zmx attach <name> <split cmd>` (argv-quoted, as the reference implementation does). Env vars still flow through `vterm-environment`/equivalents, so a newly created zmx session inherits them.
+1. **Wrap seam**: `claude-code-ide--create-terminal-with-command` (claude-code-ide.el:1525) receives the final `cmd` string from every agent builder. With zmx mode on, replace `cmd` with `zmx attach <name> <split cmd>` (argv-quoted, as the reference implementation does). Env vars still flow through the terminal process's environment, so a newly created zmx session inherits them.
 2. **Session identity**: `claude-code-ide--create-session` (claude-code-ide.el:1706) mints the session-id. Derive the zmx name there and store it in a new `zmx-name` slot on the `claude-code-ide-session` struct (claude-code-ide.el:409).
 3. **Detach semantics**: already correct for free. Buffer kill hooks and `kill-emacs-hook` cleanup (claude-code-ide.el:1111-1119) kill only the local attach-client process; the zmx server and agent survive. Only `claude-code-ide-stop` (claude-code-ide.el:1866) changes: for a session with a `zmx-name`, prompt and run `zmx kill`.
 4. **Reattach offer (FR-006)**: in `claude-code-ide--create-session`, when zmx mode is on and neither continue nor resume is set, list zmx sessions with the `<prefix><agent>-<project>-` prefix, subtract names present in `claude-code-ide--sessions`, and offer via `completing-read` with "create new".

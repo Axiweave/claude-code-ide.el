@@ -20,9 +20,8 @@
 ;; Run tests with:
 ;;   `emacs -batch -L . -l ert -l claude-code-ide-tests.el -f ert-run-tests-batch-and-exit'
 ;;
-;; The tests mock both vterm and mcp-server-lib functionality to avoid requiring
-;; these packages during testing. This allows the tests to run in any environment
-;; without external dependencies.
+;; The tests mock Ghostel and MCP interfaces to avoid terminal dependencies.
+;; Native integration checks run when their optional dependencies are available.
 ;;
 ;; CRITICAL DISCOVERY: Claude Code tools only work when launched from VS Code/editor terminals
 ;; because the extensions set these environment variables:
@@ -45,6 +44,8 @@
 (require 'cl-lib)
 
 (defvar ghostel-mode-hook)
+(defvar ghostel-module-auto-install)
+(defvar ghostel--process)
 ;;; Mock Implementations
 
 ;; === Mock claude-code-ide-debug module ===
@@ -106,51 +107,6 @@
    (defvar websocket-frame nil)
    (cl-defstruct websocket-frame opcode payload)
    (provide (quote websocket))))
-
-;; === Mock vterm module ===
-(defvar vterm--process nil)
-(defvar vterm-buffer-name nil)
-(defvar vterm-shell nil)
-(defvar vterm-environment nil)
-
-(defun vterm (&optional buffer-name)
-  "Mock vterm function for testing with optional BUFFER-NAME."
-  (let ((buffer (generate-new-buffer (or buffer-name vterm-buffer-name "*vterm*"))))
-    (with-current-buffer buffer
-      ;; Create a mock process that exits immediately
-      (setq vterm--process (make-process :name "mock-vterm"
-                                         :buffer buffer
-                                         :command '("true")
-                                         :connection-type 'pty
-                                         :sentinel (lambda (_ event)
-                                                     (when (string-match "finished" event)
-                                                       (setq vterm--process nil))))))
-    buffer))
-
-;; Mock vterm functions
-(defun vterm-send-string (_string)
-  "Mock vterm-send-string function for testing."
-  nil)
-
-(defun vterm-send-return ()
-  "Mock vterm-send-return function for testing."
-  nil)
-
-(defun vterm-send-key (_key &optional _shift _meta _ctrl)
-  "Mock vterm-send-key function for testing."
-  nil)
-
-(defun vterm--filter (_process _string)
-  "Mock vterm filter function for testing."
-  nil)
-
-(provide (quote vterm))
-
-(defun eat--filter (_process _string)
-  "Mock eat filter function for testing."
-  nil)
-
-(provide (quote eat))
 
 ;; === Mock ghostel module ===
 (defvar ghostel-enable-url-detection t
@@ -1156,17 +1112,6 @@ Ensures a clean state before each test that involves process management."
                       suffix)
           (error "Invalid Transient suffix: %S" suffix)))))
 
-(defun claude-code-ide-tests--wait-for-process (buffer)
-  "Wait for the process in BUFFER to finish.
-This prevents race conditions in tests by ensuring mock processes
-have completed before cleanup.  Waits up to 5 seconds."
-  (with-current-buffer buffer
-    (let ((max-wait 50)) ; 5 seconds max (50 * 0.1s)
-      (while (and vterm--process
-                  (process-live-p vterm--process)
-                  (> max-wait 0))
-        (sleep-for 0.1)
-        (setq max-wait (1- max-wait))))))
 
 ;;; Tests for Helper Functions
 
@@ -3821,7 +3766,8 @@ A `working' or `needs-input' state is left alone by the same clear."
         (save-window-excursion
           (with-current-buffer session-buffer
             (rename-buffer "*claude-code[non-idle-output]*" t)
-            (setq-local claude-code-ide-session-idle-enabled t
+            (setq-local major-mode 'ghostel-mode
+                        claude-code-ide-session-idle-enabled t
                         claude-code-ide-session-idle-p nil
                         claude-code-ide-session-tracking-started-p nil))
           (setq claude-code-ide-manager--items
@@ -3852,7 +3798,7 @@ A `working' or `needs-input' state is left alone by the same clear."
                 (claude-code-ide-manager--render))
               (setq refresh-count 0)
               (with-current-buffer content-buffer
-                (vterm--filter 'mock-process "output"))
+                (ghostel--filter 'mock-process "output"))
               (should (= refresh-count 0)))))
       (mapc (lambda (buffer)
               (when (buffer-live-p buffer)
@@ -8247,8 +8193,11 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                        ((symbol-function 'ghostel-create)
                         #'claude-code-ide-tests--create-companion-pipe))
                (make-directory changed-directory)
+               (dolist (buffer (list agent-a agent-b))
+                 (with-current-buffer buffer
+                   (setq-local major-mode 'ghostel-mode)))
                (with-current-buffer agent-a
-                 (setq-local claude-code-ide--terminal-backend 'eat))
+                 (insert "Agent prompt"))
                (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
                  (claude-code-ide--put-session
                   (claude-code-ide-session-create
@@ -8284,11 +8233,44 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                             (claude-code-ide-manager--make-layout-request
                              directory 'shell-left nil))))
                (should (= (hash-table-count claude-code-ide--sessions) 2))
-               (should (eq (buffer-local-value 'claude-code-ide--terminal-backend agent-a)
-                           'eat)))
+               (with-current-buffer agent-a
+                 (should (equal (buffer-string) "Agent prompt"))))
            (dolist (buffer (list agent-a agent-b custom shell-a shell-b))
              (when (buffer-live-p buffer) (kill-buffer buffer)))
            (delete-directory directory t)))))))
+
+(ert-deftest claude-code-ide-test-ghostel-native-preflight-prevents-session-effects ()
+  "Rejected directory or native prerequisites leave existing Sessions and MCP untouched."
+  (dolist (failure '(library native directory))
+    (let ((claude-code-ide-cli-path "claude")
+          (claude-code-ide-use-zmx nil)
+          (claude-code-ide--sessions (make-hash-table :test #'equal))
+          (ghostel-module-auto-install 'ask)
+          (original-require (symbol-function 'require))
+          started)
+      (puthash "existing" 'existing-session claude-code-ide--sessions)
+      (cl-letf (((symbol-function 'require)
+                 (lambda (feature &rest args)
+                   (if (eq feature 'ghostel)
+                       (unless (eq failure 'library) 'ghostel)
+                     (apply original-require feature args))))
+                ((symbol-function 'ghostel--new)
+                 (and (eq failure 'directory) #'ignore))
+                ((symbol-function 'claude-code-ide-mcp-start)
+                 (lambda (&rest _)
+                   (setq started t)
+                   (error "MCP started before terminal prerequisites passed"))))
+        (should-error
+         (claude-code-ide--create-local-session
+          (if (eq failure 'directory)
+              (expand-file-name (make-temp-name "cci-missing-") temporary-file-directory)
+            temporary-file-directory)
+          nil nil)
+         :type 'user-error))
+      (should-not started)
+      (should (eq ghostel-module-auto-install 'ask))
+      (should (= (hash-table-count claude-code-ide--sessions) 1))
+      (should (eq (gethash "existing" claude-code-ide--sessions) 'existing-session)))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-shell-startup-failures ()
   "Startup refuses missing support and never kills a started shell."
@@ -9453,31 +9435,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                        mock-process)))))
     (claude-code-ide-tests--clear-processes)))
 
-(ert-deftest claude-code-ide-test-register-session-installs-working-resize-observer-for-first-session ()
-  "Test first session setup installs resize-based working detection independently."
-  (claude-code-ide-tests--clear-processes)
-  (let ((claude-code-ide-prevent-reflow-glitch nil)
-        (added-advices nil))
-    (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
-               (lambda ()
-                 'codex))
-              ((symbol-function 'claude-code-ide--terminal-resize-handler)
-               (lambda (&optional _backend)
-                 'eat--adjust-process-window-size))
-              ((symbol-function 'advice-add)
-               (lambda (symbol where function &rest _props)
-                 (push (list symbol where function) added-advices))))
-      (claude-code-ide--register-session
-       (claude-code-ide-session-create :id "test" :directory "/tmp/test"
-                                       :process 'mock-process))
-      (should (member '(eat--adjust-process-window-size
-                        :around
-                        claude-code-ide--terminal-working-resize-observer)
-                      added-advices))
-      (should-not (member '(eat--adjust-process-window-size
-                            :around
-                            claude-code-ide--terminal-reflow-filter)
-                          added-advices)))))
 
 (ert-deftest claude-code-ide-test-register-session-refreshes-open-manager ()
   "Registering outside the manager adds the session to an open sidebar."
@@ -9617,33 +9574,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
     (should-not (claude-code-ide--get-session "one"))
     (should-not (claude-code-ide--get-session "two"))))
 
-(ert-deftest claude-code-ide-test-cleanup-removes-working-resize-observer-for-last-session ()
-  "Test last-session cleanup removes resize-based working detection advice."
-  (let ((removed-advices nil)
-        (claude-code-ide-vterm-anti-flicker nil)
-        (claude-code-ide--sessions (make-hash-table :test 'equal)))
-    (cl-letf (((symbol-function 'claude-code-ide--terminal-resize-handler)
-               (lambda (&optional _backend)
-                 'eat--adjust-process-window-size))
-              ((symbol-function 'advice-remove)
-               (lambda (symbol function)
-                 (push (list symbol function) removed-advices)))
-              ((symbol-function 'claude-code-ide-mcp-stop-session)
-               (lambda (_directory)
-                 nil))
-              ((symbol-function 'claude-code-ide-mcp-server-session-ended)
-               (lambda (_session-id)
-                 nil))
-              ((symbol-function 'claude-code-ide--get-buffer-name)
-               (lambda (_directory)
-                 "*test-buffer*")))
-      (let ((session (claude-code-ide-tests--put-session
-                      "/tmp/test" (current-buffer))))
-        (claude-code-ide--cleanup-on-exit
-         (claude-code-ide-session-id session)))
-      (should (member '(eat--adjust-process-window-size
-                        claude-code-ide--terminal-working-resize-observer)
-                      removed-advices)))))
 
 (ert-deftest claude-code-ide-test-cleanup-shared-directory-stops-each-mcp-session ()
   "Test sibling cleanup stops only the MCP state owned by each session."
@@ -9659,7 +9589,7 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                   ((symbol-function 'claude-code-ide-mcp-server-session-ended)
                    (lambda (_session-id) nil))
                   ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
-                   (lambda (&optional _backend) nil)))
+                   #'ignore))
           (claude-code-ide--put-session
            (claude-code-ide-session-create :id "one" :directory directory
                                            :process buffer-one :buffer buffer-one
@@ -9757,6 +9687,8 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                   ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore)
                   ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
                    #'ignore))
+          (with-current-buffer buffer
+            (setq-local major-mode 'ghostel-mode))
           (set-window-buffer window buffer)
           (claude-code-ide--put-session
            (claude-code-ide-session-create :id "window" :directory "/tmp/project/"
@@ -9783,6 +9715,8 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                   ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore)
                   ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
                    #'ignore))
+          (with-current-buffer buffer
+            (setq-local major-mode 'ghostel-mode))
           (set-window-buffer window buffer)
           (claude-code-ide--put-session
            (claude-code-ide-session-create :id "sole" :directory "/tmp/project/"
@@ -9815,10 +9749,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
          (claude-code-ide--sessions (make-hash-table :test #'equal)))
     (unwind-protect
         (progn
-          (dolist (buffer (list session-buffer-one session-buffer-two
-                                other-buffer))
-            (with-current-buffer buffer
-              (setq-local claude-code-ide--terminal-backend 'ghostel)))
           (claude-code-ide--put-session session-one)
           (claude-code-ide--put-session session-two)
           (with-current-buffer session-buffer-one
@@ -9852,8 +9782,8 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
     (unwind-protect
         (progn
           (with-current-buffer session-buffer
-            (setq-local claude-code-ide--terminal-backend 'ghostel)
-            (setq-local ghostel-title "Early session title"))
+            (setq-local major-mode 'ghostel-mode
+                        ghostel-title "Early session title"))
           (cl-letf (((symbol-function
                       'claude-code-ide--install-terminal-resize-observer)
                      #'ignore)
@@ -9865,44 +9795,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
       (when (buffer-live-p session-buffer)
         (kill-buffer session-buffer)))))
 
-(ert-deftest claude-code-ide-test-register-session-uses-session-backend-for-reflow-guard ()
-  "Test reflow guard follows the launched session backend, not the global default."
-  (claude-code-ide-tests--clear-processes)
-  (let ((claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide-prevent-reflow-glitch t)
-        (added-advices nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-ghostel-reflow]*")))
-    (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
-               (lambda ()
-                 'claude))
-              ((symbol-function 'advice-add)
-               (lambda (symbol where function &rest _props)
-                 (push (list symbol where function) added-advices))))
-      (unwind-protect
-          (with-current-buffer session-buffer
-            (setq-local claude-code-ide--terminal-backend 'ghostel)
-            (claude-code-ide--register-session
-             (claude-code-ide-session-create :id "test" :directory "/tmp/test"
-                                             :process session-buffer
-                                             :buffer session-buffer))
-            (should (member '(ghostel--adjust-size
-                              :around
-                              claude-code-ide--terminal-working-resize-observer)
-                            added-advices))
-            (should (member '(ghostel--adjust-size
-                              :around
-                              claude-code-ide--terminal-reflow-filter)
-                            added-advices)))
-        (when (buffer-live-p session-buffer)
-          (kill-buffer session-buffer))))))
-
-(ert-deftest claude-code-ide-test-terminal-resize-handler-supports-ghostel ()
-  "Test terminal resize handler dispatches to Ghostel's backend hook."
-  (with-temp-buffer
-    (setq-local claude-code-ide--terminal-backend 'ghostel)
-    (should (eq (claude-code-ide--terminal-resize-handler)
-                #'ghostel--adjust-size))
-    (should (claude-code-ide--terminal-supports-reflow-guard-p 'ghostel))))
 
 ;;; Tests for CLI Detection
 
@@ -9939,162 +9831,11 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
     (should-error (claude-code-ide)
                   :type 'user-error)))
 
-(ert-deftest claude-code-ide-test-run-without-vterm ()
-  "Test run command when vterm is not available."
-  (let ((claude-code-ide--cli-available t)
-        (claude-code-ide-cli-path "echo")
-        (claude-code-ide-terminal-backend 'vterm)
-        (orig-featurep (symbol-function 'featurep)))
-    (cl-letf (((symbol-function 'featurep)
-               (lambda (sym &rest _) (if (eq sym 'vterm) nil (funcall orig-featurep sym))))
-              ((symbol-function 'require)
-               (lambda (feature &optional filename noerror)
-                 (unless (eq feature 'vterm)
-                   (require feature filename noerror)))))
-      (should-error (claude-code-ide)
-                    :type 'user-error))))
-
-(ert-deftest claude-code-ide-test-run-without-eat ()
-  "Test run command when eat is not available."
-  (let ((claude-code-ide--cli-available t)
-        (claude-code-ide-cli-path "echo")
-        (claude-code-ide-terminal-backend 'eat)
-        (orig-featurep (symbol-function 'featurep)))
-    (cl-letf (((symbol-function 'featurep)
-               (lambda (sym &rest _) (if (eq sym 'eat) nil (funcall orig-featurep sym))))
-              ((symbol-function 'require)
-               (lambda (feature &optional filename noerror)
-                 (unless (eq feature 'eat)
-                   (require feature filename noerror)))))
-      (should-error (claude-code-ide)
-                    :type 'user-error))))
-
-(ert-deftest claude-code-ide-test-terminal-backend-selection ()
-  "Test terminal backend selection and validation."
-  ;; Test vterm backend
-  (let ((claude-code-ide-terminal-backend 'vterm))
-    (should (eq claude-code-ide-terminal-backend 'vterm)))
-
-  ;; Test eat backend
-  (let ((claude-code-ide-terminal-backend 'eat))
-    (should (eq claude-code-ide-terminal-backend 'eat)))
-
-  ;; Test invalid backend
-  (let ((claude-code-ide-terminal-backend 'invalid-backend)
-        (orig-featurep (symbol-function 'featurep)))
-    (cl-letf (((symbol-function 'featurep)
-               (lambda (sym) nil)))
-      (should-error (claude-code-ide--terminal-ensure-backend)
-                    :type 'user-error))))
-
-(ert-deftest claude-code-ide-test-terminal-backend-resolution ()
-  "Test per-CLI terminal backend overrides with fallback to the default."
-  (let ((claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide-cli-terminal-backends '((codex . eat)
-                                                 (opencode . vterm))))
-    (let ((claude-code-ide-cli-path "claude"))
-      (should (eq (claude-code-ide--resolve-terminal-backend) 'vterm)))
-    (let ((claude-code-ide-cli-path "codex"))
-      (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))
-    (should (eq (claude-code-ide--resolve-terminal-backend 'opencode) 'vterm))))
-
-(ert-deftest claude-code-ide-test-terminal-backend-resolution-pi ()
-  "Test `pi' respects per-CLI terminal backend overrides."
-  (let ((claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide-cli-terminal-backends '((pi . eat))))
-    (let ((claude-code-ide-cli-path "pi"))
-      (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))))
-
-(ert-deftest claude-code-ide-test-terminal-backend-resolution-ghostel ()
-  "Test terminal backend resolution supports `ghostel'."
-  (let ((claude-code-ide-terminal-backend 'ghostel)
-        (claude-code-ide-cli-terminal-backends '((codex . ghostel)
-                                                 (pi . eat))))
-    (let ((claude-code-ide-cli-path "claude"))
-      (should (eq (claude-code-ide--resolve-terminal-backend) 'ghostel)))
-    (let ((claude-code-ide-cli-path "codex"))
-      (should (eq (claude-code-ide--resolve-terminal-backend) 'ghostel)))
-    (let ((claude-code-ide-cli-path "pi"))
-      (should (eq (claude-code-ide--resolve-terminal-backend) 'eat)))))
-
-(ert-deftest claude-code-ide-test-terminal-send-functions ()
-  "Test terminal send wrapper functions."
-  ;; Mock vterm functions
-  (let ((vterm-string-sent nil)
-        (vterm-escape-sent nil)
-        (vterm-return-sent nil)
-        (eat-string-sent nil))
-    (cl-letf (((symbol-function 'vterm-send-string)
-               (lambda (str &optional _paste) (setq vterm-string-sent str)))
-              ((symbol-function 'vterm-send-escape)
-               (lambda () (setq vterm-escape-sent t)))
-              ((symbol-function 'vterm-send-return)
-               (lambda () (setq vterm-return-sent t)))
-              ((symbol-function 'eat-term-send-string)
-               (lambda (term str) (setq eat-string-sent str))))
-
-      ;; Test vterm backend
-      (let ((claude-code-ide-terminal-backend 'vterm))
-        (claude-code-ide--terminal-send-string "test")
-        (should (equal vterm-string-sent "test"))
-
-        (claude-code-ide--terminal-send-escape)
-        (should vterm-escape-sent)
-
-        (claude-code-ide--terminal-send-return)
-        (should vterm-return-sent))
-
-      ;; Test eat backend - need to mock the buffer-local variable
-      (with-temp-buffer
-        (let ((claude-code-ide-terminal-backend 'eat))
-          ;; Set eat-terminal as a buffer-local variable
-          (setq-local eat-terminal t)
-          (claude-code-ide--terminal-send-string "test")
-          (should (equal eat-string-sent "test"))
-
-          (setq eat-string-sent nil)
-          (claude-code-ide--terminal-send-escape)
-          (should (equal eat-string-sent "\e"))
-
-          (setq eat-string-sent nil)
-          (claude-code-ide--terminal-send-return)
-          (should (equal eat-string-sent "\r")))))))
-
-(ert-deftest claude-code-ide-test-terminal-send-functions-use-buffer-local-backend ()
-  "Test that terminal send wrappers honor the session buffer backend."
-  (let ((eat-string-sent nil))
-    (cl-letf (((symbol-function 'eat-term-send-string)
-               (lambda (_term str) (setq eat-string-sent str))))
-      (with-temp-buffer
-        (let ((claude-code-ide-terminal-backend 'vterm))
-          (setq-local eat-terminal t)
-          (setq-local claude-code-ide--terminal-backend 'eat)
-          (claude-code-ide--terminal-send-string "test")
-          (should (equal eat-string-sent "test")))))))
-
-(ert-deftest claude-code-ide-test-terminal-send-functions-ghostel ()
-  "Test terminal send wrapper functions dispatch to ghostel."
-  (let ((ghostel-string-sent nil))
-    (cl-letf (((symbol-function 'ghostel--send-string)
-               (lambda (str) (setq ghostel-string-sent str))))
-      (with-temp-buffer
-        (let ((claude-code-ide-terminal-backend 'ghostel))
-          (claude-code-ide--terminal-send-string "test")
-          (should (equal ghostel-string-sent "test"))
-
-          (setq ghostel-string-sent nil)
-          (claude-code-ide--terminal-send-escape)
-          (should (equal ghostel-string-sent "\e"))
-
-          (setq ghostel-string-sent nil)
-          (claude-code-ide--terminal-send-return)
-          (should (equal ghostel-string-sent "\r")))))))
-
 (ert-deftest claude-code-ide-test-insert-newline-uses-session-cli ()
   "Send LF to OMP without a submit key, even when Claude is configured."
   (with-temp-buffer
     (setq-local claude-code-ide--session-cli-type 'omp
-                claude-code-ide--terminal-backend 'ghostel)
+                major-mode 'ghostel-mode)
     (let ((buffer (current-buffer))
           (claude-code-ide-cli-path "claude")
           (sent ""))
@@ -10562,290 +10303,7 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
              (should (string-match-p "(foo \\. 1)" contents))
              (should-not (string-match-p "claude-code-ide-cli-path" contents)))))))))
 
-(ert-deftest claude-code-ide-test-terminal-session-creation ()
-  "Test terminal session creation with both backends."
-  (let ((mock-vterm-buffer nil)
-        (mock-eat-buffer nil)
-        (mock-process (start-process "mock" nil "true")))
-    (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
-               (lambda () nil))  ; Mock the ensure function to do nothing
-              ((symbol-function 'vterm)
-               (lambda (name)
-                 (setq mock-vterm-buffer (get-buffer-create name))))
-              ((symbol-function 'eat-mode)
-               (lambda () nil))
-              ((symbol-function 'eat-exec)
-               (lambda (buffer name cmd startfile args)
-                 (setq mock-eat-buffer buffer)))
-              ((symbol-function 'get-buffer-process)
-               (lambda (buffer) mock-process))
-              ((symbol-function 'claude-code-ide-mcp-start)
-               (lambda (dir) 12345)))
 
-      ;; Test vterm backend session creation
-      (let ((claude-code-ide-terminal-backend 'vterm)
-            (claude-code-ide--cli-available t))
-        (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
-                   (lambda (&rest _) "claude")))
-          (let ((result (claude-code-ide--create-terminal-session
-                         "*test-vterm*" "/tmp" 12345 nil nil "test-session")))
-            (should (consp result))
-            (should (bufferp (car result)))
-            (should (processp (cdr result)))
-            (should (equal (buffer-name mock-vterm-buffer) "*test-vterm*")))))
-
-      ;; Test eat backend session creation
-      (let ((claude-code-ide-terminal-backend 'eat)
-            (claude-code-ide--cli-available t))
-        (cl-letf (((symbol-function 'claude-code-ide--build-claude-command)
-                   (lambda (&rest _) "claude")))
-          (let ((result (claude-code-ide--create-terminal-session
-                         "*test-eat*" "/tmp" 12345 nil nil "test-session")))
-            (should (consp result))
-            (should (bufferp (car result)))
-            (should (processp (cdr result)))
-            (should (bufferp mock-eat-buffer))))))))
-
-(ert-deftest claude-code-ide-test-eat-smart-renderer-passthrough ()
-  "Test that eat smart renderer passes through normal text immediately."
-  (let ((orig-fun-called nil)
-        (orig-fun-input nil)
-        (claude-code-ide-vterm-anti-flicker t))
-    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-               (lambda (_) t)))
-      (with-temp-buffer
-        (let ((claude-code-ide--eat-render-queue nil)
-              (claude-code-ide--eat-render-timer nil)
-              (mock-process (make-process :name "mock-eat"
-                                          :buffer (current-buffer)
-                                          :command '("true"))))
-          (let ((orig-fun (lambda (_process input)
-                            (setq orig-fun-called t
-                                  orig-fun-input input))))
-            (claude-code-ide--eat-smart-renderer orig-fun mock-process "Hello World")
-            (should orig-fun-called)
-            (should (equal orig-fun-input "Hello World"))
-            (should-not claude-code-ide--eat-render-queue)))))))
-
-(ert-deftest claude-code-ide-test-eat-smart-renderer-batching ()
-  "Test that eat smart renderer batches complex escape sequences."
-  (let ((orig-fun-called nil)
-        (timer-created nil)
-        (claude-code-ide-vterm-anti-flicker t)
-        (claude-code-ide-vterm-render-delay 0.005))
-    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-               (lambda (_) t))
-              ((symbol-function 'run-at-time)
-               (lambda (delay &rest _)
-                 (setq timer-created delay)
-                 'mock-timer))
-              ((symbol-function 'cancel-timer)
-               (lambda (_) nil)))
-      (with-temp-buffer
-        (let ((claude-code-ide--eat-render-queue nil)
-              (claude-code-ide--eat-render-timer nil)
-              (mock-process (make-process :name "mock-eat"
-                                          :buffer (current-buffer)
-                                          :command '("true"))))
-          (let ((orig-fun (lambda (_process _input)
-                            (setq orig-fun-called t))))
-            (let ((complex-input "\033[2A\033[K\033[3A\033[K"))
-              (claude-code-ide--eat-smart-renderer orig-fun mock-process complex-input)
-              (should-not orig-fun-called)
-              (should (listp claude-code-ide--eat-render-queue))
-              (should (equal (apply #'concat (nreverse claude-code-ide--eat-render-queue))
-                             complex-input))
-              (should (equal timer-created 0.005)))))))))
-
-(ert-deftest claude-code-ide-test-eat-advice-cleanup ()
-  "Test that eat advice is removed during cleanup for the last session."
-  (let ((advice-removed nil)
-        (claude-code-ide-terminal-backend 'eat)
-        (claude-code-ide-vterm-anti-flicker t)
-        (claude-code-ide--sessions (make-hash-table :test 'equal)))
-    (cl-letf (((symbol-function 'advice-remove)
-               (lambda (symbol function)
-                 (when (and (eq symbol 'eat--filter)
-                            (eq function 'claude-code-ide--eat-smart-renderer))
-                   (setq advice-removed t))))
-              ((symbol-function 'claude-code-ide-mcp-stop-session)
-               (lambda (_) nil))
-              ((symbol-function 'claude-code-ide-mcp-server-session-ended)
-               (lambda (_) nil))
-              ((symbol-function 'claude-code-ide--get-buffer-name)
-               (lambda (_) "*test-buffer*")))
-      (let ((session (claude-code-ide-tests--put-session
-                      "/tmp/test" (current-buffer))))
-        (claude-code-ide--cleanup-on-exit
-         (claude-code-ide-session-id session)))
-      (should advice-removed))))
-
-(ert-deftest claude-code-ide-test-configure-eat-buffer ()
-  "Test that eat buffer configuration applies display-related settings."
-  (let ((hl-line-arg nil)
-        (face-remapped nil)
-        (advice-added nil)
-        (claude-code-ide-vterm-anti-flicker t))
-    (cl-letf (((symbol-function 'featurep)
-               (lambda (feature &rest _)
-                 (eq feature 'hl-line)))
-              ((symbol-function 'hl-line-mode)
-               (lambda (arg)
-                 (setq hl-line-arg arg)))
-              ((symbol-function 'face-remap-add-relative)
-               (lambda (&rest args)
-                 (setq face-remapped args)))
-              ((symbol-function 'advice-add)
-               (lambda (symbol where function &rest _)
-                 (setq advice-added (list symbol where function)))))
-      (with-temp-buffer
-        (claude-code-ide--configure-eat-buffer)
-        (should (local-variable-p 'cursor-in-non-selected-windows))
-        (should-not cursor-in-non-selected-windows)
-        (should (local-variable-p 'blink-cursor-mode))
-        (should-not blink-cursor-mode)
-        (should (local-variable-p 'cursor-type))
-        (should-not cursor-type)
-        (should (equal hl-line-arg -1))
-        (should (equal face-remapped '(nobreak-space :inherit default)))
-        (should (equal advice-added
-                       '(eat--filter :around claude-code-ide--eat-smart-renderer)))))))
-
-(ert-deftest claude-code-ide-test-vterm-smart-renderer-passthrough ()
-  "Test that vterm smart renderer passes through normal text immediately."
-  (let ((orig-fun-called nil)
-        (orig-fun-input nil)
-        (claude-code-ide-vterm-anti-flicker t))
-    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-               (lambda (_) t)))
-      (with-temp-buffer
-        (let ((claude-code-ide--vterm-render-queue nil)
-              (claude-code-ide--vterm-render-timer nil)
-              (mock-process (make-process :name "mock"
-                                          :buffer (current-buffer)
-                                          :command '("true"))))
-          ;; Create a mock original function
-          (let ((orig-fun (lambda (_process input)
-                            (setq orig-fun-called t
-                                  orig-fun-input input))))
-            ;; Test with normal text (no escape sequences)
-            (claude-code-ide--vterm-smart-renderer orig-fun mock-process "Hello World")
-            ;; Should pass through immediately
-            (should orig-fun-called)
-            (should (equal orig-fun-input "Hello World"))
-            (should-not claude-code-ide--vterm-render-queue)))))))
-
-(ert-deftest claude-code-ide-test-vterm-smart-renderer-batching ()
-  "Test that vterm smart renderer batches complex escape sequences."
-  (let ((orig-fun-called nil)
-        (timer-created nil)
-        (claude-code-ide-vterm-anti-flicker t)
-        (claude-code-ide-vterm-render-delay 0.005))
-    (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-               (lambda (_) t))
-              ((symbol-function 'run-at-time)
-               (lambda (delay &rest _)
-                 (setq timer-created delay)
-                 'mock-timer))
-              ((symbol-function 'cancel-timer)
-               (lambda (_) nil)))
-      (with-temp-buffer
-        (let ((claude-code-ide--vterm-render-queue nil)
-              (claude-code-ide--vterm-render-timer nil)
-              (mock-process (make-process :name "mock"
-                                          :buffer (current-buffer)
-                                          :command '("true"))))
-          ;; Create a mock original function
-          (let ((orig-fun (lambda (_process _input)
-                            (setq orig-fun-called t))))
-            ;; Test with complex escape sequence pattern
-            (let ((complex-input "\033[2A\033[K\033[3A\033[K"))
-              (claude-code-ide--vterm-smart-renderer orig-fun mock-process complex-input)
-              ;; Should be queued, not called immediately
-              (should-not orig-fun-called)
-              ;; Queue is a list (pushed in reverse order for O(1))
-              (should (listp claude-code-ide--vterm-render-queue))
-              (should (equal (apply #'concat (nreverse claude-code-ide--vterm-render-queue))
-                             complex-input))
-              (should (equal timer-created 0.005)))))))))
-
-(ert-deftest claude-code-ide-test-toggle-vterm-optimization ()
-  "Test toggling vterm optimization on and off."
-  (let ((original-value claude-code-ide-vterm-anti-flicker)
-        (message-output nil))
-    (unwind-protect
-        (cl-letf (((symbol-function 'message)
-                   (lambda (format &rest args)
-                     (setq message-output (apply #'format format args)))))
-          ;; Start with optimization enabled
-          (setq claude-code-ide-vterm-anti-flicker t)
-
-          ;; Toggle off
-          (claude-code-ide-toggle-vterm-optimization)
-          (should-not claude-code-ide-vterm-anti-flicker)
-          (should (string-match "disabled" message-output))
-
-          ;; Toggle back on
-          (claude-code-ide-toggle-vterm-optimization)
-          (should claude-code-ide-vterm-anti-flicker)
-          (should (string-match "enabled" message-output)))
-      ;; Restore original value
-      (setq claude-code-ide-vterm-anti-flicker original-value))))
-
-(ert-deftest claude-code-ide-test-run-with-cli ()
-  "Test successful run command execution."
-  (skip-unless nil) ; Skip this test for now
-  (claude-code-ide-tests--clear-processes)
-  (unwind-protect
-      (claude-code-ide-tests--with-temp-directory
-       (lambda ()
-         (let ((claude-code-ide--cli-available t)
-               (claude-code-ide-cli-path "echo"))
-           ;; Run claude-code-ide
-           (claude-code-ide)
-
-           ;; Check that buffer was created
-           (let ((buffer-name (claude-code-ide--get-buffer-name)))
-             (should (get-buffer buffer-name))
-
-             ;; Check that process was registered
-             (should (claude-code-ide--preferred-session
-                      (claude-code-ide--get-working-directory)))
-
-             ;; Wait for process to finish and clean up
-             (claude-code-ide-tests--wait-for-process (get-buffer buffer-name))
-             ;; Kill the buffer explicitly since we're in batch mode
-             (when (get-buffer buffer-name)
-               (kill-buffer buffer-name))))))
-    (claude-code-ide-tests--clear-processes)))
-
-(ert-deftest claude-code-ide-test-run-existing-session ()
-  "Test run command when session already exists."
-  (skip-unless nil) ; Skip this test for now
-  (claude-code-ide-tests--clear-processes)
-  (unwind-protect
-      (claude-code-ide-tests--with-temp-directory
-       (lambda ()
-         (let ((claude-code-ide--cli-available t)
-               (claude-code-ide-cli-path "echo"))
-           ;; Start first session
-           (claude-code-ide)
-           (let* ((buffer-name (claude-code-ide--get-buffer-name))
-                  (first-buffer (get-buffer buffer-name)))
-
-             ;; Verify we have the buffer
-             (should first-buffer)
-
-             ;; Try to run again - should not create new buffer
-             (claude-code-ide)
-
-             ;; Should still have same buffer
-             (should (eq (get-buffer buffer-name) first-buffer))
-
-             ;; Wait for process and clean up
-             (claude-code-ide-tests--wait-for-process first-buffer)
-             (kill-buffer first-buffer)))))
-    (claude-code-ide-tests--clear-processes)))
 
 (ert-deftest claude-code-ide-test-check-status ()
   "Test status check command."
@@ -10855,34 +10313,7 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
     (claude-code-ide-check-status)
     (should claude-code-ide--cli-available)))
 
-(ert-deftest claude-code-ide-test-terminal-initialization-delay ()
-  "Test terminal initialization delay configuration."
-  ;; Test default value
-  (should (boundp 'claude-code-ide-terminal-initialization-delay))
-  (should (numberp claude-code-ide-terminal-initialization-delay))
-  (should (= claude-code-ide-terminal-initialization-delay 0.1))
 
-  ;; Test customization
-  (let ((original-delay claude-code-ide-terminal-initialization-delay))
-    (unwind-protect
-        (progn
-          (setq claude-code-ide-terminal-initialization-delay 0.2)
-          (should (= claude-code-ide-terminal-initialization-delay 0.2)))
-      ;; Restore original value
-      (setq claude-code-ide-terminal-initialization-delay original-delay))))
-
-(ert-deftest claude-code-ide-test-obsolete-eat-delay-alias ()
-  "Test that the obsolete eat delay alias still works."
-  ;; The alias should be defined
-  (should (boundp 'claude-code-ide-eat-initialization-delay))
-  ;; Setting the old variable should affect the new one
-  (let ((original-delay claude-code-ide-terminal-initialization-delay))
-    (unwind-protect
-        (progn
-          (setq claude-code-ide-eat-initialization-delay 0.3)
-          (should (= claude-code-ide-terminal-initialization-delay 0.3)))
-      ;; Restore original value
-      (setq claude-code-ide-terminal-initialization-delay original-delay))))
 
 (ert-deftest claude-code-ide-test-stop-no-session ()
   "Test stop command when no session is running."
@@ -10894,34 +10325,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
          (claude-code-ide-stop)))
     (claude-code-ide-tests--clear-processes)))
 
-(ert-deftest claude-code-ide-test-stop-with-session ()
-  "Test stop command with active session."
-  (skip-unless nil) ; Skip this test for now
-  (claude-code-ide-tests--clear-processes)
-  (unwind-protect
-      (claude-code-ide-tests--with-temp-directory
-       (lambda ()
-         (let ((claude-code-ide--cli-available t)
-               (claude-code-ide-cli-path "echo"))
-           ;; Start a session
-           (claude-code-ide)
-           (let ((buffer-name (claude-code-ide--get-buffer-name)))
-             ;; Verify session exists
-             (should (get-buffer buffer-name))
-             (should (claude-code-ide--preferred-session
-                      (claude-code-ide--get-working-directory)))
-
-             ;; Wait for process to finish before stopping
-             (claude-code-ide-tests--wait-for-process (get-buffer buffer-name))
-
-             ;; Stop the session
-             (claude-code-ide-stop)
-
-             ;; Verify session is stopped
-             (should (null (get-buffer buffer-name)))
-             (should (null (claude-code-ide--preferred-session
-                            (claude-code-ide--get-working-directory))))))))
-    (claude-code-ide-tests--clear-processes)))
 
 (ert-deftest claude-code-ide-test-switch-to-buffer-no-session ()
   "Test `switch-to-buffer' command when no session exists."
@@ -10931,34 +10334,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                     :type 'user-error)
     (claude-code-ide-tests--clear-processes)))
 
-(ert-deftest claude-code-ide-test-toggle-window-functionality ()
-  "Test that running claude-code-ide on an existing session toggles the window."
-  (skip-unless nil) ; Skip this test for now
-  (claude-code-ide-tests--clear-processes)
-  (unwind-protect
-      (claude-code-ide-tests--with-temp-directory
-       (lambda ()
-         (let ((claude-code-ide--cli-available t)
-               (claude-code-ide-cli-path "echo")
-               (test-dir default-directory))
-           ;; Start a session
-           (claude-code-ide)
-           (let* ((buffer-name (claude-code-ide--get-buffer-name))
-                  (session-buffer (get-buffer buffer-name)))
-
-             ;; Verify we have the buffer
-             (should session-buffer)
-
-             ;; Simulate window being visible (in batch mode we can't test actual windows)
-             ;; Just verify the command runs without error when session exists
-             (let ((default-directory test-dir))
-               ;; Running claude-code-ide again should toggle (not error)
-               (claude-code-ide))
-
-             ;; Wait for process and clean up
-             (claude-code-ide-tests--wait-for-process session-buffer)
-             (kill-buffer session-buffer)))))
-    (claude-code-ide-tests--clear-processes)))
 
 (ert-deftest claude-code-ide-test-list-sessions-empty ()
   "Test listing sessions when none exist."
@@ -11084,37 +10459,22 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
       (kill-buffer buffer-b))))
 
 (ert-deftest claude-code-ide-test-show-session-buffer-reuses-visible-session-window ()
-  "Test switching sessions reuses an existing visible Claude window."
+  "Replace the visible Session without adding a window or changing focus."
   (let ((claude-code-ide-focus-on-open nil)
         (target-buffer (generate-new-buffer "*claude-code[target]*"))
-        (visible-session-buffer (generate-new-buffer "*claude-code[current]*"))
-        (reused-window 'mock-session-window)
-        (reused-with nil)
-        (display-called nil))
+        (visible-session-buffer (generate-new-buffer "*claude-code[current]*")))
     (unwind-protect
-        (cl-letf (((symbol-function 'get-buffer-window)
-                   (lambda (_buffer) nil))
-                  ((symbol-function 'window-list)
-                   (lambda (&optional _frame _minibuf _window)
-                     (list reused-window)))
-                  ((symbol-function 'window-buffer)
-                   (lambda (_window) visible-session-buffer))
-                  ((symbol-function 'set-window-buffer)
-                   (lambda (_window buffer)
-                     (setq reused-with buffer)))
-                  ((symbol-function 'claude-code-ide--sync-terminal-dimensions)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
-                   (lambda (_buffer)
-                     (setq display-called t)
-                     nil)))
-          (claude-code-ide--show-session-buffer target-buffer)
-          (should (eq reused-with target-buffer))
-          (should-not display-called))
-      (when (buffer-live-p target-buffer)
-        (kill-buffer target-buffer))
-      (when (buffer-live-p visible-session-buffer)
-        (kill-buffer visible-session-buffer)))))
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((origin (selected-window))
+                 (session-window (split-window-right)))
+            (set-window-buffer session-window visible-session-buffer)
+            (claude-code-ide--show-session-buffer target-buffer)
+            (should (eq (window-buffer session-window) target-buffer))
+            (should (eq (selected-window) origin))
+            (should (= (length (window-list)) 2))))
+      (kill-buffer target-buffer)
+      (kill-buffer visible-session-buffer))))
 
 (ert-deftest claude-code-ide-test-stop-prefers-attached-session-directory ()
   "Test stop uses the attached session directory instead of project root."
@@ -11197,35 +10557,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
 
 ;;; Edge Case Tests
 
-(ert-deftest claude-code-ide-test-concurrent-sessions ()
-  "Test managing multiple concurrent sessions."
-  (skip-unless nil) ; Skip this test for now
-  (claude-code-ide-tests--clear-processes)
-  (unwind-protect
-      (let ((claude-code-ide--cli-available t)
-            (claude-code-ide-cli-path "echo")
-            (dir1 (make-temp-file "claude-test-1" t))
-            (dir2 (make-temp-file "claude-test-2" t)))
-        ;; Start sessions in different directories
-        (let ((default-directory dir1))
-          (claude-code-ide)
-          (should (claude-code-ide--preferred-session dir1)))
-        (let ((default-directory dir2))
-          (claude-code-ide)
-          (should (claude-code-ide--preferred-session dir2)))
-        ;; Verify both sessions exist
-        (should (= (hash-table-count claude-code-ide--sessions) 2))
-        ;; Clean up
-        (let ((buffers (mapcar (lambda (dir)
-                                 (funcall claude-code-ide-buffer-name-function dir))
-                               (list dir1 dir2))))
-          (dolist (buffer-name buffers)
-            (when-let* ((buffer (get-buffer buffer-name)))
-              (claude-code-ide-tests--wait-for-process buffer)
-              (kill-buffer buffer))))
-        (delete-directory dir1 t)
-        (delete-directory dir2 t))
-    (claude-code-ide-tests--clear-processes)))
 
 (ert-deftest claude-code-ide-test-custom-buffer-naming ()
   "Test custom buffer naming function."
@@ -11809,92 +11140,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
       (kill-buffer "*test-buffer*")
       (kill-buffer "*test-sidebar*"))))
 
-(ert-deftest claude-code-ide-test-terminal-position-keeper-syncs-unfocused-eat-window ()
-  "Test Eat position keeper also syncs visible windows omitted by Eat."
-  (let ((buffer (generate-new-buffer " *claude-code-ide-eat-position*")))
-    (unwind-protect
-        (save-window-excursion
-          (delete-other-windows)
-          (switch-to-buffer buffer)
-          (with-current-buffer buffer
-            (insert (mapconcat (lambda (n) (format "line %d" n))
-                               (number-sequence 1 80)
-                               "\n"))
-            (goto-char (point-min))
-            (forward-line 59)
-            (setq-local eat-terminal 'mock-terminal)
-            (let ((buffer-read-only nil)
-                  (target-point (point))
-                  (side-window (split-window-below)))
-              (set-window-buffer side-window buffer)
-              (set-window-point side-window (point-min))
-              (cl-letf (((symbol-function 'eat-term-display-cursor)
-                         (lambda (_terminal) target-point))
-                        ((symbol-function 'evil-emacs-state-p)
-                         (lambda () t))
-                        ((symbol-function 'claude-code-ide--current-cli-type)
-                         (lambda () 'claude)))
-                (claude-code-ide--terminal-position-keeper nil))
-              (should (= (window-point side-window) target-point)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest claude-code-ide-test-terminal-position-keeper-skips-sync-outside-evil-emacs-state ()
-  "Test Eat position keeper leaves windows alone outside Evil Emacs state."
-  (let ((buffer (generate-new-buffer " *claude-code-ide-eat-position*")))
-    (unwind-protect
-        (save-window-excursion
-          (delete-other-windows)
-          (switch-to-buffer buffer)
-          (with-current-buffer buffer
-            (insert (mapconcat (lambda (n) (format "line %d" n))
-                               (number-sequence 1 80)
-                               "\n"))
-            (goto-char (point-min))
-            (forward-line 59)
-            (setq-local eat-terminal 'mock-terminal)
-            (let ((buffer-read-only nil)
-                  (target-point (point))
-                  (side-window (split-window-below)))
-              (set-window-buffer side-window buffer)
-              (set-window-point side-window (point-min))
-              (cl-letf (((symbol-function 'eat-term-display-cursor)
-                         (lambda (_terminal) target-point))
-                        ((symbol-function 'evil-emacs-state-p)
-                         (lambda () nil))
-                        ((symbol-function 'claude-code-ide--current-cli-type)
-                         (lambda () 'claude)))
-                (claude-code-ide--terminal-position-keeper nil))
-              (should (= (window-point side-window) (point-min))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest claude-code-ide-test-visible-live-prompt-terminal-syncs-after-window-restore ()
-  "Test live-prompt terminal windows are pushed back to the prompt after layout restore."
-  (let ((buffer (generate-new-buffer " *claude-code-ide-codex-position*")))
-    (unwind-protect
-        (save-window-excursion
-          (delete-other-windows)
-          (switch-to-buffer buffer)
-          (with-current-buffer buffer
-            (insert (mapconcat (lambda (n) (format "line %d" n))
-                               (number-sequence 1 80)
-                               "\n"))
-            (goto-char (point-max))
-            (setq-local claude-code-ide--session-cli-type 'codex
-                        claude-code-ide--terminal-backend 'vterm)
-            (let ((target-point (point))
-                  (session-window (selected-window)))
-              (set-window-point session-window (point-min))
-              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-                         (lambda (candidate)
-                           (eq candidate buffer)))
-                        ((symbol-function 'evil-emacs-state-p)
-                         (lambda () t)))
-                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
-              (should (= (window-point session-window) target-point)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-visible-live-prompt-ghostel-terminal-syncs-after-window-restore ()
   "Test live-prompt ghostel terminal windows sync to Ghostel's cursor after restore."
@@ -11911,7 +11156,7 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
             (forward-line 78)
             (move-to-column 2)
             (setq-local claude-code-ide--session-cli-type 'codex
-                        claude-code-ide--terminal-backend 'ghostel
+                        major-mode 'ghostel-mode
                         ghostel--term 'mock-term
                         ghostel--cursor-char-pos (point))
             (let ((target-point (point))
@@ -11942,7 +11187,7 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
             (forward-line 78)
             (move-to-column 2)
             (setq-local claude-code-ide--session-cli-type 'omp
-                        claude-code-ide--terminal-backend 'ghostel
+                        major-mode 'ghostel-mode
                         ghostel--term 'mock-term
                         ghostel--cursor-char-pos (point))
             (let ((target-point (point))
@@ -11958,20 +11203,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-live-prompt-bottom-margin-per-cli ()
-  "Live-prompt bottom margin is per CLI: 4 lines for Codex, 1 otherwise."
-  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
-             (lambda () 'codex)))
-    (should (= (claude-code-ide--live-prompt-bottom-margin) 4)))
-  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
-             (lambda () 'omp)))
-    (should (= (claude-code-ide--live-prompt-bottom-margin) 1)))
-  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
-             (lambda () 'claude)))
-    (should (= (claude-code-ide--live-prompt-bottom-margin) 1)))
-  (cl-letf (((symbol-function 'claude-code-ide--current-cli-type)
-             (lambda () 'pi)))
-    (should (= (claude-code-ide--live-prompt-bottom-margin) 1))))
 
 (ert-deftest claude-code-ide-test-omp-visible-prompt-start ()
   "OMP prompt start uses the nearest visible gutter without crossing chrome."
@@ -12030,7 +11261,7 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
                        (number-sequence 1 80)
                        "\n"))
     (setq-local claude-code-ide--session-cli-type 'omp
-                claude-code-ide--terminal-backend 'ghostel
+                major-mode 'ghostel-mode
                 ghostel--term 'mock-term
                 ghostel--term-rows 3
                 ghostel--cursor-pos '(2 . 1))
@@ -12042,38 +11273,6 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
       (should (= (claude-code-ide--live-prompt-terminal-window-target-point)
                  char-pos)))))
 
-(ert-deftest claude-code-ide-test-visible-live-prompt-omp-vterm-sync-pins-cursor-at-bottom ()
-  "Oh My Pi vterm windows pin the cursor to the bottom line, not 4 lines up."
-  (let ((buffer (generate-new-buffer " *claude-code-ide-omp-vterm-position*")))
-    (unwind-protect
-        (save-window-excursion
-          (delete-other-windows)
-          (switch-to-buffer buffer)
-          (with-current-buffer buffer
-            (insert (mapconcat (lambda (n) (format "line %d" n))
-                               (number-sequence 1 80)
-                               "\n"))
-            (goto-char (point-max))
-            (setq-local claude-code-ide--session-cli-type 'omp
-                        claude-code-ide--terminal-backend 'vterm)
-            (let ((target-point (point))
-                  (session-window (selected-window)))
-              (set-window-point session-window (point-min))
-              (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-                         (lambda (candidate)
-                           (eq candidate buffer)))
-                        ((symbol-function 'evil-emacs-state-p)
-                         (lambda () t)))
-                (claude-code-ide--sync-visible-live-prompt-terminal-windows))
-              (should (= (window-point session-window) target-point))
-              ;; Margin 1 pins the cursor to the bottom visible line
-              ;; (window-start = point-line - height + 1); the old hardcoded
-              ;; -4 recenter left empty lines below the cursor.
-              (should (= (line-number-at-pos (window-start session-window))
-                         (- (line-number-at-pos target-point)
-                            (1- (window-body-height session-window))))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-visible-live-prompt-ghostel-terminal-sync-skips-recenter ()
   "Ghostel live-prompt sync should not force recenter on layout changes."
@@ -12091,7 +11290,7 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
             (forward-line 78)
             (move-to-column 2)
             (setq-local claude-code-ide--session-cli-type 'codex
-                        claude-code-ide--terminal-backend 'ghostel
+                        major-mode 'ghostel-mode
                         ghostel--term 'mock-term
                         ghostel--cursor-char-pos (point))
             (let ((target-point (point))
@@ -12127,7 +11326,7 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
             (forward-line 118)
             (move-to-column 2)
             (setq-local claude-code-ide--session-cli-type 'codex
-                        claude-code-ide--terminal-backend 'ghostel
+                        major-mode 'ghostel-mode
                         ghostel--term 'mock-term
                         ghostel--cursor-char-pos (point))
             (let ((target-point (point))
@@ -12972,7 +12171,7 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
               ((symbol-function 'require)
                (lambda (feature &optional _filename _noerror)
                  (cond ((eq feature 'claude-code-ide-mcp-http-server) nil)
-                       ((memq feature '(claude-code-ide-mcp-server websocket vterm flycheck
+                       ((memq feature '(claude-code-ide-mcp-server websocket flycheck
                                                                    claude-code-ide-debug claude-code-ide-mcp-handlers
                                                                    claude-code-ide transient)) nil)
                        (t (funcall (cl-letf-saved-symbol-function 'require) feature _filename _noerror))))))
@@ -14081,42 +13280,35 @@ connected sessions would silently break first-connect replay."
       (kill-buffer prompt-buf))))
 
 (ert-deftest claude-code-ide-test-maybe-switch-to-window-enabled ()
-  "Test that helper selects window when enabled and window is visible."
-  (let ((claude-code-ide-switch-after-send t)
-        (selected-window nil))
+  "Select the visible target when switching after input is enabled."
+  (let ((claude-code-ide-switch-after-send t))
     (with-temp-buffer
-      (let ((buf (current-buffer)))
-        (display-buffer buf)
-        (cl-letf (((symbol-function 'select-window)
-                   (lambda (win) (setq selected-window win))))
-          (claude-code-ide--maybe-switch-to-window buf)
-          (should selected-window))))))
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((target (split-window-right)))
+          (set-window-buffer target (current-buffer))
+          (claude-code-ide--maybe-switch-to-window (current-buffer))
+          (should (eq (selected-window) target)))))))
 
 (ert-deftest claude-code-ide-test-maybe-switch-to-window-disabled ()
-  "Test that helper does nothing when disabled."
-  (let ((claude-code-ide-switch-after-send nil)
-        (selected-window nil))
+  "Preserve focus when switching after input is disabled."
+  (let ((claude-code-ide-switch-after-send nil))
     (with-temp-buffer
-      (let ((buf (current-buffer)))
-        (display-buffer buf)
-        (cl-letf (((symbol-function 'select-window)
-                   (lambda (win) (setq selected-window win))))
-          (claude-code-ide--maybe-switch-to-window buf)
-          (should-not selected-window))))))
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((origin (selected-window))
+              (target (split-window-right)))
+          (set-window-buffer target (current-buffer))
+          (claude-code-ide--maybe-switch-to-window (current-buffer))
+          (should (eq (selected-window) origin)))))))
 
 (ert-deftest claude-code-ide-test-maybe-switch-to-window-not-visible ()
-  "Test that helper does nothing when window is not visible."
+  "Preserve focus when the target has no window."
   (let ((claude-code-ide-switch-after-send t)
-        (selected-window nil))
+        (origin (selected-window)))
     (with-temp-buffer
-      (let ((buf (current-buffer)))
-        ;; Don't display the buffer - no visible window
-        (cl-letf (((symbol-function 'select-window)
-                   (lambda (win) (setq selected-window win)))
-                  ((symbol-function 'get-buffer-window)
-                   (lambda (_buf) nil)))
-          (claude-code-ide--maybe-switch-to-window buf)
-          (should-not selected-window))))))
+      (claude-code-ide--maybe-switch-to-window (current-buffer))
+      (should (eq (selected-window) origin)))))
 
 (ert-deftest claude-code-ide-test-send-current-file-switches-to-prompt ()
   "Test send-current-file switches to prompt buffer when enabled."
@@ -14762,44 +13954,23 @@ inside the target session's directory."
         (claude-code-ide-cli-extra-flags ""))
     (should (string-match-p "^pi" (claude-code-ide--build-command)))))
 
-(ert-deftest claude-code-ide-test-create-codex-terminal-session ()
-  "Test creating a codex terminal session without MCP env vars."
-  (let ((claude-code-ide-cli-path "codex")
-        (claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide--cli-available t)
-        (claude-code-ide-cli-extra-flags ""))
-    (cl-letf (((symbol-function 'claude-code-ide--build-codex-command)
-               (lambda (&rest _) "codex")))
-      (let ((result (claude-code-ide--create-terminal-session
-                     "*test-codex*" "/tmp" 12345 nil nil "test-session")))
-        (should (consp result))
-        (should (bufferp (car result)))))))
-
 (ert-deftest claude-code-ide-test-create-pi-terminal-session ()
   "Select child image support by launch frame without changing the parent."
   (with-temp-buffer
     (let ((process-environment (copy-sequence process-environment))
           (claude-code-ide--session-cli-type nil)
-          ;; A calling buffer's cached backend must not select the new backend.
-          (claude-code-ide--terminal-backend 'eat)
           (claude-code-ide-cli-extra-flags ""))
       (setenv "PI_FORCE_IMAGE_PROTOCOL" nil)
       (setenv "ITERM_SESSION_ID" "probe")
       (setenv "TMUX" "probe")
       (setenv "TERM_PROGRAM" "tmux")
-      (dolist (case '(("omp" t eat ghostel nil "kitty")
-                      ("omp" nil eat ghostel nil "off")
-                      ("omp" t eat ghostel nil "kitty")
-                      ("omp-dev" t eat ghostel nil "kitty")
-                      ("omp" t ghostel eat nil "unset")
-                      ("omp" t ghostel vterm nil "unset")
-                      ("pi" t ghostel ghostel nil "unset")
-                      ("omp" nil eat ghostel "kitty" "off")))
-        (pcase-let* ((`(,cli ,graphic ,backend ,override ,inherited ,expected) case)
-                     (claude-code-ide-cli-path cli)
-                     (claude-code-ide-terminal-backend backend)
-                     (claude-code-ide-cli-terminal-backends
-                      `((omp . ,override) (pi . ,override))))
+      (dolist (case '(("omp" t nil "kitty")
+                      ("omp" nil nil "off")
+                      ("omp-dev" t nil "kitty")
+                      ("pi" t nil "unset")
+                      ("omp" nil "kitty" "off")))
+        (pcase-let* ((`(,cli ,graphic ,inherited ,expected) case)
+                     (claude-code-ide-cli-path cli))
           (setenv "PI_FORCE_IMAGE_PROTOCOL" inherited)
           (let ((parent-environment (copy-sequence process-environment)))
             (cl-letf (((symbol-function 'display-graphic-p)
@@ -14821,107 +13992,43 @@ inside the target session's directory."
                          expected))
                 (should (equal process-environment parent-environment))))))))))
 
-(ert-deftest claude-code-ide-test-create-pi-terminal-session-uses-cli-backend-override ()
-  "Test Pi terminal session creation respects per-CLI backend overrides."
-  (let ((claude-code-ide-cli-path "pi")
-        (claude-code-ide-terminal-backend 'eat)
-        (claude-code-ide-cli-terminal-backends '((pi . vterm)))
-        (claude-code-ide--cli-available t)
-        (claude-code-ide-cli-extra-flags "")
-        (mock-vterm-buffer nil)
-        (mock-process (start-process "mock-pi-vterm" nil "true")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                   (lambda (&optional _backend) nil))
-                  ((symbol-function 'vterm)
-                   (lambda (&optional buffer-name)
-                     (setq mock-vterm-buffer
-                           (generate-new-buffer (or buffer-name "*mock-pi-vterm*")))))
-                  ((symbol-function 'get-buffer-process)
-                   (lambda (_buffer) mock-process))
-                  ((symbol-function 'claude-code-ide--configure-vterm-buffer)
-                   (lambda () nil))
-                  ((symbol-function 'claude-code-ide--build-pi-command)
-                   (lambda (&rest _) "pi")))
-          (let* ((result (claude-code-ide--create-terminal-session
-                          "*test-pi-vterm*" "/tmp" 12345 nil nil "test-session"))
-                 (buffer (car result)))
-            (should (consp result))
-            (should (eq buffer mock-vterm-buffer))
-            (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
-                        'vterm))))
-      (when (process-live-p mock-process)
-        (delete-process mock-process))
-      (when (buffer-live-p mock-vterm-buffer)
-        (kill-buffer mock-vterm-buffer)))))
-
-(ert-deftest claude-code-ide-test-create-codex-terminal-session-uses-cli-backend-override ()
-  "Test live-prompt terminal session creation respects per-CLI backend overrides."
+(ert-deftest claude-code-ide-test-create-codex-terminal-session ()
+  "Test creating a codex terminal session through Ghostel."
   (let ((claude-code-ide-cli-path "codex")
-        (claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide-cli-terminal-backends '((codex . eat)))
-        (claude-code-ide--cli-available t)
-        (claude-code-ide-cli-extra-flags "")
-        (mock-eat-buffer nil)
-        (mock-process (start-process "mock-codex-eat" nil "true")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                   (lambda (&optional _backend) nil))
-                  ((symbol-function 'eat-mode)
-                   (lambda () nil))
-                  ((symbol-function 'eat-exec)
-                   (lambda (buffer _name _cmd _startfile _args)
-                     (setq mock-eat-buffer buffer)))
-                  ((symbol-function 'get-buffer-process)
-                   (lambda (_buffer) mock-process))
-                  ((symbol-function 'claude-code-ide--build-codex-command)
-                   (lambda (&rest _) "codex")))
-          (let* ((result (claude-code-ide--create-terminal-session
-                          "*test-codex-eat*" "/tmp" 12345 nil nil "test-session"))
-                 (buffer (car result)))
-            (should (consp result))
-            (should (eq buffer mock-eat-buffer))
-            (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
-                        'eat))))
-      (when (process-live-p mock-process)
-        (delete-process mock-process))
-      (when (buffer-live-p mock-eat-buffer)
-        (kill-buffer mock-eat-buffer)))))
-
-(ert-deftest claude-code-ide-test-create-codex-terminal-session-uses-ghostel-backend-override ()
-  "Test live-prompt terminal session creation respects `ghostel' backend overrides."
-  (let ((claude-code-ide-cli-path "codex")
-        (claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide-cli-terminal-backends '((codex . ghostel)))
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags "")
         (mock-ghostel-buffer nil)
-        (url-detection-disabled-before-exec nil)
-        (mock-process (start-process "mock-codex-ghostel" nil "true")))
+        (mock-process nil)
+        (url-detection-disabled-before-exec nil))
     (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                   (lambda (&optional _backend) nil))
-                  ((symbol-function 'ghostel-mode)
-                   (lambda () nil))
+        (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
                   ((symbol-function 'ghostel-exec)
                    (lambda (buffer _program &optional _args)
                      (setq url-detection-disabled-before-exec
                            (null (buffer-local-value 'ghostel-enable-url-detection
                                                      buffer)))
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode))
                      (setq mock-ghostel-buffer buffer)
-                     mock-process))
+                     (setq mock-process
+                           (make-pipe-process :name "mock-codex-ghostel"
+                                              :buffer buffer :noquery t))))
                   ((symbol-function 'claude-code-ide--build-codex-command)
                    (lambda (&rest _) "codex")))
           (let* ((result (claude-code-ide--create-terminal-session
                           "*test-codex-ghostel*" "/tmp" 12345 nil nil "test-session"))
                  (buffer (car result)))
             (should (consp result))
+            (should (bufferp buffer))
+            (should (buffer-live-p buffer))
             (should (eq buffer mock-ghostel-buffer))
             (should (eq (cdr result) mock-process))
-            (should url-detection-disabled-before-exec)
-            (should (eq (buffer-local-value 'claude-code-ide--terminal-backend buffer)
-                        'ghostel))))
-      (when (process-live-p mock-process)
+            (should (process-live-p (cdr result)))
+            (should (eq (process-buffer (cdr result)) buffer))
+            (with-current-buffer buffer
+              (should (derived-mode-p 'ghostel-mode)))
+            (should url-detection-disabled-before-exec)))
+      (when (and mock-process (process-live-p mock-process))
         (delete-process mock-process))
       (when (buffer-live-p mock-ghostel-buffer)
         (kill-buffer mock-ghostel-buffer)))))
@@ -14929,22 +14036,20 @@ inside the target session's directory."
 (ert-deftest claude-code-ide-test-create-terminal-session-snapshots-cli-type ()
   "Test terminal buffers keep the launch-time CLI type."
   (let ((claude-code-ide-cli-path "codex")
-        (claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide-cli-terminal-backends '((codex . eat)))
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags "")
-        (mock-eat-buffer nil)
-        (mock-process (start-process "mock-cli-type-snapshot" nil "true")))
+        (mock-ghostel-buffer nil)
+        (mock-process nil))
     (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                   (lambda (&optional _backend) nil))
-                  ((symbol-function 'eat-mode)
-                   (lambda () nil))
-                  ((symbol-function 'eat-exec)
-                   (lambda (buffer _name _cmd _startfile _args)
-                     (setq mock-eat-buffer buffer)))
-                  ((symbol-function 'get-buffer-process)
-                   (lambda (_buffer) mock-process))
+        (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                  ((symbol-function 'ghostel-exec)
+                   (lambda (buffer _program &optional _args)
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode))
+                     (setq mock-ghostel-buffer buffer)
+                     (setq mock-process
+                           (make-pipe-process :name "mock-cli-type-snapshot"
+                                              :buffer buffer :noquery t))))
                   ((symbol-function 'claude-code-ide--build-codex-command)
                    (lambda (&rest _) "codex")))
           (let* ((result (claude-code-ide--create-terminal-session
@@ -14952,15 +14057,270 @@ inside the target session's directory."
                  (buffer (car result)))
             (setq claude-code-ide-cli-path "claude")
             (should (consp result))
-            (should (eq buffer mock-eat-buffer))
+            (should (eq buffer mock-ghostel-buffer))
             (should (eq (buffer-local-value 'claude-code-ide--session-cli-type buffer)
                         'codex))
             (with-current-buffer buffer
               (should (eq (claude-code-ide--current-cli-type) 'codex)))))
-      (when (process-live-p mock-process)
+      (when (and mock-process (process-live-p mock-process))
         (delete-process mock-process))
-      (when (buffer-live-p mock-eat-buffer)
-        (kill-buffer mock-eat-buffer)))))
+      (when (buffer-live-p mock-ghostel-buffer)
+        (kill-buffer mock-ghostel-buffer)))))
+
+(ert-deftest claude-code-ide-test-create-terminal-with-command-execs-through-ghostel ()
+  "Ghostel starts the requested command despite retired preference values."
+  ;; These deleted preferences are migration inputs, not supported settings.
+  (cl-progv '(claude-code-ide-terminal-backend claude-code-ide-cli-terminal-backends)
+      '(removed ((claude . removed)))
+    (let ((claude-code-ide-cli-path "claude")
+          (claude-code-ide-session-setup-hook nil)
+          (working-dir (file-name-as-directory
+                        (file-truename temporary-file-directory)))
+          buffer process)
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (target program args)
+                       (setq buffer target)
+                       (with-current-buffer target
+                         (setq-local major-mode 'ghostel-mode)
+                         (set (make-local-variable 'claude-code-ide--terminal-backend)
+                              'removed))
+                       (setq process
+                             (make-process :name "cci-factory-command"
+                                           :buffer target
+                                           :command (cons program args)
+                                           :connection-type 'pipe
+                                           :sentinel #'ignore
+                                           :noquery t)))))
+            (let ((result
+                   (claude-code-ide--create-terminal-with-command
+                    "*claude-code[factory-command]*" working-dir
+                    "printf 'cci-factory:%s:%s\\n' \"$CLAUDE_CODE_TEST\" \"$PWD\"; exec cat"
+                    '("CLAUDE_CODE_TEST=1"))))
+              (with-timeout (5 (ert-fail "The Agent command did not produce output"))
+                (while (not (with-current-buffer (car result)
+                              (save-excursion
+                                (goto-char (point-min))
+                                (re-search-forward "cci-factory:.*\n" nil t))))
+                  (accept-process-output (cdr result) 0.05)))
+              (should
+               (with-current-buffer (car result)
+                 (save-excursion
+                   (goto-char (point-min))
+                   (search-forward
+                    (format "cci-factory:1:%s\n" (directory-file-name working-dir))
+                    nil t))))))
+        (when (process-live-p process)
+          (delete-process process))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-create-terminal-with-command-preserves-existing-buffer ()
+  "A requested name must not transfer an existing buffer or process."
+  (let* ((claude-code-ide-cli-path "claude")
+         (claude-code-ide-session-setup-hook nil)
+         (existing (generate-new-buffer "*claude-code[factory-existing]*"))
+         (existing-process (make-pipe-process :name "cci-existing-terminal"
+                                              :buffer existing :noquery t))
+         buffer process)
+    (unwind-protect
+        (progn
+          (with-current-buffer existing
+            (insert "existing terminal output"))
+          (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (target _program _args)
+                       (setq buffer target)
+                       (with-current-buffer target
+                         (setq-local major-mode 'ghostel-mode))
+                       (setq process
+                             (make-pipe-process :name "cci-new-terminal"
+                                                :buffer target :noquery t)))))
+            (let ((result
+                   (claude-code-ide--create-terminal-with-command
+                    (buffer-name existing) temporary-file-directory
+                    "claude --continue" nil)))
+              (should-not (eq (car result) existing))
+              (should (process-live-p existing-process))
+              (should (eq (process-buffer existing-process) existing))
+              (with-current-buffer existing
+                (should (eq major-mode 'fundamental-mode))
+                (should (equal (buffer-string) "existing terminal output"))))))
+      (dolist (client (list process existing-process))
+        (when (process-live-p client)
+          (delete-process client)))
+      (dolist (target (list buffer existing))
+        (when (buffer-live-p target)
+          (kill-buffer target))))))
+
+(ert-deftest claude-code-ide-test-ghostel-constructor-failures-preserve-unrelated-process ()
+  "Failed constructors clean their buffer without installing or harming another process."
+  (let* ((ghostel-module-auto-install 'ask)
+         (claude-code-ide-session-setup-hook nil)
+         (existing (generate-new-buffer " *cci-unrelated-terminal*"))
+         (existing-process (make-pipe-process :name "cci-unrelated-terminal"
+                                              :buffer existing :noquery t))
+         partial client installation-attempted)
+    (unwind-protect
+        (dolist (failure '(error missing dead foreign))
+          (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (buffer _program _args)
+                       (setq partial buffer)
+                       (with-current-buffer buffer
+                         (setq-local major-mode 'ghostel-mode))
+                       (when ghostel-module-auto-install
+                         (setq installation-attempted t)
+                         (error "The constructor attempted module installation"))
+                       (pcase failure
+                         ('error (error "Native constructor failed"))
+                         ('missing nil)
+                         ('dead
+                          (setq client (make-pipe-process :name "cci-dead-terminal"
+                                                          :buffer buffer :noquery t))
+                          (delete-process client)
+                          client)
+                         ('foreign existing-process)))))
+            (should-error
+             (claude-code-ide--create-terminal-with-command
+              "*claude-code[failed-constructor]*" temporary-file-directory
+              "claude" nil))
+            (should-not (buffer-live-p partial))
+            (should-not installation-attempted)
+            (should (eq ghostel-module-auto-install 'ask))
+            (should (process-live-p existing-process))
+            (should (eq (process-buffer existing-process) existing))))
+      (dolist (process (list client existing-process))
+        (when (process-live-p process)
+          (delete-process process)))
+      (dolist (buffer (list partial existing))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-local-session-exits-during-initialization ()
+  "Failed initialization cannot publish success or destroy a replacement Session."
+  (dolist (failure '(exit replacement))
+    (let ((claude-code-ide-cli-path "codex")
+          (claude-code-ide-use-zmx nil)
+          (claude-code-ide--sessions (make-hash-table :test #'equal))
+          buffer client registered replacement replacement-buffer replacement-process
+          announced)
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                    ((symbol-function 'claude-code-ide--register-session)
+                     (lambda (session)
+                       (setq registered session)
+                       (claude-code-ide--put-session session)))
+                    ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore)
+                    ((symbol-function 'claude-code-ide--create-terminal-session)
+                     (lambda (name &rest _)
+                       (setq buffer (generate-new-buffer name))
+                       (with-current-buffer buffer
+                         (setq-local major-mode 'ghostel-mode))
+                       (setq client (make-pipe-process :name "cci-exiting-local"
+                                                       :buffer buffer :noquery t))
+                       (cons buffer client)))
+                    ((symbol-function 'sleep-for)
+                     (lambda (&rest _)
+                       (if (eq failure 'exit)
+                           (delete-process client)
+                         (setq replacement-buffer (generate-new-buffer " *cci-replacement*")
+                               replacement-process
+                               (make-pipe-process :name "cci-replacement"
+                                                  :buffer replacement-buffer :noquery t)
+                               replacement
+                               (claude-code-ide-session-create
+                                :id (claude-code-ide-session-id registered)
+                                :directory temporary-file-directory :cli-type 'codex
+                                :buffer replacement-buffer :process replacement-process))
+                         (with-current-buffer replacement-buffer
+                           (setq-local major-mode 'ghostel-mode))
+                         (claude-code-ide--put-session replacement))))
+                    ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                     (lambda (&rest _) (setq announced t)))
+                    ((symbol-function 'claude-code-ide-log)
+                     (lambda (&rest _) (setq announced t))))
+            (should-error
+             (claude-code-ide--create-local-session temporary-file-directory nil nil)
+             :type 'user-error)
+            (should-not announced)
+            (should-not (process-live-p client))
+            (if (eq failure 'exit)
+                (should (= (hash-table-count claude-code-ide--sessions) 0))
+              (should (eq (claude-code-ide--get-session
+                           (claude-code-ide-session-id replacement))
+                          replacement))
+              (should (process-live-p replacement-process))
+              (should (buffer-live-p replacement-buffer))))
+        (dolist (process (list client replacement-process))
+          (when (process-live-p process)
+            (delete-process process)))
+        (dolist (target (list buffer replacement-buffer))
+          (when (buffer-live-p target)
+            (kill-buffer target)))))))
+
+(ert-deftest claude-code-ide-test-session-input-rejects-non-ghostel-modes ()
+  "An old Session name must not permit Ghostel input into another mode."
+  (with-temp-buffer
+    (rename-buffer "*claude-code[unsupported-input]*" t)
+    (should-error (claude-code-ide-session-mode 1) :type 'user-error)
+    (should-not claude-code-ide-session-mode)
+    (cl-letf (((symbol-function 'claude-code-ide-session--clipboard-image-p)
+               (lambda () nil))
+              ((symbol-function 'ghostel--send-string)
+               (lambda (&rest _) (ert-fail "Unsupported buffer received input")))
+              ((symbol-function 'ghostel-paste-string)
+               (lambda (&rest _) (ert-fail "Unsupported buffer received paste")))
+              ((symbol-function 'ghostel-yank)
+               (lambda () (ert-fail "Unsupported buffer received clipboard input")))
+              ((symbol-function 'ghostel-send-C-c)
+               (lambda () (ert-fail "Unsupported buffer received an interrupt")))
+              ((symbol-function 'ghostel-send-C-g)
+               (lambda () (ert-fail "Unsupported buffer received Control-G"))))
+      (dolist (call '((claude-code-ide-session-send-string "text")
+                      (claude-code-ide-session-send-string "text" t)
+                      (claude-code-ide-session-paste-clipboard)
+                      (claude-code-ide-session-send-escape)
+                      (claude-code-ide-session-send-return)
+                      (claude-code-ide-session-send-interrupt)
+                      (claude-code-ide-session-send-control-g)))
+        (should-error (apply (car call) (cdr call)) :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-reload-preserves-unsupported-terminal-buffer ()
+  "Setup and registry cleanup must leave an unsupported live terminal untouched."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-prevent-reflow-glitch nil)
+         (buffer (generate-new-buffer "*claude-code[unsupported-reload]*"))
+         (process (make-pipe-process :name "cci-unsupported-terminal"
+                                     :buffer buffer :noquery t))
+         configured
+         (claude-code-ide-session-setup-hook
+          (list (lambda () (setq configured t)))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended) #'ignore)
+                  ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
+                   (lambda (&rest _) nil)))
+          (with-current-buffer buffer
+            (insert "existing terminal output")
+            (claude-code-ide-session-setup-buffer)
+            (claude-code-ide--maybe-enable-session-mode))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "unsupported" :directory temporary-file-directory
+            :cli-type 'codex :buffer buffer :process process))
+          (claude-code-ide--cleanup-on-exit "unsupported")
+          (should (buffer-live-p buffer))
+          (should (process-live-p process))
+          (should-not configured)
+          (with-current-buffer buffer
+            (should (eq major-mode 'fundamental-mode))
+            (should-not claude-code-ide-session-mode)
+            (should (equal (buffer-string) "existing terminal output"))))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-dangerous-flag-by-cli-type ()
   "Test that the dangerous permissions flag varies by CLI type."
@@ -14983,7 +14343,6 @@ inside the target session's directory."
 (ert-deftest claude-code-ide-test-pi-full-session-flow ()
   "Test that Pi CLI type flows through session creation correctly."
   (let ((claude-code-ide-cli-path "pi")
-        (claude-code-ide-terminal-backend 'vterm)
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags ""))
     (should (eq (claude-code-ide--current-cli-type) 'pi))
@@ -14996,7 +14355,6 @@ inside the target session's directory."
 (ert-deftest claude-code-ide-test-codex-full-session-flow ()
   "Test that codex CLI type flows through session creation correctly."
   (let ((claude-code-ide-cli-path "codex")
-        (claude-code-ide-terminal-backend 'vterm)
         (claude-code-ide--cli-available t)
         (claude-code-ide-cli-extra-flags ""))
     ;; Verify CLI type
@@ -15011,51 +14369,6 @@ inside the target session's directory."
     (should (equal (claude-code-ide--dangerous-permissions-flag)
                    "--dangerously-bypass-approvals-and-sandbox"))))
 
-(ert-deftest claude-code-ide-test-codex-session-skips-terminal-keybindings ()
-  "Test that Codex sessions do not install Claude-specific terminal keybindings."
-  (let ((claude-code-ide-cli-path "codex")
-        (claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide--cli-available t)
-        (claude-code-ide-cli-extra-flags "")
-        (keybindings-set nil)
-        (buffer (generate-new-buffer "*codex-keybinding-test*"))
-        (process (start-process "mock-codex-session" nil "true")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--ensure-cli)
-                   (lambda () t))
-                  ((symbol-function 'claude-code-ide--cleanup-dead-processes)
-                   (lambda () nil))
-                  ((symbol-function 'claude-code-ide--get-working-directory)
-                   (lambda () "/tmp/codex-project/"))
-                  ((symbol-function 'claude-code-ide--get-buffer-name)
-                   (lambda (&optional _directory)
-                     (buffer-name buffer)))
-                  ((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                   (lambda () nil))
-                  ((symbol-function 'claude-code-ide-mcp-start)
-                   (lambda (&rest _) 12345))
-                  ((symbol-function 'claude-code-ide--create-terminal-session)
-                   (lambda (&rest _args)
-                     (cons buffer process)))
-                  ((symbol-function 'claude-code-ide-mcp-server-session-started)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'set-process-sentinel)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'claude-code-ide--setup-terminal-keybindings)
-                   (lambda ()
-                     (setq keybindings-set t)))
-                  ((symbol-function 'sleep-for)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
-                   (lambda (_buffer) nil))
-                  ((symbol-function 'claude-code-ide-log)
-                   (lambda (&rest _args) nil)))
-          (claude-code-ide--start-session)
-          (should-not keybindings-set))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (when (process-live-p process)
-        (delete-process process)))))
 
 (ert-deftest claude-code-ide-test-start-session-force-new-does-not-toggle-sibling ()
   (let ((created 0) (toggled 0))
@@ -15104,136 +14417,129 @@ inside the target session's directory."
                        ("prompt-a" . switch-to-buffer)))))))
 
 (ert-deftest claude-code-ide-test-create-session-generates-unique-sibling-identities ()
+  "Same-directory launches keep distinct live Sessions and terminal buffers."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
-        (buffers nil)
-        (buffer-names nil)
-        (session-ids nil)
-        (sessions nil)
-        (timestamp 0))
+        (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
+        (claude-code-ide-cli-path "claude")
+        (claude-code-ide-use-zmx nil)
+        (timestamp 0)
+        buffers sessions)
     (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+        (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
                   ((symbol-function 'claude-code-ide-mcp-start) (lambda (&rest _) 12345))
                   ((symbol-function 'format-time-string) (lambda (&rest _) "20260727-063500"))
                   ((symbol-function 'float-time)
                    (lambda (&optional _) (cl-incf timestamp)))
                   ((symbol-function 'claude-code-ide--create-terminal-session)
-                   (lambda (buffer-name _directory _port _continue _resume session-id)
-                     (let ((buffer (generate-new-buffer buffer-name)))
+                   (lambda (name &rest _)
+                     (let ((buffer (generate-new-buffer name)))
                        (push buffer buffers)
-                       (push buffer-name buffer-names)
-                       (push session-id session-ids)
-                       (cons buffer buffer))))
+                       (with-current-buffer buffer
+                         (setq-local major-mode 'ghostel-mode))
+                       (cons buffer
+                             (make-pipe-process :name "cci-sibling"
+                                                :buffer buffer :noquery t)))))
                   ((symbol-function 'claude-code-ide-mcp-server-session-started) #'ignore)
-                  ((symbol-function 'claude-code-ide--register-session) #'ignore)
+                  ((symbol-function 'claude-code-ide--register-session)
+                   #'claude-code-ide--put-session)
                   ((symbol-function 'set-process-sentinel) #'ignore)
-                  ((symbol-function 'claude-code-ide--current-terminal-backend) (lambda () 'eat))
                   ((symbol-function 'sleep-for) #'ignore)
                   ((symbol-function 'claude-code-ide--display-buffer-in-side-window) #'ignore)
                   ((symbol-function 'claude-code-ide-log) #'ignore))
-          (push (claude-code-ide--create-session "/tmp/project/" nil nil) sessions)
-          (push (claude-code-ide--create-session "/tmp/project/" nil nil) sessions)
-          (setq sessions (nreverse sessions))
-          (should (= (length (delete-dups session-ids)) 2))
-          (should (= (length (delete-dups buffer-names)) 2))
-          (let ((created-at
-                 (mapcar #'claude-code-ide-session-created-at sessions)))
-            (should (equal created-at
-                           (mapcar #'claude-code-ide-session-last-accessed-at
-                                   sessions)))
-            (should (< (car created-at) (cadr created-at)))))
+          (dotimes (_ 2)
+            (push (claude-code-ide--create-session temporary-file-directory nil nil) sessions))
+          (should (= (hash-table-count claude-code-ide--sessions) 2))
+          (should (= (length (delete-dups (mapcar #'claude-code-ide-session-id sessions))) 2))
+          (should-not (eq (claude-code-ide-session-buffer (car sessions))
+                          (claude-code-ide-session-buffer (cadr sessions))))
+          (dolist (session sessions)
+            (should (process-live-p (claude-code-ide-session-process session))))
+          (should (< (claude-code-ide-session-created-at (cadr sessions))
+                     (claude-code-ide-session-created-at (car sessions)))))
       (dolist (buffer buffers)
         (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+          (with-current-buffer buffer
+            (setq kill-buffer-hook nil)
+            (kill-buffer buffer)))))))
 
 (ert-deftest claude-code-ide-test-create-session-uses-agent-mcp-transport-and-port ()
-  "Session startup uses and reports only the current agent's MCP transport."
+  "Session startup uses only the current Agent's MCP transport."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
         (claude-code-ide-cli-debug nil)
-        messages websocket-starts sse-starts terminal-ports tool-sessions)
-    (with-temp-buffer
-      (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                 #'ignore)
-                ((symbol-function 'claude-code-ide--zmx-launch-spec)
-                 (lambda (&rest _) nil))
-                ((symbol-function 'claude-code-ide-mcp-start)
-                 (lambda (&rest _)
-                   (push (claude-code-ide--current-cli-type) websocket-starts)
-                   26015))
-                ((symbol-function 'claude-code-ide-mcp-sse-ensure-server)
-                 (lambda ()
-                   (push (claude-code-ide--current-cli-type) sse-starts)
-                   27182))
-                ((symbol-function 'claude-code-ide--create-terminal-session)
-                 (lambda (_buffer-name _directory port &rest _)
-                   (push (cons (claude-code-ide--current-cli-type) port)
-                         terminal-ports)
-                   (cons (current-buffer) (current-buffer))))
-                ((symbol-function 'claude-code-ide-mcp-server-session-started)
-                 (lambda (&rest _)
-                   (push (claude-code-ide--current-cli-type) tool-sessions)))
-                ((symbol-function 'claude-code-ide--register-session) #'ignore)
-                ((symbol-function 'set-process-sentinel) #'ignore)
-                ((symbol-function 'claude-code-ide--current-terminal-backend)
-                 (lambda () 'eat))
-                ((symbol-function 'sleep-for) #'ignore)
-                ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
-                 #'ignore)
-                ((symbol-function 'claude-code-ide-log)
-                 (lambda (&rest args)
-                   (push (apply #'format args) messages))))
-        (dolist (claude-code-ide-cli-path
-                 '("claude" "codex" "opencode" "pi" "omp"))
-          (claude-code-ide--create-session "/tmp/project/" t nil))))
-    (should (equal websocket-starts '(claude)))
-    (should (equal sse-starts '(omp)))
-    (should (equal tool-sessions '(claude)))
-    (should
-     (equal
-      (nreverse terminal-ports)
-      '((claude . 26015)
-        (codex)
-        (opencode)
-        (pi)
-        (omp . 27182))))
-    (should
-     (equal
-      (nreverse messages)
-      '("Claude Code continued and started in project with MCP on port 26015"
-        "Codex continued and started in project"
-        "OpenCode continued and started in project"
-        "Pi continued and started in project"
-        "Oh My Pi continued and started in project with MCP on port 27182")))))
+        buffers websocket-starts sse-starts terminal-ports tool-sessions)
+    (unwind-protect
+        (with-temp-buffer
+          (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                    ((symbol-function 'claude-code-ide--zmx-launch-spec) #'ignore)
+                    ((symbol-function 'claude-code-ide-mcp-start)
+                     (lambda (&rest _)
+                       (push (claude-code-ide--current-cli-type) websocket-starts)
+                       26015))
+                    ((symbol-function 'claude-code-ide-mcp-sse-ensure-server)
+                     (lambda ()
+                       (push (claude-code-ide--current-cli-type) sse-starts)
+                       27182))
+                    ((symbol-function 'claude-code-ide--create-terminal-session)
+                     (lambda (name _directory port &rest _)
+                       (push (cons (claude-code-ide--current-cli-type) port) terminal-ports)
+                       (let ((buffer (generate-new-buffer name)))
+                         (push buffer buffers)
+                         (with-current-buffer buffer
+                           (setq-local major-mode 'ghostel-mode))
+                         (cons buffer
+                               (make-pipe-process :name "cci-mcp-transport"
+                                                  :buffer buffer :noquery t)))))
+                    ((symbol-function 'claude-code-ide-mcp-server-session-started)
+                     (lambda (&rest _)
+                       (push (claude-code-ide--current-cli-type) tool-sessions)))
+                    ((symbol-function 'claude-code-ide--register-session)
+                     #'claude-code-ide--put-session)
+                    ((symbol-function 'set-process-sentinel) #'ignore)
+                    ((symbol-function 'sleep-for) #'ignore)
+                    ((symbol-function 'claude-code-ide--display-buffer-in-side-window) #'ignore)
+                    ((symbol-function 'claude-code-ide-log) #'ignore))
+            (dolist (claude-code-ide-cli-path '("claude" "codex" "opencode" "pi" "omp"))
+              (claude-code-ide--create-session temporary-file-directory t nil))
+            (should (equal websocket-starts '(claude)))
+            (should (equal sse-starts '(omp)))
+            (should (equal tool-sessions '(claude)))
+            (should (equal (nreverse terminal-ports)
+                           '((claude . 26015) (codex) (opencode) (pi) (omp . 27182))))))
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (setq kill-buffer-hook nil)
+            (kill-buffer buffer)))))))
 
 (ert-deftest claude-code-ide-test-create-session-rolls-back-after-core-registration ()
   "A post-registration startup error tears down every ID-scoped resource."
   (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-cli-path "claude")
          (buffer (generate-new-buffer "*claude-code[rollback]*"))
-         (process (make-pipe-process :name "cc-create-rollback" :buffer buffer))
+         (process (make-pipe-process :name "cc-create-rollback" :buffer buffer :noquery t))
          session-id stopped ended)
     (unwind-protect
         (progn
-          (cl-letf (((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                     #'ignore)
+          (with-current-buffer buffer
+            (setq-local major-mode 'ghostel-mode))
+          (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
                     ((symbol-function 'claude-code-ide-mcp-start)
                      (lambda (&rest _) 12345))
                     ((symbol-function 'claude-code-ide--create-terminal-session)
                      (lambda (_buffer-name _directory _port _continue _resume id)
                        (setq session-id id)
                        (cons buffer process)))
-                    ((symbol-function 'claude-code-ide-mcp-server-session-started)
-                     #'ignore)
+                    ((symbol-function 'claude-code-ide-mcp-server-session-started) #'ignore)
                     ((symbol-function 'set-process-sentinel)
-                     (lambda (&rest _) (error "sentinel setup failed")))
+                     (lambda (&rest _) (error "Sentinel setup failed")))
                     ((symbol-function 'claude-code-ide-mcp-stop-session)
                      (lambda (id) (push id stopped)))
                     ((symbol-function 'claude-code-ide-mcp-server-session-ended)
                      (lambda (id) (push id ended)))
-                    ((symbol-function 'claude-code-ide-manager-session-ended)
-                     #'ignore)
-                    ((symbol-function 'claude-code-ide--remove-terminal-resize-observer)
-                     #'ignore))
+                    ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore))
             (should-error
-             (claude-code-ide--create-session "/tmp/rollback/" nil nil)
+             (claude-code-ide--create-session temporary-file-directory nil nil)
              :type 'error))
           (should session-id)
           (should-not (claude-code-ide--get-session session-id))
@@ -15247,47 +14553,35 @@ inside the target session's directory."
         (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-start-session-suppresses-intermediate-display-when-requested ()
-  "Test that start-session skips the initial side-window display when suppressed."
-  (let ((claude-code-ide-terminal-backend 'vterm)
-        (claude-code-ide--cli-available t)
-        (claude-code-ide--suppress-initial-display t)
-        (displayed nil)
-        (buffer (generate-new-buffer "*claude-code-silent-start-test*"))
-        (process (start-process "mock-claude-silent-start" nil "true")))
+  "A suppressed startup leaves the new Session outside the window layout."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide--cli-available t)
+         (claude-code-ide-cli-path "codex")
+         (claude-code-ide-use-zmx nil)
+         (claude-code-ide-terminal-initialization-delay 0)
+         (claude-code-ide--suppress-initial-display t)
+         (buffer (generate-new-buffer "*claude-code[silent-start]*"))
+         (process (make-pipe-process :name "cci-silent-start" :buffer buffer :noquery t)))
     (unwind-protect
-        (cl-letf (((symbol-function 'claude-code-ide--ensure-cli)
-                   (lambda () t))
-                  ((symbol-function 'claude-code-ide--cleanup-dead-processes)
-                   (lambda () nil))
-                  ((symbol-function 'claude-code-ide--get-working-directory)
-                   (lambda () "/tmp/claude-silent-project/"))
-                  ((symbol-function 'claude-code-ide--get-buffer-name)
-                   (lambda (&optional _directory)
-                     (buffer-name buffer)))
-                  ((symbol-function 'claude-code-ide--terminal-ensure-backend)
-                   (lambda () nil))
-                  ((symbol-function 'claude-code-ide-mcp-start)
-                   (lambda (&rest _) 12345))
-                  ((symbol-function 'claude-code-ide--create-terminal-session)
-                   (lambda (&rest _args)
-                     (cons buffer process)))
-                  ((symbol-function 'claude-code-ide-mcp-server-session-started)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'set-process-sentinel)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'sleep-for)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
-                   (lambda (_buffer)
-                     (setq displayed t)))
-                  ((symbol-function 'claude-code-ide-log)
-                   (lambda (&rest _args) nil)))
-          (claude-code-ide--start-session)
-          (should-not displayed))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
+        (save-window-excursion
+          (with-current-buffer buffer
+            (setq-local major-mode 'ghostel-mode))
+          (cl-letf (((symbol-function 'claude-code-ide--ensure-cli) #'always)
+                    ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                    ((symbol-function 'claude-code-ide--create-terminal-session)
+                     (lambda (&rest _) (cons buffer process)))
+                    ((symbol-function 'claude-code-ide--register-session)
+                     #'claude-code-ide--put-session)
+                    ((symbol-function 'claude-code-ide-log) #'ignore))
+            (claude-code-ide--start-session nil nil temporary-file-directory)
+            (should-not (get-buffer-window buffer))))
+      (set-process-sentinel process #'ignore)
       (when (process-live-p process)
-        (delete-process process)))))
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (setq kill-buffer-hook nil)
+          (kill-buffer buffer))))))
 
 (ert-deftest claude-code-ide-test-start-reattach-preserves-hidden-manager-layout ()
   "Start reattachment keeps the manager hidden and preserves editor windows."
@@ -15312,9 +14606,11 @@ inside the target session's directory."
             (delete-other-windows)
             (switch-to-buffer editor)
             (set-window-buffer (split-window-below) other)
+            (with-current-buffer buffer
+              (setq-local major-mode 'ghostel-mode))
             (cl-letf (((symbol-function 'claude-code-ide--ensure-cli)
                        (lambda () t))
-                      ((symbol-function 'claude-code-ide--terminal-ensure-backend)
+                      ((symbol-function 'claude-code-ide-session--ensure-ghostel)
                        #'ignore)
                       ((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
                       ((symbol-function 'claude-code-ide-zmx-list-sessions)
@@ -15352,6 +14648,7 @@ inside the target session's directory."
   (should (require 'claude-code-ide-session nil t))
   (with-temp-buffer
     (rename-buffer "*claude-code[test-session]*" t)
+    (setq-local major-mode 'ghostel-mode)
     (claude-code-ide--maybe-enable-session-mode)
     (should claude-code-ide-session-mode)))
 
@@ -15372,11 +14669,10 @@ inside the target session's directory."
             :id "b" :directory directory :buffer terminal-b
             :last-accessed-at 2))
           (with-current-buffer terminal-a
+            (setq-local major-mode 'ghostel-mode)
             (cl-letf (((symbol-function 'claude-code-ide-session-setup-buffer)
                        #'ignore))
               (claude-code-ide-session-mode 1))
-            (should (memq #'claude-code-ide-session--touch-current-session
-                          post-command-hook))
             (run-hooks 'post-command-hook))
           (should (equal
                    (claude-code-ide-session-id
@@ -15385,47 +14681,22 @@ inside the target session's directory."
       (kill-buffer terminal-a)
       (kill-buffer terminal-b))))
 
-(ert-deftest claude-code-ide-test-session-send-interrupt-dispatches-to-backend ()
-  "Test that session interrupt dispatches to the current terminal backend."
+(ert-deftest claude-code-ide-test-session-send-control-g-resets-idle-state ()
+  "Test that C-g dispatches to Ghostel and records shared activity."
   (should (require 'claude-code-ide-session nil t))
-  (let ((vterm-key-called nil)
-        (eat-string-called nil))
-    (cl-letf (((symbol-function 'vterm-send-key)
-               (lambda (&rest _args)
-                 (setq vterm-key-called t)))
-              ((symbol-function 'eat-term-send-string)
-               (lambda (&rest _args)
-                 (setq eat-string-called t))))
+  (let ((sent nil)
+        (activity-called nil))
+    (cl-letf (((symbol-function 'ghostel-send-C-g)
+               (lambda () (setq sent t)))
+              ((symbol-function 'claude-code-ide-session-idle-record-activity)
+               (lambda (&optional _buffer)
+                 (setq activity-called t))))
       (with-temp-buffer
-        (rename-buffer "*claude-code[test-interrupt]*" t)
-        (claude-code-ide-session-mode 1)
-        (let ((claude-code-ide--terminal-backend 'vterm)
-              (eat-terminal t))
-          (claude-code-ide-session-send-interrupt))
-        (should vterm-key-called)
-        (should-not eat-string-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-control-g-dispatches-to-backend ()
-  "Test that C-g dispatches to each terminal backend."
-  (should (require 'claude-code-ide-session nil t))
-  (dolist (backend '(vterm eat ghostel))
-    (let (sent)
-      (cl-letf (((symbol-function 'vterm-send-key)
-                 (lambda (&rest args) (setq sent args)))
-                ((symbol-function 'eat-term-send-string)
-                 (lambda (&rest args) (setq sent args)))
-                ((symbol-function 'ghostel-send-C-g)
-                 (lambda () (setq sent 'ghostel))))
-        (with-temp-buffer
-          (rename-buffer (format "*claude-code[test-control-g-%s]*" backend) t)
-          (setq-local claude-code-ide--terminal-backend backend
-                      eat-terminal 'terminal)
-          (claude-code-ide-session-send-control-g)
-          (should (equal sent
-                         (pcase backend
-                           ('vterm '("g" nil nil t))
-                           ('eat '(terminal "\007"))
-                           ('ghostel 'ghostel)))))))))
+        (rename-buffer "*claude-code[test-control-g]*" t)
+        (setq-local major-mode 'ghostel-mode)
+        (claude-code-ide-session-send-control-g)
+        (should sent)
+        (should activity-called)))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-sends-control-v-for-image-capable-clis ()
   "Test that image clipboard targets send raw control-V for Claude, Codex, and Oh My Pi."
@@ -15438,11 +14709,11 @@ inside the target session's directory."
                 ((symbol-function 'claude-code-ide-session-send-string)
                  (lambda (string &optional paste)
                    (setq sent (cons string paste))))
-                ((symbol-function 'vterm-yank)
+                ((symbol-function 'ghostel-yank)
                  (lambda () (setq yanked t))))
         (with-temp-buffer
-          (setq-local claude-code-ide--terminal-backend 'vterm
-                      claude-code-ide--session-cli-type cli-type)
+          (setq-local major-mode 'ghostel-mode)
+          (setq-local claude-code-ide--session-cli-type cli-type)
           (claude-code-ide-session-paste-clipboard)
           (should (equal sent '("\026")))
           (should-not yanked))))))
@@ -15458,33 +14729,28 @@ inside the target session's directory."
                 ((symbol-function 'claude-code-ide-session-send-string)
                  (lambda (string &optional paste)
                    (setq sent (cons string paste))))
-                ((symbol-function 'vterm-yank)
+                ((symbol-function 'ghostel-yank)
                  (lambda () (setq yanked t))))
         (with-temp-buffer
-          (setq-local claude-code-ide--terminal-backend 'vterm
-                      claude-code-ide--session-cli-type 'claude)
+          (setq-local major-mode 'ghostel-mode)
+          (setq-local claude-code-ide--session-cli-type 'claude)
           (claude-code-ide-session-paste-clipboard)
           (should (equal sent '("\026")))
           (should-not yanked))))))
 
-(ert-deftest claude-code-ide-test-session-paste-clipboard-preserves-text-yank-by-backend ()
-  "Test that non-image clipboard targets use each backend's normal paste."
+(ert-deftest claude-code-ide-test-session-paste-clipboard-preserves-text-yank ()
+  "Test that non-image clipboard targets use Ghostel's normal paste."
   (should (require 'claude-code-ide-session nil t))
-  (dolist (backend '(vterm eat ghostel))
-    (let ((yanked nil))
-      (cl-letf (((symbol-function 'gui-get-selection)
-                 (lambda (&rest _args) [UTF8_STRING]))
-                ((symbol-function 'vterm-yank)
-                 (lambda () (setq yanked 'vterm)))
-                ((symbol-function 'eat-yank)
-                 (lambda () (setq yanked 'eat)))
-                ((symbol-function 'ghostel-yank)
-                 (lambda () (setq yanked 'ghostel))))
-        (with-temp-buffer
-          (setq-local claude-code-ide--terminal-backend backend
-                      claude-code-ide--session-cli-type 'claude)
-          (claude-code-ide-session-paste-clipboard)
-          (should (eq yanked backend)))))))
+  (let ((yanked nil))
+    (cl-letf (((symbol-function 'gui-get-selection)
+               (lambda (&rest _args) [UTF8_STRING]))
+              ((symbol-function 'ghostel-yank)
+               (lambda () (setq yanked t))))
+      (with-temp-buffer
+        (setq-local claude-code-ide--session-cli-type 'claude
+                    major-mode 'ghostel-mode)
+        (claude-code-ide-session-paste-clipboard)
+        (should yanked)))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-falls-back-for-unsupported-or-unavailable-targets ()
   "Test that unsupported and unavailable target queries retain normal paste."
@@ -15496,44 +14762,42 @@ inside the target session's directory."
                    (if (eq targets 'error)
                        (error "Clipboard unavailable")
                      targets)))
-                ((symbol-function 'vterm-yank)
+                ((symbol-function 'ghostel-yank)
                  (lambda () (setq yanked t))))
         (with-temp-buffer
-          (setq-local claude-code-ide--terminal-backend 'vterm
-                      claude-code-ide--session-cli-type 'claude)
+          (setq-local claude-code-ide--session-cli-type 'claude
+                      major-mode 'ghostel-mode)
           (claude-code-ide-session-paste-clipboard)
           (should yanked))))))
 
-(ert-deftest claude-code-ide-test-session-paste-clipboard-gates-images-to-claude-and-codex ()
-  "Test that image clipboard targets fall back for non-image-capable CLIs."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((sent nil)
-        (yanked nil))
-    (cl-letf (((symbol-function 'gui-get-selection)
-               (lambda (&rest _args) [public.png]))
-              ((symbol-function 'claude-code-ide-session-send-string)
-               (lambda (&rest _args) (setq sent t)))
-              ((symbol-function 'vterm-yank)
-               (lambda () (setq yanked t))))
-      (with-temp-buffer
-        (setq-local claude-code-ide--terminal-backend 'vterm
-                    claude-code-ide--session-cli-type 'pi)
-        (claude-code-ide-session-paste-clipboard)
-        (should-not sent)
-        (should yanked)))))
+(ert-deftest claude-code-ide-test-session-paste-clipboard-gates-images-by-cli-capability ()
+  "Pi and OpenCode keep normal paste instead of image control sequences."
+  (dolist (cli-type '(pi opencode))
+    (let (sent yanked)
+      (cl-letf (((symbol-function 'gui-get-selection)
+                 (lambda (&rest _) [public.png]))
+                ((symbol-function 'claude-code-ide-session-send-string)
+                 (lambda (&rest _) (setq sent t)))
+                ((symbol-function 'ghostel-yank)
+                 (lambda () (setq yanked t))))
+        (with-temp-buffer
+          (setq-local claude-code-ide--session-cli-type cli-type
+                      major-mode 'ghostel-mode)
+          (claude-code-ide-session-paste-clipboard)
+          (should-not sent)
+          (should yanked))))))
 
-(ert-deftest claude-code-ide-test-session-paste-clipboard-installs-super-v-for-each-backend ()
-  "Test that every session backend installs the clipboard paste keybinding."
+(ert-deftest claude-code-ide-test-session-paste-clipboard-installs-super-v ()
+  "Test that the session mode installs the clipboard paste keybinding."
   (should (require 'claude-code-ide-session nil t))
-  (dolist (backend '(vterm eat ghostel))
-    (with-temp-buffer
-      (rename-buffer (format "*claude-code[test-%s-paste]*" backend) t)
-      (setq-local claude-code-ide--terminal-backend backend)
-      (claude-code-ide-session-mode 1)
-      (should (eq (key-binding (kbd "s-v"))
-                  #'claude-code-ide-session-paste-clipboard))
-      (should (eq (key-binding (kbd "H-v"))
-                  #'claude-code-ide-session-paste-clipboard)))))
+  (with-temp-buffer
+    (rename-buffer "*claude-code[test-paste]*" t)
+    (setq-local major-mode 'ghostel-mode)
+    (claude-code-ide-session-mode 1)
+    (should (eq (key-binding (kbd "s-v"))
+                #'claude-code-ide-session-paste-clipboard))
+    (should (eq (key-binding (kbd "H-v"))
+                #'claude-code-ide-session-paste-clipboard))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-does-not-override-evil-keys ()
   "Test that clipboard precedence does not promote unrelated session keys."
@@ -15547,8 +14811,8 @@ inside the target session's directory."
           (define-key claude-code-ide-session-mode-map (kbd "C-z") #'ignore)
           (with-temp-buffer
             (rename-buffer "*claude-code[test-evil-precedence]*" t)
-            (setq-local claude-code-ide--terminal-backend 'ghostel
-                        emulation-mode-map-alists
+            (setq-local major-mode 'ghostel-mode)
+            (setq-local emulation-mode-map-alists
                         (list (list (cons t evil-map))))
             (claude-code-ide-session-mode 1)
             (should (eq (key-binding (kbd "C-z")) #'previous-line))
@@ -15569,11 +14833,12 @@ inside the target session's directory."
     (unwind-protect
         (progn
           (with-current-buffer non-session-buffer
+            (setq-local major-mode 'ghostel-mode)
             (use-local-map ghostel-semi-char-map)
             (should (eq (key-binding (kbd "s-v")) #'ghostel-yank)))
           (with-current-buffer session-buffer
+            (setq-local major-mode 'ghostel-mode)
             (use-local-map ghostel-semi-char-map)
-            (setq-local claude-code-ide--terminal-backend 'ghostel)
             (claude-code-ide-session-mode 1)
             (should (eq (lookup-key ghostel-semi-char-map (kbd "s-v"))
                         #'ghostel-yank))
@@ -15589,169 +14854,7 @@ inside the target session's directory."
       (kill-buffer session-buffer))))
 
 (ert-deftest claude-code-ide-test-session-send-string-resets-idle-state ()
-  "Test that sending a string records shared activity."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((sent-string nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'vterm-send-string)
-               (lambda (string &optional _paste)
-                 (setq sent-string string)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-string-idle]*" t)
-        (setq claude-code-ide--terminal-backend 'vterm)
-        (claude-code-ide-session-send-string "status")
-        (should (equal sent-string "status"))
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-string-resets-idle-state-eat ()
-  "Test that sending a string records shared activity on eat."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((sent-string nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'eat-term-send-string)
-               (lambda (_terminal string)
-                 (setq sent-string string)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-string-idle-eat]*" t)
-        (setq claude-code-ide--terminal-backend 'eat
-              eat-terminal t)
-        (claude-code-ide-session-send-string "status")
-        (should (equal sent-string "status"))
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-return-resets-idle-state ()
-  "Test that sending return records shared activity."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((return-called nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'vterm-send-return)
-               (lambda ()
-                 (setq return-called t)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-return-idle]*" t)
-        (setq claude-code-ide--terminal-backend 'vterm)
-        (claude-code-ide-session-send-return)
-        (should return-called)
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-return-resets-idle-state-eat ()
-  "Test that sending return records shared activity on eat."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((sent-string nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'eat-term-send-string)
-               (lambda (_terminal string)
-                 (setq sent-string string)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-return-idle-eat]*" t)
-        (setq claude-code-ide--terminal-backend 'eat
-              eat-terminal t)
-        (claude-code-ide-session-send-return)
-        (should (equal sent-string "\r"))
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-escape-resets-idle-state ()
-  "Test that sending escape records shared activity."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((escape-called nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'vterm-send-escape)
-               (lambda ()
-                 (setq escape-called t)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-escape-idle]*" t)
-        (setq claude-code-ide--terminal-backend 'vterm)
-        (claude-code-ide-session-send-escape)
-        (should escape-called)
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-escape-resets-idle-state-eat ()
-  "Test that sending escape records shared activity on eat."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((sent-string nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'eat-term-send-string)
-               (lambda (_terminal string)
-                 (setq sent-string string)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-escape-idle-eat]*" t)
-        (setq claude-code-ide--terminal-backend 'eat
-              eat-terminal t)
-        (claude-code-ide-session-send-escape)
-        (should (equal sent-string "\e"))
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-interrupt-resets-idle-state ()
-  "Test that sending interrupt records shared activity."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((interrupt-called nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'vterm-send-key)
-               (lambda (&rest _args)
-                 (setq interrupt-called t)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-interrupt-idle]*" t)
-        (setq claude-code-ide--terminal-backend 'vterm)
-        (claude-code-ide-session-send-interrupt)
-        (should interrupt-called)
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-interrupt-resets-idle-state-eat ()
-  "Test that sending interrupt records shared activity on eat."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((sent-string nil)
-        (activity-called nil))
-    (cl-letf (((symbol-function 'eat-term-send-string)
-               (lambda (_terminal string)
-                 (setq sent-string string)))
-              ((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional _buffer)
-                 (setq activity-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-interrupt-idle-eat]*" t)
-        (setq claude-code-ide--terminal-backend 'eat
-              eat-terminal t)
-        (claude-code-ide-session-send-interrupt)
-        (should (equal sent-string "\003"))
-        (should activity-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-interrupt-dispatches-to-ghostel ()
-  "Test that session interrupt dispatches to ghostel."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((ghostel-interrupt-called nil))
-    (cl-letf (((symbol-function 'ghostel-send-C-c)
-               (lambda ()
-                 (setq ghostel-interrupt-called t))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-ghostel-interrupt]*" t)
-        (claude-code-ide-session-mode 1)
-        (let ((claude-code-ide--terminal-backend 'ghostel))
-          (claude-code-ide-session-send-interrupt))
-        (should ghostel-interrupt-called)))))
-
-(ert-deftest claude-code-ide-test-session-send-string-resets-idle-state-ghostel ()
-  "Test that sending a string records shared activity on ghostel."
+  "Test that sending a string dispatches to Ghostel and records activity."
   (should (require 'claude-code-ide-session nil t))
   (let ((sent-string nil)
         (activity-called nil))
@@ -15762,10 +14865,65 @@ inside the target session's directory."
                (lambda (&optional _buffer)
                  (setq activity-called t))))
       (with-temp-buffer
-        (rename-buffer "*claude-code[test-send-string-idle-ghostel]*" t)
-        (setq claude-code-ide--terminal-backend 'ghostel)
+        (rename-buffer "*claude-code[test-send-string-idle]*" t)
+        (setq-local major-mode 'ghostel-mode)
         (claude-code-ide-session-send-string "status")
         (should (equal sent-string "status"))
+        (should activity-called)))))
+
+(ert-deftest claude-code-ide-test-session-send-return-resets-idle-state ()
+  "Test that sending return dispatches to Ghostel and records activity."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil)
+        (activity-called nil))
+    (cl-letf (((symbol-function 'ghostel--send-string)
+               (lambda (string)
+                 (setq sent-string string)))
+              ((symbol-function 'claude-code-ide-session-idle-record-activity)
+               (lambda (&optional _buffer)
+                 (setq activity-called t))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-return-idle]*" t)
+        (setq-local major-mode 'ghostel-mode)
+        (claude-code-ide-session-send-return)
+        (should (equal sent-string "\r"))
+        (should activity-called)))))
+
+(ert-deftest claude-code-ide-test-session-send-escape-resets-idle-state ()
+  "Test that sending escape dispatches to Ghostel and records activity."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((sent-string nil)
+        (activity-called nil))
+    (cl-letf (((symbol-function 'ghostel--send-string)
+               (lambda (string)
+                 (setq sent-string string)))
+              ((symbol-function 'claude-code-ide-session-idle-record-activity)
+               (lambda (&optional _buffer)
+                 (setq activity-called t))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-send-escape-idle]*" t)
+        (setq-local major-mode 'ghostel-mode)
+        (claude-code-ide-session-send-escape)
+        (should (equal sent-string "\e"))
+        (should activity-called)))))
+
+(ert-deftest claude-code-ide-test-session-send-interrupt-resets-idle-state ()
+  "Test that session interrupt dispatches to Ghostel and records activity."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((ghostel-interrupt-called nil)
+        (activity-called nil))
+    (cl-letf (((symbol-function 'ghostel-send-C-c)
+               (lambda ()
+                 (setq ghostel-interrupt-called t)))
+              ((symbol-function 'claude-code-ide-session-idle-record-activity)
+               (lambda (&optional _buffer)
+                 (setq activity-called t))))
+      (with-temp-buffer
+        (rename-buffer "*claude-code[test-ghostel-interrupt]*" t)
+        (setq-local major-mode 'ghostel-mode)
+        (claude-code-ide-session-mode 1)
+        (claude-code-ide-session-send-interrupt)
+        (should ghostel-interrupt-called)
         (should activity-called)))))
 
 (ert-deftest claude-code-ide-test-session-send-string-uses-ghostel-paste-when-requested ()
@@ -15785,7 +14943,7 @@ inside the target session's directory."
                  (setq activity-called t))))
       (with-temp-buffer
         (rename-buffer "*claude-code[test-send-string-paste-ghostel]*" t)
-        (setq claude-code-ide--terminal-backend 'ghostel)
+        (setq-local major-mode 'ghostel-mode)
         (claude-code-ide-session-send-string "status" t)
         (should (equal pasted-string "status"))
         (should-not raw-string)
@@ -15803,9 +14961,10 @@ inside the target session's directory."
           (save-window-excursion
             (delete-other-windows)
             (switch-to-buffer session-buffer)
+            (setq-local major-mode 'ghostel-mode)
             (let ((orig-activity (symbol-function 'claude-code-ide-session-idle-record-activity)))
-              (cl-letf (((symbol-function 'vterm-send-string)
-                         (lambda (string &optional _paste)
+              (cl-letf (((symbol-function 'ghostel--send-string)
+                         (lambda (string)
                            (setq sent-string string)))
                         ((symbol-function 'frame-focus-state)
                          (lambda (_frame) t))
@@ -15825,8 +14984,7 @@ inside the target session's directory."
                            (setq activity-called t)
                            (funcall orig-activity buffer))))
                 (with-current-buffer session-buffer
-                  (setq-local claude-code-ide--terminal-backend 'vterm
-                              claude-code-ide-session-idle-enabled t
+                  (setq-local claude-code-ide-session-idle-enabled t
                               claude-code-ide-session-idle-p t
                               claude-code-ide-session-idle-timer 'old-timer))
                 (claude-code-ide-session-send-string "status")
@@ -15843,108 +15001,52 @@ inside the target session's directory."
   "Test that interrupt only applies to Claude session buffers."
   (should (require 'claude-code-ide-session nil t))
   (with-temp-buffer
-    (let ((claude-code-ide--terminal-backend 'vterm))
-      (should-error (claude-code-ide-session-send-interrupt)
-                    :type 'user-error))))
+    (should-error (claude-code-ide-session-send-interrupt)
+                  :type 'user-error)))
 
-(ert-deftest claude-code-ide-test-session-idle-observer-is-installed-on-session-buffers ()
-  "Test that backend output filters reset idle only for session buffers."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (should (advice-member-p #'claude-code-ide-session-idle--filter-advice
-                           'vterm--filter))
-  (let ((activity-buffer nil))
-    (cl-letf (((symbol-function 'claude-code-ide-session-idle-record-activity)
-               (lambda (&optional buffer)
-                 (setq activity-buffer (or buffer (current-buffer))))))
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-idle-observer]*" t)
-        (vterm--filter nil "output")
-        (should (eq activity-buffer (current-buffer))))
-      (setq activity-buffer nil)
-      (with-temp-buffer
-        (rename-buffer "*not-a-claude-buffer*" t)
-        (vterm--filter nil "output")
-        (should-not activity-buffer)))))
-
-(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer ()
-  "Test that backend output filters reset idle for the process buffer."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (let ((activity-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer]*"))
-        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
+(ert-deftest claude-code-ide-test-session-output-observers-preserve-buffer-ownership ()
+  "Both Ghostel output paths update their own Session and reject unsupported modes."
+  (let* ((session-buffer (generate-new-buffer "*claude-code[output-owner]*"))
+         (other-buffer (generate-new-buffer "*claude-code[output-sibling]*"))
+         (process (make-pipe-process :name "cci-output-owner"
+                                     :buffer session-buffer :noquery t))
+         (claude-code-ide-session-working-delay 0)
+         (claude-code-ide-session-working-hook nil)
+         (claude-code-ide-session-idle-suppressed-predicate #'always))
     (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process)
-                     session-buffer))
-                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
-                   (lambda (&optional buffer)
-                     (setq activity-buffer (or buffer (current-buffer))))))
+        (dolist (entry '((ghostel--filter . "output")
+                         (ghostel--events-filter . "(ignore)")))
+          (dolist (buffer (list session-buffer other-buffer))
+            (with-current-buffer buffer
+              (setq-local major-mode 'ghostel-mode
+                          claude-code-ide-session-tracking-started-p t
+                          claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p t
+                          claude-code-ide-session-working-p nil)))
           (with-current-buffer other-buffer
-            (vterm--filter 'mock-process "output"))
-          (should (eq activity-buffer session-buffer)))
+            (funcall (car entry) process "()"))
+          (with-current-buffer session-buffer
+            (should claude-code-ide-session-idle-p)
+            (should-not claude-code-ide-session-working-p))
+          (with-current-buffer other-buffer
+            (funcall (car entry) process (cdr entry)))
+          (with-current-buffer session-buffer
+            (should-not claude-code-ide-session-idle-p)
+            (should claude-code-ide-session-working-p)
+            (setq-local major-mode 'fundamental-mode
+                        claude-code-ide-session-idle-p t
+                        claude-code-ide-session-working-p nil))
+          (with-current-buffer other-buffer
+            (funcall (car entry) process (cdr entry)))
+          (dolist (buffer (list session-buffer other-buffer))
+            (with-current-buffer buffer
+              (should claude-code-ide-session-idle-p)
+              (should-not claude-code-ide-session-working-p))))
+      (delete-process process)
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
-(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer-eat ()
-  "Test that eat output filters reset idle for the process buffer."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (let ((activity-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer-eat]*"))
-        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process)
-                     session-buffer))
-                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
-                   (lambda (&optional buffer)
-                     (setq activity-buffer (or buffer (current-buffer))))))
-          (with-current-buffer other-buffer
-            (eat--filter 'mock-process "output"))
-          (should (eq activity-buffer session-buffer)))
-      (kill-buffer session-buffer)
-      (kill-buffer other-buffer))))
 
-(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer-ghostel ()
-  "Test that ghostel output filters reset idle for the process buffer."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (should (advice-member-p #'claude-code-ide-session-idle--filter-advice
-                           'ghostel--filter))
-  (let ((activity-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer-ghostel]*"))
-        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process)
-                     session-buffer))
-                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
-                   (lambda (&optional buffer)
-                     (setq activity-buffer (or buffer (current-buffer))))))
-          (with-current-buffer other-buffer
-            (ghostel--filter 'mock-process "output"))
-          (should (eq activity-buffer session-buffer)))
-      (kill-buffer session-buffer)
-      (kill-buffer other-buffer))))
-
-(ert-deftest claude-code-ide-test-session-idle-observer-uses-process-buffer-ghostel-events ()
-  "Test that ghostel native-PTY events reset idle for the process buffer."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (should (advice-member-p #'claude-code-ide-session-idle--filter-advice
-                           'ghostel--events-filter))
-  (let ((activity-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-idle-process-buffer-ghostel-events]*"))
-        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process)
-                     session-buffer))
-                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
-                   (lambda (&optional buffer)
-                     (setq activity-buffer (or buffer (current-buffer))))))
-          (with-current-buffer other-buffer
-            (ghostel--events-filter 'mock-pipe "(ignore)"))
-          (should (eq activity-buffer session-buffer)))
-      (kill-buffer session-buffer)
-      (kill-buffer other-buffer))))
 
 (ert-deftest claude-code-ide-test-session-idle-real-activity-p ()
   "Test that content-free ghostel heartbeats are not real activity."
@@ -15957,26 +15059,6 @@ inside the target session's directory."
   (should (claude-code-ide-session-idle--real-activity-p
            "(ghostel--handle-notification \"T\" \"B\")")))
 
-(ert-deftest claude-code-ide-test-session-idle-filter-ignores-ghostel-heartbeat ()
-  "Test that a content-free `()' ghostel-events batch is not activity.
-Ghostel's native PTY reaper redraws cursors/spinners via periodic
-empty event batches; treating those as activity flapped hidden idle
-sessions back to working every few seconds with no real output."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (let ((activity-called nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-idle-heartbeat]*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process) session-buffer))
-                  ((symbol-function 'claude-code-ide-session-idle-record-activity)
-                   (lambda (&optional _buffer) (setq activity-called t)))
-                  ((symbol-function 'claude-code-ide-session-working-record-output)
-                   #'ignore))
-          (claude-code-ide-session-idle--filter-advice
-           (lambda (&rest _args) nil)
-           'mock-pipe "()")
-          (should-not activity-called))
-      (kill-buffer session-buffer))))
 
 
 (ert-deftest claude-code-ide-test-session-idle-filter-does-not-log-terminal-output ()
@@ -15986,6 +15068,8 @@ sessions back to working every few seconds with no real output."
         (session-buffer (generate-new-buffer "*claude-code[test-idle-no-output-log]*")))
     (unwind-protect
         (let ((claude-code-ide-debug t))
+          (with-current-buffer session-buffer
+            (setq-local major-mode 'ghostel-mode))
           (cl-letf (((symbol-function 'process-buffer)
                      (lambda (_process)
                        session-buffer))
@@ -16004,80 +15088,24 @@ sessions back to working every few seconds with no real output."
             (should-not debug-calls)))
       (kill-buffer session-buffer))))
 
-(ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer ()
-  "Test that backend output marks the process buffer as working."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (let ((working-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-working-process-buffer]*"))
-        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process)
-                     session-buffer))
-                  ((symbol-function 'claude-code-ide-session-working-record-output)
-                   (lambda (&optional buffer)
-                     (setq working-buffer (or buffer (current-buffer))))))
-          (with-current-buffer other-buffer
-            (vterm--filter 'mock-process "output"))
-          (should (eq working-buffer session-buffer)))
-      (kill-buffer session-buffer)
-      (kill-buffer other-buffer))))
 
-(ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer-ghostel ()
-  "Test that ghostel backend output marks the process buffer as working."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (let ((working-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-working-process-buffer-ghostel]*"))
-        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process)
-                     session-buffer))
-                  ((symbol-function 'claude-code-ide-session-working-record-output)
-                   (lambda (&optional buffer)
-                     (setq working-buffer (or buffer (current-buffer))))))
-          (with-current-buffer other-buffer
-            (ghostel--filter 'mock-process "output"))
-          (should (eq working-buffer session-buffer)))
-      (kill-buffer session-buffer)
-      (kill-buffer other-buffer))))
 
-(ert-deftest claude-code-ide-test-session-working-observer-uses-process-buffer-ghostel-events ()
-  "Test that ghostel native-PTY events mark the process buffer as working."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (let ((working-buffer nil)
-        (session-buffer (generate-new-buffer "*claude-code[test-working-process-buffer-ghostel-events]*"))
-        (other-buffer (generate-new-buffer "*not-a-claude-buffer*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'process-buffer)
-                   (lambda (_process)
-                     session-buffer))
-                  ((symbol-function 'claude-code-ide-session-working-record-output)
-                   (lambda (&optional buffer)
-                     (setq working-buffer (or buffer (current-buffer))))))
-          (with-current-buffer other-buffer
-            (ghostel--events-filter 'mock-pipe "(ignore)"))
-          (should (eq working-buffer session-buffer)))
-      (kill-buffer session-buffer)
-      (kill-buffer other-buffer))))
 
 (ert-deftest claude-code-ide-test-ghostel-focus-observer-suppresses-working-during-focus-report ()
-  "Test Ghostel focus replies cannot mark their session as working."
-  (should (require 'claude-code-ide-session-idle nil t))
-  (let ((suppressed-buffer nil))
+  "Ghostel focus replies do not mark an otherwise active Session as working."
+  (let ((claude-code-ide-session-working-delay 0)
+        (claude-code-ide-session-working-hook nil)
+        (claude-code-ide-session-working-resize-suppress-delay 60))
     (with-temp-buffer
-      (rename-buffer "*claude-code[test-working-ghostel-focus]*" t)
-      (let ((session-buffer (current-buffer)))
-        (cl-letf (((symbol-function 'claude-code-ide-session-buffer-p)
-                   (lambda (&optional _buffer) t))
-                  ((symbol-function 'claude-code-ide-session-working-suppress-after-resize)
-                   (lambda (&optional buffer)
-                     (setq suppressed-buffer (or buffer (current-buffer))))))
-          (should (eq :focus-result
-                      (claude-code-ide-session-working--ghostel-focus-advice
-                       (lambda (&rest _args)
-                         (should (eq suppressed-buffer session-buffer))
-                         :focus-result)))))))))
+      (rename-buffer "*claude-code[focus-report]*" t)
+      (setq-local major-mode 'ghostel-mode
+                  claude-code-ide-session-tracking-started-p t)
+      (claude-code-ide-session-working-record-output)
+      (should claude-code-ide-session-working-p)
+      (claude-code-ide-session-working-clear-state)
+      (claude-code-ide-session-working--ghostel-focus-advice
+       (lambda (&rest _) (claude-code-ide-session-working-record-output)))
+      (should-not claude-code-ide-session-working-p))))
 
 (ert-deftest claude-code-ide-test-session-idle-record-activity-does-not-arm-visible-session ()
   "Visible focused sessions clear idle state without arming a timer."
@@ -16606,6 +15634,7 @@ sessions back to working every few seconds with no real output."
                "git status")))
         (with-temp-buffer
           (rename-buffer "*claude-code[test-command-reader]*" t)
+          (setq-local major-mode 'ghostel-mode)
           (claude-code-ide-session-mode 1)
           (claude-code-ide-session-insert-command)
           (should (eq reader-buffer (current-buffer)))
@@ -16620,6 +15649,7 @@ sessions back to working every few seconds with no real output."
                  (setq sent (cons string paste)))))
       (with-temp-buffer
         (rename-buffer "*claude-code[test-omp-packets]*" t)
+        (setq-local major-mode 'ghostel-mode)
         (setq-local claude-code-ide--session-cli-type 'omp)
         (claude-code-ide-session-mode 1)
         (claude-code-ide-session-insert-command "/review ")
@@ -16638,6 +15668,7 @@ sessions back to working every few seconds with no real output."
                  (setq sent (cons string paste)))))
       (with-temp-buffer
         (rename-buffer "*claude-code[test-insert-in-place]*" t)
+        (setq-local major-mode 'ghostel-mode)
         (setq-local claude-code-ide--session-cli-type 'omp)
         (claude-code-ide-session-mode 1)
         (insert "fix ")
@@ -16661,6 +15692,7 @@ sessions back to working every few seconds with no real output."
                "src/main.el")))
         (with-temp-buffer
           (rename-buffer "*claude-code[test-file-reader]*" t)
+          (setq-local major-mode 'ghostel-mode)
           (claude-code-ide-session-mode 1)
           (claude-code-ide-session-insert-file-reference)
           (should (eq reader-buffer (current-buffer)))
@@ -16945,26 +15977,51 @@ sessions back to working every few seconds with no real output."
         (should (eq claude-code-ide-session-working-timer 'mock-working-timer))))))
 
 (ert-deftest claude-code-ide-test-terminal-working-resize-observer-suppresses-working-during-resize ()
-  "Test terminal resize observer suppresses working output before resizing."
-  (should (require 'claude-code-ide nil t))
-  (let ((suppressed-buffer nil))
-    (save-window-excursion
-      (with-temp-buffer
-        (rename-buffer "*claude-code[test-working-resize-observer]*" t)
-        (let ((session-buffer (current-buffer)))
-          (switch-to-buffer session-buffer)
-          (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-                     (lambda (&optional _buffer)
-                       t))
-                    ((symbol-function 'claude-code-ide-session-working-suppress-after-resize)
-                     (lambda (&optional buffer)
-                       (setq suppressed-buffer (or buffer (current-buffer))))))
-            (should (eq :base-result
-                        (claude-code-ide--terminal-working-resize-observer
-                         (lambda (&rest _args)
-                           (should (eq suppressed-buffer session-buffer))
-                           :base-result))))
-            (should (eq suppressed-buffer session-buffer))))))))
+  "Resize replies stay quiet from the first Session until the last Session exits."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-cli-path "codex")
+        (claude-code-ide-prevent-reflow-glitch nil)
+        (claude-code-ide-session-working-delay 0)
+        (claude-code-ide-session-working-hook nil)
+        (claude-code-ide-session-working-resize-suppress-delay 60)
+        (first (generate-new-buffer "*claude-code[resize-first]*"))
+        (second (generate-new-buffer "*claude-code[resize-second]*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--adjust-size)
+                   (lambda (&rest _) (claude-code-ide-session-working-record-output)))
+                  ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore)
+                  ((symbol-function 'claude-code-ide-manager-session-ended) #'ignore))
+          (claude-code-ide--remove-terminal-resize-observer)
+          (dolist (buffer (list first second))
+            (with-current-buffer buffer
+              (setq-local major-mode 'ghostel-mode
+                          claude-code-ide-session-tracking-started-p t)))
+          (with-current-buffer first
+            (ghostel--adjust-size nil)
+            (should claude-code-ide-session-working-p)
+            (claude-code-ide-session-working-clear-state))
+          (claude-code-ide--register-session
+           (claude-code-ide-session-create
+            :id "first" :directory temporary-file-directory :buffer first :cli-type 'codex
+            :process (make-pipe-process :name "cci-resize-first" :buffer first :noquery t)))
+          (with-current-buffer first
+            (ghostel--adjust-size nil)
+            (should-not claude-code-ide-session-working-p))
+          (claude-code-ide--register-session
+           (claude-code-ide-session-create
+            :id "second" :directory temporary-file-directory :buffer second :cli-type 'codex
+            :process (make-pipe-process :name "cci-resize-second" :buffer second :noquery t)))
+          (claude-code-ide--cleanup-on-exit "first" t)
+          (with-current-buffer second
+            (ghostel--adjust-size nil)
+            (should-not claude-code-ide-session-working-p))
+          (claude-code-ide--cleanup-on-exit "second" t)
+          (with-current-buffer second
+            (setq-local claude-code-ide-session-working-suppress-until nil)
+            (ghostel--adjust-size nil)
+            (should claude-code-ide-session-working-p)))
+      (kill-buffer first)
+      (kill-buffer second))))
 
 (ert-deftest claude-code-ide-test-session-tracking-grace-setup-defers-start ()
   "Test session setup defers idle and working tracking during startup grace."
@@ -18409,12 +17466,10 @@ The resync ignores pin state and stored order keys."
           (claude-code-ide-zmx--pending-name "cci-test-name")
           (claude-code-ide-zmx--pending-attach-only nil)
           captured-cmd)
-      (cl-letf (((symbol-function 'claude-code-ide--resolve-terminal-backend)
-                 (lambda (&optional _) 'vterm))
-                ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
-                ((symbol-function 'vterm)
-                 (lambda (&rest _)
-                   (setq captured-cmd vterm-shell)
+      (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                ((symbol-function 'ghostel-exec)
+                 (lambda (_buffer _program args)
+                   (setq captured-cmd (nth 1 args))
                    (error "Stop after capture"))))
         (ignore-errors
           (claude-code-ide--create-terminal-with-command
@@ -18450,12 +17505,10 @@ The resync ignores pin state and stored order keys."
   "Nil pending name leaves the command untouched (use-zmx off path)."
   (let ((claude-code-ide-zmx--pending-name nil)
         captured-cmd)
-    (cl-letf (((symbol-function 'claude-code-ide--resolve-terminal-backend)
-               (lambda (&optional _) 'vterm))
-              ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
-              ((symbol-function 'vterm)
-               (lambda (&rest _)
-                 (setq captured-cmd vterm-shell)
+    (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+              ((symbol-function 'ghostel-exec)
+               (lambda (_buffer _program args)
+                 (setq captured-cmd (nth 1 args))
                  (error "Stop after capture"))))
       (ignore-errors
         (claude-code-ide--create-terminal-with-command
@@ -19189,27 +18242,6 @@ Return a plist with :killed-zmx and :killed-buffer."
         (delete-process process)
         (kill-buffer buffer)))))
 
-(ert-deftest claude-code-ide-test-remote-attach-rejects-non-ghostel-backend ()
-  "A vterm or eat backend is refused before any row, buffer, or process exists."
-  (dolist (backend '(vterm eat))
-    (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
-          (claude-code-ide-manager--items nil)
-          (claude-code-ide-manager-persist-state nil)
-          (claude-code-ide-remote-hosts '("host"))
-          (claude-code-ide-terminal-backend backend)
-          (claude-code-ide-cli-terminal-backends nil)
-          (buffers-before (buffer-list)))
-      (cl-letf (((symbol-function 'claude-code-ide--create-terminal-with-command)
-                 (lambda (&rest _) (ert-fail "Terminal created on unsupported backend"))))
-        (let ((err (should-error
-                    (claude-code-ide--create-remote-session "/remote/project" "cci-omp-x" "host" nil)
-                    :type 'user-error)))
-          (should (string-match-p (symbol-name backend) (cadr err)))))
-      (should (= (hash-table-count claude-code-ide--sessions) 0))
-      (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "x"))
-      (should-not claude-code-ide-manager--items)
-      (should (equal (buffer-list) buffers-before)))))
-
 (ert-deftest claude-code-ide-test-remote-attachment-bypasses-local-agent-startup ()
   "Remote attachment needs only a terminal and keeps remote paths as text."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
@@ -19218,14 +18250,13 @@ Return a plist with :killed-zmx and :killed-buffer."
         (claude-code-ide-cli-path "/missing/omp")
         (claude-code-ide-zmx-program "/missing/zmx")
         (claude-code-ide-terminal-initialization-delay 0)
-        (claude-code-ide-terminal-backend 'ghostel)
         (claude-code-ide-manager-persist-state nil)
         (file-name-handler-alist
          (list (cons "\\`/ssh:" (lambda (&rest _) (ert-fail "Remote filesystem access")))))
         buffer process working-directory terminal-command selected-id)
     (unwind-protect
         (cl-letf
-            (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+            (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
              ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata) #'ignore)
              ((symbol-function 'claude-code-ide-zmx--call-remote)
               (lambda (&rest _) (ert-fail "Fresh discovery caused another SSH request")))
@@ -19249,6 +18280,8 @@ Return a plist with :killed-zmx and :killed-buffer."
                       process (make-process :name "cci-remote-fixture"
                                             :buffer buffer :command '("cat")
                                             :connection-type 'pipe :noquery t))
+                (with-current-buffer buffer
+                  (setq-local major-mode 'ghostel-mode))
                 (cons buffer process)))
              ((symbol-function 'claude-code-ide--create-terminal-session)
               (lambda (&rest _) (ert-fail "Remote attach entered an Agent builder")))
@@ -19573,6 +18606,8 @@ default, so the default must not track the last saved value."
                                  :id id :host host :zmx-name "same"
                                  :directory "/tmp/shared/" :buffer buffer
                                  :process process :cli-type 'omp :order 1)))
+                  (with-current-buffer buffer
+                    (setq-local major-mode 'ghostel-mode))
                   (push buffer buffers)
                   (push process clients)
                   (claude-code-ide--put-session session)
@@ -19712,20 +18747,21 @@ default, so the default must not track the last saved value."
   (claude-code-ide-tests--with-remote-targets
    (let ((other (add-target "b" "host-b"))
          (claude-code-ide-terminal-initialization-delay 0)
-         (claude-code-ide-terminal-backend 'ghostel)
          (available nil))
      (cl-letf
-         (((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+         (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
           ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
           ((symbol-function 'claude-code-ide--register-session)
            #'claude-code-ide--put-session)
           ((symbol-function 'claude-code-ide--create-terminal-with-command)
            (lambda (name _directory _command _environment)
-             (unless available (user-error "The terminal backend is unavailable"))
+             (unless available (user-error "Ghostel is unavailable"))
              (let* ((buffer (generate-new-buffer name))
                     (process (make-pipe-process
                               :name "cci-reattached-client" :buffer buffer
                               :noquery t :sentinel #'ignore)))
+               (with-current-buffer buffer
+                 (setq-local major-mode 'ghostel-mode))
                (push buffer buffers)
                (push process clients)
                (cons buffer process)))))
@@ -19767,36 +18803,36 @@ default, so the default must not track the last saved value."
   (claude-code-ide-tests--with-remote-targets
    (claude-code-ide--materialize-remote-target
     "stable" "host-a" "same" "/tmp/shared/" 1 1)
-   (let ((claude-code-ide-terminal-backend 'ghostel))
-     (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
-                (lambda (host _args callback &optional _name)
-                  (funcall callback (list :host host :status 0
-                                          :stdout "same-other\n" :stderr ""))
-                  nil))
-               ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
-               ((symbol-function 'claude-code-ide--create-terminal-with-command)
-                (lambda (&rest _) (ert-fail "A missing target started a terminal"))))
-       (should-error (claude-code-ide--reattach-remote-session "stable")
-                     :type 'user-error)
-       (should-not (claude-code-ide--get-session "stable"))
-       (should (claude-code-ide-manager--item-by-session-key "stable"))))))
+   (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+              (lambda (host _args callback &optional _name)
+                (funcall callback (list :host host :status 0
+                                        :stdout "same-other\n" :stderr ""))
+                nil))
+             ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+             ((symbol-function 'claude-code-ide--create-terminal-with-command)
+              (lambda (&rest _) (ert-fail "A missing target started a terminal"))))
+     (should-error (claude-code-ide--reattach-remote-session "stable")
+                   :type 'user-error)
+     (should-not (claude-code-ide--get-session "stable"))
+     (should (claude-code-ide-manager--item-by-session-key "stable")))))
 
 (ert-deftest claude-code-ide-test-remote-attach-exits-during-initialization ()
   "An attach client that exits during setup must not report success."
   (claude-code-ide-tests--with-remote-targets
-   (let ((claude-code-ide-terminal-backend 'ghostel)
-         client)
+   (let (client)
      (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
                 (lambda (host _args callback &optional _name)
                   (funcall callback (list :host host :status 0
                                           :stdout "same\n" :stderr ""))
                   nil))
-               ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+               ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
                ((symbol-function 'claude-code-ide--register-session)
                 #'claude-code-ide--put-session)
                ((symbol-function 'claude-code-ide--create-terminal-with-command)
                 (lambda (name &rest _)
                   (let ((buffer (generate-new-buffer name)))
+                    (with-current-buffer buffer
+                      (setq-local major-mode 'ghostel-mode))
                     (setq client (make-pipe-process :name "cci-exiting-attach"
                                                     :buffer buffer :noquery t))
                     (push buffer buffers)
@@ -19810,6 +18846,8 @@ default, so the default must not track the last saved value."
         (claude-code-ide--attach-zmx-entry
          '(:host "host-a" :name "same") "/tmp/shared/" "/missing/omp" "stable")
         :type 'user-error)
+       (should (processp client))
+       (should-not (process-live-p client))
        (should-not (claude-code-ide--get-session "stable"))
        (should (claude-code-ide-manager--item-by-session-key "stable"))))))
 
@@ -21223,7 +20261,6 @@ result arrives never has that result applied to the row now at its key."
   (let ((enqueue (symbol-function 'claude-code-ide-manager--enqueue-remote-metadata))
         (claude-code-ide-manager--remote-metadata-operations (make-hash-table :test 'equal))
         (claude-code-ide-terminal-initialization-delay 0)
-        (claude-code-ide-terminal-backend 'ghostel)
         callback control fail-start selected)
     (claude-code-ide-tests--with-remote-targets
      (cl-letf (((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
@@ -21231,7 +20268,7 @@ result arrives never has that result applied to the row now at its key."
                   (when (eq fail-start 'enqueue)
                     (user-error "The metadata fixture cannot enqueue"))
                   (funcall enqueue session)))
-               ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+               ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
                ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
                ((symbol-function 'claude-code-ide--install-terminal-resize-observer) #'ignore)
                ((symbol-function 'claude-code-ide-manager-refresh-all)
@@ -21246,6 +20283,8 @@ result arrives never has that result applied to the row now at its key."
                          (process (make-pipe-process
                                    :name "cci-metadata-attach-client" :buffer buffer
                                    :noquery t :sentinel #'ignore)))
+                    (with-current-buffer buffer
+                      (setq-local major-mode 'ghostel-mode))
                     (push buffer buffers)
                     (push process clients)
                     (cons buffer process))))
@@ -21363,7 +20402,8 @@ result arrives never has that result applied to the row now at its key."
                  :id "remote" :host "host-a" :zmx-name "agent"
                  :directory "/srv/repo/sub/" :buffer agent :process agent-process :cli-type 'codex))
                (with-current-buffer agent
-                 (setq-local claude-code-ide--terminal-backend 'eat))
+                 (setq-local major-mode 'ghostel-mode)
+                 (insert "Remote Agent prompt"))
                (dolist (preset '(magit-left magit-right dired-left dired-right shell-left shell-right))
                  (ert-info ((format "Remote preset %s" preset))
                    (setq claude-code-ide-manager-status-buffer-function provider
@@ -21405,7 +20445,8 @@ result arrives never has that result applied to the row now at its key."
                           (claude-code-ide-manager--display-remote-project-view
                            "remote" agent (selected-frame) companion
                            (claude-code-ide-remote-project--attempt-layout-request (car attempts)))))
-                       (should (eq (buffer-local-value 'claude-code-ide--terminal-backend agent) 'eat))
+                       (with-current-buffer agent
+                         (should (equal (buffer-string) "Remote Agent prompt")))
                        (should (eq (eq side 'left)
                                    (< (car (window-edges companion-window))
                                       (car (window-edges agent-window)))))
@@ -22100,7 +21141,7 @@ result arrives never has that result applied to the row now at its key."
               ((symbol-function 'claude-code-ide-manager--session-directory)
                (lambda (_) "/work/"))
               ((symbol-function 'featurep)
-               (lambda (feature)
+               (lambda (feature &optional _subfeature)
                  (not (eq feature
                           'claude-code-ide-remote-project))))
               ((symbol-function 'require)
@@ -22504,7 +21545,7 @@ result arrives never has that result applied to the row now at its key."
 
 (ert-deftest claude-code-ide-test-remote-project-unavailable-native-view-preserves-edits ()
   "Fresh native preparation preserves unsafe unavailable views and refreshes safe ones."
-  (require 'magit-status)
+  (skip-unless (require 'magit-status nil t))
   (dolist (case '(edited kill-hook shared safe))
     (ert-info ((format "Unavailable native view: %s" case))
       (let ((claude-code-ide-remote-hosts '("fixture"))
@@ -23667,7 +22708,7 @@ result arrives never has that result applied to the row now at its key."
                'claude-code-ide-remote-project--start-health-deadline)
               #'ignore)
              ((symbol-function 'make-thread)
-              (lambda (_function &optional _name) nil))
+              (lambda (_function &optional _name _finalizer) nil))
              ((symbol-function
                'claude-code-ide-manager--display-remote-project-view)
               (lambda (&rest _args) (setq displayed t))))
@@ -23719,7 +22760,7 @@ result arrives never has that result applied to the row now at its key."
                'claude-code-ide-remote-project--start-health-deadline)
               #'ignore)
              ((symbol-function 'make-thread)
-              (lambda (_function &optional _name) nil))
+              (lambda (_function &optional _name _finalizer) nil))
              ((symbol-function 'message)
               (lambda (format-string &rest args)
                 (push (apply #'format format-string args) messages))))
@@ -23767,7 +22808,7 @@ result arrives never has that result applied to the row now at its key."
                'claude-code-ide-remote-project--start-health-deadline)
               #'ignore)
              ((symbol-function 'make-thread)
-              (lambda (_function &optional _name) nil))
+              (lambda (_function &optional _name _finalizer) nil))
              ((symbol-function
                'claude-code-ide-manager--display-remote-project-view)
               (lambda (&rest _args) (setq displayed t))))
@@ -25533,43 +24574,40 @@ displayed last."
 (ert-deftest claude-code-ide-test-remote-worktree-prerequisites-never-fall-back ()
   "Missing remote tools, view support, or hook trust cannot start a local substitute."
   (require 'claude-code-ide-remote-project)
-  (let ((claude-code-ide-remote-hosts '("fixture"))
-        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
-        (load-path (cons (expand-file-name
-                          "../magit-worktrunk"
-                          (file-name-directory (locate-library "claude-code-ide-zmx")))
-                         load-path))
-        attempts)
-    (cl-letf (((symbol-function 'executable-find)
-               (lambda (&rest _) (push 'local-tool attempts) nil))
-              ((symbol-function 'process-file)
-               (lambda (&rest _) (push 'process attempts) 1))
-              ((symbol-function 'claude-code-ide-remote-project-target-available-p)
-               (lambda () nil)))
-      (dolist (case '(missing-tool approval-bypass missing-view))
-        (let ((operation
-               (claude-code-ide-remote-worktree--new-operation
-                (if (eq case 'missing-view) 'create 'remove)
-                "fixture" "/srv/repo/feature"
-                (if (eq case 'missing-view)
-                    '(:backend wt :name "new" :create-only t)
-                  '(:backend wt)))))
-          (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
-                (list :settings '(:backend wt)
-                      :tools (list '(git . "/remote/git") '(zmx . "/remote/zmx")
-                                   (cons 'wt (unless (eq case 'missing-tool) "/remote/wt"))))
-                (claude-code-ide-remote-worktree--operation-steps operation)
-                (list (list :step-id 1
-                            :kind (if (eq case 'missing-view) 'backend-create 'named-remove)
-                            :cwd "/srv/repo" :program "/remote/wt"
-                            :argv (if (eq case 'approval-bypass)
-                                      '("remove" "--yes" "feature")
-                                    '("remove" "feature"))
-                            :protected-targets
-                            (unless (eq case 'missing-view) '("/srv/repo/feature")))))
-          (should-error (claude-code-ide-remote-worktree--prerequisites operation)
-                        :type 'user-error)))
-      (should-not attempts))))
+  (cl-progv '(features) (list (cons 'magit-worktrunk-core features))
+    (let ((claude-code-ide-remote-hosts '("fixture"))
+          (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+          attempts)
+      (cl-letf (((symbol-function 'executable-find)
+                 (lambda (&rest _) (push 'local-tool attempts) nil))
+                ((symbol-function 'process-file)
+                 (lambda (&rest _) (push 'process attempts) 1))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () nil)))
+        (dolist (case '(missing-tool approval-bypass missing-view))
+          (let ((operation
+                 (claude-code-ide-remote-worktree--new-operation
+                  (if (eq case 'missing-view) 'create 'remove)
+                  "fixture" "/srv/repo/feature"
+                  (if (eq case 'missing-view)
+                      '(:backend wt :name "new" :create-only t)
+                    '(:backend wt)))))
+            (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+                  (list :settings '(:backend wt)
+                        :tools (list '(git . "/remote/git") '(zmx . "/remote/zmx")
+                                     (cons 'wt (unless (eq case 'missing-tool) "/remote/wt"))))
+                  (claude-code-ide-remote-worktree--operation-steps operation)
+                  (list (list :step-id 1
+                              :kind (if (eq case 'missing-view) 'backend-create 'named-remove)
+                              :cwd "/srv/repo" :program "/remote/wt"
+                              :argv (if (eq case 'approval-bypass)
+                                        '("remove" "--yes" "feature")
+                                      '("remove" "feature"))
+                              :protected-targets
+                              (unless (eq case 'missing-view) '("/srv/repo/feature")))))
+            (should-error (claude-code-ide-remote-worktree--prerequisites operation)
+                          :type 'user-error)))
+        (should-not attempts)))))
 
 (ert-deftest claude-code-ide-test-remote-worktree-outcomes-require-authority ()
   "Five outcomes preserve completed work and never authorize an entered failure."
@@ -26336,10 +25374,11 @@ displayed last."
 
 (ert-deftest claude-code-ide-test-remote-worktree-explicit-refresh-reuses-native-view ()
   "Mutation completion publishes surviving rows before refreshing existing views."
+  (skip-unless (require 'magit nil t))
   (let ((load-path (cons (expand-file-name "../magit-worktrunk"
                                            (file-name-directory (locate-library "claude-code-ide-zmx")))
                          load-path)))
-    (require 'magit-worktrunk-section))
+    (skip-unless (require 'magit-worktrunk-section nil t)))
   (claude-code-ide-remote-project--reset-state)
   (let ((claude-code-ide-remote-hosts '("fixture"))
         (file-name-handler-alist nil)
@@ -26442,42 +25481,39 @@ displayed last."
 
 (ert-deftest claude-code-ide-test-remote-worktree-view-listing-failure-and-cancel ()
   "A failed or canceled listing preserves mutation proof and does not open a view."
-  (let ((load-path (cons (expand-file-name "../magit-lane"
-                                           (file-name-directory (locate-library "claude-code-ide-zmx")))
-                         load-path)))
-    (require 'magit-lane-core))
-  (let* ((claude-code-ide-remote-hosts '("fixture"))
-         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
-         (claude-code-ide-remote-worktree--snapshots (make-hash-table :test #'equal))
-         (operation (claude-code-ide-remote-worktree--new-operation
-                     'remove "fixture" "/gone" '(:backend lane :name "gone")))
-         (id (claude-code-ide-remote-worktree--operation-id operation))
-         response views)
-    (setf (claude-code-ide-remote-worktree--operation-state operation) 'completed
-          (claude-code-ide-remote-worktree--operation-results operation)
-          '(:outcome completed :view-target (:host "fixture" :directory "/srv/main")
-                     :view-snapshot (:host "fixture" :backend lane :repository "/srv/main/.git"
-                                           :main-worktree "/srv/main" :directory "/srv/main" :worktree "/srv/main"
-                                           :lane-store t :tools ((lane . "/bin/lane")))))
-    (cl-letf (((symbol-function 'claude-code-ide-zmx-remote-exec)
-               (lambda (_host _purpose _program _args callback &rest _)
-                 (setq response callback) nil))
-              ((symbol-function 'claude-code-ide-remote-project-open-target)
-               (lambda (&rest _) (push 'opened views))))
-      (claude-code-ide-remote-worktree-recover-view id)
-      (funcall response '(:status 255 :stdout "" :stderr "disconnected"))
-      (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
-      (should (eq (plist-get (plist-get (claude-code-ide-remote-worktree--operation-results operation) :view)
-                             :status) 'failed))
-      (claude-code-ide-remote-worktree-recover-view id)
-      (claude-code-ide-remote-worktree-cancel-observation id)
-      (funcall response '(:status 0 :stdout "/srv/main/.lane/trees\0[]" :stderr ""))
-      (should (eq (plist-get (plist-get (claude-code-ide-remote-worktree--operation-results operation) :view)
-                             :status) 'stopped))
-      (should (eq (plist-get (claude-code-ide-remote-worktree--operation-results operation) :outcome)
-                  'completed))
-      (should-not views)
-      (should (= (hash-table-count claude-code-ide-remote-worktree--snapshots) 0)))))
+  (cl-progv '(features) (list (cons 'magit-lane-core features))
+    (let* ((claude-code-ide-remote-hosts '("fixture"))
+           (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+           (claude-code-ide-remote-worktree--snapshots (make-hash-table :test #'equal))
+           (operation (claude-code-ide-remote-worktree--new-operation
+                       'remove "fixture" "/gone" '(:backend lane :name "gone")))
+           (id (claude-code-ide-remote-worktree--operation-id operation))
+           response views)
+      (setf (claude-code-ide-remote-worktree--operation-state operation) 'completed
+            (claude-code-ide-remote-worktree--operation-results operation)
+            '(:outcome completed :view-target (:host "fixture" :directory "/srv/main")
+                       :view-snapshot (:host "fixture" :backend lane :repository "/srv/main/.git"
+                                             :main-worktree "/srv/main" :directory "/srv/main" :worktree "/srv/main"
+                                             :lane-store t :tools ((lane . "/bin/lane")))))
+      (cl-letf (((symbol-function 'claude-code-ide-zmx-remote-exec)
+                 (lambda (_host _purpose _program _args callback &rest _)
+                   (setq response callback) nil))
+                ((symbol-function 'claude-code-ide-remote-project-open-target)
+                 (lambda (&rest _) (push 'opened views))))
+        (claude-code-ide-remote-worktree-recover-view id)
+        (funcall response '(:status 255 :stdout "" :stderr "disconnected"))
+        (should (eq (claude-code-ide-remote-worktree--operation-state operation) 'completed))
+        (should (eq (plist-get (plist-get (claude-code-ide-remote-worktree--operation-results operation) :view)
+                               :status) 'failed))
+        (claude-code-ide-remote-worktree-recover-view id)
+        (claude-code-ide-remote-worktree-cancel-observation id)
+        (funcall response '(:status 0 :stdout "/srv/main/.lane/trees\0[]" :stderr ""))
+        (should (eq (plist-get (plist-get (claude-code-ide-remote-worktree--operation-results operation) :view)
+                               :status) 'stopped))
+        (should (eq (plist-get (claude-code-ide-remote-worktree--operation-results operation) :outcome)
+                    'completed))
+        (should-not views)
+        (should (= (hash-table-count claude-code-ide-remote-worktree--snapshots) 0))))))
 
 (ert-deftest claude-code-ide-test-remote-worktree-completion-from-results-or-deferred ()
   "Results inspection permits completion. Unrelated or canceled views retain recovery."
@@ -26811,7 +25847,7 @@ displayed last."
   (let ((load-path (cons (expand-file-name "../magit-worktrunk"
                                            (file-name-directory (locate-library "claude-code-ide-zmx")))
                          load-path)))
-    (require 'magit-worktrunk-core))
+    (skip-unless (require 'magit-worktrunk-core nil t)))
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _linked)
      (let* ((bin (make-temp-file "cci-public-request-" t))
@@ -27187,14 +26223,12 @@ displayed last."
   "Cancellation during an existing-target read prevents terminal creation and Agent replacement."
   (let ((claude-code-ide-remote-hosts '("fixture"))
         (claude-code-ide--sessions (make-hash-table :test #'equal))
-        (claude-code-ide-terminal-backend 'ghostel)
-        (claude-code-ide-cli-terminal-backends nil)
         (claude-code-ide-cli-path "omp")
         (valid t)
         created)
     (cl-letf (((symbol-function 'claude-code-ide-manager--item-by-session-key) #'ignore)
               ((symbol-function 'claude-code-ide--materialize-remote-target) #'ignore)
-              ((symbol-function 'claude-code-ide--terminal-ensure-backend) #'ignore)
+              ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
               ((symbol-function 'claude-code-ide-zmx-require-remote-session)
                (lambda (&rest _) (setq valid nil)))
               ((symbol-function 'claude-code-ide--create-terminal-with-command)
@@ -27352,7 +26386,7 @@ for a subcommand that is only sometimes safe."
 native capture scope.  Outside that scope the real command still
 runs; inside it, the literal argv is captured with no process and the
 caller's own credential hook is suppressed for that extent."
-  (require 'magit-process)
+  (skip-unless (require 'magit-process nil t))
   (should (integerp (magit-call-git "--version")))
   (let ((magit-credential-hook
          (list (lambda () (ert-fail "Credential hook ran during capture")))))
@@ -27366,7 +26400,7 @@ caller's own credential hook is suppressed for that extent."
   "`--capture-native' never returns a plausible-looking argv for a thunk
 that never reaches the executor advice, that reaches it with a
 non-literal argument, or that reaches it under a foreign token."
-  (require 'magit-process)
+  (skip-unless (require 'magit-process nil t))
   (dolist (thunk
            (list #'ignore
                  (lambda () (magit-call-git "push" (current-buffer)))
@@ -27390,7 +26424,7 @@ non-literal argument, or that reaches it under a foreign token."
 (ert-deftest claude-code-ide-test-remote-worktree-worktree-move-advice-runs-real-local-move ()
   "A local (non-RPC) `magit-worktree-move' call, reached through the
 advice this feature adds, still performs the real move on disk."
-  (require 'magit-worktree)
+  (skip-unless (require 'magit-worktree nil t))
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main linked)
      (let* ((claude-code-ide-remote-hosts nil)
@@ -27403,7 +26437,7 @@ advice this feature adds, still performs the real move on disk."
 
 (ert-deftest claude-code-ide-test-remote-worktree-native-move-captures-and-strips-real-command ()
   "Native movement preserves host context and captures before mutation."
-  (require 'magit-worktree)
+  (skip-unless (require 'magit-worktree nil t))
   (require 'tramp)
   (cl-letf (((default-value 'tramp-methods)
              (if (assoc "rpc" (default-value 'tramp-methods))
@@ -27445,7 +26479,7 @@ advice this feature adds, still performs the real move on disk."
 'push operation with a still-current attempt handed to `--start'.  A
 captured command that does not start with \"push\" fails closed through
 `--fail' instead, and `--start' is never reached for it."
-  (require 'magit-process)
+  (skip-unless (require 'magit-process nil t))
   (let* ((claude-code-ide-remote-hosts '("fixture"))
          (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
          (default-directory "/rpc:fixture:/srv/repo/wt1/")
@@ -27484,7 +26518,7 @@ captured command that does not start with \"push\" fails closed through
 freeform prompt set for an approved RPC directory, keyed by
 `this-command', and never calls that suffix's own native interactive
 form.  A local directory keeps using the real captured native form."
-  (require 'magit-push)
+  (skip-unless (require 'magit-push nil t))
   (let ((claude-code-ide-remote-hosts '("fixture")))
     (let ((this-command 'magit-push-tag)
           (default-directory "/rpc:fixture:/srv/repo/wt1/")
@@ -27519,7 +26553,7 @@ form.  A local directory keeps using the real captured native form."
 
 (ert-deftest claude-code-ide-test-remote-worktree-host-prompts-native-move ()
   "Native movement names its captured host without remote listing or mutation."
-  (require 'magit-worktree)
+  (skip-unless (require 'magit-worktree nil t))
   (with-temp-buffer
     (let ((default-directory "/rpc:fixture:/srv/repo/")
           (claude-code-ide-remote-hosts '("fixture"))
@@ -27742,7 +26776,7 @@ form.  A local directory keeps using the real captured native form."
 
 (ert-deftest claude-code-ide-test-remote-worktree-native-push-existing-destination ()
   "Native push resolves an existing tracking branch without executing publication."
-  (require 'magit-push)
+  (skip-unless (require 'magit-push nil t))
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _linked)
      (let ((default-directory main)

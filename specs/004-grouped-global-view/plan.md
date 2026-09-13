@@ -34,8 +34,8 @@ No remote Python, jq, service, or patched zmx is required.
 Run `./scripts/compile-and-test.sh` after implementation. Reload changed Elisp through `emacsclient` after verification.
 
 **Target Platform**: Desktop Emacs on supported platforms, with the development proof on macOS.
-Grouped local manager behavior remains backend-neutral for vterm, eat, and ghostel.
-Existing remote attachment remains ghostel-only with its explicit unsupported-backend error. This feature does not expand remote backend support.
+Grouped local manager behavior is unchanged for the Ghostel terminal backend.
+Remote attachment also uses Ghostel and reports missing library or native support before terminal creation.
 
 **Project Type**: Emacs package with interactive manager commands and an internal remote metadata protocol.
 
@@ -63,7 +63,7 @@ A PASS here means the design satisfies the rule. It does not claim implementatio
 | I. Shared Session core, thin adapters | PASS | PASS | Manager owns grouping. Session orchestration supplies the post-attach trigger. Agent command builders stay unchanged |
 | II. Batch-verifiable quality | PASS | PASS | ERT behavior boundaries and the full byte-compile/test command appear in quickstart. Live UI checks supplement the suite |
 | III. Optional dependencies | PASS | PASS | No new runtime package. Missing Git/SSH metadata produces a clear result without breaking attachment |
-| IV. Terminal-backend neutrality | PASS | PASS | Existing manager/Session interfaces handle UI behavior. Existing remote backend limitation remains explicit |
+| IV. Ghostel-Only Terminal Support | PASS | PASS | Existing manager/Session interfaces preserve Ghostel behavior and report missing terminal support explicitly. |
 | V. Simplicity and compatibility | PASS | PASS | Emacs 28.1+, existing state stores, one ordering path, two real adapters sharing one SSH runner |
 | Branch, commit, and file ownership | PASS | PASS | Work remains on `main`. No commit or source implementation occurs in this workflow |
 
@@ -212,7 +212,7 @@ Reset the transient host-operation table and cancel its owned test processes in 
 
 The final implementation gate is byte compilation plus the full existing ERT suite.
 Then use `emacsclient` to reload changed Elisp and verify the real manager surface, including Spacemacs/Evil bindings.
-Validate local manager behavior for supported backends and the existing explicit remote-backend limitation.
+Validate local and remote Ghostel behavior, including explicit missing-support errors.
 Use only user-approved remote Sessions for live checks. Do not send Agent input, Stop, or create remote Sessions as part of this feature's validation.
 
 The planning Git experiment already passed the identity and shell-quoting checks recorded in research R1.

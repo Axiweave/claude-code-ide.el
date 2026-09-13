@@ -22,7 +22,7 @@ Remote creation of a persistent session must remain impossible. The user rejecte
 
 **Language/Version**: Emacs Lisp, Emacs 28.1 or later.
 
-**Primary Dependencies**: Existing `persist` integration, the system OpenSSH client, a supported terminal backend, and stock zmx on each remote host. No new Emacs package dependency.
+**Primary Dependencies**: Existing `persist` integration, the system OpenSSH client, Ghostel, and stock zmx on each remote host. No new Emacs package dependency.
 
 **Storage**: Existing manager persistence, upgraded to state version 3. History remains local to each Emacs. Remote zmx continues to own Agent processes.
 
@@ -54,7 +54,7 @@ Initial review passed before design consolidation. The post-design review also p
 | I. User-owned Agent configuration | Do not add an Agent list or launcher policy | Existing Agent identification remains authoritative. Remote metadata never becomes an Agent launch command |
 | II. Batch-verifiable quality | Preserve the existing ERT and compile gate | Regression plan covers lifecycle races, host collisions, discovery failures, and unintended local integration |
 | III. Optional dependencies | Validate prerequisites at the remote feature entry point | Local package load and workflows do not require SSH or a remote host |
-| IV. Terminal-backend neutrality | Use the common terminal factory | Remote attachment targets Ghostel only; vterm and Eat are scheduled for deprecation and must report the limitation explicitly |
+| IV. Ghostel-Only Terminal Support | Use the common terminal factory | Remote attachment uses Ghostel only. Feature 008 removed EAT/vterm support and the former selection-dependent rejection. |
 | V. Simplicity and compatibility | Keep Emacs 28.1 and existing local behavior | Reuse existing records and persistence. Add no transport framework, history service, or second connection-state registry |
 | Workflow and domain language | Keep the current branch and domain glossary | `main` remains unchanged. The glossary includes Configured host. No commits or runtime edits form part of planning |
 

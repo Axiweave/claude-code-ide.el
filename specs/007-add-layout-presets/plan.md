@@ -40,7 +40,7 @@ It does not implement the layouts, create `tasks.md`, run feature acceptance sce
 
 **Testing**: Existing ERT suite and `scripts/compile-and-test.sh`. New behavior checks belong in `claude-code-ide-tests.el`. Use `emacsclient` for live reload and real window/terminal validation after implementation. Do not load test mocks into live Emacs.
 
-**Target Platform**: Existing supported Emacs desktop platforms. Local Agent terminals retain Ghostel, vterm, or eat support as currently configured. Current remote Agent attachment remains Ghostel-only. Remote companion shells require a supported POSIX host and the existing admitted project-access path.
+**Target Platform**: Existing supported Emacs desktop platforms. Local Agent terminals use Ghostel exclusively. Current remote Agent attachment remains Ghostel-only. Remote companion shells require a supported POSIX host and the existing admitted project-access path.
 
 **Project Type**: Emacs extension with public preferences, interactive commands, and optional remote process integration.
 
@@ -63,7 +63,7 @@ Design completion does not turn a failing repository gate into a pass.
 | I. Shared Session core | PASS | PASS | Preset and window policy live in the manager. Ghostel operations live in the Session layer. Remote preparation uses the existing shared attempt workflow. No Agent adapter changes. |
 | II. Batch-verifiable quality gate | ERROR | ERROR | Latest observed run: byte compilation passed, 915 tests, 896 expected, 10 missing-Magit-module failures, 9 skipped. The exact required gate must succeed before implementation acceptance. |
 | III. Optional dependencies | PASS | PASS | Ghostel loads only for shell creation. Dired requires neither Ghostel nor Magit. Missing support leaves the Agent usable. No new hard require. |
-| IV. Terminal neutrality | PASS | PASS | Companion choice does not change the Agent terminal. Validate available local Agent backends and the existing supported remote backend. |
+| IV. Ghostel-Only Terminal Support | PASS | PASS | Companion choice does not change the Agent terminal. Validate available local and remote Agents through Ghostel. |
 | V. Simplicity and compatibility | PASS | PASS | One fixed alist, one runtime shell table, additive layout metadata, and existing workers. Local Emacs 28.1 remains supported. No new framework or dependency. |
 | VI. Local/remote parity | PASS | PASS | Same presets, focus, ownership, and saved-layout rules. Remote preparation may finish later due to remote I/O. Exact host approval and independent terminal use remain required. |
 

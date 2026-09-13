@@ -1,6 +1,6 @@
 # Quickstart Validation: Attach Remote Agents
 
-**Status**: Implementation, repository gate, and all five live workflows pass on stock zmx across two hosts (`ramhorn` zmx 0.8.0, `vps` zmx 0.8.1 with omp built from the fork). vterm and Eat are out of scope: the user is deprecating them.
+**Status**: Implementation, repository gate, and all five live workflows pass on stock zmx across two hosts (`ramhorn` zmx 0.8.0, `vps` zmx 0.8.1 with omp built from the fork). vterm and Eat were out of scope: feature 008 has since removed those backends entirely.
 
 **Interfaces**: [Remote access contract](contracts/remote-sessions.md)
 **State rules**: [Data model](data-model.md)
@@ -16,9 +16,8 @@ Prepare these prerequisites:
 2. Configure passwordless SSH and trusted host keys outside this feature.
 3. Install a supported Agent on each test host.
 4. Prepare a disposable Emacs instance with this package and its existing dependencies.
-5. Select Ghostel through the existing terminal-backend configuration.
-6. Replace the example host aliases with two personal test hosts.
-7. Use a fresh zmx test-session name if an example name already exists.
+5. Replace the example host aliases with two personal test hosts.
+6. Use a fresh zmx test-session name if an example name already exists.
 
 Keep the same test-session name and project basename across both remote hosts. This deliberately tests host identity collisions.
 
@@ -198,7 +197,7 @@ If the Stop response is lost or verification fails, the manager must report an u
 - Verify that local reattach uses the guarded command without changing ordinary local Agent creation.
 - Verify that remote attachment works without a local zmx installation.
 - Exercise rejected option, prefix, current-session, and path-like names without sending remote actions.
-- vterm and Eat are out of scope for remote attachment (scheduled for deprecation). They must report the limitation explicitly.
+- vterm and Eat were out of scope for remote attachment (feature 008 has since removed those backends). They had to report the limitation explicitly.
 - Confirm that remote Sessions do not receive local MCP state when local and remote zmx names collide.
 - Confirm that remote title changes do not cause automatic SSH or local zmx writes.
 
@@ -290,7 +289,7 @@ Batch Ghostel does not render terminal output. The user then confirmed interacti
 
 ### Live Acceptance Result
 
-On 2026-09-06 the two-host walkthroughs ran on the user's live Emacs against `ramhorn` and `vps`, plus a second disposable Emacs for the second-computer step. vterm and Eat are out of scope.
+On 2026-09-06 the two-host walkthroughs ran on the user's live Emacs against `ramhorn` and `vps`, plus a second disposable Emacs for the second-computer step. vterm and Eat were out of scope (feature 008 has since removed those backends).
 
 | Criterion | Automated evidence | Live acceptance |
 |-----------|--------------------|-----------------|

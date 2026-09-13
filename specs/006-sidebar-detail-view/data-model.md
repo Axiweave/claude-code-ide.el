@@ -20,7 +20,7 @@ The text the detail line shows.
 | Source | the terminal OSC 2 title |
 | Read by this feature | `claude-code-ide-session-title`, already forward-declared at `claude-code-ide-manager.el:34` |
 | Lifetime | in memory, for the life of the Session. Not written to disk by this feature |
-| Absent when | the terminal backend reports no title. Only Ghostel reports one today |
+| Absent when | Ghostel has not reported a title |
 
 **Not changed by this feature.** The feature is a reader.
 

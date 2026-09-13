@@ -36,7 +36,7 @@ Migrate callers in the same task as any signature or data-shape change.
 
 Use Emacs 28.1-compatible local code and existing optional-dependency boundaries.
 Remote project companions retain the existing Emacs 30.1 RPC-client prerequisite and supported POSIX-host constraint.
-Do not change Ghostel native source, RPC transport policy, host approval, or Agent backend selection.
+Do not change Ghostel native source, RPC transport policy, host approval, or Agent identity.
 
 For concurrent tasks, freeze the contracts below before dispatch.
 Concurrent workers must skip formatters, linters, builds, and tests until their edits reach the integration barrier.
@@ -218,8 +218,8 @@ These tasks do not authorize speculative refactors, new telemetry, or unrelated 
 Final gate: **927 tests, 919 expected results, 0 unexpected results, 8 skips**.
 Focused integration: **26/26 checks**, including all **15 layout-preset checks**.
 Native Ghostel checks covered all six arrangements locally and on the approved disposable ramhorn Sessions.
-The user excluded EAT and vterm from acceptance because those backends will soon be deprecated.
-This scope change does not remove existing backend code.
+The user excluded EAT and vterm from that acceptance run.
+Feature 008 has since removed that backend code.
 The acceptance record documents Agent combinations, the later Pi exit, process identities, lifecycle checks, and cleanup.
 Changed Elisp was reloaded after the gate passed. No commit was created.
 
@@ -414,7 +414,7 @@ No feature acceptance scenario has run during task generation.
 
 Assessment found four remaining gaps after T001–T026 completed.
 The findings below describe current behavior, not changes between revisions.
-EAT and vterm remain outside the user-approved native acceptance scope.
+The user excluded EAT and vterm from the native checks recorded here. Feature 008 removed that integration.
 
 - [X] T027 **CRITICAL** Complete delayed remote-view display after navigation per Constitution VI, FR-013, US4/AC1, plan §1E, and T020/T022 (partial).
   Update `claude-code-ide-manager.el` and `claude-code-ide-remote-project.el` for finding F3.
@@ -480,7 +480,7 @@ This assessment made no application-code changes and did not repeat native accep
 
 **Validation**: After T031–T032, run `./scripts/compile-and-test.sh` and the affected live Ghostel scenarios.
 Reload the changed Elisp through `emacsclient` after the gate passes.
-Keep native EAT/vterm acceptance outside the user-approved scope. Do not create a commit.
+This verification excluded EAT and vterm, which feature 008 removed. Do not create a commit.
 
 ### Phase 9 verification
 

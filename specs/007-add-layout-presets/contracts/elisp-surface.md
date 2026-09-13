@@ -42,7 +42,7 @@ No new menu, command family, or arbitrary layout registration interface is requi
 | Dired right | Agent | Dired for the Session directory |
 
 The sidebar is outside these two content windows.
-The preset does not select or replace the Agent CLI or its terminal backend.
+The preset does not select or replace the Agent CLI or its Ghostel terminal.
 A new layout selects the Agent window unless the invoking manager action requests continued manager focus.
 
 ## 3. Existing custom-content preference

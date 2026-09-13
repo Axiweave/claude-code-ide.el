@@ -204,7 +204,7 @@ The flat editor keeps its current behavior, including its known disconnected-row
 ## R9. Planning gates and verification scope
 
 **Decision**: Keep all feature code in existing manager, Session orchestration, zmx, transient, and ERT files. Add no runtime dependency.
-Support Emacs 28.1+ and preserve backend dispatch through the shared Session layer.
+Support Emacs 28.1+ and preserve Ghostel behavior through the shared Session layer.
 Performance validation measures cached ordering/render preparation with 1,000 Sessions across 100 groups.
 Target less than 100 ms median over 20 runs on the development workstation, with zero external processes during cached preparation.
 This is a proposed validation target, not an observed feature benchmark.

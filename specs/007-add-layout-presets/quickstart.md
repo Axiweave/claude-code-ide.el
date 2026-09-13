@@ -134,8 +134,8 @@ The Agent window receives focus for this direct reset call.
 No additional Agent row appears for the shell.
 
 Repeat the arrangement checks for available supported Agents with Ghostel.
-The user excluded EAT and vterm from acceptance on 2026-09-12 because those backends will soon be deprecated.
-This acceptance scope change does not remove existing backend code.
+The user excluded EAT and vterm from acceptance on 2026-09-12.
+Feature 008 has since removed that backend code.
 Record unavailable Agent combinations rather than claiming that they passed.
 
 ## 6. Prove provider and old-side isolation
@@ -331,7 +331,7 @@ Do not close unrelated Sessions or ordinary terminals.
 
 Validation completed on 2026-09-12 on macOS arm64 with Emacs 31.1.50.
 The user excluded EAT and vterm from acceptance during validation.
-No backend implementation was removed.
+Feature 008 has since removed that backend implementation.
 
 - `./scripts/compile-and-test.sh` passed with **927 tests, 919 expected results, 0 unexpected results, and 8 skips**.
 - The gate used a disposable HOME and existing installed dependency paths. It installed no packages.
@@ -401,7 +401,7 @@ It changed no host approvals, connection settings, or installed software.
 The initial run passed the exercised Ghostel scenarios. The Phase 8 checks below cover the later convergence repairs.
 EAT and vterm are excluded by user direction, not recorded as acceptance failures or claimed backend coverage.
 The Pi stability limit above remains explicit.
-The implementation preserves existing backend selection code.
+Feature 008 has since removed that backend selection code.
 
 Both disposable remote zmx targets stopped with verified results.
 The remote directory and disposable local scripts, directories, and Emacs processes were removed.
@@ -445,7 +445,7 @@ No production approvals changed. No commit was created.
 ### Phase 9 convergence validation
 
 Validation completed on 2026-09-12 with macOS arm64, Emacs 31.1.50, and real local and remote OMP/Ghostel Sessions.
-Native EAT/vterm acceptance remained outside the user-approved scope.
+Native EAT/vterm acceptance remained outside the user-approved scope. Feature 008 later removed those integrations.
 
 - The final `./scripts/compile-and-test.sh` run passed: **932 tests, 924 expected results, 0 unexpected results, and 8 skips**.
 - All **20 layout-preset regressions** passed.
