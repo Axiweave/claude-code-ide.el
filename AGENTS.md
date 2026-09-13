@@ -49,7 +49,9 @@ Run ERT directly when needed:
 emacs -batch -L . -l ert -l claude-code-ide-tests.el -f ert-run-tests-batch-and-exit
 ```
 
-Add tests for new logic. The suite mocks optional dependencies such as vterm and WebSocket so it can run in batch mode.
+Add tests for new logic. Mock optional dependencies such as Ghostel and WebSocket so tests can run in batch mode without those packages.
+
+The constitution requires Ghostel-only terminal support with optional loading and shared behavior across Agents.
 
 Claude Code hooks in `.claude/settings.json` format edited Elisp and run the verification script on stop. Other agents must run the equivalent checks explicitly.
 

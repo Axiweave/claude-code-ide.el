@@ -1,12 +1,16 @@
 <!--
 Sync Impact Report
-Version change: 1.0.0 -> 1.1.0 (new principle)
-Modified principles: none
-Added section: VI. Local and Remote Workflow Parity
+Version change: 1.1.0 -> 2.0.0 (MAJOR: terminal-support policy reversal)
+Modified principles:
+- II. Batch-Verifiable Quality Gate: use Ghostel as the terminal mock example.
+- III. Optional Dependencies Stay Optional: keep Ghostel optional, including native support.
+- IV. Terminal-Backend Neutrality -> Ghostel-Only Terminal Support.
+Added sections: none
 Removed sections: none
-Dependent templates and commands: unchanged, read constitution at runtime
-Deferred feature work: apply confirmed interview decisions to 005-remote-rpc-magit
-after the user confirms shared understanding. Keep the active feature unchanged.
+Dependent guidance: AGENTS.md aligned.
+Dependent templates and commands: reviewed, no backend-specific rules require changes.
+Feature 008: governance prerequisite resolved; rerun planning against this version.
+Implementation status: backend removal remains implementation work, not part of this amendment.
 Deferred placeholders: none
 -->
 
@@ -36,26 +40,34 @@ baseline and the package ships no agent-selection command.
 Every change passes `./scripts/compile-and-test.sh`: byte-compilation of all
 `*.el` files, then the full ERT suite in batch mode. New logic ships with
 ERT tests in `claude-code-ide-tests.el`. Tests must run without a display
-and without optional packages installed — mock vterm, websocket, and other
-optional dependencies the way the existing suite does. A change that only
+and without optional packages installed. Mock Ghostel, WebSocket, and other
+optional dependencies at their existing interfaces. A change that only
 passes interactively, or only with optional packages present, is not done.
 
 ### III. Optional Dependencies Stay Optional
 
-Hard `require` is allowed only for the declared `Package-Requires`
-dependencies. Terminal backends (vterm, eat), diagnostics providers
-(flycheck, flymake), and transport packages loaded at feature boundaries
-(websocket, web-server) load via soft require — `(require 'foo nil t)` or
-`condition-case` — and fail at the point of use with an actionable
-`user-error` naming the missing package. The package must load, byte-compile,
-and pass tests with none of them installed.
+Only declared `Package-Requires` dependencies may use a hard `require`.
+Ghostel, diagnostics providers (flycheck, flymake), and transport packages
+(websocket, web-server) remain optional.
+Load them at feature boundaries through `(require 'foo nil t)` or
+`condition-case`.
+A missing dependency must produce an actionable `user-error` at the point of use.
+The package must load, byte-compile, and pass tests with none of these optional packages installed.
 
-### IV. Terminal-Backend Neutrality
+Terminal operations must explain missing Ghostel or native support without
+installing software or substituting another terminal.
+Non-terminal operations must remain available.
 
-Backend-specific behavior dispatches on the live buffer (`derived-mode-p`
-checks) inside the session layer. A new session feature works on vterm, eat,
-and ghostel, or it degrades with an explicit, user-visible message for the
-unsupported backend. Silent per-backend behavior differences are defects.
+### IV. Ghostel-Only Terminal Support
+
+Ghostel is the sole supported terminal runtime for Agent Sessions and companion shells.
+Terminal interaction stays in the shared session layer for every supported Agent.
+Use the live Session buffer and its owned process for terminal operations.
+An ordinary Ghostel shell does not become an Agent Session merely because it uses the same terminal.
+
+Unsupported terminal operations must produce an explicit, user-visible explanation.
+Do not retain alternative terminal implementations, terminal-choice settings, per-Agent terminal overrides, or compatibility aliases for removed support.
+Preserve unrelated terminal buffers, processes, and installed packages.
 
 ### V. Simplicity and Compatibility
 
@@ -118,4 +130,4 @@ below (semver: principle removals or reversals are MAJOR, new principles or
 sections MINOR, wording fixes PATCH), and update AGENTS.md if the two
 diverge.
 
-**Version**: 1.1.0 | **Ratified**: 2026-08-28 | **Last Amended**: 2026-09-06
+**Version**: 2.0.0 | **Ratified**: 2026-08-28 | **Last Amended**: 2026-09-12
