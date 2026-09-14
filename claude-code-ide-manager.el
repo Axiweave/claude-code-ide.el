@@ -2184,8 +2184,11 @@ markers, which take precedence over the pin marker."
   "Refresh the sidebar when ORIG-FN changes manager-visible session status."
   (let ((before (claude-code-ide-manager--session-status-snapshot)))
     (prog1 (apply orig-fn args)
-      (let ((after (claude-code-ide-manager--session-status-snapshot)))
-        (unless (eq (nth 3 before) (nth 3 after))
+      (let* ((after (claude-code-ide-manager--session-status-snapshot))
+             (before-idle (and (nth 0 before) (nth 1 before) (null (nth 3 before))))
+             (after-idle (and (nth 0 after) (nth 1 after) (null (nth 3 after)))))
+        (when (or (not (eq (nth 3 before) (nth 3 after)))
+                  (not (eq before-idle after-idle)))
           (when-let* ((key (claude-code-ide-manager--session-key-for-buffer
                             (current-buffer))))
             (dolist (passes (list claude-code-ide-manager--priority-visits
@@ -2195,7 +2198,8 @@ markers, which take precedence over the pin marker."
                  (let ((visited (plist-get record :visited)))
                    (when (and visited (gethash key visited))
                      (puthash key
-                              (if (memq (nth 3 after) '(needs-input failed done))
+                              (if (or after-idle
+                                      (memq (nth 3 after) '(needs-input failed done)))
                                   'attention
                                 t)
                               visited))))
@@ -2203,8 +2207,20 @@ markers, which take precedence over the pin marker."
         (unless (equal before after)
           (claude-code-ide-manager--refresh-on-idle-transition))))))
 
+(defun claude-code-ide-manager--refresh-after-idle-timer (orig-fn buffer &rest args)
+  "Track idle transitions from ORIG-FN in BUFFER with ARGS."
+  (if (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (apply #'claude-code-ide-manager--refresh-after-session-status-change
+               orig-fn buffer args))
+    (apply orig-fn buffer args)))
+
 (defun claude-code-ide-manager--install-idle-refresh-hooks ()
   "Refresh the manager sidebar when session idle state changes."
+  (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-timer
+                          'claude-code-ide-session-idle--fire-timer)
+    (advice-add 'claude-code-ide-session-idle--fire-timer
+                :around #'claude-code-ide-manager--refresh-after-idle-timer))
   (unless (memq #'claude-code-ide-manager--refresh-on-idle-transition
                 claude-code-ide-session-idle-hook)
     (add-hook 'claude-code-ide-session-idle-hook

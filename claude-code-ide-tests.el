@@ -6978,6 +6978,47 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
      (jump "02" command)
      (jump "01" command))))
 
+(ert-deftest claude-code-ide-test-manager-priority-next-interrupts-output-idle ()
+  "A new bell interrupts either pass and preserves the return target."
+  (dolist (command '(claude-code-ide-manager-next-priority-session
+                     claude-code-ide-manager-next-uncleared-session))
+    (claude-code-ide-tests--with-priority-sessions
+     '(("01" nil t nil t) ("02" working) ("03" working))
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (jump "02" command)
+     ;; Timer callbacks run with an unrelated buffer current.
+     (with-current-buffer status-buffer
+       (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+       (claude-code-ide-session-idle--fire-timer (session-buffer "01")))
+     (jump "01" command)
+     (jump "03" command)
+     (jump "02" command)
+     ;; A later bell renews the visit again.
+     (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+     (jump "01" command))))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-ignores-masked-output-idle ()
+  "Output flags cannot renew visits when a reported state masks the bell."
+  (dolist (state '(working idle))
+    (claude-code-ide-tests--with-priority-sessions
+     `(("01" ,state t nil t) ("02" working) ("03" working))
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (jump "02")
+     (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+     (jump "03"))))
+
+(ert-deftest claude-code-ide-test-manager-priority-next-cancels-cleared-output-idle ()
+  "Clearing a pending bell removes its interruption before output resumes."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" nil t nil t) ("02" working) ("03" working))
+   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+   (jump "02")
+   (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+   (with-current-buffer (session-buffer "01")
+     (claude-code-ide-session-idle-clear-state)
+     (claude-code-ide-session-working--set-state t))
+   (jump "03")))
+
 (ert-deftest claude-code-ide-test-manager-uncleared-next-interrupts-completion ()
   "Completion interrupts once, and acknowledgment prevents replay."
   (claude-code-ide-tests--with-priority-sessions

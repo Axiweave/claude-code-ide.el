@@ -624,9 +624,11 @@ Within each priority, the command preserves sidebar pin and manual order.
 The current session counts as visited.
 New sessions join the current pass, and state changes can promote unvisited sessions.
 A visited session that changes to =needs-input=, =failed=, or =done= becomes eligible again within the pass.
+A new output-idle bell also renews a visited session when tracking is enabled and no reported state masks it.
 The command selects these changed sessions and unvisited sessions in the same priority order.
 After these visits, it returns to the first interrupted session before starting another pass.
-Repeated unchanged reports and output-only changes do not interrupt the pass.
+Repeated unchanged reports and unchanged bells do not interrupt the pass.
+Clearing a bell cancels its pending interruption.
 The return target must remain live and eligible. A manual visit to that target completes the return.
 
 Global and repository scopes keep separate passes, shared across frames until Emacs restarts.
