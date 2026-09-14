@@ -8,9 +8,10 @@
 
 1. If the invoking buffer owns a live Session terminal, toggle that exact Session.
 2. Otherwise, if the invoking buffer is the active Session's saved managed project view, toggle that exact Session.
-3. Otherwise, if the invoking buffer is remote, signal a user-visible no-session error without directory fallback.
-4. Otherwise, use the existing local attached-project and working-directory fallback.
-5. If no live Session matches, signal a user-visible no-session error.
+3. Otherwise, if the invoking buffer has a remote host and path, toggle the preferred live Session for that exact host and path.
+4. Otherwise, if the invoking buffer is remote, signal a user-visible no-session error without local directory fallback.
+5. Otherwise, use the existing local attached-project and working-directory fallback.
+6. If no live Session matches, signal a user-visible no-session error.
 
 Exact Session identity wins over directory, recency, and buffer naming.
 
@@ -20,6 +21,7 @@ Exact Session identity wins over directory, recency, and buffer naming.
 - Remote Sessions on different hosts remain distinct.
 - Sibling Sessions on one host and directory remain distinct when a terminal or managed view supplies exact ownership.
 - An unrelated RPC buffer does not inherit the manager's active Session.
+- A remote Magit buffer uses its exact remote host and path. It cannot select a same-path Session on another host.
 - A remembered disconnected target is not a live toggle target.
 
 ## Visibility behavior
