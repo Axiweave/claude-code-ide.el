@@ -4897,38 +4897,43 @@ session layout is updated."
               (claude-code-ide-manager--sync-point-to-session-key scope session-key))
           (when (window-live-p preferred-window)
             (select-window preferred-window))))
-      (when-let* (((featurep 'claude-code-ide-remote-project))
-                  ((claude-code-ide-manager--remote-project-enabled-p session-key))
-                  (attachment (claude-code-ide-manager--session-buffer session-key))
-                  (view (claude-code-ide-remote-project-surviving-view
-                         session-key attachment))
-                  ((claude-code-ide-remote-project-display-allowed-p
-                    session-key attachment)))
-        (claude-code-ide-manager--display-remote-project-view
-         session-key attachment (selected-frame) view))
-      (cond
-       (first-managed-switch
-        (claude-code-ide-manager--maybe-prepare-remote-project
-         session-key
-         (claude-code-ide-manager--session-buffer session-key)
-         (selected-frame)
-         'first-display))
-       ((and new-attachment (claude-code-ide-manager--session-host session-key))
-        (claude-code-ide-manager--maybe-prepare-remote-project
-         session-key (claude-code-ide-manager--session-buffer session-key)
-         (selected-frame) 'reattach))
-       ((and
-         (claude-code-ide-manager--remote-project-enabled-p
-          session-key)
-         (featurep 'claude-code-ide-remote-project)
-         (claude-code-ide-remote-project-needs-replacement-p
-          session-key
-          (claude-code-ide-manager--session-buffer session-key)))
-        (claude-code-ide-manager--maybe-prepare-remote-project
-         session-key
-         (claude-code-ide-manager--session-buffer session-key)
-         (selected-frame)
-         'replacement)))
+      (let ((displayed
+             (when-let* (((featurep 'claude-code-ide-remote-project))
+                         ((claude-code-ide-manager--remote-project-enabled-p session-key))
+                         (attachment (claude-code-ide-manager--session-buffer session-key))
+                         (view (claude-code-ide-remote-project-surviving-view
+                                session-key attachment))
+                         ((claude-code-ide-remote-project-display-allowed-p
+                           session-key attachment)))
+               (claude-code-ide-manager--display-remote-project-view
+                session-key attachment (selected-frame) view))))
+        (cond
+         (first-managed-switch
+          (claude-code-ide-manager--maybe-prepare-remote-project
+           session-key
+           (claude-code-ide-manager--session-buffer session-key)
+           (selected-frame)
+           'first-display))
+         ;; A displayed surviving view already satisfies the reattach.  A
+         ;; second worker would redisplay it later over whatever buffer the
+         ;; user put in that window meanwhile.
+         ((and new-attachment (not displayed)
+               (claude-code-ide-manager--session-host session-key))
+          (claude-code-ide-manager--maybe-prepare-remote-project
+           session-key (claude-code-ide-manager--session-buffer session-key)
+           (selected-frame) 'reattach))
+         ((and
+           (claude-code-ide-manager--remote-project-enabled-p
+            session-key)
+           (featurep 'claude-code-ide-remote-project)
+           (claude-code-ide-remote-project-needs-replacement-p
+            session-key
+            (claude-code-ide-manager--session-buffer session-key)))
+          (claude-code-ide-manager--maybe-prepare-remote-project
+           session-key
+           (claude-code-ide-manager--session-buffer session-key)
+           (selected-frame)
+           'replacement))))
       target-window)))
 
 (defun claude-code-ide-manager-reset-layout (session-key &optional keep-manager-focus scope)

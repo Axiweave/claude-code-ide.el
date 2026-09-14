@@ -475,6 +475,12 @@ On any error, answer `cancel', kill BUFFER, and re-signal."
                     #'claude-code-ide-session--editor-done nil t)
           (add-hook 'with-editor-post-cancel-hook
                     #'claude-code-ide-session--editor-cancel nil t))
+        ;; The open may be slow (remote RPC).  Land in the Session's window,
+        ;; not in whatever window the user selected meanwhile, so a visible
+        ;; companion (Magit) is never replaced behind the manager's back.
+        (when-let* ((window (get-buffer-window
+                             (cdr claude-code-ide-session--editor-request))))
+          (select-window window))
         (switch-to-buffer buffer))
     ((error quit)
      (claude-code-ide-session--editor-cancel)

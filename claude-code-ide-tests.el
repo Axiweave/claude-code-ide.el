@@ -15606,6 +15606,44 @@ request while one is accepted is ignored, and the prompt shows once."
                            #'with-editor-kill-buffer-noop t))
             (kill-buffer buffer)))))))
 
+(ert-deftest claude-code-ide-test-session-editor-late-remote-open-lands-in-session-window ()
+  "Test that a slow remote open shows the prompt in the Session's window.
+The user may select the companion (Magit) window while the RPC open runs.
+The prompt must not replace that companion buffer."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((opened nil)
+        (claude-code-ide-remote-hosts '("box"))
+        (companion (generate-new-buffer " *remote companion*")))
+    (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t))
+                ((symbol-function 'claude-code-ide-remote-project-open-file)
+                 (lambda (host path callback)
+                   (setq opened (list host path callback)))))
+        (let ((session-buffer (current-buffer))
+              (prompt (generate-new-buffer " *remote prompt*")))
+          (unwind-protect
+              (save-window-excursion
+                (delete-other-windows)
+                (set-window-buffer (selected-window) session-buffer)
+                (let ((session-window (selected-window))
+                      (companion-window (split-window)))
+                  (set-window-buffer companion-window companion)
+                  (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
+                  (select-window companion-window)
+                  (funcall (nth 2 opened) (list :status 'completed :buffer prompt))
+                  (should (eq (window-buffer session-window) prompt))
+                  (should (eq (window-buffer companion-window) companion))))
+            (with-current-buffer prompt
+              (remove-hook 'kill-buffer-query-functions
+                           #'with-editor-kill-buffer-noop t))
+            (kill-buffer prompt)
+            (kill-buffer companion)))))))
+
 (ert-deftest claude-code-ide-test-session-editor-request-remote-failure-cancels ()
   "Test that a failed remote open answers cancel after the ack."
   (should (require 'claude-code-ide-session nil t))
