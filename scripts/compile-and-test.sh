@@ -48,6 +48,7 @@ find_emacs_package() {
         ~/.emacs.d.spacemacs-30/elpa/"$package"* \
         ~/.emacs.d.spacemacs-30/elpa/*/"$package"* \
         ~/.emacs.d.spacemacs-30/elpa/*/develop/"$package"* \
+        ~/.emacs.d.spacemacs-32/elpa/*/develop/"$package"* \
         ~/.config/emacs/.cache/straight/repos/"$package" \
         ~/.config/emacs/elpa/"$package"* \
         ~/.config/emacs/elpa/*/"$package"* \
@@ -87,6 +88,13 @@ fi
 if AVY_DIR=$(find_emacs_package "avy"); then
     LOAD_PATH="$LOAD_PATH -L $AVY_DIR"
 fi
+
+# transient and with-editor 2026 builds need these at load time
+for dep in cond-let llama; do
+    if DEP_DIR=$(find_emacs_package "$dep"); then
+        LOAD_PATH="$LOAD_PATH -L $DEP_DIR"
+    fi
+done
 
 # STEP 1: Compile all elisp files
 echo "=== Running byte-compilation check ===" >&2
