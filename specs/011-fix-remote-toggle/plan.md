@@ -8,7 +8,7 @@ The setup script returned `011-fix-remote-toggle` as its feature identifier. The
 
 ## Summary
 
-Make `claude-code-ide-toggle` select the exact live Session associated with the invoking terminal or managed project view before it uses local directory fallback. Preserve host identity, existing layout behavior, local project lookup, and the no-session error. Add no remote request, state field, dependency, or new user command.
+Make `claude-code-ide-toggle` select the live Session associated with the invoking terminal, managed project view, or exact remote host and path before it uses local directory fallback. Preserve host identity, existing layout behavior, local project lookup, and the no-session error. Add no remote request, state field, dependency, or new user command.
 
 ## Technical Context
 
@@ -87,6 +87,7 @@ Resolved decisions:
 - The reported failure comes from directory-first resolution that skips exact terminal ownership and loses host identity.
 - `claude-code-ide-stop` provides the existing exact-Session-first pattern.
 - A managed project view must resolve through exact saved-layout buffer ownership, not host and directory recency.
+- A remote Magit buffer requires host-qualified path lookup because it is not always the active managed view.
 - Local project buffers retain the current directory fallback.
 - Disconnected targets remain outside the live Session registry and never trigger reattach.
 
@@ -110,12 +111,13 @@ Update `claude-code-ide-toggle` to:
 
 1. Resolve the Session that directly owns the current terminal buffer, following the established `claude-code-ide-stop` hierarchy.
 2. If no terminal owns the buffer, ask the manager accessor for an exact managed project-view owner.
-3. If a Session is found, preserve its host, live terminal buffer, and bare directory.
-4. If no Session is found and the current buffer is remote, signal the existing no-session `user-error` without directory fallback.
-5. Otherwise, call the existing attached-working-directory and local session-buffer fallback unchanged.
-6. Pass the selected buffer and directory to `claude-code-ide--toggle-existing-window` unchanged.
+3. If neither exact owner exists, extract the remote host and local path with `file-remote-p` and select the preferred live Session for that exact project key.
+4. If a Session is found, preserve its host, live terminal buffer, and bare directory.
+5. If no Session is found and the current buffer is remote, signal the existing no-session `user-error` without local fallback.
+6. Otherwise, call the existing attached-working-directory and local session-buffer fallback unchanged.
+7. Pass the selected buffer and directory to `claude-code-ide--toggle-existing-window` unchanged.
 
-Do not change `claude-code-ide--get-session-buffer`. Its broader callers do not need this feature, and changing it would widen the regression surface. If a future host-qualified non-view context needs directory lookup, pass the preserved host to `claude-code-ide--preferred-session` at that caller.
+Do not change `claude-code-ide--get-session-buffer`. Its broader callers do not need this feature. Keep the host-qualified Magit lookup local to the toggle command and reuse `claude-code-ide--preferred-session`.
 
 ### Data and Interface
 
@@ -130,10 +132,12 @@ Add focused public-command ERT cases:
 1. A remote terminal wins over a local Session with identical directory text.
 2. Each of two remote terminals with the same directory and Session name selects its own host-specific Session.
 3. The active managed remote project view selects its exact layout Session, including when a sibling shares host and directory.
-4. An unrelated RPC buffer does not inherit the manager's active Session or fall back to a same-path local Session.
-5. A disconnected remembered target does not attach and produces the existing no-session result.
-6. A local terminal still selects itself.
-7. A local project buffer still uses the existing directory fallback.
+4. A remote Magit buffer selects a live Session by exact host and project path.
+5. A same-path Session on another host cannot satisfy the Magit lookup.
+6. An unrelated RPC buffer with no matching live Session does not fall back to a same-path local Session.
+7. A disconnected remembered target does not attach and produces the existing no-session result.
+8. A local terminal still selects itself.
+9. A local project buffer still uses the existing directory fallback.
 
 Capture the buffer and directory passed to `claude-code-ide--toggle-existing-window`. Do not assert internal scan order or exact error wording.
 

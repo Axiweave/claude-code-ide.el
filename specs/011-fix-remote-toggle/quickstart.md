@@ -53,7 +53,15 @@ Expected result: each invocation affects only the terminal on the invoking Sessi
 
 Expected result: the layout's exact Session hides or restores. The sibling does not change.
 
-## Live scenario 4: No implicit reattach
+## Live scenario 4: Remote Magit buffer
+
+1. Open Magit for the remote Session's RPC project directory.
+2. Keep a Session with the same path on another host.
+3. Invoke the toggle from the remote Magit buffer.
+
+Expected result: the command toggles the Session on the Magit buffer's host. The other host does not change.
+
+## Live scenario 5: No implicit reattach
 
 1. Disconnect a remembered remote target.
 2. Select an unrelated remote project buffer with matching path text.
