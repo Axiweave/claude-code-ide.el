@@ -580,11 +580,13 @@ Group order is stored for the global scope. Remote and local groups mix freely.
 A group move never changes row order keys, so the flat view keeps its order.
 A group with no stored position follows the stored groups, sorted by heading name.
 
-In grouped global view, =E= includes live and disconnected rows under fixed project headings.
+In grouped global view, =E= includes live and disconnected rows under project headings.
 =M-p= and =M-n= move rows only within the same project.
 =M-P= and =M-N= move a complete project block with its rows.
 Each group has one heading line, which shows =[HOST] PROJECT= for a remote group.
-Apply rejects edited labels or headings, missing rows, and changed project membership.
+Headings are writable so Evil =V=, =d=, and =p= can move a heading with all its rows.
+Paste complete project blocks between other blocks. Each Session must remain under its original heading.
+Apply rejects changed heading text or identity, duplicate or missing headings or rows, edited labels, and changed project membership.
 Failure leaves the editor, pins, and order unchanged.
 
 *** Session State Indicator
@@ -705,8 +707,9 @@ Each Session has one numbered row.
 - =M-n= moves the current row down and renumbers all rows
 - =M-P= moves the current group block up with its rows and renumbers all rows
 - =M-N= moves the current group block down with its rows and renumbers all rows
-- In Evil mode, use =V=, =d=, and =p= to move complete rows; stale row numbers are allowed
-- =C-c C-c= validates every opening row, pins all snapshot sessions, and applies the displayed order
+- In Evil mode, use =V=, =d=, and =p= to move complete rows within a project or complete project blocks
+- Stale row numbers are allowed
+- =C-c C-c= validates every opening row and heading, clears scope pins, and applies the displayed order
 - Empty lines between rows are allowed
 - =C-c C-k= discards all edits
 

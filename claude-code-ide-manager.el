@@ -2512,7 +2512,7 @@ of its own."
                            items nil claude-code-ide-manager--pin-order-scope 'flat)))))))
 
 (defun claude-code-ide-manager--render-pin-order-editor (snapshot)
-  "Render ordered SNAPSHOT rows with any captured fixed headings."
+  "Render ordered SNAPSHOT rows with captured project headings."
   (let ((inhibit-read-only t)
         (groups (plist-get claude-code-ide-manager--pin-order-grouping :groups))
         (headings (plist-get claude-code-ide-manager--pin-order-grouping :headings)))
@@ -2522,11 +2522,9 @@ of its own."
              for group = (and groups (gethash session-key groups))
              do
              (when (and headings (equal (caar headings) group))
-               (let ((heading (pop headings))
-                     (start (point)))
+               (let ((heading (pop headings)))
                  (claude-code-ide-manager--insert-group-heading
-                  (nth 1 heading) (nth 2 heading) (car heading))
-                 (put-text-property start (point) 'read-only t)))
+                  (nth 1 heading) (nth 2 heading) (car heading))))
              (insert (format "%d. " index))
              (let ((name-start (point)))
                (insert name)
@@ -2626,7 +2624,7 @@ of its own."
       (nreverse starts))))
 
 (defun claude-code-ide-manager--pin-order-move-group (direction)
-  "Move the group block at point in DIRECTION and keep captured headings in sync."
+  "Move the group block at point in DIRECTION."
   (let ((headings (plist-get claude-code-ide-manager--pin-order-grouping :headings)))
     (unless headings
       (user-error "The flat order editor has no project groups"))
@@ -2639,18 +2637,12 @@ of its own."
                (first-start (nth low starts))
                (middle (nth (1+ low) starts))
                (end (or (nth (+ low 2) starts) (point-max)))
-               (ordered (copy-sequence headings))
                (marker (copy-marker (point))))
-          (cl-rotatef (nth low ordered) (nth (1+ low) ordered))
           (unwind-protect
               (progn
                 (atomic-change-group
-                  (let ((inhibit-read-only t))
-                    (transpose-regions first-start middle middle end))
+                  (transpose-regions first-start middle middle end)
                   (claude-code-ide-manager--pin-order-renumber))
-                (setq claude-code-ide-manager--pin-order-grouping
-                      (plist-put claude-code-ide-manager--pin-order-grouping
-                                 :headings ordered))
                 (goto-char marker)
                 (beginning-of-line))
             (set-marker marker nil)))))))
@@ -2683,17 +2675,17 @@ of its own."
          ((looking-at-p "^$"))
          ((and groups (get-text-property (point) 'claude-code-ide-manager-group-heading))
           (let* ((identity (get-text-property (point) 'claude-code-ide-manager-group-heading))
-                 (heading (pop headings))
+                 (heading (assoc identity headings))
                  (end (line-end-position)))
             (unless (and heading
-                         (equal identity (car heading))
                          (equal (buffer-substring-no-properties (point) end) (nth 1 heading))
                          (not (text-property-not-all
                                (point) end 'claude-code-ide-manager-group-heading identity))
                          (not (text-property-not-all
                                (point) end 'claude-code-ide-manager-session-key nil)))
-              (user-error "A fixed heading changed. Reopen the order editor"))
-            (setq current-group identity)))
+              (user-error "A project heading changed or appears more than once"))
+            (setq headings (remove heading headings)
+                  current-group identity)))
          (t
           (cl-incf row-number)
           (unless (looking-at "[0-9]+\\. \\(.+\\)$")
@@ -2723,7 +2715,7 @@ of its own."
             (push session-key keys))))
         (forward-line 1)))
     (when headings
-      (user-error "A fixed heading is missing. Reopen the order editor"))
+      (user-error "A project heading is missing"))
     (dolist (row snapshot)
       (unless (gethash (car row) seen)
         (user-error "A snapshot Session is missing")))

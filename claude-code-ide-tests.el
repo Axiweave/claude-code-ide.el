@@ -1020,6 +1020,29 @@ Ensures a clean state before each test that involves process management."
    (should (equal (car (claude-code-ide-manager--group-order scope))
                   '(git "beta" "/work/repo-b/.git")))))
 
+(ert-deftest claude-code-ide-test-manager-grouped-editor-cut-pastes-group ()
+  "Linewise cut and paste saves physical group order despite stale numbers."
+  (claude-code-ide-tests--with-grouped-order-editor
+   (let ((kill-ring nil)
+         (select-enable-clipboard nil)
+         (interprogram-cut-function nil)
+         (interprogram-paste-function nil))
+     (row "b2")
+     (forward-line -1)
+     (kill-region (point) (point-max))
+     (goto-char (point-min))
+     (yank))
+   ;; Mix a normal group command with a manual move.
+   (goto-char (point-min))
+   (claude-code-ide-manager-pin-order-move-group-down)
+   (claude-code-ide-manager-pin-order-move-group-up)
+   (claude-code-ide-manager-pin-order-apply)
+   (should-not (buffer-live-p editor))
+   (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                         (claude-code-ide-manager--sorted-items
+                          (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+                  '("b2" "b3" "b1" "a2" "a3" "a1")))))
+
 (ert-deftest claude-code-ide-test-manager-grouped-editor-applies-mixed-hosts ()
   "Unedited and reordered mixed-host editors apply and clear scope pins."
   (dolist (local '(nil t))
@@ -1076,8 +1099,6 @@ Ensures a clean state before each test that involves process management."
 (ert-deftest claude-code-ide-test-manager-grouped-editor-applies-occupied-order ()
   "Grouped edits retain identities, opening labels, and post-open fallback behavior."
   (claude-code-ide-tests--with-grouped-order-editor
-   (goto-char (point-min))
-   (should-error (delete-char 1) :type 'text-read-only)
    (let ((kill-ring nil)
          (select-enable-clipboard nil)
          (interprogram-cut-function nil)
@@ -1116,7 +1137,7 @@ Ensures a clean state before each test that involves process management."
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-rejects-invalid-snapshots ()
   "Invalid headings, rows, and current membership reject all order and pin changes."
-  (dolist (variant '(heading-text heading-order heading-identity missing-heading
+  (dolist (variant '(heading-text heading-order heading-identity missing-heading duplicate-heading
                                   foreign-key changed-label missing-row duplicate-row
                                   cross-group changed-membership vanished-row))
     (claude-code-ide-tests--with-grouped-order-editor
@@ -1146,6 +1167,9 @@ Ensures a clean state before each test that involves process management."
           (let ((inhibit-read-only t))
             (goto-char (point-min))
             (delete-region (point) (line-beginning-position 2))))
+         ('duplicate-heading
+          (goto-char (point-min))
+          (insert (buffer-substring (point) (line-beginning-position 2))))
          ('foreign-key
           (row "a2")
           (re-search-forward "^[0-9]+\\. ")
@@ -1206,7 +1230,7 @@ Ensures a clean state before each test that involves process management."
      (should (equal (claude-code-ide-manager--validate-pin-order-editor)
                     '("a1" "a3" "a2" "b1" "b3" "b2")))
      (goto-char (point-min))
-     (should-error (delete-char 1) :type 'text-read-only)
+     (delete-char 1)
      (claude-code-ide-manager-pin-order-cancel)
      (should-not (buffer-live-p editor))
      (should (eq (window-buffer (selected-window)) content))

@@ -186,7 +186,7 @@ NUL framing preserves spaces, quotes, tabs in diagnostics, and field boundaries 
 ## R8. Grouped E snapshots identity and validates before mutation
 
 **Decision**: Store editor view, fixed heading identities/text, snapshot Session IDs, group keys, labels, and baseline flat order in the editor buffer.
-Make heading text read-only, but also validate it at apply because kill/yank or programmatic edits can bypass normal movement commands.
+Headings are writable for whole-block cut/paste. Apply requires each captured heading exactly once with unchanged text and hidden identity.
 Allow blank lines as the existing editor does. Count Session rows, not headings.
 
 In grouped view, check current scope membership rather than process liveness.

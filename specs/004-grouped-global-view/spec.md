@@ -66,8 +66,8 @@ The user can pin Sessions, move Session rows, and use `E` while keeping Project 
 
 1. Pins appear first within their Project group, followed by manual order and the configured fallback sort.
 2. A Session move cannot cross a Project group boundary.
-3. In grouped view, `E` shows fixed Project group headings and permits Session moves only within their group.
-4. The editor rejects edits that move Sessions across groups or change fixed headings.
+3. In grouped view, `E` permits within-group Session moves and whole-project block moves through linewise cut/paste.
+4. Apply rejects cross-group Session moves, changed heading text or identity, and missing or duplicate headings.
 5. Applying a valid order retains the existing editor behavior, including clearing pins in the edited manager scope.
 6. Flat view and its order editor retain their existing behavior.
 7. Quick slots follow displayed Session-row order across groups. Slots remain limited to 1–10, with `0` selecting slot 10.
@@ -127,7 +127,7 @@ The user can see remote Project groups under configured-host headings, including
 - **FR-011**: Show local Project groups first, followed by remote host sections labeled `[host]`.
 - **FR-012**: Sort host sections and Project groups by name. Apply Session order rules within groups.
 - **FR-013**: Keep pins, manual Session order, and the configured fallback sort within each group. Prevent cross-group manual moves.
-- **FR-014**: Support grouped view in `E` with fixed group headings and within-group Session moves.
+- **FR-014**: Support grouped `E` with writable project headings for whole-block cut/paste and within-group Session moves. Validate complete, unique headings and unchanged identities/text before saving.
 - **FR-015**: Preserve order application and pin clearing. Grouped `E` validates Session presence in current scope items, not process liveness. Remembered disconnected Sessions remain eligible. Leave the flat-view editor unchanged.
 - **FR-016**: Keep the branch visible in row labels. Append a custom name when present, such as `main · review`.
 - **FR-017**: Without a custom name, add a Session-order suffix when needed to distinguish rows. Keep final row labels unambiguous.

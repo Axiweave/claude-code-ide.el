@@ -103,7 +103,7 @@ Keep the snapshot buffer-local. Capture:
 - Manager scope and editor view at open.
 - Ordered Session IDs and immutable opening row labels.
 - Group identity for each Session ID.
-- Fixed heading identities, text, and order.
+- Opening heading identities and text. The edited buffer determines group order.
 - Baseline flat sequence of snapshot Session IDs.
 
 A global view toggle does not silently rebuild an open editor.
@@ -112,7 +112,7 @@ An external metadata completion updates the sidebar, not the editor contents.
 
 Apply validates all rows and current group membership before any pin/order mutation.
 Remembered disconnected rows are valid when they remain in current scope items.
-Vanished Sessions, changed groups, foreign/duplicate rows, or modified fixed headings reject the complete apply.
+Vanished Sessions, changed groups, foreign/duplicate rows, or changed, missing, or duplicate headings reject the complete apply.
 Current labels remain distinct from identity. A branch-label change alone need not invalidate membership if the row still matches its opening label.
 
 ## Transient metadata operation

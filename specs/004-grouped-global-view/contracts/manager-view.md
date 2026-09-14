@@ -72,9 +72,10 @@ Ordinary `n`/`p`, numeric shortcuts, and priority navigation use the same displa
 
 ## Grouped order editor
 
-Fixed host/group headings have read-only text, no Session identity, and no row number.
+Project headings have writable text, a hidden group identity, no Session identity, and no row number.
 Session rows retain stable hidden Session IDs and existing number, kill/yank, and rename-validation conventions.
-Movement and renumbering operate on Session rows, never raw heading lines.
+Row commands move Sessions within their project. Group commands and linewise cut/paste move complete project blocks.
+Renumbering changes only Session row numbers. Physical block order determines the saved group order.
 Allow empty lines as the current editor does.
 
 Capture the editor view and the snapshot defined in the data model.
@@ -83,7 +84,7 @@ The existing explicit sort action can resync its contents using the captured vie
 
 Apply validates the entire buffer before changing manager items:
 
-1. Validate fixed heading text, order, and identity.
+1. Require every captured heading exactly once, with unchanged text and complete hidden identity, in any block order.
 2. Validate complete, unique, known Session row identities and opening labels.
 3. Validate each Session remains inside its opening group in the buffer.
 4. Validate each snapshot Session still belongs to the same group in current scope items.
