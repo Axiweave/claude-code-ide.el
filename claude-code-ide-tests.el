@@ -18420,7 +18420,10 @@ Return a plist with :killed-zmx and :killed-buffer."
         (kill-buffer buffer)))))
 
 (ert-deftest claude-code-ide-test-remote-attachment-bypasses-local-agent-startup ()
-  "Remote attachment needs only a terminal and keeps remote paths as text."
+  "Remote attachment needs only a terminal and keeps remote paths as text.
+The Session buffer starts on the RPC name of its directory so Ghostel's
+OSC 7 tracking keeps that prefix instead of building /scp:HOST: from
+the Agent's self-reported hostname."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
         (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
         (claude-code-ide-remote-hosts '("host"))
@@ -18428,9 +18431,11 @@ Return a plist with :killed-zmx and :killed-buffer."
         (claude-code-ide-zmx-program "/missing/zmx")
         (claude-code-ide-terminal-initialization-delay 0)
         (claude-code-ide-manager-persist-state nil)
+        (had-tramp-rpc (featurep 'tramp-rpc))
         (file-name-handler-alist
-         (list (cons "\\`/ssh:" (lambda (&rest _) (ert-fail "Remote filesystem access")))))
+         (list (cons "\\`/\\(ssh\\|rpc\\):" (lambda (&rest _) (ert-fail "Remote filesystem access")))))
         buffer process working-directory terminal-command selected-id)
+    (unless had-tramp-rpc (provide 'tramp-rpc))
     (unwind-protect
         (cl-letf
             (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
@@ -18440,7 +18445,7 @@ Return a plist with :killed-zmx and :killed-buffer."
              ((symbol-function 'completing-read)
               (lambda (_prompt candidates &rest _) (caar candidates)))
              ((symbol-function 'read-string)
-              (lambda (&rest _) "/ssh:metadata:/remote-project"))
+              (lambda (&rest _) "/remote-project"))
              ((symbol-function 'read-directory-name)
               (lambda (&rest _) (ert-fail "Remote attach requested local completion")))
              ((symbol-function 'claude-code-ide--read-agent)
@@ -18475,14 +18480,17 @@ Return a plist with :killed-zmx and :killed-buffer."
             (should-not (string-match-p "--do-not-launch" terminal-command))
             (should (equal (claude-code-ide-session-host session) "host"))
             (should (equal (claude-code-ide-session-directory session)
-                           "/ssh:metadata:/remote-project"))
+                           "/remote-project"))
+            (should (equal (buffer-local-value 'default-directory buffer)
+                           "/rpc:host:/remote-project/"))
             (should (equal working-directory temporary-file-directory))))
       (when (processp process)
         (set-process-sentinel process #'ignore)
         (when (process-live-p process) (delete-process process)))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
-          (let ((kill-buffer-hook nil)) (kill-buffer buffer)))))))
+          (let ((kill-buffer-hook nil)) (kill-buffer buffer))))
+      (unless had-tramp-rpc (setq features (delq 'tramp-rpc features))))))
 
 (ert-deftest claude-code-ide-test-remote-host-collision-isolates-directory-and-order ()
   "Identical remote directories must not change local or other-host lookup."

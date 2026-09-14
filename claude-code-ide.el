@@ -93,6 +93,8 @@
 (declare-function ghostel--adjust-size "ghostel" (window &optional force))
 (declare-function claude-code-ide-remote-worktree-target-for-file
                   "claude-code-ide-remote-worktree" (filename))
+(declare-function claude-code-ide-remote-project-rpc-directory
+                  "claude-code-ide-remote-project" (host directory))
 
 ;; External function declarations from MCP
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
@@ -1833,6 +1835,17 @@ INTENT-VALID must still approve attachment after any remote identity read."
                   process (cdr buffer-and-process))
             (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
               (user-error "Ghostel did not start a live process for the new buffer"))
+            ;; Ghostel reuses the remote prefix of `default-directory'
+            ;; on each OSC 7 report.  Without one it builds
+            ;; /scp:HOST: from the Agent's self-reported hostname, and
+            ;; the first timer to touch a relative name there opens a
+            ;; fresh tramp-sh connection to an unconfigured host.
+            (when (and (member host claude-code-ide-remote-hosts)
+                       (require 'tramp-rpc nil t)
+                       (require 'claude-code-ide-remote-project nil t))
+              (with-current-buffer buffer
+                (setq default-directory
+                      (claude-code-ide-remote-project-rpc-directory host working-dir))))
             (setq session
                   (claude-code-ide-session-create
                    :id session-id
