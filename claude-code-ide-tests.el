@@ -15103,6 +15103,437 @@ inside the target session's directory."
         (should ghostel-interrupt-called)
         (should activity-called)))))
 
+;;; Editor handoff (Oh My Pi)
+
+(defmacro claude-code-ide-tests--with-editor-handoff-session (cli sent &rest body)
+  "Run BODY in a Session buffer whose Ghostel maps send raw C-g and RET.
+CLI is the `claude-code-ide-cli-path'.  SENT collects every string
+sent to the terminal.  Ghostel senders and `ghostel--on-user-input'
+are stubbed."
+  (declare (indent 2))
+  `(let ((claude-code-ide-cli-path ,cli)
+         (claude-code-ide-session--editor-nonce "n0nce")
+         (claude-code-ide-session--editor-request nil)
+         (ghostel-map (make-sparse-keymap))
+         (,sent nil))
+     (define-key ghostel-map (kbd "C-g") #'ghostel-send-C-g)
+     (define-key ghostel-map (kbd "RET") #'ghostel--send-event)
+     (cl-letf (((symbol-function 'ghostel--send-string)
+                (lambda (string) (push string ,sent)))
+               ((symbol-function 'ghostel-send-C-g)
+                (lambda () (interactive) (push 'ghostel-send-C-g ,sent)))
+               ((symbol-function 'ghostel--send-event)
+                (lambda () (interactive) (push 'ghostel--send-event ,sent)))
+               ((symbol-function 'ghostel--on-user-input)
+                (lambda () (push 'on-user-input ,sent)))
+               ((symbol-function 'claude-code-ide-session-idle-record-activity)
+                #'ignore)
+               ;; The local visit runs on a timer; run it inline here.
+               ((symbol-function 'run-at-time)
+                (lambda (_time _repeat fn &rest args) (apply fn args))))
+       (with-temp-buffer
+         (rename-buffer "*claude-code[test-editor-handoff]*" t)
+         (setq-local major-mode 'ghostel-mode)
+         (use-local-map ghostel-map)
+         (claude-code-ide-session-mode 1)
+         ,@body))))
+
+(ert-deftest claude-code-ide-test-session-editor-keys-take-precedence ()
+  "Test that C-g and RET resolve to the marked senders in a Session."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (should (eq (key-binding (kbd "C-g"))
+                #'claude-code-ide-session-send-control-g-marked))
+    (should (eq (key-binding (kbd "RET"))
+                #'claude-code-ide-session-send-return-marked))
+    (should (eq (claude-code-ide-session--shadowed-binding (kbd "C-g"))
+                #'ghostel-send-C-g))))
+
+(ert-deftest claude-code-ide-test-session-editor-c-g-sends-marker-then-key ()
+  "Test that C-g in an Oh My Pi Session sends the open marker and CSI-u ctrl+g as one write.
+A raw BEL would not pass zmx's non-leader input gate (`isUserInput').
+Like `ghostel-send-C-g', it does not run `ghostel--on-user-input', so a
+scrolled-back window keeps its position."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (claude-code-ide-session-send-control-g-marked)
+    (should (equal sent '("\e_pi:editor-open;n0nce\e\\\e[103;5u")))
+    (should-not (memq 'on-user-input sent))))
+
+(ert-deftest claude-code-ide-test-session-editor-return-sends-marker-then-cr ()
+  "Test that RET in an Oh My Pi Session runs user-input handling, then the marked CR.
+`ghostel--on-user-input' is the scroll anchor `ghostel--send-event' runs
+before the raw CR, so a scrolled-back window follows the input the same way."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (claude-code-ide-session-send-return-marked)
+    (should (equal (reverse sent)
+                   '(on-user-input "\e_pi:editor-submit;n0nce\e\\\r")))))
+
+(ert-deftest claude-code-ide-test-session-editor-keys-fall-through-for-other-cli ()
+  "Test that a non-omp Session keeps the shadowed Ghostel bindings."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "claude" sent
+    (claude-code-ide-session-send-control-g-marked)
+    (claude-code-ide-session-send-return-marked)
+    (should (equal (reverse sent) '(ghostel-send-C-g ghostel--send-event)))))
+
+(ert-deftest claude-code-ide-test-session-send-control-g-marks-only-omp ()
+  "Test that the public C-g command marks in omp and stays raw elsewhere."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (claude-code-ide-session-send-control-g)
+    (should (equal sent '("\e_pi:editor-open;n0nce\e\\\e[103;5u"))))
+  (claude-code-ide-tests--with-editor-handoff-session "claude" sent
+    (claude-code-ide-session-send-control-g)
+    (should (equal sent '(ghostel-send-C-g)))))
+
+(ert-deftest claude-code-ide-test-session-editor-keys-fall-through-in-copy-mode ()
+  "Test that a non-terminal binding (copy mode) runs unchanged."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (let ((copy-map (make-sparse-keymap))
+          (ran nil))
+      (define-key copy-map (kbd "C-g") (lambda () (interactive) (setq ran 'c-g)))
+      (define-key copy-map (kbd "RET") (lambda () (interactive) (setq ran 'ret)))
+      (use-local-map copy-map)
+      (claude-code-ide-session-send-control-g-marked)
+      (should (eq ran 'c-g))
+      (claude-code-ide-session-send-return-marked)
+      (should (eq ran 'ret))
+      (should-not sent))))
+
+(ert-deftest claude-code-ide-test-session-editor-keys-fall-through-in-line-mode ()
+  "Test that Ghostel line mode keeps its own Return and C-g with no marker.
+Ghostel installs `ghostel-line-mode-map' with `use-local-map'
+(`ghostel-line-mode.el:445').  That map binds RET and <return> only
+(`ghostel-line-mode.el:179-180'); C-g falls through to the global
+`keyboard-quit'.  The batch gate loads the stub `ghostel', so the map
+is rebuilt here with the same bindings."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (let ((line-map (make-sparse-keymap)))
+      (define-key line-map (kbd "RET") #'ghostel-line-mode-send-or-open-link)
+      (define-key line-map (kbd "<return>") #'ghostel-line-mode-send-or-open-link)
+      (cl-letf (((symbol-function 'ghostel-line-mode-send-or-open-link)
+                 (lambda () (interactive) (push 'line-send sent)))
+                ((symbol-function 'keyboard-quit)
+                 (lambda () (interactive) (push 'keyboard-quit sent))))
+        (use-local-map line-map)
+        (should (eq (claude-code-ide-session--shadowed-binding (kbd "RET"))
+                    #'ghostel-line-mode-send-or-open-link))
+        (should (eq (claude-code-ide-session--shadowed-binding (kbd "C-g"))
+                    #'keyboard-quit))
+        (claude-code-ide-session-send-return-marked)
+        (claude-code-ide-session-send-control-g-marked)
+        (should (equal (reverse sent) '(line-send keyboard-quit)))))))
+
+(ert-deftest claude-code-ide-test-session-editor-keys-fall-through-in-evil-state ()
+  "Test that an Evil emulation map after the package map wins over Ghostel's map."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (let ((evil-map (make-sparse-keymap))
+          (ran nil))
+      (define-key evil-map (kbd "RET") (lambda () (interactive) (setq ran 'evil-ret)))
+      (define-key evil-map (kbd "C-g") (lambda () (interactive) (setq ran 'evil-c-g)))
+      (setq-local emulation-mode-map-alists
+                  (append emulation-mode-map-alists (list (list (cons t evil-map)))))
+      (should (eq (key-binding (kbd "RET")) #'claude-code-ide-session-send-return-marked))
+      (claude-code-ide-session-send-return-marked)
+      (should (eq ran 'evil-ret))
+      (claude-code-ide-session-send-control-g-marked)
+      (should (eq ran 'evil-c-g))
+      (should-not sent))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-one-buffer-for-two-windows ()
+  "Test that one Session shown in two windows opens exactly one prompt buffer.
+The Agent sends one request per keystroke on its pty, so a second
+request while one is accepted is ignored, and the prompt shows once."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n")))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (let ((session-buffer (current-buffer)))
+            (save-window-excursion
+              (delete-other-windows)
+              (set-window-buffer (selected-window) session-buffer)
+              (set-window-buffer (split-window) session-buffer)
+              (should (= 2 (length (get-buffer-window-list session-buffer))))
+              (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                         (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                        ((symbol-function 'claude-code-ide-session-host)
+                         (lambda (_) nil)))
+                (claude-code-ide-session-editor-request "r11" "n0nce" file)
+                (claude-code-ide-session-editor-request "r12" "n0nce" file)
+                (should (equal sent '("\e_pi:editor-ack;r11\e\\")))
+                (let ((prompt (find-buffer-visiting file)))
+                  (should prompt)
+                  (should (= 1 (length (get-buffer-window-list prompt))))
+                  (should (= 1 (length (get-buffer-window-list session-buffer))))
+                  (should (eq (window-buffer (selected-window)) prompt))
+                  (should (equal (car claude-code-ide-session--editor-request) "r11"))
+                  (with-current-buffer prompt
+                    (with-editor-cancel nil)))))))
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-accepts-own-nonce ()
+  "Test that a matching nonce acks, visits the file, and answers done on finish."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n"))
+        (visited nil))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (setq visited buffer))))
+            (claude-code-ide-session-editor-request "r1" "n0nce" file)
+            (should (equal sent '("\e_pi:editor-ack;r1\e\\")))
+            (should (equal (buffer-file-name visited) file))
+            (should (buffer-local-value 'with-editor-mode visited))
+            (should (equal claude-code-ide-session--editor-request
+                           (cons "r1" (current-buffer))))
+            (with-current-buffer visited
+              (with-editor-finish nil))
+            (should (equal (car sent) "\e_pi:editor-done;r1\e\\"))
+            (should-not claude-code-ide-session--editor-request)))
+      (delete-file file))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-cancel-answers-cancel ()
+  "Test that with-editor cancel answers the request with cancel."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n"))
+        (visited nil))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (setq visited buffer))))
+            (claude-code-ide-session-editor-request "r2" "n0nce" file)
+            (with-current-buffer visited
+              (with-editor-cancel nil))
+            (should (equal (car sent) "\e_pi:editor-cancel;r2\e\\"))
+            (should-not claude-code-ide-session--editor-request)))
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-ignores-foreign-nonce ()
+  "Test that another client's nonce, or a non-Session buffer, gets no answer."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+               (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
+      (claude-code-ide-session-editor-request "r3" "other" "/tmp/x.md")
+      (should-not sent)
+      (should-not claude-code-ide-session--editor-request))
+    (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+               (lambda (&optional _) nil)))
+      (claude-code-ide-session-editor-request "r3" "n0nce" "/tmp/x.md")
+      (should-not sent)
+      (should-not claude-code-ide-session--editor-request))
+    (let ((claude-code-ide-session--editor-nonce nil))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
+        (claude-code-ide-session-editor-request "r3" "" "/tmp/x.md")
+        (should-not sent)
+        (should-not claude-code-ide-session--editor-request)))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-remote-uses-rpc-open-file ()
+  "Test that a remote Session visits the path through `claude-code-ide-remote-project-open-file'."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((opened nil)
+        (visited nil)
+        (claude-code-ide-remote-hosts '("box")))
+    (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t))
+                ((symbol-function 'claude-code-ide-remote-project-open-file)
+                 (lambda (host path callback)
+                   (setq opened (list host path callback))))
+                ((symbol-function 'switch-to-buffer)
+                 (lambda (buffer &rest _) (setq visited buffer))))
+        (claude-code-ide-session-editor-request "r4" "n0nce" "/tmp/remote.md")
+        (should (equal sent '("\e_pi:editor-ack;r4\e\\")))
+        (should (equal (seq-take opened 2) '("box" "/tmp/remote.md")))
+        (let ((buffer (generate-new-buffer " *remote prompt*")))
+          (unwind-protect
+              (progn
+                (funcall (nth 2 opened) (list :status 'completed :buffer buffer))
+                (should (eq visited buffer))
+                (should (buffer-local-value 'with-editor-mode buffer)))
+            (with-current-buffer buffer
+              (remove-hook 'kill-buffer-query-functions
+                           #'with-editor-kill-buffer-noop t))
+            (kill-buffer buffer)))))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-remote-failure-cancels ()
+  "Test that a failed remote open answers cancel after the ack."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((claude-code-ide-remote-hosts '("box")))
+    (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t))
+                ((symbol-function 'claude-code-ide-remote-project-open-file)
+                 (lambda (_host _path callback)
+                   (funcall callback (list :status 'failed :error "boom")))))
+        (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
+        (should (equal (reverse sent)
+                       '("\e_pi:editor-ack;r5\e\\" "\e_pi:editor-cancel;r5\e\\")))
+        (should-not claude-code-ide-session--editor-request)))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-remote-preflight-sends-no-ack ()
+  "Test that an unapproved host or unavailable RPC signals before any packet."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((claude-code-ide-remote-hosts '("box")))
+    (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "elsewhere"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t)))
+        (should-error (claude-code-ide-session-editor-request "r6" "n0nce" "/tmp/remote.md")
+                      :type 'user-error))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () nil)))
+        (should-error (claude-code-ide-session-editor-request "r7" "n0nce" "/tmp/remote.md")
+                      :type 'user-error))
+      (should-not sent)
+      (should-not claude-code-ide-session--editor-request))))
+
+(ert-deftest claude-code-ide-test-session-editor-visit-failure-cancels-and-kills ()
+  "Test that a display failure after the ack cancels once and leaves no buffer."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((claude-code-ide-remote-hosts '("box"))
+        (file (make-temp-file "cc-editor-" nil ".md" "draft\n")))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (&rest _) (error "no window"))))
+            (claude-code-ide-session-editor-request "r8" "n0nce" file)
+            (should (equal (reverse sent)
+                           '("\e_pi:editor-ack;r8\e\\" "\e_pi:editor-cancel;r8\e\\")))
+            (should-not claude-code-ide-session--editor-request)
+            (should-not (find-buffer-visiting file)))
+          (setq sent nil)
+          (let ((buffer (generate-new-buffer " *remote prompt*")))
+            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                      ((symbol-function 'claude-code-ide-session-host)
+                       (lambda (_) "box"))
+                      ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                       (lambda () t))
+                      ((symbol-function 'claude-code-ide-remote-project-open-file)
+                       (lambda (_host _path callback)
+                         (funcall callback (list :status 'completed :buffer buffer))))
+                      ((symbol-function 'switch-to-buffer)
+                       (lambda (&rest _) (error "no window"))))
+              (claude-code-ide-session-editor-request "r9" "n0nce" "/tmp/remote.md")
+              (should (equal (reverse sent)
+                             '("\e_pi:editor-ack;r9\e\\" "\e_pi:editor-cancel;r9\e\\")))
+              (should-not claude-code-ide-session--editor-request)
+              (should-not (buffer-live-p buffer)))))
+      (delete-file file))))
+
+(ert-deftest claude-code-ide-test-session-editor-local-open-failure-cancels ()
+  "Test that a file that cannot be visited answers cancel and shows one message."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((messages nil))
+    (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) nil))
+                ((symbol-function 'find-file-noselect)
+                 (lambda (&rest _) (error "disk gone")))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+        (claude-code-ide-session-editor-request "r10" "n0nce" "/tmp/x.md")
+        (should (equal (reverse sent)
+                       '("\e_pi:editor-ack;r10\e\\" "\e_pi:editor-cancel;r10\e\\")))
+        (should (equal messages '("Prompt open failed: disk gone")))
+        (should-not claude-code-ide-session--editor-request)))))
+
+(ert-deftest claude-code-ide-test-find-prompt-buffer-matches-remote-localname ()
+  "Test that a remote prompt buffer matches by its local name part."
+  (let ((buffer (generate-new-buffer " *remote prompt*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq buffer-file-name "/rpc:box:/tmp/omp-prompt-abc.md"))
+          (cl-letf (((symbol-function 'walk-windows)
+                     (lambda (fn &rest _) (funcall fn (selected-window))))
+                    ((symbol-function 'window-buffer)
+                     (lambda (&optional _) buffer)))
+            (should (eq (claude-code-ide--find-prompt-buffer) buffer))))
+      (with-current-buffer buffer (setq buffer-file-name nil))
+      (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-remote-project-open-file-validates-inputs ()
+  "Test that open-file rejects an unapproved host or relative path before work."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (let ((claude-code-ide-remote-hosts '("box")))
+    (should-error (claude-code-ide-remote-project-open-file "nope" "/tmp/x.md" #'ignore)
+                  :type 'user-error)
+    (should-error (claude-code-ide-remote-project-open-file "box" "tmp/x.md" #'ignore)
+                  :type 'user-error)
+    (should-error (claude-code-ide-remote-project-open-file "box" "/tmp/x.md" 'not-a-function)
+                  :type 'user-error)))
+
+(ert-deftest claude-code-ide-test-remote-project-open-file-visits-through-worker ()
+  "Test that open-file runs the worker's file branch and calls back with the buffer."
+  (should (require 'claude-code-ide-remote-project nil t))
+  (let* ((claude-code-ide-remote-hosts '("box"))
+         (buffer (generate-new-buffer " *rpc file*"))
+         (result nil)
+         (spawned nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                   (lambda () t))
+                  ((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                   (lambda (attempt _label) (setq spawned attempt) attempt))
+                  ((symbol-function 'claude-code-ide-remote-project--load-client)
+                   (lambda () t))
+                  ((symbol-function 'tramp-dissect-file-name) (lambda (_) 'vec))
+                  ((symbol-function 'tramp-rpc--connection-key) (lambda (_) 'key))
+                  ((symbol-function 'claude-code-ide-remote-project--health-check)
+                   (lambda (_) t))
+                  ((symbol-function 'find-file-noselect)
+                   (lambda (file &rest _)
+                     (should (equal file "/rpc:box:/tmp/omp-prompt.md"))
+                     buffer))
+                  ((symbol-function 'run-at-time)
+                   (lambda (_ _ fn &rest args) (apply fn args))))
+          (claude-code-ide-remote-project-open-file
+           "box" "/tmp/omp-prompt.md" (lambda (r) (setq result r)))
+          (should (equal (claude-code-ide-remote-project--attempt-file spawned)
+                         "/rpc:box:/tmp/omp-prompt.md"))
+          (claude-code-ide-remote-project--worker spawned)
+          (should (eq (plist-get result :status) 'completed))
+          (should (eq (plist-get result :buffer) buffer))
+          (should (eq (claude-code-ide-remote-project--attempt-state spawned) 'ready)))
+      (kill-buffer buffer))))
+
 (ert-deftest claude-code-ide-test-session-send-string-uses-ghostel-paste-when-requested ()
   "Test that pasted text uses Ghostel's bracketed paste path."
   (should (require 'claude-code-ide-session nil t))

@@ -94,14 +94,16 @@
                (:constructor claude-code-ide-remote-project--make-attempt))
   "One asynchronous Project-view preparation attempt.
 CALLBACK is non-nil only for an explicit no-Session target attempt
-from `claude-code-ide-remote-project-open-target'.  REQUESTED-DIRECTORY
+from `claude-code-ide-remote-project-open-target' or
+`claude-code-ide-remote-project-open-file'.  REQUESTED-DIRECTORY
 then holds its exact requested directory for the callback result.
 EXPLICIT-PROVIDER holds that same attempt's captured Git provider,
-used only to build its shared view key."
+used only to build its shared view key.  FILE, when non-nil, is the
+RPC file name an open-file attempt visits instead of a view."
   id session-id attachment host admitted-host directory frame reason
   state worker connecting timer route-key view-key candidate
   candidate-origin abandon-reason callback requested-directory on-close
-  layout-request explicit-provider)
+  layout-request explicit-provider file)
 
 (cl-defstruct (claude-code-ide-remote-project--view
                (:constructor claude-code-ide-remote-project--make-view))
@@ -1274,6 +1276,26 @@ owns the Session's display."
              nil))
           (message "%s" failure-message))))))
 
+(defun claude-code-ide-remote-project--finish-file-success (attempt result)
+  "Hand ATTEMPT's visited file buffer in RESULT to its callback.
+Recheck admission first.  A stale attempt reports `failed' through
+`claude-code-ide-remote-project--finish-failure'."
+  (let ((buffer (plist-get result :buffer)))
+    (if (and (not (claude-code-ide-remote-project--invalidate-lost-admission attempt))
+             (claude-code-ide-remote-project--attempt-current-p attempt)
+             (buffer-live-p buffer))
+        (progn
+          (claude-code-ide-remote-project--cancel-timer attempt)
+          (setf (claude-code-ide-remote-project--attempt-state attempt) 'ready)
+          (funcall (claude-code-ide-remote-project--attempt-callback attempt)
+                   (list :status 'completed
+                         :buffer buffer
+                         :host (claude-code-ide-remote-project--attempt-host attempt)
+                         :directory (claude-code-ide-remote-project--attempt-requested-directory
+                                     attempt))))
+      (claude-code-ide-remote-project--finish-failure
+       attempt (list 'error "The remote file open lost its host admission")))))
+
 (defun claude-code-ide-remote-project--prepare-shell (attempt)
   "Return ATTEMPT's freshly created companion shell result.
 Refuse before creating a shell for ATTEMPT whose layout request no
@@ -1324,18 +1346,25 @@ longer owns its Session's display."
                           attempt)
                          :companion-kind)
                         'shell))
+                   (file (claude-code-ide-remote-project--attempt-file attempt))
                    (result
-                    (if shell-p
-                        (claude-code-ide-remote-project--prepare-shell attempt)
+                    (cond
+                     (file
+                      (list :buffer (find-file-noselect file)))
+                     (shell-p
+                      (claude-code-ide-remote-project--prepare-shell attempt))
+                     (t
                       (claude-code-ide-remote-project--prepare-view
                        attempt
                        (claude-code-ide-remote-project--resolve-view-key
-                        attempt)))))
+                        attempt))))))
               (unless shell-p
                 (claude-code-ide-remote-project--checkpoint attempt))
               (run-at-time
                0 nil
-               #'claude-code-ide-remote-project--finish-success
+               (if file
+                   #'claude-code-ide-remote-project--finish-file-success
+                 #'claude-code-ide-remote-project--finish-success)
                attempt result))))
       (claude-code-ide-remote-project-abandoned nil)
       (error
@@ -1529,6 +1558,44 @@ finishes on its own."
         intent)
        (buffer-name view-buffer))
       t)))
+
+(defun claude-code-ide-remote-project-open-file (host path callback)
+  "Visit the absolute remote PATH on HOST through the owned RPC worker.
+Reject an unapproved HOST or a non-absolute PATH before any remote
+work.  This shares the guards of
+`claude-code-ide-remote-project-open-target': the RPC client gate, the
+health check, the 30-second deadline, and the admission recheck before
+the callback.  It registers no Project view.
+
+Call CALLBACK exactly once, on the main thread, with a plist:
+:status `completed' or `failed', :host, :directory, and either
+:buffer (the visited file buffer) or :error.
+
+Return the owned attempt.  Cancel it with
+`claude-code-ide-remote-project-cancel-target'."
+  (claude-code-ide-zmx--validate-host host)
+  (unless (and (stringp path) (file-name-absolute-p path)
+               (not (string-suffix-p "/" path)))
+    (user-error "Host %s requires an absolute remote file name" host))
+  (unless (functionp callback)
+    (user-error "The remote file callback must be a function"))
+  (unless (claude-code-ide-remote-project-target-available-p)
+    (user-error "Remote file access requires Emacs 30.1 and a compatible RPC client"))
+  (let* ((directory (file-name-directory path))
+         (rpc-directory (claude-code-ide-remote-project--rpc-directory host directory))
+         (attempt
+          (claude-code-ide-remote-project--make-attempt
+           :id (make-symbol "remote-project-file-attempt")
+           :host (copy-sequence host)
+           :admitted-host (copy-sequence host)
+           :requested-directory (copy-sequence directory)
+           :directory rpc-directory
+           :file (concat rpc-directory (file-name-nondirectory path))
+           :callback callback
+           :reason 'explicit-file
+           :state 'checking-client)))
+    (claude-code-ide-remote-project--spawn-worker
+     attempt (format "remote-project-file-%s" host))))
 
 (defun claude-code-ide-remote-project-surviving-view
     (session-id attachment)

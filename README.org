@@ -814,6 +814,10 @@ With =claude-code-ide-use-with-editor= enabled, editor commands such as =C-g= in
 The package routes files matching =claude-code-ide-prompt-buffer-patterns= to the current window.
 The unbound command =claude-code-ide-session-send-control-g= sends C-g through Ghostel for users who want a dedicated keybinding.
 
+For Oh My Pi Sessions, =C-g= and =RET= in terminal-input mode carry a per-Emacs nonce, and =claude-code-ide-session-send-control-g= carries it too.
+The Agent then opens its prompt buffer in the Emacs that pressed the key, even when another Emacs started the Session or attached it over a remote host.
+This needs an Agent started after the upgrade. Copy mode and line mode keep their own keys, so a line-mode =/todo edit= still uses =$EDITOR=.
+
 *** Session Customization
 
 The package owns session buffer setup and idle monitoring. Your configuration can extend those behaviors through public hooks and reader functions:

@@ -74,3 +74,19 @@ The new-worktree command refuses names that already exist as a branch.
 * DONE remove eat and vterm; ghostel only forward
 CLOSED: [2026-09-12 Sat]
 Superseded by [[file:specs/008-remove-legacy-backends/plan.md][specs/008-remove-legacy-backends]] (Ghostel-only terminal cutover).
+
+* DONE remote with-editor; omp integration
+CLOSED: [2026-09-14 Mon]
+Done in [[file:specs/010-attached-editor-handoff/plan.md][specs/010-attached-editor-handoff]]: the Agent asks the attached Emacs through an APC marker plus CSI-u ctrl+g, and the prompt opens in whichever Emacs is attached now. Needs an Agent started after the upgrade.
+now it open editor in remote emacs! if the session is launch by remote emacs which wrapped its own with-editor.
+find a way to open in my local emacs?
+how? escape sequence? force to nvim (not ideal...)
+how to make it transparent to match my local workflow?
+
+assuming free to change omp
+
+* TODO remote prompt open is slow on first use (~30 s)
+While the remote-project worker waits on the RPC response, =accept-process-output= also runs Ghostel's event filter for the Session buffer. =ghostel--buffer-identification= calls =abbreviate-file-name= on the remote =default-directory= (=%d= spec), which makes a nested tramp-rpc call inside the outer wait. Slow, not a hang. Fix in Ghostel: skip =abbreviate-file-name= for remote paths, or drop =%d= from =ghostel-buffer-identification-format=.
+
+* TODO harden magit-prime late sentinels
+=leo/magit-prime-refresh-cache= now skips priming when =magit--refresh-cache= is nil. The upstream sentinel at =magit-prime.el:110-125= can still see a nil cache after the 1 s wait scope exits and leak one exited process per git call ("Too many open files"). Capture a stable cache in the sentinel and reap in =unwind-protect=, or send it upstream.

@@ -365,7 +365,8 @@ matching buffer, or nil."
      (lambda (win)
        (unless result
          (let* ((buf (window-buffer win))
-                (fname (buffer-file-name buf)))
+                (name (buffer-file-name buf))
+                (fname (and name (or (file-remote-p name 'localname) name))))
            (when (and fname
                       (cl-some (lambda (pat) (string-match-p pat fname))
                                claude-code-ide-prompt-buffer-patterns))

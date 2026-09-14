@@ -40,7 +40,18 @@
 (declare-function ghostel-send-C-g "ghostel" ())
 (declare-function ghostel-yank "ghostel" ())
 
+(declare-function ghostel--on-user-input "ghostel" ())
+(declare-function with-editor-mode "with-editor" (&optional arg))
+(declare-function claude-code-ide-remote-project-open-file
+                  "claude-code-ide-remote-project" (host path callback))
+(declare-function claude-code-ide-remote-project-target-available-p
+                  "claude-code-ide-remote-project" ())
+(defvar ghostel-eval-cmds)
+(defvar claude-code-ide-remote-hosts)
+
 (declare-function claude-code-ide--current-cli-type "claude-code-ide" ())
+(declare-function claude-code-ide--session-for-buffer "claude-code-ide" (&optional buffer))
+(declare-function claude-code-ide-session-host "claude-code-ide" (session))
 (declare-function claude-code-ide-session-idle-record-activity
                   "claude-code-ide-session-idle" (&optional buffer))
 (declare-function claude-code-ide--touch-session-for-buffer
@@ -364,12 +375,198 @@ Use paste input when PASTE is non-nil."
   (prog1 (ghostel-send-C-c)
     (claude-code-ide-session--record-activity)))
 
+;;; Editor handoff (Oh My Pi)
+
+(defvar claude-code-ide-session--editor-nonce nil
+  "Per-client random nonce that marks this Emacs's editor keystrokes.")
+
+(defvar claude-code-ide-session--editor-request nil
+  "Accepted editor request (REQUEST-ID . SESSION-BUFFER) awaiting its answer.")
+
+(defun claude-code-ide-session--editor-nonce ()
+  "Return this client's editor nonce, creating it once."
+  (or claude-code-ide-session--editor-nonce
+      (setq claude-code-ide-session--editor-nonce
+            (format "%x%x" (random most-positive-fixnum) (emacs-pid)))))
+
+(defun claude-code-ide-session--shadowed-binding (key)
+  "Return KEY's binding with the package emulation map removed."
+  (let ((emulation-mode-map-alists
+         (delq 'claude-code-ide-session--emulation-mode-map-alist
+               (copy-sequence emulation-mode-map-alists))))
+    (key-binding key t)))
+
+(defun claude-code-ide-session--editor-handoff-p (binding)
+  "Return non-nil when BINDING is raw terminal input in an Oh My Pi Session."
+  (and (memq binding '(ghostel-send-C-g ghostel--send-event))
+       (claude-code-ide-session-buffer-p (current-buffer))
+       (eq (claude-code-ide--current-cli-type) 'omp)))
+
 (defun claude-code-ide-session-send-control-g ()
-  "Send C-g to the terminal in the current Session buffer."
+  "Send C-g to the terminal in the current Session buffer.
+In an Oh My Pi Session the key carries this client's editor nonce, so
+a prompt buffer the Agent opens lands in this Emacs.  The key goes as
+the kitty CSI-u sequence: zmx forwards a non-leader client's write only
+when it holds a printable, CR, or a CSI key, and a raw BEL is neither.
+The Agent accepts CSI-u ctrl+g in legacy mode too."
   (interactive)
   (claude-code-ide-session--ensure-session-buffer)
-  (prog1 (ghostel-send-C-g)
-    (claude-code-ide-session--record-activity)))
+  (if (eq (claude-code-ide--current-cli-type) 'omp)
+      (progn
+        (setq quit-flag nil)
+        (deactivate-mark)
+        (claude-code-ide-session-send-string
+         (concat "\e_pi:editor-open;" (claude-code-ide-session--editor-nonce)
+                 "\e\\\e[103;5u")))
+    (prog1 (ghostel-send-C-g)
+      (claude-code-ide-session--record-activity))))
+
+(defun claude-code-ide-session-send-control-g-marked ()
+  "Send C-g through `claude-code-ide-session-send-control-g'.
+Fall through to the shadowed binding outside terminal-input mode or
+outside an Oh My Pi Session."
+  (interactive)
+  (let ((binding (claude-code-ide-session--shadowed-binding (kbd "C-g"))))
+    (if (claude-code-ide-session--editor-handoff-p binding)
+        (claude-code-ide-session-send-control-g)
+      (when binding (call-interactively binding)))))
+
+(defun claude-code-ide-session-send-return-marked ()
+  "Send Return to the terminal, marked with this client's editor nonce.
+Fall through to the shadowed binding outside terminal-input mode or
+outside an Oh My Pi Session."
+  (interactive)
+  (let ((binding (claude-code-ide-session--shadowed-binding (kbd "RET"))))
+    (if (claude-code-ide-session--editor-handoff-p binding)
+        (progn
+          (ghostel--on-user-input)
+          ;; ponytail: raw default \r; Kitty keyboard mode would need ghostel--send-encoded.
+          (claude-code-ide-session-send-string
+           (concat "\e_pi:editor-submit;" (claude-code-ide-session--editor-nonce)
+                   "\e\\\r")))
+      (when binding (call-interactively binding)))))
+
+(defun claude-code-ide-session--editor-answer (kind)
+  "Send the KIND answer packet for the accepted editor request, if any."
+  (when-let* ((request claude-code-ide-session--editor-request))
+    (setq claude-code-ide-session--editor-request nil)
+    (when (buffer-live-p (cdr request))
+      (with-current-buffer (cdr request)
+        (when (derived-mode-p 'ghostel-mode)
+          (claude-code-ide-session-send-omp-packet
+           (concat "editor-" kind) (car request)))))))
+
+(defun claude-code-ide-session--editor-done ()
+  "Answer the accepted editor request with `done'."
+  (claude-code-ide-session--editor-answer "done"))
+
+(defun claude-code-ide-session--editor-cancel ()
+  "Answer the accepted editor request with `cancel'."
+  (claude-code-ide-session--editor-answer "cancel"))
+
+(defun claude-code-ide-session--editor-visit (buffer)
+  "Show BUFFER as the prompt buffer for the accepted editor request.
+On any error, answer `cancel', kill BUFFER, and re-signal."
+  (condition-case err
+      (progn
+        (with-current-buffer buffer
+          (with-editor-mode 1)
+          (add-hook 'with-editor-post-finish-hook
+                    #'claude-code-ide-session--editor-done nil t)
+          (add-hook 'with-editor-post-cancel-hook
+                    #'claude-code-ide-session--editor-cancel nil t))
+        (switch-to-buffer buffer))
+    ((error quit)
+     (claude-code-ide-session--editor-cancel)
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (with-editor-mode -1)
+         (remove-hook 'kill-buffer-query-functions
+                      #'with-editor-kill-buffer-noop t)
+         (set-buffer-modified-p nil))
+       (kill-buffer buffer))
+     (signal (car err) (cdr err)))))
+
+(defun claude-code-ide-session--editor-remote-preflight (host)
+  "Signal a `user-error' unless HOST can be visited over RPC now."
+  (unless (or (fboundp 'claude-code-ide-remote-project-open-file)
+              (and (require 'claude-code-ide-remote-project nil t)
+                   (fboundp 'claude-code-ide-remote-project-open-file)))
+    (user-error "Editing a remote prompt needs claude-code-ide-remote-project"))
+  (unless (member host claude-code-ide-remote-hosts)
+    (user-error "Host %s is not in `claude-code-ide-remote-hosts'" host))
+  (unless (claude-code-ide-remote-project-target-available-p)
+    (user-error "Remote file access requires Emacs 30.1 and a compatible RPC client")))
+
+(defun claude-code-ide-session--editor-visit-or-cancel (request thunk)
+  "Call THUNK to visit the buffer for REQUEST when it is still accepted.
+On any error answer `cancel' once and show one message."
+  (when (eq request claude-code-ide-session--editor-request)
+    (condition-case err
+        (funcall thunk)
+      ((error quit)
+       (claude-code-ide-session--editor-cancel)
+       (message "Prompt open failed: %s" (error-message-string err))))))
+
+(defun claude-code-ide-session--editor-local-visit (request path)
+  "Visit local PATH for REQUEST on a timer, off Ghostel's VT callback."
+  (run-at-time
+   0 nil
+   #'claude-code-ide-session--editor-visit-or-cancel request
+   (lambda ()
+     (claude-code-ide-session--editor-visit (find-file-noselect path)))))
+
+(defun claude-code-ide-session--editor-remote-visit (request host path)
+  "Visit PATH on HOST for REQUEST through the remote Project RPC transport."
+  ;; ponytail: no Agent->Emacs abort during a slow open; a late buffer answers
+  ;; with a stale id the Agent ignores.  Add an editor-abort OSC if this bites.
+  (claude-code-ide-remote-project-open-file
+   host path
+   (lambda (result)
+     (claude-code-ide-session--editor-visit-or-cancel
+      request
+      (lambda ()
+        (if (eq (plist-get result :status) 'completed)
+            (claude-code-ide-session--editor-visit (plist-get result :buffer))
+          (error "Remote prompt open failed: %s" (plist-get result :error))))))))
+
+(defun claude-code-ide-session-editor-request (request-id nonce path)
+  "Answer an Oh My Pi editor request from the current Session buffer.
+Accept only when NONCE is this client's and no request is pending.
+Run every synchronous guard first, so a `user-error' sends no `ack'
+and the Agent falls back to its own editor.  Then send `ack' for
+REQUEST-ID and visit PATH locally or through the Session's remote host.
+Both visits run later, outside Ghostel's native VT callback."
+  (when (and (stringp nonce)
+             (not (string-empty-p nonce))
+             (equal nonce claude-code-ide-session--editor-nonce)
+             (null claude-code-ide-session--editor-request))
+    (when-let* ((session (claude-code-ide--session-for-buffer)))
+      (let ((host (claude-code-ide-session-host session))
+            (request (cons request-id (current-buffer))))
+        (when host
+          (claude-code-ide-session--editor-remote-preflight host))
+        (setq claude-code-ide-session--editor-request request)
+        (claude-code-ide-session-send-omp-packet "editor-ack" request-id)
+        (condition-case err
+            (if host
+                (claude-code-ide-session--editor-remote-visit request host path)
+              (claude-code-ide-session--editor-local-visit request path))
+          ((error quit)
+           (claude-code-ide-session--editor-cancel)
+           (signal (car err) (cdr err))))))))
+
+(with-eval-after-load 'ghostel
+  (when (and (boundp 'ghostel-eval-cmds)
+             (not (assoc "claude-code-ide-session-editor-request" ghostel-eval-cmds)))
+    (push '("claude-code-ide-session-editor-request"
+            claude-code-ide-session-editor-request)
+          ghostel-eval-cmds)))
+
+;; `<return>' reaches RET through `function-key-map', so RET alone covers both.
+(let ((map (cdar claude-code-ide-session--emulation-mode-map-alist)))
+  (define-key map (kbd "C-g") #'claude-code-ide-session-send-control-g-marked)
+  (define-key map (kbd "RET") #'claude-code-ide-session-send-return-marked))
 
 (defun claude-code-ide-session-setup-terminal-keybindings ()
   "Set up package-owned keybindings for the current Session buffer."
