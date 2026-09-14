@@ -97,6 +97,10 @@
 (declare-function claude-code-ide-manager-open-remote "claude-code-ide-manager" (&optional sibling))
 (declare-function claude-code-ide-manager-new-remote-worktree "claude-code-ide-manager" (&optional create-only))
 (declare-function claude-code-ide-remote-worktree-show "claude-code-ide-remote-worktree" (&optional operation-id))
+(autoload 'claude-code-ide-remote-worktree-show
+  "claude-code-ide-remote-worktree"
+  "Display a retained remote Worktree operation."
+  t)
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-port "claude-code-ide-mcp" (session))

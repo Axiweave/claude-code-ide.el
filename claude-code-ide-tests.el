@@ -10416,6 +10416,24 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                            :command)
                 (cdr binding)))))
 
+(ert-deftest claude-code-ide-test-remote-worktree-menu-autoloads-results ()
+  "The remote Worktree menu loads its optional results command lazily."
+  (let ((original (symbol-function 'claude-code-ide-remote-worktree-show)))
+    (unwind-protect
+        (progn
+          (fmakunbound 'claude-code-ide-remote-worktree-show)
+          (load "claude-code-ide-transient" nil t)
+          (should (autoloadp
+                   (symbol-function 'claude-code-ide-remote-worktree-show)))
+          (should
+           (eq (plist-get
+                (claude-code-ide-tests--transient-suffix-plist
+                 'claude-code-ide-manager-remote-worktree-menu "r")
+                :command)
+               'claude-code-ide-remote-worktree-show))
+          (should (commandp 'claude-code-ide-remote-worktree-show)))
+      (fset 'claude-code-ide-remote-worktree-show original))))
+
 (ert-deftest claude-code-ide-test-transient-exposes-manager-open-and-repo-toggle-bindings ()
   "Main transient binds `o` to manager-open and `w` to repo manager toggle."
   (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "o") :command)
