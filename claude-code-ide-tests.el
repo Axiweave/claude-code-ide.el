@@ -10504,6 +10504,238 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
       (when (buffer-live-p sub-buffer)
         (kill-buffer sub-buffer)))))
 
+(ert-deftest claude-code-ide-test-toggle-remote-terminal-keeps-exact-host ()
+  "Remote terminals toggle their exact Sessions before directory lookup."
+  (let* ((directory "/srv/project/")
+         (local-buffer (generate-new-buffer "*claude-toggle-local*"))
+         (remote-a-buffer (generate-new-buffer "*claude-toggle-remote-a*"))
+         (remote-b-buffer (generate-new-buffer "*claude-toggle-remote-b*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         toggled)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "local" :directory directory :buffer local-buffer))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "remote-a" :directory directory :host "alpha"
+            :buffer remote-a-buffer))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "remote-b" :directory directory :host "beta"
+            :buffer remote-b-buffer))
+          (cl-letf (((symbol-function
+                      'claude-code-ide--get-attached-working-directory)
+                     (lambda (&optional _)
+                       (ert-fail "Exact Session reached directory fallback")))
+                    ((symbol-function 'claude-code-ide--toggle-existing-window)
+                     (lambda (buffer working-directory)
+                       (push (cons buffer working-directory) toggled))))
+            (with-current-buffer remote-a-buffer
+              (claude-code-ide-toggle))
+            (with-current-buffer remote-b-buffer
+              (claude-code-ide-toggle)))
+          (should (equal (nreverse toggled)
+                         (list (cons remote-a-buffer directory)
+                               (cons remote-b-buffer directory)))))
+      (mapc #'kill-buffer
+            (list local-buffer remote-a-buffer remote-b-buffer)))))
+
+(ert-deftest claude-code-ide-test-toggle-managed-view-uses-active-session ()
+  "A managed project view toggles only its active layout Session."
+  (let* ((directory "/srv/project/")
+         (view-buffer (generate-new-buffer "*claude-toggle-view*"))
+         (other-view (generate-new-buffer "*claude-toggle-other-view*"))
+         (terminal-buffer (generate-new-buffer "*claude-toggle-managed*"))
+         (sibling-buffer (generate-new-buffer "*claude-toggle-sibling*"))
+         (terminal-process
+          (make-pipe-process :name "claude-toggle-managed-process"
+                             :buffer terminal-buffer))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+         (claude-code-ide-manager--current-session-key "managed")
+         toggled)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "managed" :directory directory :host "alpha"
+            :process terminal-process :buffer terminal-buffer))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "sibling" :directory directory :host "alpha"
+            :buffer sibling-buffer :last-accessed-at 99))
+          (puthash "managed" (list :project-view-buffer view-buffer)
+                   claude-code-ide-manager--layouts)
+          (puthash "sibling" (list :project-view-buffer other-view)
+                   claude-code-ide-manager--layouts)
+          (cl-letf (((symbol-function
+                      'claude-code-ide--get-attached-working-directory)
+                     (lambda (&optional _)
+                       (ert-fail "Managed view reached directory fallback")))
+                    ((symbol-function 'claude-code-ide--toggle-existing-window)
+                     (lambda (buffer working-directory)
+                       (setq toggled (cons buffer working-directory)))))
+            (with-current-buffer view-buffer
+              (claude-code-ide-toggle)))
+          (should (equal toggled (cons terminal-buffer directory))))
+      (ignore-errors (delete-process terminal-process))
+      (mapc #'kill-buffer
+            (list view-buffer other-view terminal-buffer sibling-buffer)))))
+
+(ert-deftest claude-code-ide-test-toggle-remote-magit-uses-host-and-path ()
+  "A remote Magit buffer toggles the Session for its exact host and path."
+  (let* ((directory "/srv/project")
+         (magit-buffer (generate-new-buffer "magit: project"))
+         (other-view (generate-new-buffer "*claude-toggle-other-project*"))
+         (alpha-buffer (generate-new-buffer "*claude-toggle-alpha*"))
+         (beta-buffer (generate-new-buffer "*claude-toggle-beta*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+         (claude-code-ide-manager--current-session-key "beta")
+         toggled)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "alpha" :directory directory :host "alpha"
+            :buffer alpha-buffer))
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "beta" :directory directory :host "beta"
+            :buffer beta-buffer))
+          (puthash "beta" (list :project-view-buffer other-view)
+                   claude-code-ide-manager--layouts)
+          (with-current-buffer magit-buffer
+            (setq default-directory "/rpc:alpha:/srv/project/")
+            (cl-letf (((symbol-function 'file-remote-p)
+                       (lambda (_file &optional identification _connected)
+                         (pcase identification
+                           ('host "alpha")
+                           ('localname "/srv/project/")
+                           (_ "/rpc:alpha:"))))
+                      ((symbol-function
+                        'claude-code-ide--get-attached-working-directory)
+                       (lambda (&optional _)
+                         (ert-fail "Remote Magit reached directory fallback")))
+                      ((symbol-function 'claude-code-ide--toggle-existing-window)
+                       (lambda (buffer working-directory)
+                         (setq toggled (cons buffer working-directory)))))
+              (claude-code-ide-toggle)))
+          (should (equal toggled (cons alpha-buffer directory))))
+      (mapc #'kill-buffer
+            (list magit-buffer other-view alpha-buffer beta-buffer)))))
+
+(ert-deftest claude-code-ide-test-toggle-unowned-remote-view-does-not-fallback ()
+  "An unowned remote view cannot select a same-path local Session."
+  (let* ((directory "/srv/project/")
+         (remote-directory "/rpc:alpha:/srv/project/")
+         (local-buffer (generate-new-buffer "*claude-toggle-local-alias*"))
+         (unowned-view (generate-new-buffer "*claude-toggle-unowned-view*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+         (claude-code-ide-manager--current-session-key nil))
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "local" :directory directory :buffer local-buffer))
+          (with-current-buffer unowned-view
+            (setq default-directory remote-directory)
+            (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                       (lambda (&optional _)
+                         (ert-fail "Remote view reached local fallback")))
+                      ((symbol-function 'claude-code-ide--toggle-existing-window)
+                       (lambda (&rest _)
+                         (ert-fail "Remote view toggled a Session"))))
+              (should-error (claude-code-ide-toggle) :type 'user-error))))
+      (mapc #'kill-buffer (list local-buffer unowned-view)))))
+
+(ert-deftest claude-code-ide-test-toggle-disconnected-managed-view-does-not-attach ()
+  "A remembered view without a live Session remains disconnected."
+  (let* ((view-buffer (generate-new-buffer "*claude-toggle-disconnected*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+         (claude-code-ide-manager--current-session-key "disconnected"))
+    (unwind-protect
+        (progn
+          (puthash "disconnected" (list :project-view-buffer view-buffer)
+                   claude-code-ide-manager--layouts)
+          (with-current-buffer view-buffer
+            (setq default-directory "/rpc:alpha:/srv/project/")
+            (cl-letf (((symbol-function 'claude-code-ide--get-session-buffer)
+                       (lambda (&optional _)
+                         (ert-fail "Disconnected view reached fallback")))
+                      ((symbol-function 'claude-code-ide--toggle-existing-window)
+                       (lambda (&rest _)
+                         (ert-fail "Disconnected view toggled a Session"))))
+              (should-error (claude-code-ide-toggle) :type 'user-error))))
+      (kill-buffer view-buffer))))
+
+(ert-deftest claude-code-ide-test-toggle-local-terminal-keeps-exact-session ()
+  "A local terminal toggles its owning Session before project lookup."
+  (let* ((directory "/tmp/project/")
+         (terminal-buffer (generate-new-buffer "*claude-toggle-local-terminal*"))
+         (claude-code-ide--sessions (make-hash-table :test #'equal))
+         toggled)
+    (unwind-protect
+        (progn
+          (claude-code-ide--put-session
+           (claude-code-ide-session-create
+            :id "local" :directory directory :buffer terminal-buffer))
+          (cl-letf (((symbol-function
+                      'claude-code-ide--get-attached-working-directory)
+                     (lambda (&optional _)
+                       (ert-fail "Local terminal reached project fallback")))
+                    ((symbol-function 'claude-code-ide--toggle-existing-window)
+                     (lambda (buffer working-directory)
+                       (setq toggled (cons buffer working-directory)))))
+            (with-current-buffer terminal-buffer
+              (claude-code-ide-toggle)))
+          (should (equal toggled (cons terminal-buffer directory))))
+      (kill-buffer terminal-buffer))))
+
+(ert-deftest claude-code-ide-test-toggle-local-project-keeps-directory-fallback ()
+  "A local project buffer keeps the established directory fallback."
+  (let ((directory "/tmp/project/")
+        (terminal-buffer (generate-new-buffer "*claude-toggle-local-project*"))
+        toggled)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _) nil))
+                  ((symbol-function
+                    'claude-code-ide-manager--session-for-project-view-buffer)
+                   (lambda (&optional _) nil))
+                  ((symbol-function
+                    'claude-code-ide--get-attached-working-directory)
+                   (lambda (&optional _) directory))
+                  ((symbol-function 'claude-code-ide--get-session-buffer)
+                   (lambda (&optional _) terminal-buffer))
+                  ((symbol-function 'claude-code-ide--toggle-existing-window)
+                   (lambda (buffer working-directory)
+                     (setq toggled (cons buffer working-directory)))))
+          (with-temp-buffer
+            (setq default-directory directory)
+            (claude-code-ide-toggle))
+          (should (equal toggled (cons terminal-buffer directory))))
+      (kill-buffer terminal-buffer))))
+
+(ert-deftest claude-code-ide-test-toggle-local-project-without-session-errors ()
+  "A local project without a Session keeps the public error."
+  (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+             (lambda (&optional _) nil))
+            ((symbol-function
+              'claude-code-ide-manager--session-for-project-view-buffer)
+             (lambda (&optional _) nil))
+            ((symbol-function 'claude-code-ide--get-attached-working-directory)
+             (lambda (&optional _) "/tmp/project/"))
+            ((symbol-function 'claude-code-ide--get-session-buffer)
+             (lambda (&optional _) nil)))
+    (with-temp-buffer
+      (setq default-directory "/tmp/project/")
+      (should-error (claude-code-ide-toggle) :type 'user-error))))
+
 (ert-deftest claude-code-ide-test-toggle-recent ()
   "Test the toggle-recent functionality."
   (claude-code-ide-tests--clear-processes)

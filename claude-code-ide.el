@@ -3112,12 +3112,45 @@ context so selection state comes from the target file."
             (claude-code-ide--send-reference-body reference-body))
         (claude-code-ide--send-reference-body reference-body)))))
 
+(defun claude-code-ide--session-for-remote-directory (&optional directory)
+  "Return the Session for DIRECTORY's exact remote host and path."
+  (let* ((directory (or directory default-directory))
+         (host (and (stringp directory)
+                    (ignore-errors (file-remote-p directory 'host))))
+         (path (and host
+                    (ignore-errors (file-remote-p directory 'localname)))))
+    (when (and (stringp host) (stringp path))
+      (or (claude-code-ide--preferred-session path host)
+          (and (string-suffix-p "/" path)
+               (claude-code-ide--preferred-session
+                (directory-file-name path) host))))))
+
 ;;;###autoload
 (defun claude-code-ide-toggle ()
-  "Toggle visibility of Claude Code window for the current project."
+  "Toggle the Session owned by the current terminal, view, or local project."
   (interactive)
-  (let* ((working-dir (claude-code-ide--get-attached-working-directory))
-         (buffer (claude-code-ide--get-session-buffer)))
+  (let* ((session
+          (or (claude-code-ide--session-for-buffer)
+              (claude-code-ide-manager--session-for-project-view-buffer)
+              (claude-code-ide--session-for-remote-directory)))
+         (remote-context
+          (and (null session)
+               (stringp default-directory)
+               (or (string-prefix-p "/rpc:" default-directory)
+                   (ignore-errors (file-remote-p default-directory)))))
+         (_ (when remote-context
+              (user-error "No Claude Code session for this project")))
+         (working-dir
+          (if session
+              (claude-code-ide-session-directory session)
+            (claude-code-ide--get-attached-working-directory)))
+         (buffer
+          (if session
+              (or (and (buffer-live-p (claude-code-ide-session-buffer session))
+                       (claude-code-ide-session-buffer session))
+                  (claude-code-ide--session-buffer-from-process
+                   (claude-code-ide-session-process session)))
+            (claude-code-ide--get-session-buffer))))
     (if buffer
         (claude-code-ide--toggle-existing-window buffer working-dir)
       (user-error "No Claude Code session for this project"))))

@@ -910,6 +910,19 @@ Return nil without loading the feature when the host is not admitted."
                (not (claude-code-ide-manager--session-host session-key)))
       (claude-code-ide--get-session-buffer session-key))))
 
+(defun claude-code-ide-manager--session-for-project-view-buffer (&optional buffer)
+  "Return the live Session whose active layout owns BUFFER."
+  (let* ((buffer (or buffer (current-buffer)))
+         (session-key claude-code-ide-manager--current-session-key)
+         (layout (and session-key
+                      (gethash session-key claude-code-ide-manager--layouts)))
+         (session (and session-key
+                       (claude-code-ide--get-session session-key))))
+    (when (and session
+               (eq buffer (plist-get layout :project-view-buffer))
+               (claude-code-ide-manager--session-buffer session-key))
+      session)))
+
 (defun claude-code-ide-manager--session-git-root (session-or-key)
   "Return the local Git root for SESSION-OR-KEY when available."
   (unless (claude-code-ide-manager--session-host session-or-key)
