@@ -74,6 +74,14 @@ connect."
   :type '(repeat string)
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-remote-launch-config nil
+  "Remote Agent overrides keyed by exact configured host.
+Each value is a property list with optional `:executable' and `:args'.
+The default executable is the globally selected Agent's standard command.
+Remote arguments default to an empty list, without local CLI or MCP flags."
+  :type '(alist :key-type string :value-type plist)
+  :group 'claude-code-ide)
+
 (defconst claude-code-ide-zmx--ssh-options
   '("-o" "BatchMode=yes" "-o" "StrictHostKeyChecking=yes"
     "-o" "ConnectTimeout=10" "-o" "ConnectionAttempts=1"
@@ -234,6 +242,37 @@ seconds.  No request retries."
 Only a control character makes an otherwise arbitrary string unsafe
 for `claude-code-ide-zmx--quote' to carry across the wire."
   (and (stringp value) (not (string-match-p "[[:cntrl:]\u007f-\u009f]" value))))
+
+(defun claude-code-ide-zmx--remote-launch-spec (host)
+  "Return validated, copied remote Agent settings for HOST."
+  (claude-code-ide-zmx--validate-host host)
+  (require 'claude-code-ide)
+  (let* ((config
+          (cdr (assoc host (default-value 'claude-code-ide-remote-launch-config))))
+         (cli-type
+          (claude-code-ide--cli-type-for-command
+           (default-value 'claude-code-ide-cli-path)))
+         (executable (or (plist-get config :executable) (symbol-name cli-type)))
+         (args (plist-get config :args))
+         (fields config)
+         seen)
+    (unless (and (proper-list-p config) (zerop (% (length config) 2)))
+      (user-error "The remote Agent override must be a property list"))
+    (while fields
+      (let ((key (pop fields)))
+        (pop fields)
+        (unless (and (memq key '(:executable :args)) (not (memq key seen)))
+          (user-error "The remote Agent override contains an unknown or duplicate key"))
+        (push key seen)))
+    (unless (and (claude-code-ide-zmx--valid-argument-p executable)
+                 (not (string-empty-p executable))
+                 (not (string-prefix-p "-" executable))
+                 (proper-list-p args)
+                 (cl-every #'claude-code-ide-zmx--valid-argument-p args))
+      (user-error "The remote Agent executable or argument list is invalid"))
+    (list :cli-type cli-type
+          :executable (copy-sequence executable)
+          :args (mapcar #'copy-sequence args))))
 
 (defun claude-code-ide-zmx--exec-command (program argv &optional directory)
   "Return a POSIX command running PROGRAM with literal ARGV.
@@ -706,6 +745,35 @@ so no shell or Agent is left behind and the client exits nonzero.")
                      (list host (claude-code-ide-zmx--remote-command
                                  (claude-code-ide-zmx--attach-args name))))
              " "))
+
+(defun claude-code-ide-zmx--remote-create-command
+    (host directory name executable args)
+  "Build an interactive SSH command creating and attaching NAME on HOST."
+  (claude-code-ide-zmx--validate-host host)
+  (unless (claude-code-ide-zmx--valid-directory-p directory)
+    (user-error "Remote project directory must be absolute path text"))
+  (claude-code-ide-zmx--validate-name name)
+  (unless (and (claude-code-ide-zmx--valid-argument-p executable)
+               (not (string-empty-p executable))
+               (not (string-prefix-p "-" executable))
+               (proper-list-p args)
+               (cl-every #'claude-code-ide-zmx--valid-argument-p args))
+    (user-error "The remote Agent executable or argument list is invalid"))
+  (mapconcat
+   #'claude-code-ide-zmx--quote
+   (append
+    '("ssh" "-t")
+    claude-code-ide-zmx--ssh-options
+    (list
+     host
+     (claude-code-ide-zmx--exec-command
+      "env"
+      (append '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
+                "zmx" "attach")
+              (list name executable)
+              args)
+      directory)))
+   " "))
 
 (defun claude-code-ide-zmx-wrap-command (name &optional cmd)
   "Return a shell command attaching to zmx session NAME.

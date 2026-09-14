@@ -267,6 +267,7 @@ The manager uses these remote lifecycle keys:
 |-----+--------|
 | =RET= | Open a connected Session terminal. |
 | =c= | Reattach a disconnected row explicitly. |
+| =s= | Start and attach a fresh Agent on the row's exact host and directory. |
 | =D= or =X= | Detach and remove the local row without stopping the Agent. |
 | =K= | Confirm and Stop the exact remote zmx target. |
 | =R= | Reset the Session layout to the selected preset and retry its companion. |
@@ -276,6 +277,10 @@ The manager uses these remote lifecycle keys:
 Selecting or refreshing a disconnected row never contacts its host.
 Startup and layout restoration never reconnect automatically.
 A successful reattach keeps the Session ID, title, order, pin state, and saved layout.
+
+Remote sibling launch uses direct interactive SSH and creates one new zmx target.
+It does not create, select, or inspect a Worktree.
+Remote =S= and prefixed =s= remain unavailable.
 
 Closing a remote terminal buffer detaches the local client.
 The manager retains the row as disconnected.

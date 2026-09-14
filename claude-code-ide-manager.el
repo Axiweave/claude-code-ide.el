@@ -29,6 +29,8 @@
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--get-session "claude-code-ide" (session-id))
 (declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory force-new))
+(declare-function claude-code-ide--start-remote-sibling-session
+                  "claude-code-ide" (host directory))
 (declare-function claude-code-ide--set-session-custom-name "claude-code-ide" (session name))
 (declare-function claude-code-ide--set-session-group-metadata "claude-code-ide" (session metadata))
 (declare-function claude-code-ide--preferred-session "claude-code-ide" (directory &optional host))
@@ -5247,9 +5249,10 @@ Leave the remote zmx session and its agent process unchanged."
       (message "Detached zmx session %s" zmx-name))))
 
 (defun claude-code-ide-manager-start-session-at-point (&optional dangerous arg)
-  "Start and switch to a session for the row or repo scope at point.
-With prefix ARG, select the CLI for this launch.
-When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
+  "Start and switch to a sibling session for the row or repo scope at point.
+With prefix ARG, select the CLI for a local launch.
+When DANGEROUS is non-nil, force the selected local CLI's permissions bypass.
+A plain launch on a remote row starts a sibling Agent in that exact Worktree."
   (interactive (list nil current-prefix-arg))
   (let* ((item (claude-code-ide-manager--item-at-point))
          (scope (claude-code-ide-manager--scope-for-command))
@@ -5257,23 +5260,30 @@ When DANGEROUS is non-nil, force the selected launch CLI's permissions bypass."
                              (claude-code-ide-manager-item-directory item))
                         (and (eq (plist-get scope :type) 'repo)
                              (plist-get scope :git-root))
-                        (user-error "No manager session at point"))))
-    (when (and item
-               (claude-code-ide-manager--session-host
-                (claude-code-ide-manager-item-session-key item)))
-      (user-error "Remote session creation is not available in attach mode"))
-    (let* ((directory (file-name-as-directory (expand-file-name directory)))
-           (claude-code-ide--suppress-initial-display t)
-           (claude-code-ide--session-cli-type
-            (unless arg claude-code-ide--session-cli-type))
-           (claude-code-ide-cli-path
-            (claude-code-ide--transient-cli-path arg))
-           (claude-code-ide-cli-extra-flags
-            (claude-code-ide--transient-launch-flags dangerous)))
-      (when-let* ((session (claude-code-ide--start-session
-                            nil nil directory t)))
-        (claude-code-ide-manager-switch-to-session
-         (claude-code-ide-session-id session) nil scope)))))
+                        (user-error "No manager session at point")))
+         (host (and item
+                    (claude-code-ide-manager--session-host
+                     (claude-code-ide-manager-item-session-key item)))))
+    (if host
+        (if (or dangerous arg)
+            (user-error "Remote sibling launch does not use local CLI options")
+          (let* ((claude-code-ide--suppress-initial-display t)
+                 (session
+                  (claude-code-ide--start-remote-sibling-session host directory)))
+            (claude-code-ide-manager-switch-to-session
+             (claude-code-ide-session-id session) nil scope)))
+      (let* ((directory (file-name-as-directory (expand-file-name directory)))
+             (claude-code-ide--suppress-initial-display t)
+             (claude-code-ide--session-cli-type
+              (unless arg claude-code-ide--session-cli-type))
+             (claude-code-ide-cli-path
+              (claude-code-ide--transient-cli-path arg))
+             (claude-code-ide-cli-extra-flags
+              (claude-code-ide--transient-launch-flags dangerous)))
+        (when-let* ((session (claude-code-ide--start-session
+                              nil nil directory t)))
+          (claude-code-ide-manager-switch-to-session
+           (claude-code-ide-session-id session) nil scope))))))
 
 (defun claude-code-ide-manager-start-session-at-point-skip-permissions (&optional arg)
   "Start a sibling with the selected launch CLI's permissions bypass."

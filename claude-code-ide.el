@@ -1059,7 +1059,8 @@ keeps whatever buffer the following kill puts in it."
 (defun claude-code-ide--cleanup-session-resources (session &optional keep-buffer disposition)
   "Clean resources owned by SESSION after it leaves the live registry.
 KEEP-BUFFER lets an active buffer kill finish.
-DISPOSITION `verified-stop' leaves manager finalization to the Stop caller."
+DISPOSITION `verified-stop' leaves manager finalization to the Stop caller.
+DISPOSITION `failed-remote-launch' forgets every row from the failed launch."
   (let* ((session-id (claude-code-ide-session-id session))
          (directory (claude-code-ide-session-directory session))
          (buffer (claude-code-ide-session-buffer session))
@@ -1072,8 +1073,12 @@ DISPOSITION `verified-stop' leaves manager finalization to the Stop caller."
     (when (and (eq cli-type 'claude) (not host))
       (claude-code-ide-mcp-stop-session session-id)
       (claude-code-ide-mcp-server-session-ended session-id))
-    (unless (eq disposition 'verified-stop)
-      (claude-code-ide-manager-session-ended session-id))
+    (cond
+     ((eq disposition 'verified-stop))
+     ((eq disposition 'failed-remote-launch)
+      (claude-code-ide-manager-session-ended session-id t))
+     (t
+      (claude-code-ide-manager-session-ended session-id)))
     (when (and (buffer-live-p buffer)
                (with-current-buffer buffer (derived-mode-p 'ghostel-mode)))
       (when (claude-code-ide-session-buffer-p buffer)
@@ -1095,13 +1100,16 @@ captured when it was installed; when given, cleanup runs only if it
 still matches SESSION-ID's current process, so a stale callback from a
 replaced or already-finished attach process cannot tear down a session
 it no longer owns.  DISPOSITION reaches
-`claude-code-ide--cleanup-session-resources'."
+`claude-code-ide--cleanup-session-resources'.  A nil disposition keeps
+normal remote attachment behavior and retains a disconnected row.
+`verified-stop' and `failed-remote-launch' forget that row."
   (save-current-buffer
     (when-let* ((session (claude-code-ide--get-session session-id)))
       (when (or (null expected-process)
                 (eq expected-process (claude-code-ide-session-process session)))
         (when (and (claude-code-ide-session-host session)
-                   (not (eq disposition 'verified-stop)))
+                   (not (memq disposition
+                              '(verified-stop failed-remote-launch))))
           (claude-code-ide-manager--remember-remote-session session))
         ;; Removing first is the ID-scoped recursion guard for sentinel/hook races.
         (remhash session-id claude-code-ide--sessions)
@@ -1787,129 +1795,192 @@ failure still leaves exactly one disconnected row instead of none."
     :host host)))
 
 (defun claude-code-ide--create-remote-session
-    (working-dir zmx-attach-name host reusable-session-id &optional intent-valid)
-  "Attach a Ghostel terminal to an existing remote zmx target.
-WORKING-DIR remains opaque remote directory metadata.
-ZMX-ATTACH-NAME identifies the existing target on HOST.
-REUSABLE-SESSION-ID preserves its remembered identity, order, and creation time.
-This path skips Agent builders, MCP startup, and local zmx wrapping.
-It remembers a disconnected row before terminal creation.
-INTENT-VALID must still approve attachment after any remote identity read."
-  (when (and intent-valid (not (funcall intent-valid)))
-    (user-error "The remote attachment intent was canceled"))
-  (unless zmx-attach-name
-    (user-error "Remote attachment needs an existing zmx session name"))
-  (unless (claude-code-ide-zmx--valid-directory-p working-dir)
-    (user-error "Remote project directory must be absolute path text"))
-  (let* ((session-id
-          (or reusable-session-id
-              (make-temp-name (format "claude-remote-%s-" host))))
-         (existing-item (claude-code-ide-manager--item-by-session-key session-id))
-         (order (if existing-item
-                    (claude-code-ide-manager-item-order existing-item)
-                  (claude-code-ide--next-session-order working-dir host)))
-         (created-at (if existing-item
-                         (claude-code-ide-manager-item-created-at existing-item)
-                       (float-time)))
-         (cmd (claude-code-ide-zmx--remote-attach-command host zmx-attach-name))
-         (buffer-name
-          (generate-new-buffer-name
-           (format "*claude-code[%s@%s]*"
-                   (claude-code-ide--path-basename working-dir) host)))
-         buffer process session)
-    (claude-code-ide--materialize-remote-target
-     session-id host zmx-attach-name working-dir order created-at)
-    (condition-case err
-        (progn
-          (claude-code-ide-session--ensure-ghostel)
-          (when reusable-session-id
-            (claude-code-ide-zmx-require-remote-session
-             host zmx-attach-name
-             (claude-code-ide--remote-target-process-name session-id)))
-          (when (and intent-valid (not (funcall intent-valid)))
-            (user-error "The remote attachment intent was canceled"))
-          (let* ((claude-code-ide--pending-remote-host host)
-                 (buffer-and-process
-                  (claude-code-ide--create-terminal-with-command
-                   buffer-name temporary-file-directory cmd nil)))
-            (setq buffer (car buffer-and-process)
-                  process (cdr buffer-and-process))
-            (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
-              (user-error "Ghostel did not start a live process for the new buffer"))
-            ;; Ghostel reuses the remote prefix of `default-directory'
-            ;; on each OSC 7 report.  Without one it builds
-            ;; /scp:HOST: from the Agent's self-reported hostname, and
-            ;; the first timer to touch a relative name there opens a
-            ;; fresh tramp-sh connection to an unconfigured host.
-            (when (and (member host claude-code-ide-remote-hosts)
-                       (require 'tramp-rpc nil t)
-                       (require 'claude-code-ide-remote-project nil t))
+    (working-dir zmx-attach-name host reusable-session-id
+                 &optional intent-valid launch-spec)
+  "Create a Ghostel terminal for a remote zmx target.
+With nil LAUNCH-SPEC, attach to existing ZMX-ATTACH-NAME on HOST.
+REUSABLE-SESSION-ID preserves a remembered identity, order, and creation
+time.  INTENT-VALID must still approve attachment after any remote
+identity read.  With non-nil LAUNCH-SPEC, create a fresh target in
+WORKING-DIR and attach.  Launch mode rejects attachment identity inputs
+and rolls back failed local state.
+Both paths skip local Agent builders, MCP startup, and local zmx wrapping."
+  (let ((launch-mode (not (null launch-spec))))
+    (when (and launch-mode
+               (or zmx-attach-name reusable-session-id intent-valid))
+      (user-error "Remote launch mode does not accept attachment identity inputs"))
+    (when (and intent-valid (not (funcall intent-valid)))
+      (user-error "The remote attachment intent was canceled"))
+    (unless (or launch-mode zmx-attach-name)
+      (user-error "Remote attachment needs an existing zmx session name"))
+    (unless (claude-code-ide-zmx--valid-directory-p working-dir)
+      (user-error "Remote project directory must be absolute path text"))
+    (let* ((session-id
+            (or reusable-session-id
+                (make-temp-name (format "claude-remote-%s-" host))))
+           (cli-type
+            (if launch-mode
+                (plist-get launch-spec :cli-type)
+              (claude-code-ide--current-cli-type)))
+           (zmx-name
+            (if launch-mode
+                (claude-code-ide-zmx-session-name
+                 cli-type working-dir session-id)
+              zmx-attach-name))
+           (existing-item
+            (and (not launch-mode)
+                 (claude-code-ide-manager--item-by-session-key session-id)))
+           (order
+            (if existing-item
+                (claude-code-ide-manager-item-order existing-item)
+              (claude-code-ide--next-session-order working-dir host)))
+           (now (float-time))
+           (created-at
+            (if existing-item
+                (claude-code-ide-manager-item-created-at existing-item)
+              now))
+           (cmd
+            (if launch-mode
+                (claude-code-ide-zmx--remote-create-command
+                 host working-dir zmx-name
+                 (plist-get launch-spec :executable)
+                 (plist-get launch-spec :args))
+              (claude-code-ide-zmx--remote-attach-command host zmx-name)))
+           (buffer-name
+            (generate-new-buffer-name
+             (format "*claude-code[%s@%s]*"
+                     (claude-code-ide--path-basename working-dir) host)))
+           buffer process session launch-ready)
+      (unless launch-mode
+        (claude-code-ide--materialize-remote-target
+         session-id host zmx-name working-dir order created-at))
+      (condition-case err
+          (progn
+            (claude-code-ide-session--ensure-ghostel)
+            (when reusable-session-id
+              (claude-code-ide-zmx-require-remote-session
+               host zmx-name
+               (claude-code-ide--remote-target-process-name session-id)))
+            (when (and intent-valid (not (funcall intent-valid)))
+              (user-error "The remote attachment intent was canceled"))
+            (let* ((claude-code-ide--pending-remote-host host)
+                   (claude-code-ide--session-cli-type cli-type)
+                   (buffer-and-process
+                    (claude-code-ide--create-terminal-with-command
+                     buffer-name temporary-file-directory cmd nil)))
+              (setq buffer (car buffer-and-process)
+                    process (cdr buffer-and-process))
+              (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
+                (user-error "Ghostel did not start a live process for the new buffer"))
+              ;; Ghostel reuses the remote prefix of `default-directory'
+              ;; on each OSC 7 report.  Without one it builds
+              ;; /scp:HOST: from the Agent's self-reported hostname, and
+              ;; the first timer to touch a relative name there opens a
+              ;; fresh tramp-sh connection to an unconfigured host.
+              (when (and (member host claude-code-ide-remote-hosts)
+                         (require 'tramp-rpc nil t)
+                         (require 'claude-code-ide-remote-project nil t))
+                (with-current-buffer buffer
+                  (setq default-directory
+                        (claude-code-ide-remote-project-rpc-directory
+                         host working-dir))))
+              (setq session
+                    (claude-code-ide-session-create
+                     :id session-id
+                     :directory working-dir
+                     :process process
+                     :buffer buffer
+                     :cli-type cli-type
+                     :order order
+                     :created-at created-at
+                     :custom-name
+                     (and existing-item
+                          (claude-code-ide-manager-item-custom-name existing-item))
+                     :last-accessed-at (if launch-mode created-at (float-time))
+                     :zmx-name zmx-name
+                     :host host))
+              (claude-code-ide--register-session session)
+              (set-process-sentinel
+               process
+               (lambda (proc event)
+                 (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
+                   (claude-code-ide-log
+                    "Remote agent %s on %s exited abnormally (code %s)"
+                    zmx-name host (match-string 1 event)))
+                 (when (string-match-p "finished\\|exited\\|killed\\|terminated" event)
+                   (claude-code-ide--cleanup-on-exit
+                    session-id nil proc
+                    (and launch-mode (not launch-ready)
+                         'failed-remote-launch)))))
               (with-current-buffer buffer
-                (setq default-directory
-                      (claude-code-ide-remote-project-rpc-directory host working-dir))))
-            (setq session
-                  (claude-code-ide-session-create
-                   :id session-id
-                   :directory working-dir
-                   :process process
-                   :buffer buffer
-                   :cli-type (claude-code-ide--current-cli-type)
-                   :order order
-                   :created-at created-at
-                   :custom-name (and existing-item
-                                     (claude-code-ide-manager-item-custom-name existing-item))
-                   :last-accessed-at (float-time)
-                   :zmx-name zmx-attach-name
-                   :host host))
-            (claude-code-ide--register-session session)
-            (set-process-sentinel
-             process
-             (lambda (proc event)
-               (when (string-match "exited abnormally with code \\([0-9]+\\)" event)
-                 (claude-code-ide-log "Remote agent %s on %s exited abnormally (code %s)"
-                                      zmx-attach-name host (match-string 1 event)))
-               (when (string-match-p "finished\\|exited\\|killed\\|terminated" event)
-                 (claude-code-ide--cleanup-on-exit session-id nil proc))))
-            (with-current-buffer buffer
-              (add-hook 'kill-buffer-hook
-                        (lambda ()
-                          (claude-code-ide--cleanup-on-exit session-id t process))
-                        nil t))
-            (sleep-for claude-code-ide-terminal-initialization-delay)
-            (unless (and (claude-code-ide-session--live-ghostel-process-p buffer process)
-                         (eq session (claude-code-ide--get-session session-id)))
-              (user-error "Cannot attach %s on %s. The terminal exited or Session ownership changed"
-                          zmx-attach-name host))
-            (unless claude-code-ide--suppress-initial-display
-              (claude-code-ide--display-buffer-in-side-window buffer))
-            (claude-code-ide-log "Started attachment to %s on %s" zmx-attach-name host)
-            (condition-case metadata-error
-                (claude-code-ide-manager--enqueue-remote-metadata session)
-              (error
-               (claude-code-ide-log "Remote metadata request for %s on %s failed: %s"
-                                    zmx-attach-name host
-                                    (error-message-string metadata-error))))
-            session))
-      ((error quit)
-       (let ((current (claude-code-ide--get-session session-id)))
-         (if (and session (eq session current))
-             (claude-code-ide--cleanup-on-exit session-id nil process)
-           (when (and (buffer-live-p buffer)
-                      (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
-                      (processp process)
-                      (process-live-p process)
-                      (eq (process-buffer process) buffer)
-                      (not (and current
-                                (eq process (claude-code-ide-session-process current)))))
-             (delete-process process))
-           (when (and (buffer-live-p buffer)
-                      (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
-                      (not (and current
-                                (eq buffer (claude-code-ide-session-buffer current)))))
-             (let ((kill-buffer-hook nil)
-                   (kill-buffer-query-functions nil))
-               (kill-buffer buffer)))))
-       (signal (car err) (cdr err))))))
+                (add-hook
+                 'kill-buffer-hook
+                 (lambda ()
+                   (claude-code-ide--cleanup-on-exit
+                    session-id t process
+                    (and launch-mode (not launch-ready)
+                         'failed-remote-launch)))
+                 nil t))
+              (sleep-for claude-code-ide-terminal-initialization-delay)
+              (unless (and
+                       (claude-code-ide-session--live-ghostel-process-p
+                        buffer process)
+                       (eq session (claude-code-ide--get-session session-id)))
+                (if launch-mode
+                    (user-error
+                     "The terminal exited or Session ownership changed during initialization")
+                  (user-error
+                   "Cannot attach %s on %s. The terminal exited or Session ownership changed"
+                   zmx-name host)))
+              (unless claude-code-ide--suppress-initial-display
+                (claude-code-ide--display-buffer-in-side-window buffer))
+              (claude-code-ide-log
+               (if launch-mode
+                   "Started %s on %s"
+                 "Started attachment to %s on %s")
+               zmx-name host)
+              (condition-case metadata-error
+                  (claude-code-ide-manager--enqueue-remote-metadata session)
+                (error
+                 (claude-code-ide-log
+                  "Remote metadata request for %s on %s failed: %s"
+                  zmx-name host
+                  (error-message-string metadata-error))))
+              (setq launch-ready t)
+              session))
+        ((error quit)
+         (let ((current (claude-code-ide--get-session session-id)))
+           (if (and session (eq session current))
+               (claude-code-ide--cleanup-on-exit
+                session-id nil process
+                (and launch-mode 'failed-remote-launch))
+             (when (and (buffer-live-p buffer)
+                        (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
+                        (processp process)
+                        (process-live-p process)
+                        (eq (process-buffer process) buffer)
+                        (not (and current
+                                  (eq process
+                                      (claude-code-ide-session-process current)))))
+               (delete-process process))
+             (when (and (buffer-live-p buffer)
+                        (with-current-buffer buffer (derived-mode-p 'ghostel-mode))
+                        (not (and current
+                                  (eq buffer
+                                      (claude-code-ide-session-buffer current)))))
+               (let ((kill-buffer-hook nil)
+                     (kill-buffer-query-functions nil))
+                 (kill-buffer buffer)))))
+         (if (and launch-mode (not (eq (car err) 'quit)))
+             (user-error "Cannot start %s on %s: %s"
+                         zmx-name host (error-message-string err))
+           (signal (car err) (cdr err))))))))
+
+(defun claude-code-ide--start-remote-sibling-session (host directory)
+  "Start and attach a fresh remote Agent on HOST in exact DIRECTORY."
+  (let ((launch-spec (claude-code-ide-zmx--remote-launch-spec host)))
+    (claude-code-ide--create-remote-session
+     directory nil host nil nil launch-spec)))
 
 (defun claude-code-ide--create-session
     (working-dir continue resume &optional zmx-attach-name host reusable-session-id intent-valid)

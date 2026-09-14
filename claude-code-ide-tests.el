@@ -1960,6 +1960,60 @@ Ensures a clean state before each test that involves process management."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "S"))
               #'claude-code-ide-manager-start-session-at-point-skip-permissions)))
 
+(ert-deftest claude-code-ide-test-manager-s-starts-remote-sibling-in-exact-worktree ()
+  "Manager `s' starts a sibling Agent in the selected remote Worktree."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "remote" :host "alpha"
+               :directory "/srv/repo/topic" :zmx-name "agent-one"))
+        (scope '(:type global))
+        launch-call switch-call)
+    (cl-letf
+        (((symbol-function 'claude-code-ide-manager--item-at-point)
+          (lambda () item))
+         ((symbol-function 'claude-code-ide-manager--scope-for-command)
+          (lambda () scope))
+         ((symbol-function 'claude-code-ide-manager--session-host)
+          (lambda (_) "alpha"))
+         ((symbol-function 'claude-code-ide--start-remote-sibling-session)
+          (lambda (host directory)
+            (setq launch-call
+                  (list host directory
+                        claude-code-ide--suppress-initial-display))
+            (claude-code-ide-session-create
+             :id "new-remote" :host host :directory directory)))
+         ((symbol-function 'claude-code-ide-manager-switch-to-session)
+          (lambda (&rest args) (setq switch-call args)))
+         ((symbol-function 'claude-code-ide--start-session)
+          (lambda (&rest _) (ert-fail "Remote launch used the local starter")))
+         ((symbol-function 'claude-code-ide-manager--request-remote-open)
+          (lambda (&rest _) (ert-fail "Remote launch prepared a Worktree"))))
+      (claude-code-ide-manager-start-session-at-point)
+      (should (equal launch-call '("alpha" "/srv/repo/topic" t)))
+      (should (equal switch-call '("new-remote" nil (:type global)))))))
+
+(ert-deftest claude-code-ide-test-manager-S-keeps-remote-local-options-rejected ()
+  "Manager `S' does not pass local permission options to a remote launch."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "remote" :host "alpha"
+               :directory "/srv/repo/topic" :zmx-name "agent-one"))
+        direct-started worktree-started)
+    (cl-letf
+        (((symbol-function 'claude-code-ide-manager--item-at-point)
+          (lambda () item))
+         ((symbol-function 'claude-code-ide-manager--scope-for-command)
+          (lambda () '(:type global)))
+         ((symbol-function 'claude-code-ide-manager--session-host)
+          (lambda (_) "alpha"))
+         ((symbol-function 'claude-code-ide--start-remote-sibling-session)
+          (lambda (&rest _) (setq direct-started t)))
+         ((symbol-function 'claude-code-ide-manager--request-remote-open)
+          (lambda (&rest _) (setq worktree-started t))))
+      (should-error
+       (claude-code-ide-manager-start-session-at-point-skip-permissions)
+       :type 'user-error)
+      (should-not direct-started)
+      (should-not worktree-started))))
+
 (ert-deftest claude-code-ide-test-manager-mode-binds-d-and-x-to-detach ()
   "Manager mode exposes zmx detach on `D' and `X'."
   (dolist (key '("D" "X"))
@@ -18555,6 +18609,51 @@ The resync ignores pin state and stored order keys."
                    "'env' '-u' 'ZMX_SESSION' '-u' 'ZMX_SESSION_PREFIX' 'zmx' 'attach' 'target' 'false'"))
     (should-error (claude-code-ide-zmx-wrap-command "a/b") :type 'user-error)))
 
+(ert-deftest claude-code-ide-test-zmx-remote-create-command-quotes-literals ()
+  "Remote creation quotes every literal and rejects invalid input before framing."
+  (let* ((claude-code-ide-remote-hosts '("host"))
+         (directory "/srv/work tree/a'b;$HOME")
+         (name "target name")
+         (executable "/opt/Agent tool/omp'run")
+         (args '("--model" "two words" "quote'\";$HOME" "$(touch nope)"))
+         (expected
+          (mapconcat
+           #'claude-code-ide-zmx--quote
+           (append
+            '("ssh" "-t")
+            claude-code-ide-zmx--ssh-options
+            (list
+             "host"
+             (claude-code-ide-zmx--exec-command
+              "env"
+              (append '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
+                        "zmx" "attach")
+                      (list name executable)
+                      args)
+              directory)))
+           " ")))
+    (should
+     (equal
+      (claude-code-ide-zmx--remote-create-command
+       "host" directory name executable args)
+      expected))
+    (dolist (invalid
+             '(("host" "relative" "target" "omp" nil)
+               ("host" "/srv/repo" "a/b" "omp" nil)
+               ("host" "/srv/repo" "target" "-omp" nil)
+               ("host" "/srv/repo" "target" "omp" "--model")
+               ("host" "/srv/repo" "target" "omp" ("bad\nargument"))))
+      (let (constructed)
+        (cl-letf
+            (((symbol-function 'claude-code-ide-zmx--exec-command)
+              (lambda (&rest _)
+                (setq constructed t)
+                (ert-fail "Invalid input reached command construction"))))
+          (should-error
+           (apply #'claude-code-ide-zmx--remote-create-command invalid)
+           :type 'user-error)
+          (should-not constructed))))))
+
 (ert-deftest claude-code-ide-test-zmx-wrap-at-shared-seam-per-cli ()
   "Every CLI type gets wrapped through the shared terminal seam."
   (dolist (cli-path '("claude" "codex" "opencode" "pi" "omp"))
@@ -19410,6 +19509,175 @@ the Agent's self-reported hostname."
         (with-current-buffer buffer
           (let ((kill-buffer-hook nil)) (kill-buffer buffer))))
       (unless had-tramp-rpc (setq features (delq 'tramp-rpc features))))))
+
+(ert-deftest claude-code-ide-test-remote-sibling-launch-registers-exact-session ()
+  "A remote sibling launch registers its exact host, directory, Agent, and target."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts '("host"))
+        (claude-code-ide-cli-path "omp")
+        (claude-code-ide-remote-launch-config
+         '(("host" :executable "/remote/omp tool" :args ("--model" "remote model"))))
+        (claude-code-ide-zmx-session-prefix "cci-")
+        (claude-code-ide-terminal-initialization-delay 0)
+        buffer process terminal-call displayed metadata id-prefix session)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'make-temp-name)
+              (lambda (prefix)
+                (setq id-prefix prefix)
+                (concat prefix "fixed")))
+             ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+             ((symbol-function 'claude-code-ide--create-terminal-with-command)
+              (lambda (name directory command environment)
+                (setq terminal-call
+                      (list name directory command environment
+                            claude-code-ide--session-cli-type)
+                      buffer (generate-new-buffer name)
+                      process
+                      (make-pipe-process
+                       :name "cci-remote-sibling" :buffer buffer :noquery t
+                       :sentinel #'ignore))
+                (with-current-buffer buffer
+                  (setq-local major-mode 'ghostel-mode))
+                (cons buffer process)))
+             ((symbol-function 'claude-code-ide--register-session)
+              #'claude-code-ide--put-session)
+             ((symbol-function 'set-process-sentinel) #'ignore)
+             ((symbol-function 'sleep-for) #'ignore)
+             ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+              (lambda (target) (setq displayed target)))
+             ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
+              (lambda (target) (setq metadata target)))
+             ((symbol-function 'claude-code-ide-remote-project-rpc-directory)
+              (lambda (host directory) (format "/rpc:%s:%s/" host directory)))
+             ((symbol-function 'claude-code-ide--materialize-remote-target)
+              (lambda (&rest _) (ert-fail "Remote launch materialized an attachment")))
+             ((symbol-function 'claude-code-ide-zmx-require-remote-session)
+              (lambda (&rest _) (ert-fail "Remote launch checked attachment existence")))
+             ((symbol-function 'claude-code-ide-remote-worktree-request)
+              (lambda (&rest _) (ert-fail "Remote launch created a Worktree operation")))
+             ((symbol-function 'claude-code-ide--create-terminal-session)
+              (lambda (&rest _) (ert-fail "Remote launch entered a local Agent builder")))
+             ((symbol-function 'claude-code-ide-mcp-start)
+              (lambda (&rest _) (ert-fail "Remote launch started MCP")))
+             ((symbol-function 'claude-code-ide-mcp-sse-ensure-server)
+              (lambda (&rest _) (ert-fail "Remote launch started MCP SSE")))
+             ((symbol-function 'executable-find)
+              (lambda (&rest _) (ert-fail "Remote launch probed a local executable"))))
+          (setq session
+                (claude-code-ide--start-remote-sibling-session
+                 "host" "/srv/repo exact"))
+          (should (equal id-prefix "claude-remote-host-"))
+          (should (equal (claude-code-ide-session-id session)
+                         "claude-remote-host-fixed"))
+          (should (equal (claude-code-ide-session-zmx-name session)
+                         "cci-omp-repo-exact-fixed"))
+          (should (equal (claude-code-ide-session-host session) "host"))
+          (should (equal (claude-code-ide-session-directory session)
+                         "/srv/repo exact"))
+          (should (eq (claude-code-ide-session-cli-type session) 'omp))
+          (should (= (claude-code-ide-session-order session) 1))
+          (should (= (claude-code-ide-session-created-at session)
+                     (claude-code-ide-session-last-accessed-at session)))
+          (should (eq (claude-code-ide--get-session
+                       "claude-remote-host-fixed")
+                      session))
+          (should (eq displayed buffer))
+          (should (eq metadata session))
+          (should (equal (nth 1 terminal-call) temporary-file-directory))
+          (should (eq (nth 4 terminal-call) 'omp))
+          (should
+           (equal
+            (nth 2 terminal-call)
+            (claude-code-ide-zmx--remote-create-command
+             "host" "/srv/repo exact" "cci-omp-repo-exact-fixed"
+             "/remote/omp tool" '("--model" "remote model")))))
+      (when (processp process)
+        (set-process-sentinel process #'ignore)
+        (when (process-live-p process) (delete-process process)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (let ((kill-buffer-hook nil)) (kill-buffer buffer)))))))
+
+(ert-deftest claude-code-ide-test-remote-sibling-launch-rolls-back-local-state ()
+  "An early SSH exit forgets the new Session and all owned local resources."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
+        (claude-code-ide-manager--scope-state (make-hash-table :test #'equal))
+        (claude-code-ide-manager--remote-metadata-operations
+         (make-hash-table :test #'equal))
+        (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
+        (claude-code-ide-manager--companion-shells (make-hash-table :test #'equal))
+        (claude-code-ide-manager--items nil)
+        (claude-code-ide-manager--current-session-key nil)
+        (claude-code-ide-manager-persist-state nil)
+        (claude-code-ide-remote-hosts '("host-a"))
+        (claude-code-ide-cli-path "omp")
+        (claude-code-ide-zmx-session-prefix "cci-")
+        (claude-code-ide-terminal-initialization-delay 0)
+        (live-results '(t nil))
+        buffer process sentinel)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'make-temp-name)
+              (lambda (prefix) (concat prefix "fixed")))
+             ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+             ((symbol-function 'claude-code-ide--create-terminal-with-command)
+              (lambda (name &rest _)
+                (setq buffer (generate-new-buffer name)
+                      process
+                      (make-pipe-process
+                       :name "cci-failed-remote-sibling" :buffer buffer
+                       :noquery t :sentinel #'ignore))
+                (with-current-buffer buffer
+                  (setq-local major-mode 'ghostel-mode))
+                (cons buffer process)))
+             ((symbol-function 'claude-code-ide--register-session)
+              (lambda (new-session)
+                (claude-code-ide--put-session new-session)
+                (claude-code-ide-manager--remember-remote-session new-session)
+                new-session))
+             ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore)
+             ((symbol-function 'set-process-sentinel)
+              (lambda (_process callback) (setq sentinel callback)))
+             ((symbol-function 'claude-code-ide-session--live-ghostel-process-p)
+              (lambda (&rest _)
+                (prog1 (pop live-results))))
+             ((symbol-function 'sleep-for)
+              (lambda (&rest _)
+                (delete-process process)
+                (funcall sentinel process "exited abnormally with code 1\n")))
+             ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+              (lambda (&rest _) (ert-fail "Failed remote launch was displayed")))
+             ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
+              (lambda (&rest _) (ert-fail "Failed remote launch requested metadata")))
+             ((symbol-function 'claude-code-ide-zmx-stop-remote)
+              (lambda (&rest _) (ert-fail "Rollback killed a remote zmx target")))
+             ((symbol-function 'claude-code-ide-zmx-kill)
+              (lambda (&rest _) (ert-fail "Rollback killed a remote zmx target"))))
+          (let ((error-data
+                 (should-error
+                  (claude-code-ide--start-remote-sibling-session
+                   "host-a" "/srv/repo")
+                  :type 'user-error)))
+            (should
+             (equal
+              (error-message-string error-data)
+              (concat
+               "Cannot start cci-omp-repo-fixed on host-a: "
+               "The terminal exited or Session ownership changed during initialization"))))
+          (should (= (hash-table-count claude-code-ide--sessions) 0))
+          (should-not
+           (claude-code-ide-manager--item-by-session-key
+            "claude-remote-host-a-fixed"))
+          (should-not (buffer-live-p buffer))
+          (should-not (process-live-p process)))
+      (when (and (processp process) (process-live-p process))
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (let ((kill-buffer-hook nil)) (kill-buffer buffer)))))))
 
 (ert-deftest claude-code-ide-test-remote-host-collision-isolates-directory-and-order ()
   "Identical remote directories must not change local or other-host lookup."
@@ -27306,21 +27574,39 @@ displayed last."
          '(("alpha" :executable "/remote/agent" :args ("--model" "remote model")))))
     (with-temp-buffer
       (setq-local claude-code-ide-cli-path "/buffer/local/codex")
-      (let ((alpha (claude-code-ide-remote-worktree--launch-spec
-                    (claude-code-ide-remote-worktree--new-operation 'open "alpha" "/srv/repo" nil)))
-            (beta (claude-code-ide-remote-worktree--launch-spec
-                   (claude-code-ide-remote-worktree--new-operation 'open "beta" "/srv/repo" nil))))
+      (let* ((alpha (claude-code-ide-zmx--remote-launch-spec "alpha"))
+             (beta (claude-code-ide-zmx--remote-launch-spec "beta"))
+             (operation
+              (claude-code-ide-remote-worktree--new-operation
+               'open "alpha" "/srv/repo" nil))
+             (worktree
+              (claude-code-ide-remote-worktree--launch-spec operation))
+             (token
+              (claude-code-ide-remote-worktree--operation-attempt-id operation)))
         (should (eq (plist-get alpha :cli-type) 'omp))
         (should (equal (plist-get alpha :executable) "/remote/agent"))
         (should (equal (plist-get alpha :args) '("--model" "remote model")))
+        (let ((configured
+               (cdr (assoc "alpha" claude-code-ide-remote-launch-config))))
+          (should-not
+           (eq (plist-get alpha :executable)
+               (plist-get configured :executable)))
+          (should-not
+           (eq (plist-get alpha :args)
+               (plist-get configured :args)))
+          (should-not
+           (eq (car (plist-get alpha :args))
+               (car (plist-get configured :args)))))
         (should (equal (plist-get beta :executable) "omp"))
-        (should-not (plist-get beta :args))))
+        (should-not (plist-get beta :args))
+        (should (equal (plist-get worktree :zmx-name)
+                       (concat "cci-worktree-" token)))
+        (should (equal (plist-get worktree :bootstrap-token) token))))
     (dolist (bad '((:shell "touch effect") (:executable "-unsafe")
                    (:args "--local-flags") (:args ("ok") :args ("duplicate"))))
       (let ((claude-code-ide-remote-launch-config (list (cons "alpha" bad))))
         (should-error
-         (claude-code-ide-remote-worktree--launch-spec
-          (claude-code-ide-remote-worktree--new-operation 'open "alpha" "/srv/repo" nil))
+         (claude-code-ide-zmx--remote-launch-spec "alpha")
          :type 'user-error)))))
 
 (ert-deftest claude-code-ide-test-remote-worktree-canceled-attachment-does-not-create-terminal ()

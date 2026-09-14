@@ -257,6 +257,8 @@ Remote rows appear only in the global manager. Flat labels retain =[HOST] PROJEC
 
 Selecting a connected row opens its terminal. Selecting a disconnected row does not contact its host. Press =c= to reattach explicitly with the same Session ID. Refresh, startup, and restored layouts never reconnect automatically.
 
+Press =s= on a connected remote row to start a fresh Agent on that exact host and directory. The direct interactive SSH path creates a new zmx target without a Worktree operation. Remote =S= and prefixed =s= remain unavailable because remote launch ignores local CLI options.
+
 A successful attachment requests project metadata asynchronously. A metadata failure does not undo attachment.
 Press =? m= in the manager to refresh cached Git metadata for one configured host.
 The command uses known connected and disconnected rows. It does not discover or reattach Agents.

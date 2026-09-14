@@ -80,13 +80,6 @@
   "Non-nil after the results buffer owns a visible window.")
 
 
-(defcustom claude-code-ide-remote-launch-config nil
-  "Remote Agent overrides keyed by exact configured host.
-Each value is a property list with optional `:executable' and `:args'.
-The default executable is the globally selected Agent's standard command.
-Remote arguments default to an empty list, without local CLI or MCP flags."
-  :type '(alist :key-type string :value-type plist)
-  :group 'claude-code-ide)
 (defconst claude-code-ide-remote-worktree--option-keys
   '((list :backend :refresh)
     (open :backend :sibling :select :view-only :name :main)
@@ -226,12 +219,8 @@ Return nil for a local filename.  Reject unsupported remote routes."
 
 (defun claude-code-ide-remote-worktree--launch-selection (host)
   "Return an immutable description of HOST's selected Agent settings."
-  (require 'claude-code-ide)
   (let ((print-length nil) (print-level nil) (print-circle t))
-    (prin1-to-string
-     (list (claude-code-ide--cli-type-for-command
-            (default-value 'claude-code-ide-cli-path))
-           (cdr (assoc host (default-value 'claude-code-ide-remote-launch-config)))))))
+    (prin1-to-string (claude-code-ide-zmx--remote-launch-spec host))))
 
 (defun claude-code-ide-remote-worktree--launch-current-p (operation)
   "Return non-nil when OPERATION's planned launch still has its captured settings."
@@ -1495,35 +1484,18 @@ This includes registration pruning."
 
 (defun claude-code-ide-remote-worktree--launch-spec (operation)
   "Capture validated host launch settings for OPERATION without remote I/O."
-  (require 'claude-code-ide)
   (unless (equal (claude-code-ide-remote-worktree--operation-launch-selection operation)
                  (claude-code-ide-remote-worktree--launch-selection
                   (plist-get (claude-code-ide-remote-worktree--operation-target operation) :host)))
     (user-error "The selected remote Agent settings changed during preparation"))
-  (let* ((host (plist-get (claude-code-ide-remote-worktree--operation-target operation) :host))
-         (config (cdr (assoc host (default-value 'claude-code-ide-remote-launch-config))))
-         (cli-type (claude-code-ide--cli-type-for-command
-                    (default-value 'claude-code-ide-cli-path)))
-         (executable (or (plist-get config :executable) (symbol-name cli-type)))
-         (args (plist-get config :args))
-         (fields config) seen)
-    (unless (and (proper-list-p config) (zerop (% (length config) 2)))
-      (user-error "The remote Agent override must be a property list"))
-    (while fields
-      (let ((key (pop fields)))
-        (pop fields)
-        (unless (and (memq key '(:executable :args)) (not (memq key seen)))
-          (user-error "The remote Agent override contains an unknown or duplicate key"))
-        (push key seen)))
-    (unless (and (claude-code-ide-remote-worktree--literal-p executable)
-                 (not (string-empty-p executable)) (not (string-prefix-p "-" executable))
-                 (proper-list-p args)
-                 (cl-every #'claude-code-ide-remote-worktree--literal-p args))
-      (user-error "The remote Agent executable or argument list is invalid"))
-    (list :cli-type cli-type :executable (copy-sequence executable)
-          :args (copy-tree args)
-          :zmx-name (concat "cci-worktree-" (claude-code-ide-remote-worktree--operation-attempt-id operation))
-          :bootstrap-token (claude-code-ide-remote-worktree--operation-attempt-id operation))))
+  (append
+   (claude-code-ide-zmx--remote-launch-spec
+    (plist-get (claude-code-ide-remote-worktree--operation-target operation) :host))
+   (list :zmx-name
+         (concat "cci-worktree-"
+                 (claude-code-ide-remote-worktree--operation-attempt-id operation))
+         :bootstrap-token
+         (claude-code-ide-remote-worktree--operation-attempt-id operation))))
 
 (defun claude-code-ide-remote-worktree--prepare-launch (operation callback)
   "Resolve OPERATION's remote Agent executable and append its owned bootstrap."
