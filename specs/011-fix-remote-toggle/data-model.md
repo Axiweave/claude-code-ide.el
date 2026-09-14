@@ -44,7 +44,7 @@ Represents a disconnected remote target in manager state.
 | Value | Meaning | Toggle rule |
 | --- | --- | --- |
 | Session key | Persistent target identity | Does not imply a live Session |
-| Host and directory | Reattach metadata | Must not trigger lookup by directory alone |
+| Host and directory | Reattach metadata | Can identify only a matching live Session. Must not trigger reattachment |
 | Terminal buffer | Absent while disconnected | Makes the target ineligible for toggle |
 
 ## Resolution State Transitions
@@ -53,7 +53,8 @@ Represents a disconnected remote target in manager state.
 Invoking buffer
 ├── owns live terminal ───────────────> exact Session
 ├── equals active saved project view ─> exact live layout Session
-└── neither
+├── has remote host and path ─────────> preferred live host-qualified Session
+└── none of the above
     ├── local project fallback found ─> preferred local Session
     └── no live Session ──────────────> explicit user error
 ```

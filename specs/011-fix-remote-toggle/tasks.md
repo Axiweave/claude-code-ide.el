@@ -41,21 +41,21 @@ No foundational code is required. The existing Session accessors, active Session
 
 ## Phase 3: User Story 1 - Toggle the Attached Remote Session (Priority: P1) MVP
 
-**Goal**: Toggle the exact attached remote Session from its terminal or managed project view without selecting another host or making a remote request.
+**Goal**: Toggle the matching attached remote Session from its terminal, managed project view, or remote Magit buffer without selecting another host or making a remote request.
 
-**Independent Test**: Register colliding local and remote Sessions. Invoke the public command from the remote terminal and managed view. Confirm that only the exact remote Session reaches the existing window-toggle helper.
+**Independent Test**: Register colliding local and remote Sessions. Invoke the public command from the remote terminal, managed view, and host-qualified Magit buffer. Confirm that only the matching remote Session reaches the existing window-toggle helper.
 
 ### Tests for User Story 1
 
 > Write these tests first and confirm that the relevant cases fail before implementation.
 
 - [X] T002 [US1] Add a failing public-command ERT test for a remote terminal colliding with a local Session and two remote hosts in `claude-code-ide-tests.el`
-- [X] T003 [US1] Add failing public-command ERT tests for exact managed-view ownership, unrelated RPC buffers, and disconnected targets in `claude-code-ide-tests.el`
+- [X] T003 [US1] Add failing public-command ERT tests for exact managed-view ownership, remote Magit host-path lookup, unrelated RPC buffers, and disconnected targets in `claude-code-ide-tests.el`
 
 ### Implementation for User Story 1
 
 - [X] T004 [US1] Add the constant-size active-layout project-view Session accessor in `claude-code-ide-manager.el`
-- [X] T005 [US1] Add the manager accessor declaration and implement exact terminal, exact managed-view, and remote-no-fallback resolution in `claude-code-ide.el`
+- [X] T005 [US1] Implement exact terminal, exact managed-view, host-qualified remote Magit, and remote-no-fallback resolution in `claude-code-ide.el`
 
 **Checkpoint**: User Story 1 passes its focused ERT cases. Toggle performs no discovery, attachment, reattachment, Agent start, or network access.
 
