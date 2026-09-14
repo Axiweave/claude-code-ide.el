@@ -12412,6 +12412,19 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
   (should (equal (claude-code-ide-mcp-sse--frame nil "{\"a\":1}")
                  "data: {\"a\":1}\n\n")))
 
+(ert-deftest claude-code-ide-mcp-sse-test-write-tolerates-peer-that-left ()
+  "Test a peer closing between the liveness check and the send does not signal.
+A signal here escapes into web-server's handler, whose 500 reply hits
+the same dead socket and drops Emacs into the debugger from a process
+filter with `debug-on-error'."
+  (cl-letf (((symbol-function 'process-live-p) (lambda (_proc) t))
+            ((symbol-function 'process-send-string)
+             (lambda (&rest _) (error "Process ws-server not running: connection broken by remote peer")))
+            ((symbol-function 'ws-response-header)
+             (lambda (&rest _) (error "Process ws-server no longer connected to pipe; closed it"))))
+    (should (null (claude-code-ide-mcp-sse--write 'dead "data: x\n\n")))
+    (should (null (claude-code-ide-mcp-sse--respond 'dead 202 '("Content-Length" . "0"))))))
+
 (ert-deftest claude-code-ide-mcp-sse-test-lockfile-content ()
   "Test the lockfile content alist advertises the sse transport and url."
   (let ((content (claude-code-ide-mcp-sse--lockfile-content 4242)))

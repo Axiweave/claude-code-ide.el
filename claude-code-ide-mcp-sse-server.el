@@ -73,7 +73,6 @@
 (declare-function ws-headers "web-server" (request))
 (declare-function ws-body "web-server" (request))
 (declare-function ws-response-header "web-server" (proc code &rest headers))
-(declare-function ws-send-404 "web-server" (proc &rest msg-and-args))
 (declare-function claude-code-ide--session-buffer-for-agent "claude-code-ide" (zmx-name buffer-name))
 (declare-function claude-code-ide-session-buffer-p "claude-code-ide-session" (buffer))
 (declare-function claude-code-ide-session-idle-set-agent-state "claude-code-ide-session-idle" (state &optional acknowledged))
@@ -133,9 +132,23 @@ newline."
 (defun claude-code-ide-mcp-sse--write (proc string)
   "Send STRING to PROC if PROC is still a live process.
 The web-server listener is created with `:coding \\='no-conversion', so
-STRING is explicitly encoded as UTF-8 before sending."
+STRING is explicitly encoded as UTF-8 before sending.  A peer that
+closed between the check and the send is dropped silently: a signal
+here reaches web-server's error path, which writes a 500 to the same
+dead socket and lands in the debugger from a process filter."
   (when (process-live-p proc)
-    (process-send-string proc (encode-coding-string string 'utf-8))))
+    (condition-case err
+        (process-send-string proc (encode-coding-string string 'utf-8))
+      (error (claude-code-ide-debug "SSE peer %s gone during write: %S" proc err)))))
+
+(defun claude-code-ide-mcp-sse--respond (proc code &rest headers)
+  "Send a CODE response with HEADERS to PROC, ignoring a peer that left.
+MCP clients close a POST as soon as they have sent it, so the answer
+often meets a dead socket."
+  (when (process-live-p proc)
+    (condition-case err
+        (apply #'ws-response-header proc code headers)
+      (error (claude-code-ide-debug "SSE peer %s gone before %d: %S" proc code err)))))
 
 (defun claude-code-ide-mcp-sse--send (session-id message)
   "Encode MESSAGE as JSON and write it to the SSE stream for SESSION-ID.
@@ -377,9 +390,9 @@ terminal) without losing the last real selection."
   "Handle a GET /sse REQUEST, keeping the connection open as an SSE stream."
   (let ((process (ws-process request)))
     (let ((session-id (format "%d-%d" (emacs-pid) (cl-incf claude-code-ide-mcp-sse--session-counter))))
-      (ws-response-header process 200
-                           '("Content-Type" . "text/event-stream")
-                           '("Cache-Control" . "no-cache"))
+      (claude-code-ide-mcp-sse--respond process 200
+                                        '("Content-Type" . "text/event-stream")
+                                        '("Cache-Control" . "no-cache"))
       (puthash session-id (list :process process :root nil) claude-code-ide-mcp-sse--sessions)
       (claude-code-ide-mcp-sse--write
        process
@@ -405,14 +418,14 @@ terminal) without losing the last real selection."
                             (string-match "^/messages/\\([^/]+\\)" url)
                             (match-string 1 url))))
       (if (or (null session-id) (not (gethash session-id claude-code-ide-mcp-sse--sessions)))
-          (ws-send-404 process)
+          (claude-code-ide-mcp-sse--respond process 404 '("Content-Length" . "0"))
         (condition-case err
             (let ((message (json-parse-string body :object-type 'alist)))
               (claude-code-ide-mcp-sse--dispatch session-id message)
-              (ws-response-header process 202 '("Content-Length" . "0")))
+              (claude-code-ide-mcp-sse--respond process 202 '("Content-Length" . "0")))
           (error
            (claude-code-ide-debug "SSE POST body failed to parse: %s (%S)" body err)
-           (ws-response-header process 400 '("Content-Length" . "0"))))))))
+           (claude-code-ide-mcp-sse--respond process 400 '("Content-Length" . "0"))))))))
 
 ;;; Lifecycle
 
