@@ -647,6 +647,14 @@ Acknowledged results leave this cycle, while unresolved input requests remain el
 This command keeps its own pass for each scope, separate from =claude-code-ide-manager-next-priority-session=.
 If no other uncleared session remains, it reports a user error without changing focus.
 Neither command changes the other's visits or global key binding.
+Both forward commands select the agent's window after the switch, even when a saved layout would restore editor focus.
+
+=M-x claude-code-ide-manager-previous-priority-session= and =M-x claude-code-ide-manager-previous-uncleared-session= walk back through the sessions the matching pass left, most recent first.
+They skip sessions that left the scope and keep the forward pass's visits.
+These commands do not force the agent window.
+Focus follows the target session's saved layout, exactly as slot switching and manager row selection do, so the user returns to the buffer they last used there.
+That is the agent window when they left it selected, or when the saved buffer is gone.
+If no earlier session remains, they report a user error without changing focus.
 
 *** Sidebar Keys
 

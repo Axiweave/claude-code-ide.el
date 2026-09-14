@@ -7549,6 +7549,24 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
      (should (equal claude-code-ide-manager--current-session-key (session-key "01")))
      (jump "04"))))
 
+(ert-deftest claude-code-ide-test-manager-previous-restores-saved-focus ()
+  "Back restores the buffer the user last selected in the target session."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" working) ("02" working))
+   (let ((editor (generate-new-buffer "*cc-priority-editor*")))
+     (unwind-protect
+         (progn
+           (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+           (select-window (split-window-right))
+           (switch-to-buffer editor)
+           (jump "02")
+           (call-interactively
+            #'claude-code-ide-manager-previous-priority-session)
+           (should (equal claude-code-ide-manager--current-session-key
+                          (session-key "01")))
+           (should (eq (window-buffer (selected-window)) editor)))
+       (kill-buffer editor)))))
+
 (ert-deftest claude-code-ide-test-manager-previous-skips-dead-and-keeps-passes-separate ()
   "Back skips departed sessions, and each pass pops only its own trail."
   (claude-code-ide-tests--with-priority-sessions

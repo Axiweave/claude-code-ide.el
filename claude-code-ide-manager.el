@@ -3935,7 +3935,13 @@ Keep a separate pass from
   "Focus the session the pass in VISITS left most recently.
 Pop the per-scope :history stack, skipping entries whose session is gone
 from this scope.  The :visited table is untouched, so the forward command
-continues the same pass."
+continues the same pass.
+
+Unlike the forward pass, this command does not force the agent window.
+The switch restores the target's saved layout focus, so the user returns to
+the buffer they last used in that session.  That is the agent window when
+they left it selected, or when the saved buffer is gone.  This matches
+`claude-code-ide-manager-switch-by-slot' and manager row selection."
   (let ((scope (claude-code-ide-manager--scope-for-command)))
     (claude-code-ide-manager-refresh-items scope)
     (let* ((scope-key (claude-code-ide-manager--scope-key scope))
@@ -3955,11 +3961,6 @@ continues the same pass."
         (user-error "No earlier session in this manager scope"))
       (let ((window (let ((claude-code-ide-manager--pass-switch t))
                       (claude-code-ide-manager-switch-to-session target nil scope))))
-        ;; Saved layouts can restore editor focus.  This command visits the agent.
-        (when-let* ((session-window
-                     (get-buffer-window
-                      (claude-code-ide-manager--session-buffer target))))
-          (select-window session-window))
         (puthash scope-key
                  (list :visited (plist-get record :visited)
                        :resume (let ((resume (plist-get record :resume)))
@@ -3971,7 +3972,8 @@ continues the same pass."
 (defun claude-code-ide-manager-previous-priority-session ()
   "Focus the session left most recently in this manager scope.
 Repeat to walk further back.  The priority pass keeps its visits, so
-`claude-code-ide-manager-next-priority-session' resumes where it stopped."
+`claude-code-ide-manager-next-priority-session' resumes where it stopped.
+Focus follows the target's saved layout, as slot switching does."
   (interactive)
   (claude-code-ide-manager--previous-visited-session
    claude-code-ide-manager--priority-visits))
@@ -3979,7 +3981,8 @@ Repeat to walk further back.  The priority pass keeps its visits, so
 (defun claude-code-ide-manager-previous-uncleared-session ()
   "Focus the session left most recently in this manager scope.
 Repeat to walk further back.  The uncleared pass keeps its visits, so
-`claude-code-ide-manager-next-uncleared-session' resumes where it stopped."
+`claude-code-ide-manager-next-uncleared-session' resumes where it stopped.
+Focus follows the target's saved layout, as slot switching does."
   (interactive)
   (claude-code-ide-manager--previous-visited-session
    claude-code-ide-manager--uncleared-visits))
