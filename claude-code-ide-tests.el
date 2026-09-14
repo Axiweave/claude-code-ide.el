@@ -336,6 +336,7 @@ Ensures a clean state before each test that involves process management."
          (claude-code-ide-manager--companion-shells (make-hash-table :test 'equal))
          (claude-code-ide-manager--current-session-key nil)
          (claude-code-ide-manager--persisted-state nil)
+         (claude-code-ide-manager--remote-repositories nil)
          (claude-code-ide-manager-persist-state t)
          (persist--test-store (make-hash-table :test 'eq))
          (persist--test-defaults (make-hash-table :test 'eq)))
@@ -346,6 +347,167 @@ Ensures a clean state before each test that involves process management."
                 claude-code-ide-manager--remote-metadata-operations)
        (when-let* ((buffer (get-buffer claude-code-ide-manager--buffer-name)))
          (kill-buffer buffer)))))
+(ert-deftest claude-code-ide-test-manager-remote-repositories-mru-persists ()
+  "Remote repository history is per-host, deduplicated, bounded, and persisted."
+  (claude-code-ide-tests--with-grouped-state
+   (let ((claude-code-ide-remote-hosts '("alpha" "beta")))
+     (dotimes (index 21)
+       (claude-code-ide-manager--record-remote-repository
+        "alpha" (format "/srv/repo-%02d" index)))
+     (claude-code-ide-manager--record-remote-repository "beta" "/srv/repo-20")
+     (claude-code-ide-manager--record-remote-repository "alpha" "/srv/repo-10")
+     (should (equal (car (cdr (assoc "alpha"
+                                     claude-code-ide-manager--remote-repositories)))
+                    "/srv/repo-10"))
+     (should (= (length (cdr (assoc "alpha"
+                                    claude-code-ide-manager--remote-repositories)))
+                20))
+     (should (equal (cdr (assoc "beta"
+                                claude-code-ide-manager--remote-repositories))
+                    '("/srv/repo-20")))
+     (let ((saved (claude-code-ide-manager--serialize-state)))
+       (setq claude-code-ide-manager--remote-repositories nil)
+       (claude-code-ide-manager--restore-state saved)
+       (should (equal (plist-get saved :remote-repositories)
+                      claude-code-ide-manager--remote-repositories))))))
+
+(ert-deftest claude-code-ide-test-manager-remote-repositories-restore-normalizes ()
+  "Restore accepts missing history and normalizes untrusted local metadata."
+  (claude-code-ide-tests--with-grouped-state
+   (cl-letf (((symbol-function 'make-process)
+              (lambda (&rest _) (ert-fail "History restore started a process"))))
+     (dolist (history '(42 (("alpha" "/srv/one") . broken)))
+       (claude-code-ide-manager--restore-state
+        (list :version 4 :scopes nil :layouts nil
+              :remote-repositories history))
+       (should-not claude-code-ide-manager--remote-repositories))
+     (claude-code-ide-manager--restore-state
+      '(:version 4 :scopes nil :layouts nil
+                 :remote-repositories
+                 (("alpha" "/srv/one" "/srv/one" "relative" 12)
+                  ("-unsafe" "/srv/two")
+                  ("removed" "/srv/three")))))
+   (should (equal claude-code-ide-manager--remote-repositories
+                  '(("alpha" "/srv/one")
+                    ("removed" "/srv/three"))))
+   (claude-code-ide-manager--restore-state
+    '(:version 4 :scopes nil :layouts nil))
+   (should-not claude-code-ide-manager--remote-repositories)))
+
+(ert-deftest claude-code-ide-test-manager-remote-repository-picker ()
+  "The picker offers host history and accepts a remembered repository."
+  (let ((claude-code-ide-manager--remote-repositories
+         '(("alpha" "/srv/repo one" "/srv/repo-two")))
+        candidates require-match)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection _predicate required &rest _)
+                 (setq candidates collection
+                       require-match required)
+                 "/srv/repo one")))
+      (should
+       (equal (claude-code-ide-manager--read-remote-repository "alpha")
+              "/srv/repo one"))
+      (should (equal candidates '("/srv/repo one" "/srv/repo-two")))
+      (should-not require-match))))
+
+(ert-deftest claude-code-ide-test-manager-remote-repository-picker-input ()
+  "The picker retries invalid input and lets cancellation leave history unchanged."
+  (let ((claude-code-ide-manager--remote-repositories nil)
+        (inputs '("relative" "/srv/manual path")))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt candidates _predicate require-match &rest _)
+                 (should-not candidates)
+                 (should-not require-match)
+                 (pop inputs))))
+      (should
+       (equal (claude-code-ide-manager--read-remote-repository "alpha")
+              "/srv/manual path"))
+      (should-not inputs))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (keyboard-quit))))
+      (condition-case nil
+          (progn
+            (claude-code-ide-manager--read-remote-repository "alpha")
+            (ert-fail "Cancellation returned normally"))
+        (quit nil)))
+    (should-not claude-code-ide-manager--remote-repositories)))
+
+(ert-deftest claude-code-ide-test-manager-remote-repository-records-after-request ()
+  "A repository becomes recent only after its request is accepted."
+  (let ((claude-code-ide-remote-hosts '("alpha"))
+        (claude-code-ide-manager--remote-repositories nil))
+    (cl-letf (((symbol-function 'claude-code-ide-manager--ensure-remote-worktree)
+               #'ignore)
+              ((symbol-function 'claude-code-ide-remote-worktree-request)
+               (lambda (&rest _) "operation")))
+      (should
+       (equal (claude-code-ide-manager--request-remote-open
+               "alpha" "/srv/accepted" nil t)
+              "operation"))
+      (should (equal claude-code-ide-manager--remote-repositories
+                     '(("alpha" "/srv/accepted")))))
+    (setq claude-code-ide-manager--remote-repositories nil)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--ensure-remote-worktree)
+               #'ignore)
+              ((symbol-function 'claude-code-ide-remote-worktree-request)
+               (lambda (&rest _) (error "rejected"))))
+      (should-error
+       (claude-code-ide-manager--request-remote-open
+        "alpha" "/srv/rejected" nil t))
+      (should-not claude-code-ide-manager--remote-repositories))))
+
+(ert-deftest claude-code-ide-test-manager-remote-repository-convergence-boundaries ()
+  "Restored history stays bounded, host-scoped, and persistence-controlled."
+  (claude-code-ide-tests--with-grouped-state
+   (let ((history
+          (list
+           (cons "alpha"
+                 (cl-loop for index below 25
+                          collect (format "/srv/repo-%02d" index))))))
+     (claude-code-ide-manager--restore-state
+      (list :version 4 :scopes nil :layouts nil
+            :remote-repositories history))
+     (should (= (length
+                 (cdr (assoc "alpha"
+                             claude-code-ide-manager--remote-repositories)))
+                20))
+     (should (equal (car (last
+                          (cdr (assoc
+                                "alpha"
+                                claude-code-ide-manager--remote-repositories))))
+                    "/srv/repo-19")))
+   (let ((claude-code-ide-remote-hosts '("alpha"))
+         (claude-code-ide-manager--remote-repositories
+          '(("alpha" "/srv/alpha") ("removed" "/srv/removed")))
+         collections)
+     (cl-letf (((symbol-function 'completing-read)
+                (lambda (_prompt candidates &rest _)
+                  (push candidates collections)
+                  (if (= (length collections) 1) "alpha" "/srv/alpha")))
+               ((symbol-function
+                 'claude-code-ide-manager--request-remote-open)
+                (lambda (&rest _) "operation")))
+       (should (equal (claude-code-ide-manager-open-remote) "operation"))
+       (should
+        (equal (nreverse collections)
+               '(("alpha") ("/srv/alpha"))))))
+   (let ((claude-code-ide-manager-persist-state nil)
+         (claude-code-ide-manager--remote-repositories nil)
+         (claude-code-ide-manager--persisted-state
+          '(:version 4 :scopes nil :layouts nil
+                     :remote-repositories (("alpha" "/srv/saved")))))
+     (cl-letf (((symbol-function 'persist-load)
+                (lambda (&rest _) (ert-fail "Disabled persistence loaded"))))
+       (claude-code-ide-manager--initialize))
+     (should-not claude-code-ide-manager--remote-repositories)
+     (setq claude-code-ide-manager--remote-repositories
+           '(("alpha" "/srv/current")))
+     (claude-code-ide-manager--save-state)
+     (should
+      (equal (plist-get claude-code-ide-manager--persisted-state
+                        :remote-repositories)
+             '(("alpha" "/srv/saved")))))))
+
 
 (ert-deftest claude-code-ide-test-manager-grouped-state-migration ()
   "Old state keeps its Sessions and layouts without network requests."
@@ -5812,22 +5974,37 @@ A `working' or `needs-input' state is left alone by the same clear."
       (should-error (claude-code-ide-manager-open-directory "/rpc:gamma:/srv/repo")
                     :type 'user-error))))
 
-(ert-deftest claude-code-ide-test-remote-worktree-manager-known-context-skips-prompts ()
-  "An explicit remote command uses the current RPC host without new path prompts."
+(ert-deftest claude-code-ide-test-remote-worktree-manager-explicit-open-prompts ()
+  "The explicit remote command ignores context and prompts for both target parts."
   (let ((claude-code-ide-remote-hosts '("alpha" "beta"))
-        (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
-        (default-directory "/rpc:alpha:/srv/repo/"))
+        (claude-code-ide-manager--remote-repositories nil)
+        (claude-code-ide-remote-worktree--operations
+         (make-hash-table :test #'equal))
+        (default-directory "/rpc:alpha:/srv/context/"))
     (cl-letf (((symbol-function 'claude-code-ide--read-remote-host)
-               (lambda () (ert-fail "The current host is already known")))
-              ((symbol-function 'read-string)
-               (lambda (&rest _) (ert-fail "The current repository is already known"))))
+               (lambda () "beta"))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) "/srv/chosen")))
       (let* ((id (claude-code-ide-manager-open-remote))
-             (operation (gethash id claude-code-ide-remote-worktree--operations)))
+             (operation
+              (gethash id claude-code-ide-remote-worktree--operations)))
         (unwind-protect
             (progn
-              (should (equal (plist-get (claude-code-ide-remote-worktree--operation-target operation) :host)
-                             "alpha"))
-              (should (plist-get (claude-code-ide-remote-worktree--operation-options operation) :select)))
+              (should
+               (equal
+                (plist-get
+                 (claude-code-ide-remote-worktree--operation-target operation)
+                 :host)
+                "beta"))
+              (should
+               (equal
+                (plist-get
+                 (claude-code-ide-remote-worktree--operation-target operation)
+                 :directory)
+                "/srv/chosen"))
+              (should (plist-get
+                       (claude-code-ide-remote-worktree--operation-options operation)
+                       :select)))
           (claude-code-ide-remote-worktree-cancel-observation id))))))
 
 (ert-deftest claude-code-ide-test-remote-worktree-manager-open-prefers-rpc-context ()
@@ -18198,7 +18375,7 @@ The resync ignores pin state and stored order keys."
                              on (claude-code-ide-manager--serialize-state)
                              by #'cddr
                              collect key)
-                    '(:version :scopes :layouts))))))
+                    '(:version :scopes :layouts :remote-repositories))))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-opens-selected-scope-in-content-window ()
   "The editor refreshes its scope and uses the normal content window."

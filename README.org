@@ -360,11 +360,13 @@ Press =W= in the sidebar, or in the main transient's manager section, to open th
 
 | Key | Command | Effect |
 |-----+---------+--------|
-| =o= | =claude-code-ide-manager-open-remote= | Choose a Configured host and repository, select a Worktree, then reuse/attach/start its Agent. A prefix argument starts an explicit sibling Agent. |
+| =o= | =claude-code-ide-manager-open-remote= | Always choose a Configured host and repository, select a Worktree, then reuse/attach/start its Agent. The repository picker lists recent paths for that exact host and also accepts a new absolute path as minibuffer input. A prefix argument starts an explicit sibling Agent. |
 | =w= | =claude-code-ide-manager-new-remote-worktree= | Choose a Configured host and repository, ask one new name, create the Worktree, and start the configured Agent. A prefix argument creates only, then opens remote Magit without an Agent. |
 | =r= | =claude-code-ide-remote-worktree-show= | Display a retained operation's result. Makes no remote request. |
 
 On an existing remote Session row or inside an existing remote Magit buffer, plain =o= (=claude-code-ide-manager-open=) and =w= (=claude-code-ide-manager-new-worktree=) already use that context's exact host and repository, skipping the extra prompts. =C-u o= there starts an explicit sibling Agent; =C-u w= there creates the Worktree only.
+
+The manager remembers at most 20 successfully requested repository paths per exact host, with the newest path first. It stores this history with manager persistence. Cancelled input and refused requests do not change it. A restored path never causes remote access.
 
 Each command returns an operation ID rather than a path or session object. Every result stays attached to its captured host, so identical paths on two hosts never share a Session match or a result.
 

@@ -129,13 +129,20 @@
 (defconst claude-code-ide-manager--state-version 4
   "Persisted cc-manager state schema version.")
 
+(defconst claude-code-ide-manager--remote-repository-limit 20
+  "Maximum remembered remote repositories per host.")
+
 (defconst claude-code-ide-manager--empty-persisted-state
-  `(:version ,claude-code-ide-manager--state-version :scopes nil :layouts nil)
+  `(:version ,claude-code-ide-manager--state-version
+             :scopes nil :layouts nil :remote-repositories nil)
   "Persisted-state value that means \"nothing remembered\".")
 
 (defvar claude-code-ide-manager--persisted-state
   (copy-tree claude-code-ide-manager--empty-persisted-state)
   "Serialized manager state stored through `persist'.")
+
+(defvar claude-code-ide-manager--remote-repositories nil
+  "Remote repository paths keyed by exact host, most recent first.")
 
 (defun claude-code-ide-manager--persist-register ()
   "Register the persisted state symbol with a fixed empty default.
@@ -1625,11 +1632,50 @@ under the ESC prefix, so iterate that sub-keymap."
       (puthash (car entry) (cdr entry) table))
     table))
 
+(defun claude-code-ide-manager--normalize-remote-repositories (repositories)
+  "Return validated, deduplicated, bounded REPOSITORIES metadata."
+  (let (result)
+    (when (proper-list-p repositories)
+      (dolist (entry repositories)
+        (when (and (consp entry)
+                   (claude-code-ide-zmx--valid-host-p (car entry))
+                   (proper-list-p (cdr entry))
+                   (not (assoc (car entry) result)))
+          (let (paths)
+            (dolist (path (cdr entry))
+              (when (and (< (length paths)
+                            claude-code-ide-manager--remote-repository-limit)
+                         (claude-code-ide-zmx--valid-directory-p path)
+                         (not (member path paths)))
+                (setq paths (append paths (list path)))))
+            (when paths
+              (push (cons (copy-sequence (car entry)) paths) result))))))
+    (nreverse result)))
+
+(defun claude-code-ide-manager--record-remote-repository (host repository)
+  "Record accepted HOST and REPOSITORY as the most recent target."
+  (claude-code-ide-zmx--validate-host host)
+  (unless (claude-code-ide-zmx--valid-directory-p repository)
+    (user-error "Host %s requires an absolute repository path" host))
+  (let* ((entry (assoc host claude-code-ide-manager--remote-repositories))
+         (paths (cons (copy-sequence repository)
+                      (delete repository (copy-sequence (cdr entry))))))
+    (setq paths
+          (cl-subseq paths 0 (min (length paths)
+                                  claude-code-ide-manager--remote-repository-limit)))
+    (if entry
+        (setcdr entry paths)
+      (push (cons (copy-sequence host) paths)
+            claude-code-ide-manager--remote-repositories))
+    (claude-code-ide-manager--save-state)))
+
 (defun claude-code-ide-manager--serialize-state ()
   "Return current manager state as a plist."
   (list :version claude-code-ide-manager--state-version
         :scopes (claude-code-ide-manager--serialize-scope-state)
-        :layouts (claude-code-ide-manager--serialize-layouts)))
+        :layouts (claude-code-ide-manager--serialize-layouts)
+        :remote-repositories
+        (copy-tree claude-code-ide-manager--remote-repositories)))
 
 (defun claude-code-ide-manager--restore-state (data)
   "Restore manager state from persisted DATA."
@@ -1648,6 +1694,9 @@ under the ESC prefix, so iterate that sub-keymap."
   (setq claude-code-ide-manager--layouts
         (claude-code-ide-manager--deserialize-layouts
          (plist-get data :layouts)))
+  (setq claude-code-ide-manager--remote-repositories
+        (claude-code-ide-manager--normalize-remote-repositories
+         (plist-get data :remote-repositories)))
   (maphash
    (lambda (scope-key state)
      (let ((active (plist-get state :active-session-key)))
@@ -1697,10 +1746,9 @@ under the ESC prefix, so iterate that sub-keymap."
   (setq claude-code-ide-manager--layouts (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--companion-shells (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--current-session-key nil)
+  (setq claude-code-ide-manager--remote-repositories nil)
   (setq claude-code-ide-manager--persisted-state
-        `(:version ,claude-code-ide-manager--state-version
-                   :scopes nil
-                   :layouts nil)))
+        (copy-tree claude-code-ide-manager--empty-persisted-state)))
 
 (defun claude-code-ide-manager--item-by-session-key (scope-or-session-key
                                                      &optional session-key)
@@ -3993,12 +4041,16 @@ Unsupported or unapproved remote routes fail without a local fallback."
         (cons (plist-get target :host) (plist-get target :directory))))))
 
 (defun claude-code-ide-manager--read-remote-repository (host)
-  "Read an absolute repository path on HOST as plain host-labeled text.
-This is never a remote directory browser."
-  (let (path)
-    (while (not (claude-code-ide-zmx--valid-directory-p path))
-      (setq path (read-string (format "Repository on %s (absolute path): " host))))
-    path))
+  "Read an absolute repository path on HOST without remote file access."
+  (let ((repositories
+         (cdr (assoc host claude-code-ide-manager--remote-repositories)))
+        choice)
+    (while (not (claude-code-ide-zmx--valid-directory-p choice))
+      (setq choice
+            (completing-read
+             (format "Repository on %s (absolute path): " host)
+             repositories nil nil)))
+    choice))
 
 (defun claude-code-ide-manager--request-remote-open (host directory sibling &optional select)
   "Request a remote open for exact HOST and DIRECTORY, and return its ID.
@@ -4006,10 +4058,13 @@ SIBLING requests an explicit sibling Agent instead of reuse/attach/start.
 SELECT lets the request resolve DIRECTORY as a repository that may
 still need a Worktree chosen."
   (claude-code-ide-manager--ensure-remote-worktree)
-  (claude-code-ide-remote-worktree-request
-   'open host directory
-   (if select (list :select t :sibling (and sibling t))
-     (list :sibling (and sibling t)))))
+  (let ((operation-id
+         (claude-code-ide-remote-worktree-request
+          'open host directory
+          (if select (list :select t :sibling (and sibling t))
+            (list :sibling (and sibling t))))))
+    (claude-code-ide-manager--record-remote-repository host directory)
+    operation-id))
 
 ;;;###autoload
 (defun claude-code-ide-manager-open-directory (directory &optional force-new)
@@ -4073,22 +4128,16 @@ session."
 
 ;;;###autoload
 (defun claude-code-ide-manager-open-remote (&optional sibling)
-  "Open a remote Worktree chosen by exact host and repository.
+  "Prompt for a remote host and repository, then open a Worktree.
 
-Choose a Configured host from `claude-code-ide-remote-hosts', then
-enter its absolute repository path as plain host-labeled text, never a
-remote directory browser.  A known context already set by
-`default-directory' -- for example inside an existing remote Magit
-buffer -- skips both prompts.  Select a Worktree under that repository
-and open it.  With a prefix argument, SIBLING requests an explicit
-sibling Agent instead of reuse/attach/start.  Return the new operation
-ID."
+This command never uses the current buffer context.  With a prefix
+argument, SIBLING requests an explicit sibling Agent.  Return the new
+operation ID."
   (interactive "P")
   (claude-code-ide-manager--ensure-remote-worktree)
-  (let* ((context (claude-code-ide-manager--remote-worktree-context))
-         (host (or (car context) (claude-code-ide--read-remote-host)))
-         (repository (or (cdr context)
-                         (claude-code-ide-manager--read-remote-repository host))))
+  (let* ((host (claude-code-ide--read-remote-host))
+         (repository
+          (claude-code-ide-manager--read-remote-repository host)))
     (claude-code-ide-manager--request-remote-open host repository sibling t)))
 
 ;;; Worktree creation

@@ -84,6 +84,20 @@ Management section of the README]] for the manager =W= menu, the
 =claude-code-ide-remote-launch-config= option, and the results-buffer
 keys. This section covers the guarantees behind those commands.
 
+The explicit manager open command always asks for a Configured host and a
+repository. The repository picker shows recent paths only for that exact
+host. Enter a new absolute path directly when it is not listed.
+
+The manager records a path only after the request returns an operation ID.
+Cancellation, invalid input, and refused requests leave history unchanged.
+Restore validates and bounds stored text without local file checks or remote
+requests. History for a removed host remains stored but cannot enter the
+picker until that exact host becomes Configured again.
+
+If an expected path is absent, first confirm that manager persistence is
+enabled. Then confirm that the earlier request reached accepted operation
+creation. Enter the absolute path directly to add it again.
+
 ** Preparation and Admission
 
 Every mutation captures the exact host, repository, action, and
