@@ -91,6 +91,8 @@
 (declare-function ghostel--filter "ghostel" (process output))
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
 (declare-function ghostel--adjust-size "ghostel" (window &optional force))
+(declare-function claude-code-ide-remote-worktree-target-for-file
+                  "claude-code-ide-remote-worktree" (filename))
 
 ;; External function declarations from MCP
 (declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
@@ -411,22 +413,42 @@ to the project-associated session."
   (or (claude-code-ide--any-visible-session-buffer)
       (claude-code-ide--get-session-buffer)))
 
-(defun claude-code-ide--file-reference-path (file &optional target-buffer)
+(defun claude-code-ide--file-reference-path (file &optional target-buffer remote-aware)
   "Return FILE formatted for a reference sent to TARGET-BUFFER's session.
-FILE is an absolute path.  Returns a path relative to the target
-session's directory when FILE lies inside it; otherwise the absolute
-path.  When the target session is unknown, falls back to the current
-project root.  TARGET-BUFFER defaults to the resolved reference target."
+FILE is absolute.  Use a relative path inside the Session directory,
+or an absolute path outside it.  TARGET-BUFFER defaults to the resolved
+reference target.  Without a target, use the current project root.
+When REMOTE-AWARE is non-nil, require matching remote destinations
+before converting an RPC filename to a host-local path.  Remote
+references require a known Session directory and never use project fallback."
   (let* ((target (or target-buffer (claude-code-ide--reference-target-buffer)))
          (session (and target (claude-code-ide--session-for-buffer target)))
+         (host (and session (claude-code-ide-session-host session)))
+         (remote (and remote-aware
+                      (or host (string-prefix-p "/rpc:" file)
+                          (file-remote-p file))))
          (root (if session
                    (claude-code-ide-session-directory session)
-                 (when-let* ((project (project-current)))
-                   (project-root project))))
-         (relative (and root (file-relative-name file root))))
-    (if (and relative (not (string-prefix-p "../" relative)))
-        relative
-      file)))
+                 (unless remote
+                   (when-let* ((project (project-current)))
+                     (project-root project))))))
+    (when remote
+      (unless (and host (claude-code-ide-zmx--valid-directory-p root)
+                   (not (file-remote-p root)))
+        (user-error "Select a remote Session with a bare absolute directory"))
+      (unless (require 'claude-code-ide-remote-worktree nil t)
+        (user-error "Load the remote Worktree module to reference remote files"))
+      (let ((source (claude-code-ide-remote-worktree-target-for-file file)))
+        (unless (and source (equal (plist-get source :host) host))
+          (user-error "Select a Session on the file's exact remote destination"))
+        (setq file (plist-get source :directory))))
+    (let* ((file-name-handler-alist (unless remote file-name-handler-alist))
+           (default-directory (if remote "/" default-directory))
+           (relative (and root (file-relative-name file root))))
+      (if (and relative (not (string-prefix-p "../" relative))
+               (not (and remote (equal relative ".."))))
+          relative
+        file))))
 
 (defun claude-code-ide--send-reference-body (reference-body)
   "Send REFERENCE-BODY to the visible prompt buffer or session terminal.
@@ -2975,7 +2997,8 @@ The path is relative to the target session's directory, or the
 absolute path when the file lies outside it (e.g. a file from a
 different project).  When an evil visual selection or Emacs region
 is active, appends a line range suffix like #L12-14 (or #L12 for a
-single line).
+single line).  Remote files require a Session on the exact configured
+RPC destination.  Their references omit the editor's connection prefix.
 When called from Dired or Treemacs, uses the file at point.
 When called from a Claude Code session buffer, uses the most
 recent visible file-visiting buffer on the current frame."
@@ -2989,7 +3012,7 @@ recent visible file-visiting buffer on the current frame."
     (let ((reference-body
            (with-current-buffer (or ctx-buf (current-buffer))
              (let* ((path (claude-code-ide--file-reference-path
-                           file target-buffer))
+                           file target-buffer t))
                     (range (when ctx-buf
                              (claude-code-ide--get-selection-line-range)))
                     (suffix (claude-code-ide--format-selection-line-suffix

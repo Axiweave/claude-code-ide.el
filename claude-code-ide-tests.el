@@ -13370,35 +13370,6 @@ connected sessions would silently break first-connect replay."
           (with-current-buffer prompt-buf (setq buffer-file-name nil))
           (kill-buffer prompt-buf))))))
 
-(ert-deftest claude-code-ide-test-send-current-file-uses-prompt-buffer-helper ()
-  "Test send-current-file routes prompt-buffer insertion through the helper."
-  (let ((claude-code-ide-switch-after-send nil)
-        (helper-called nil))
-    (cl-letf (((symbol-function 'claude-code-ide--get-buffer-name)
-               (lambda () "*test-claude-buffer*"))
-              ((symbol-function 'claude-code-ide--terminal-send-string)
-               (lambda (_str &optional _paste) (ert-fail "terminal path should not be used")))
-              ((symbol-function 'project-current)
-               (lambda (&rest _) '(vc . "/home/user/project/")))
-              ((symbol-function 'project-root)
-               (lambda (_) "/home/user/project/"))
-              ((symbol-function 'claude-code-ide--find-prompt-buffer)
-               (lambda () (get-buffer "test-prompt-helper")))
-              ((symbol-function 'claude-code-ide--prompt-buffer-send-string)
-               (lambda (string)
-                 (setq helper-called string)
-                 (get-buffer "test-prompt-helper"))))
-      (let ((prompt-buf (generate-new-buffer "test-prompt-helper")))
-        (unwind-protect
-            (with-temp-buffer
-              (setq buffer-file-name "/home/user/project/src/main.el")
-              (with-current-buffer prompt-buf
-                (setq buffer-file-name "/tmp/claude-prompt-helper.md"))
-              (claude-code-ide-send-current-file)
-              (should (equal helper-called "@src/main.el ")))
-          (with-current-buffer prompt-buf
-            (setq buffer-file-name nil))
-          (kill-buffer prompt-buf))))))
 
 (ert-deftest claude-code-ide-test-send-current-file-switches-to-terminal ()
   "Test send-current-file switches to terminal buffer when no prompt buffer."
@@ -13746,6 +13717,199 @@ inside the target session's directory."
       (with-current-buffer source-buf (setq buffer-file-name nil))
       (kill-buffer session-buf)
       (kill-buffer source-buf))))
+
+(ert-deftest claude-code-ide-test-send-current-file-remote-selected-line ()
+  "Send a selected remote line relative to the receiving Session."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts '("v12mac"))
+        (transient-mark-mode t)
+        (file-name-handler-alist nil)
+        sent-string)
+    (with-temp-buffer
+      (let ((target (current-buffer)))
+        (puthash "remote-reference"
+                 (claude-code-ide-session-create
+                  :id "remote-reference" :buffer target :host "v12mac"
+                  :directory "/Users/yufu/v12x")
+                 claude-code-ide--sessions)
+        (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                   (lambda () target))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (text &optional _paste) (setq sent-string text)))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                   #'ignore))
+          (with-temp-buffer
+            (unwind-protect
+                (progn
+                  (setq buffer-file-name
+                        "/rpc:v12mac:/Users/yufu/v12x/packages/core/lib/executor.ts")
+                  (dotimes (_ 320) (insert "line\n"))
+                  (goto-char (point-min))
+                  (forward-line 315)
+                  (set-mark (point))
+                  (end-of-line)
+                  (setq mark-active t)
+                  (claude-code-ide-send-current-file)
+                  (should (equal sent-string
+                                 "@packages/core/lib/executor.ts#L316 ")))
+              (setq buffer-file-name nil))))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-remote-rejects-context ()
+  "Reject incompatible remote context before prompt or terminal delivery."
+  (dolist (case '(("/rpc:v12mac:/work/a.ts" "other" "/work")
+                  ("/rpc:user@v12mac:/work/a.ts" "v12mac" "/work")
+                  ("/work/a.ts" "v12mac" "/work")
+                  ("/rpc:v12mac:/work/a.ts" nil "/work")
+                  ("/rpc:v12mac:/work/a.ts" unknown nil)
+                  ("/rpc:v12mac:/work/a.ts" "v12mac" nil)
+                  ("/rpc:v12mac:/work/a.ts" "v12mac" "work")
+                  ("/rpc:v12mac:/work/a.ts" "v12mac" "/rpc:v12mac:/work")
+                  ("/rpc:unapproved:/work/a.ts" "unapproved" "/work")
+                  ("/ssh:v12mac:/work/a.ts" "v12mac" "/work")))
+    (ert-info ((format "Rejected reference context: %S" case))
+      (pcase-let ((`(,file ,host ,directory) case))
+        (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+              (claude-code-ide-remote-hosts '("v12mac" "user@v12mac" "other"))
+              sent)
+          (with-temp-buffer
+            (let ((target (unless (eq host 'unknown) (current-buffer))))
+              (when target
+                (puthash "remote-reference"
+                         (claude-code-ide-session-create
+                          :id "remote-reference" :buffer target
+                          :host host :directory directory)
+                         claude-code-ide--sessions))
+              (with-temp-buffer
+                (insert "Keep this prompt")
+                (let ((prompt (current-buffer)))
+                  (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                             (lambda () target))
+                            ((symbol-function 'claude-code-ide--terminal-send-string)
+                             (lambda (&rest _) (setq sent t)))
+                            ((symbol-function 'project-current)
+                             (lambda (&rest _) (ert-fail "Remote reference requested a project")))
+                            ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                             #'ignore))
+                    (dolist (destination (list nil prompt))
+                      (cl-letf (((symbol-function 'claude-code-ide--find-prompt-buffer)
+                                 (lambda () destination)))
+                        (with-temp-buffer
+                          (unwind-protect
+                              (progn
+                                (setq buffer-file-name file)
+                                (should-error (claude-code-ide-send-current-file)
+                                              :type 'user-error))
+                            (setq buffer-file-name nil)))))
+                    (should-not sent)
+                    (should (equal (buffer-string) "Keep this prompt"))))))))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-remote-containment ()
+  "Use the target directory and preserve outside-file identity without I/O."
+  (dolist (case '(("/Users/yufu/v12x/packages/core/lib/executor.ts"
+                   "/Users/yufu/v12x/packages" "@core/lib/executor.ts ")
+                  ("/Users/yufu/notes.txt"
+                   "/Users/yufu/v12x" "@/Users/yufu/notes.txt ")
+                  ("/Users/yufu/v12x-other/a.ts"
+                   "/Users/yufu/v12x" "@/Users/yufu/v12x-other/a.ts ")
+                  ("/Users/yufu/v12x/设计 notes.txt"
+                   "/Users/yufu/v12x/" "@设计 notes.txt ")
+                  ("/Users/yufu/v12x"
+                   "/Users/yufu/v12x/sub" "@/Users/yufu/v12x ")))
+    (ert-info ((format "Remote containment: %S" case))
+      (pcase-let ((`(,file ,directory ,expected) case))
+        (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+              (claude-code-ide-remote-hosts '("v12mac"))
+              sent-string)
+          (with-temp-buffer
+            (let ((target (current-buffer)))
+              (puthash "remote-reference"
+                       (claude-code-ide-session-create
+                        :id "remote-reference" :buffer target
+                        :host "v12mac" :directory directory)
+                       claude-code-ide--sessions)
+              (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                         (lambda () target))
+                        ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                         (lambda () nil))
+                        ((symbol-function 'claude-code-ide--terminal-send-string)
+                         (lambda (text &optional _paste) (setq sent-string text)))
+                        ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                         #'ignore))
+                (with-temp-buffer
+                  (unwind-protect
+                      (let ((default-directory "/rpc:v12mac:/unrelated/")
+                            (file-name-handler-alist
+                             `(("\\`/Users/" .
+                                ,(lambda (operation &rest _)
+                                   (unless (eq operation 'file-remote-p)
+                                     (ert-fail (format "Filesystem dispatch: %S" operation))))))))
+                        (setq buffer-file-name (concat "/rpc:v12mac:" file))
+                        (claude-code-ide-send-current-file)
+                        (should (equal sent-string expected)))
+                    (setq buffer-file-name nil)))))))))))
+
+(ert-deftest claude-code-ide-test-send-current-file-without-remote-module ()
+  "Local references work without remote support, but remote references fail."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (original-require (symbol-function 'require))
+        sent-string requested)
+    (with-temp-buffer
+      (let* ((target (current-buffer))
+             (session (claude-code-ide-session-create
+                       :id "local-reference" :buffer target :directory "/work")))
+        (puthash "local-reference" session claude-code-ide--sessions)
+        (cl-letf (((symbol-function 'require)
+                   (lambda (feature &optional filename noerror)
+                     (if (eq feature 'claude-code-ide-remote-worktree)
+                         (progn (setq requested t) nil)
+                       (funcall original-require feature filename noerror))))
+                  ((symbol-function 'claude-code-ide--reference-target-buffer)
+                   (lambda () target))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (text &optional _paste) (setq sent-string text)))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                   #'ignore))
+          (with-temp-buffer
+            (unwind-protect
+                (progn
+                  (setq buffer-file-name "/work/a.ts")
+                  (claude-code-ide-send-current-file)
+                  (should (equal sent-string "@a.ts "))
+                  (should-not requested)
+                  (setq sent-string nil
+                        buffer-file-name "/rpc:v12mac:/work/a.ts")
+                  (setf (claude-code-ide-session-host session) "v12mac")
+                  (should-error (claude-code-ide-send-current-file) :type 'user-error)
+                  (should requested)
+                  (should-not sent-string))
+              (setq buffer-file-name nil))))))))
+
+(ert-deftest claude-code-ide-test-send-file-preserves-remote-target-policy ()
+  "The file picker retains its existing path policy for a remote target."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        sent-string)
+    (with-temp-buffer
+      (let ((target (current-buffer)))
+        (puthash "picker-reference"
+                 (claude-code-ide-session-create
+                  :id "picker-reference" :buffer target
+                  :host "v12mac" :directory "/work")
+                 claude-code-ide--sessions)
+        (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                   (lambda () target))
+                  ((symbol-function 'project-current) (lambda (&rest _) '(vc . "/work/")))
+                  ((symbol-function 'project-root) (lambda (_) "/work/"))
+                  ((symbol-function 'read-file-name) (lambda (&rest _) "/work/a.ts"))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer) (lambda () nil))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (text &optional _paste) (setq sent-string text)))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window) #'ignore))
+          (claude-code-ide-send-file-from-root)
+          (should (equal sent-string "@a.ts ")))))))
 
 (ert-deftest claude-code-ide-test-send-current-file-line-reference ()
   "Test send-current-file-line-reference sends an absolute path by default."
