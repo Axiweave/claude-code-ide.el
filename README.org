@@ -374,17 +374,26 @@ Each command returns an operation ID rather than a path or session object. Every
 
 *** Remote Launch Configuration
 
-=claude-code-ide-remote-launch-config= is an alist keyed by exact Configured host. Each value is a property list with optional =:executable= and =:args=:
+=claude-code-ide-remote-launch-config= is an alist keyed by exact Configured host. Each value can override the Agent executable, Agent arguments, launch environment, or fresh-launch shell:
 
 #+begin_src emacs-lisp
 (setq claude-code-ide-remote-launch-config
-      '(("my-agent-host" :executable "claude" :args ("--model" "sonnet"))))
+      '(("my-agent-host" :executable "claude" :args ("--model" "sonnet"))
+        ("ramhorn"
+         :environment ("SKIP_TMUX=1")
+         :shell "/usr/bin/zsh"
+         :shell-args ("-lic"))))
 #+end_src
 
-The default executable is the globally selected Agent's standard command name, resolved on that host's =PATH=. Remote arguments default to an empty list. Local executable paths, local CLI flags, and local MCP settings are never inherited by a remote launch.
+The default executable is the globally selected Agent's standard command name. Remote arguments and environment assignments default to empty lists. Local executable paths, local CLI flags, and local MCP settings are never inherited.
 
-Backend commands and Agents keep the host's locale and umask.
-The runner uses private permissions and fixed protocol parsing only for its own work.
+=:environment= is an optional part of the shell preference. It is a list of literal =NAME=VALUE= strings. Names must be unique shell variable names. The reserved =ZMX_SESSION= and =ZMX_SESSION_PREFIX= names are invalid. Each assignment initializes the configured shell before startup files run. The resulting value reaches the fresh Agent unless those files replace it. This lets =ramhorn= set =SKIP_TMUX=1= before its startup files select a terminal multiplexer.
+
+=:shell= and =:shell-args= form an optional pair. The shell path must be absolute. The nonempty argument list must tell that shell to execute the package command that follows it. The package does not append =-c=. For zsh, =("-lic")= loads login and interactive startup files before it executes the command.
+
+These settings apply only when a fresh sibling or Worktree Agent starts on that exact host. A host without them keeps direct launch. Attach, reattach, detach, and Stop never apply them.
+
+Worktree preparation resolves the Agent in the selected environment. The owned zmx bootstrap then initializes that environment before the runner validates and starts the Agent. The control protocol uses a fixed locale and private permissions. The runner restores the shell's locale and umask when it starts the Agent.
 
 *** Explicit Refresh
 

@@ -247,7 +247,7 @@ Return nil for a local filename.  Reject unsupported remote routes."
                          :directory (copy-sequence directory))
            :options copied-options
            :launch-selection
-           (when (and (memq action '(open create))
+           (when (and (eq action 'create)
                       (not (plist-get copied-options :create-only))
                       (not (plist-get copied-options :view-only)))
              (claude-code-ide-remote-worktree--launch-selection host))
@@ -1109,27 +1109,55 @@ This includes registration pruning."
   "Render OPERATION's owned wrapper with literal remote launch arguments."
   (let* ((snapshot (claude-code-ide-remote-worktree--operation-snapshot operation))
          (launch (plist-get snapshot :launch))
+         (environment (plist-get launch :environment))
          (attempt (claude-code-ide-remote-worktree--operation-attempt-id operation))
          (root (claude-code-ide-remote-worktree--operation-receipt-directory operation))
-         (created (eq (claude-code-ide-remote-worktree--operation-kind operation) 'create)))
+         (created (eq (claude-code-ide-remote-worktree--operation-kind operation) 'create))
+         (runner-argv
+          (and
+           launch
+           (append
+            (list (concat root "/runner.sh") "agent" root attempt
+                  (alist-get 'git (plist-get snapshot :tools))
+                  (plist-get snapshot :repository)
+                  (if (eq (plist-get launch :directory) :created)
+                      "created"
+                    (plist-get launch :directory))
+                  (or (if created
+                          (plist-get
+                           (claude-code-ide-remote-worktree--operation-options operation)
+                           :name)
+                        (plist-get snapshot :branch))
+                      "")
+                  (plist-get launch :zmx-name)
+                  (plist-get launch :executable))
+            (plist-get launch :args)))))
     (when launch
       (concat
        "#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = "
-       (claude-code-ide-zmx--quote attempt) " ] || exit 64\n/bin/sh "
-       (mapconcat
-        #'claude-code-ide-zmx--quote
-        (append
-         (list (concat root "/runner.sh") "agent" root attempt
-               (alist-get 'git (plist-get snapshot :tools))
-               (plist-get snapshot :repository)
-               (if (eq (plist-get launch :directory) :created) "created" (plist-get launch :directory))
-               (or (if created
-                       (plist-get (claude-code-ide-remote-worktree--operation-options operation) :name)
-                     (plist-get snapshot :branch)) "")
-               (plist-get launch :zmx-name) (plist-get launch :executable))
-         (plist-get launch :args))
-        " ")
-       "\n"))))
+       (claude-code-ide-zmx--quote attempt)
+       " ] || exit 64\n"
+       (if-let* ((shell (plist-get launch :shell)))
+           (concat
+            "directory=$(pwd -P) || exit\nexec "
+            (mapconcat
+             #'claude-code-ide-zmx--quote
+             (append
+              (and environment (cons "env" environment))
+              (list shell)
+              (plist-get launch :shell-args)
+              '("cd \"$1\" || exit; shift; exec \"$@\""
+                "cci-worktree-login"))
+             " ")
+            " \"$directory\" "
+            (mapconcat #'claude-code-ide-zmx--quote
+                       (cons "/bin/sh" runner-argv)
+                       " ")
+            "\n")
+         (concat
+          "/bin/sh "
+          (mapconcat #'claude-code-ide-zmx--quote runner-argv " ")
+          "\n"))))))
 
 (defun claude-code-ide-remote-worktree--stage (operation callback)
   "Allocate and stage OPERATION once, then call CALLBACK with OPERATION."
@@ -1499,33 +1527,67 @@ This includes registration pruning."
 
 (defun claude-code-ide-remote-worktree--prepare-launch (operation callback)
   "Resolve OPERATION's remote Agent executable and append its owned bootstrap."
+  (unless (claude-code-ide-remote-worktree--operation-launch-selection operation)
+    (setf (claude-code-ide-remote-worktree--operation-launch-selection operation)
+          (claude-code-ide-remote-worktree--launch-selection
+           (plist-get
+            (claude-code-ide-remote-worktree--operation-target operation)
+            :host))))
   (let* ((launch (claude-code-ide-remote-worktree--launch-spec operation))
          (snapshot (claude-code-ide-remote-worktree--operation-snapshot operation))
-         (created (eq (claude-code-ide-remote-worktree--operation-kind operation) 'create)))
+         (created (eq (claude-code-ide-remote-worktree--operation-kind operation) 'create))
+         (shell (plist-get launch :shell))
+         (environment (plist-get launch :environment))
+         (resolver
+          (concat
+           "set -eu; program=$(command -v \"$1\"); "
+           "case \"$program\" in /*) [ -f \"$program\" ] && [ -x \"$program\" ]; "
+           "printf '%s\\n' \"$program\""
+           (and shell " >&3")
+           ";; *) exit 1;; esac"))
+         (argv
+          (if shell
+              (append
+               '("-c" "exec 3>&1; exec 1>&2; exec \"$@\""
+                 "cci-login-resolver")
+               (and environment (cons "env" environment))
+               (list shell)
+               (plist-get launch :shell-args)
+               (list "exec \"$@\"" "cci-login-environment"
+                     "/bin/sh" "-c" resolver "cci-agent-program"
+                     (plist-get launch :executable)))
+            (list "-c" resolver "cci-agent-program"
+                  (plist-get launch :executable)))))
     (claude-code-ide-remote-worktree--control
-     operation "worktree-agent-program" "/bin/sh"
-     (list "-c" "set -eu; program=$(command -v \"$1\"); case \"$program\" in /*) [ -f \"$program\" ] && [ -x \"$program\" ]; printf '%s\\n' \"$program\";; *) exit 1;; esac"
-           "cci-agent-program" (plist-get launch :executable))
+     operation "worktree-agent-program" "/bin/sh" argv
      (lambda (stdout)
        (let ((program (string-remove-suffix "\n" stdout))
              (steps (claude-code-ide-remote-worktree--operation-steps operation)))
          (unless (claude-code-ide-zmx--valid-directory-p program)
            (user-error "The host did not resolve an absolute Agent executable"))
          (setq launch (plist-put launch :executable program)
-               launch (plist-put launch :directory (if created :created (plist-get snapshot :worktree))))
+               launch
+               (plist-put launch :directory
+                          (if created :created (plist-get snapshot :worktree))))
          (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
                (plist-put snapshot :launch launch)
                (claude-code-ide-remote-worktree--operation-steps operation)
-               (append steps
-                       (list (list :step-id (1+ (length steps)) :kind 'bootstrap
-                                   :cwd (plist-get launch :directory) :program :runner
-                                   :argv (list "bootstrap" :resource :attempt
-                                               (alist-get 'zmx (plist-get snapshot :tools))
-                                               (plist-get launch :zmx-name))
-                                   :requires (and steps (list (length steps)))
-                                   :preconditions (and created '((:kind creation)))
-                                   :postconditions '((:kind bootstrap))))))
-         (funcall callback operation))))))
+               (append
+                steps
+                (list
+                 (list :step-id (1+ (length steps))
+                       :kind 'bootstrap
+                       :cwd (plist-get launch :directory)
+                       :program :runner
+                       :argv
+                       (list "bootstrap" :resource :attempt
+                             (alist-get 'zmx (plist-get snapshot :tools))
+                             (plist-get launch :zmx-name))
+                       :requires (and steps (list (length steps)))
+                       :preconditions (and created '((:kind creation)))
+                       :postconditions '((:kind bootstrap))))))
+         (funcall callback operation)))
+     (and (not created) (plist-get snapshot :worktree)))))
 
 (defun claude-code-ide-remote-worktree--display-current-p (operation)
   "Return non-nil for OPERATION's owned origin or its selected results view."

@@ -19577,7 +19577,8 @@ the Agent's self-reported hostname."
         (claude-code-ide-remote-hosts '("host"))
         (claude-code-ide-cli-path "omp")
         (claude-code-ide-remote-launch-config
-         '(("host" :executable "/remote/omp tool" :args ("--model" "remote model"))))
+         '(("host" :executable "/remote/omp tool" :args ("--model" "remote model")
+            :shell "/usr/bin/zsh" :shell-args ("-lic"))))
         (claude-code-ide-zmx-session-prefix "cci-")
         (claude-code-ide-terminal-initialization-delay 0)
         buffer process terminal-call displayed metadata id-prefix session)
@@ -19652,7 +19653,8 @@ the Agent's self-reported hostname."
             (nth 2 terminal-call)
             (claude-code-ide-zmx--remote-create-command
              "host" "/srv/repo exact" "cci-omp-repo-exact-fixed"
-             "/remote/omp tool" '("--model" "remote model")))))
+             "/remote/omp tool" '("--model" "remote model")
+             "/usr/bin/zsh" '("-lic")))))
       (when (processp process)
         (set-process-sentinel process #'ignore)
         (when (process-live-p process) (delete-process process)))
@@ -19660,7 +19662,7 @@ the Agent's self-reported hostname."
         (with-current-buffer buffer
           (let ((kill-buffer-hook nil)) (kill-buffer buffer)))))))
 
-(ert-deftest claude-code-ide-test-remote-sibling-launch-rolls-back-local-state ()
+(ert-deftest claude-code-ide-test-remote-login-environment-user-story-3-sibling-failure-rolls-back ()
   "An early SSH exit forgets the new Session and all owned local resources."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
         (claude-code-ide--session-order-counters (make-hash-table :test #'equal))
@@ -19674,18 +19676,21 @@ the Agent's self-reported hostname."
         (claude-code-ide-manager-persist-state nil)
         (claude-code-ide-remote-hosts '("host-a"))
         (claude-code-ide-cli-path "omp")
+        (claude-code-ide-remote-launch-config
+         '(("host-a" :shell "/missing/login-shell" :shell-args ("-lc"))))
         (claude-code-ide-zmx-session-prefix "cci-")
         (claude-code-ide-terminal-initialization-delay 0)
         (live-results '(t nil))
-        buffer process sentinel)
+        buffer process sentinel terminal-command)
     (unwind-protect
         (cl-letf
             (((symbol-function 'make-temp-name)
               (lambda (prefix) (concat prefix "fixed")))
              ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
              ((symbol-function 'claude-code-ide--create-terminal-with-command)
-              (lambda (name &rest _)
-                (setq buffer (generate-new-buffer name)
+              (lambda (name _directory command _environment)
+                (setq terminal-command command
+                      buffer (generate-new-buffer name)
                       process
                       (make-pipe-process
                        :name "cci-failed-remote-sibling" :buffer buffer
@@ -19727,6 +19732,12 @@ the Agent's self-reported hostname."
               (concat
                "Cannot start cci-omp-repo-fixed on host-a: "
                "The terminal exited or Session ownership changed during initialization"))))
+          (should
+           (equal
+            terminal-command
+            (claude-code-ide-zmx--remote-create-command
+             "host-a" "/srv/repo" "cci-omp-repo-fixed" "omp" nil
+             "/missing/login-shell" '("-lc"))))
           (should (= (hash-table-count claude-code-ide--sessions) 0))
           (should-not
            (claude-code-ide-manager--item-by-session-key
@@ -20179,14 +20190,18 @@ default, so the default must not track the last saved value."
   (claude-code-ide-tests--with-remote-targets
    (let ((other (add-target "b" "host-b"))
          (claude-code-ide-terminal-initialization-delay 0)
-         (available nil))
+         (claude-code-ide-remote-launch-config
+          '(("host-a" :environment ("SKIP_TMUX=1"))))
+         (available nil)
+         terminal-command)
      (cl-letf
          (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
           ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
           ((symbol-function 'claude-code-ide--register-session)
            #'claude-code-ide--put-session)
           ((symbol-function 'claude-code-ide--create-terminal-with-command)
-           (lambda (name _directory _command _environment)
+           (lambda (name _directory command _environment)
+             (setq terminal-command command)
              (unless available (user-error "Ghostel is unavailable"))
              (let* ((buffer (generate-new-buffer name))
                     (process (make-pipe-process
@@ -20221,6 +20236,9 @@ default, so the default must not track the last saved value."
        (should (claude-code-ide-manager--item-by-session-key "stable"))
        (setq available t)
        (claude-code-ide--reattach-remote-session "stable")
+       (should
+        (equal terminal-command
+               (claude-code-ide-zmx--remote-attach-command "host-a" "same")))
        (let ((session (claude-code-ide--get-session "stable")))
          (should (process-live-p (claude-code-ide-session-process session)))
          (should (equal (claude-code-ide-session-custom-name session) "Saved"))
@@ -27639,6 +27657,10 @@ displayed last."
              (operation
               (claude-code-ide-remote-worktree--new-operation
                'open "alpha" "/srv/repo" nil))
+             (_
+              (setf
+               (claude-code-ide-remote-worktree--operation-launch-selection operation)
+               (claude-code-ide-remote-worktree--launch-selection "alpha")))
              (worktree
               (claude-code-ide-remote-worktree--launch-spec operation))
              (token
@@ -27668,6 +27690,259 @@ displayed last."
         (should-error
          (claude-code-ide-zmx--remote-launch-spec "alpha")
          :type 'user-error)))))
+
+(ert-deftest claude-code-ide-test-remote-login-environment-foundation-launch-config ()
+  "The exact-host launch spec validates, copies, and wraps login settings."
+  (let* ((shell (copy-sequence "/usr/bin/zsh"))
+         (shell-args (list (copy-sequence "-lic")))
+         (environment (list (copy-sequence "SKIP_TMUX=1")))
+         (claude-code-ide-remote-hosts '("alpha" "beta"))
+         (claude-code-ide-cli-path "omp")
+         (claude-code-ide-remote-launch-config
+          (list (list "alpha" :shell shell :shell-args shell-args
+                      :environment environment)))
+         (launch (claude-code-ide-zmx--remote-launch-spec "alpha"))
+         (command "printf '%s' \"$HOME;$(touch nope)\""))
+    (should (equal (plist-get launch :shell) shell))
+    (should (equal (plist-get launch :shell-args) shell-args))
+    (should (equal (plist-get launch :environment) environment))
+    (should-not (eq (plist-get launch :shell) shell))
+    (should-not (eq (plist-get launch :shell-args) shell-args))
+    (should-not (eq (car (plist-get launch :shell-args)) (car shell-args)))
+    (should-not (eq (plist-get launch :environment) environment))
+    (should-not (eq (car (plist-get launch :environment)) (car environment)))
+    (should (equal (claude-code-ide-zmx--login-command command nil nil nil)
+                   command))
+    (should
+     (equal
+      (claude-code-ide-zmx--login-command
+       command shell shell-args environment)
+      (concat "exec "
+              (mapconcat #'claude-code-ide-zmx--quote
+                         (append (list "env") environment
+                                 (list shell (car shell-args) command))
+                         " "))))
+    (should-not (plist-get (claude-code-ide-zmx--remote-launch-spec "beta")
+                           :shell)))
+  (dolist (bad '((:shell "/usr/bin/zsh")
+                 (:shell-args ("-lic"))
+                 (:shell "zsh" :shell-args ("-lic"))
+                 (:shell "/usr/bin/zsh" :shell-args ())
+                 (:shell "/usr/bin/zsh" :shell-args "-lic")
+                 (:shell "/usr/bin/zsh" :shell-args ("bad\nargument"))
+                 (:shell "/usr/bin/zsh" :shell-args ("-lic")
+                         :shell "/bin/sh")
+                 (:environment ("SKIP_TMUX=1"))
+                 (:environment "SKIP_TMUX=1")
+                 (:environment ("SKIP-TMUX=1"))
+                 (:environment ("SKIP_TMUX"))
+                 (:environment ("SKIP_TMUX=1" "SKIP_TMUX=0"))
+                 (:environment ("SKIP_TMUX=bad\nvalue"))))
+    (let ((claude-code-ide-remote-hosts '("alpha"))
+          (claude-code-ide-cli-path "omp")
+          (claude-code-ide-remote-launch-config (list (cons "alpha" bad))))
+      (should-error
+       (claude-code-ide-zmx--remote-launch-spec "alpha")
+       :type 'user-error))))
+
+(ert-deftest claude-code-ide-test-remote-login-environment-user-story-1-sibling-command ()
+  "A sibling initializes both target creation and its Agent login environment."
+  (let* ((claude-code-ide-remote-hosts '("host"))
+         (directory "/srv/work tree/a'b;$HOME")
+         (name "target name")
+         (executable "/opt/Agent tool/omp'run")
+         (args '("--model" "two words" "$(touch nope)"))
+         (shell "/usr/bin/zsh")
+         (shell-args '("-lic"))
+         (environment '("SKIP_TMUX=1"))
+         (target
+          (claude-code-ide-zmx--exec-command
+           "env"
+           (append
+            '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
+              "zmx" "attach")
+            (list name executable)
+            args)
+           directory))
+         (expected
+          (mapconcat
+           #'claude-code-ide-zmx--quote
+           (append
+            '("ssh" "-t")
+            claude-code-ide-zmx--ssh-options
+            (list "host"
+                  (claude-code-ide-zmx--login-command
+                   target shell shell-args environment)))
+           " "))
+         (actual
+          (claude-code-ide-zmx--remote-create-command
+           "host" directory name executable args shell shell-args environment)))
+    (should (equal actual expected))
+    (let ((first (string-match (regexp-quote shell) actual)))
+      (should first)
+      (should-not (string-match (regexp-quote shell) actual (1+ first))))))
+
+(ert-deftest claude-code-ide-test-remote-login-environment-user-story-1-worktree-command ()
+  "Worktree preparation resolves and starts the Agent inside the selected shell."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-cli-path "omp")
+         (claude-code-ide-remote-launch-config
+          '(("fixture" :executable "omp" :args ("--flag")
+             :shell "/usr/bin/zsh" :shell-args ("-lic")
+             :environment ("SKIP_TMUX=1"))))
+         (claude-code-ide-remote-worktree--operations
+          (make-hash-table :test #'equal))
+         (operation
+          (claude-code-ide-remote-worktree--new-operation
+           'open "fixture" "/srv/worktree" nil))
+         control)
+    (setf
+     (claude-code-ide-remote-worktree--operation-snapshot operation)
+     '(:host "fixture" :worktree "/srv/worktree" :branch "topic"
+             :repository "/srv/repo/.git" :tools ((git . "/usr/bin/git")))
+     (claude-code-ide-remote-worktree--operation-receipt-directory operation)
+     "/private/root")
+    (cl-letf
+        (((symbol-function 'claude-code-ide-remote-worktree--control)
+          (lambda (&rest call)
+            (setq control call)
+            (funcall (nth 4 call) "/opt/bin/omp\n"))))
+      (claude-code-ide-remote-worktree--prepare-launch operation #'ignore))
+    (should (equal (nth 1 control) "worktree-agent-program"))
+    (should (equal (nth 2 control) "/bin/sh"))
+    (should
+     (equal
+      (nth 3 control)
+      '("-c" "exec 3>&1; exec 1>&2; exec \"$@\""
+        "cci-login-resolver" "env" "SKIP_TMUX=1" "/usr/bin/zsh" "-lic"
+        "exec \"$@\"" "cci-login-environment" "/bin/sh" "-c"
+        "set -eu; program=$(command -v \"$1\"); case \"$program\" in /*) [ -f \"$program\" ] && [ -x \"$program\" ]; printf '%s\\n' \"$program\" >&3;; *) exit 1;; esac"
+        "cci-agent-program" "omp")))
+    (should (equal (nth 5 control) "/srv/worktree"))
+    (let* ((snapshot
+            (claude-code-ide-remote-worktree--operation-snapshot operation))
+           (launch (plist-get snapshot :launch))
+           (attempt
+            (claude-code-ide-remote-worktree--operation-attempt-id operation))
+           (bootstrap
+            (claude-code-ide-remote-worktree--render-bootstrap operation))
+           (runner-argv
+            (list "/bin/sh" "/private/root/runner.sh" "agent" "/private/root"
+                  attempt "/usr/bin/git" "/srv/repo/.git" "/srv/worktree"
+                  "topic" (plist-get launch :zmx-name) "/opt/bin/omp" "--flag")))
+      (should (equal (plist-get launch :executable) "/opt/bin/omp"))
+      (should
+       (equal
+        bootstrap
+        (concat
+         "#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = "
+         (claude-code-ide-zmx--quote attempt)
+         " ] || exit 64\ndirectory=$(pwd -P) || exit\nexec "
+         (mapconcat
+          #'claude-code-ide-zmx--quote
+          '("env" "SKIP_TMUX=1" "/usr/bin/zsh" "-lic"
+            "cd \"$1\" || exit; shift; exec \"$@\"" "cci-worktree-login")
+          " ")
+         " \"$directory\" "
+         (mapconcat #'claude-code-ide-zmx--quote runner-argv " ")
+         "\n"))))))
+
+(ert-deftest claude-code-ide-test-remote-login-environment-user-story-2-host-isolation ()
+  "Only one exact host wraps fresh creation, and existing targets stay direct."
+  (let* ((claude-code-ide-remote-hosts '("alpha" "beta"))
+         (claude-code-ide-cli-path "omp")
+         (claude-code-ide-remote-launch-config
+          '(("alpha" :shell "/usr/bin/zsh" :shell-args ("-lic"))))
+         (claude-code-ide-remote-worktree--operations
+          (make-hash-table :test #'equal))
+         (operation
+          (claude-code-ide-remote-worktree--new-operation
+           'open "alpha" "/srv/repo" nil))
+         (direct-command
+          (claude-code-ide-zmx--exec-command
+           "env"
+           '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
+             "zmx" "attach" "target" "omp")
+           "/srv/repo")))
+    (should (equal (plist-get
+                    (claude-code-ide-zmx--remote-launch-spec "alpha")
+                    :shell)
+                   "/usr/bin/zsh"))
+    (should-not
+     (plist-get (claude-code-ide-zmx--remote-launch-spec "beta") :shell))
+    (should
+     (equal
+      (claude-code-ide-zmx--remote-create-command
+       "beta" "/srv/repo" "target" "omp" nil)
+      (mapconcat
+       #'claude-code-ide-zmx--quote
+       (append '("ssh" "-t") claude-code-ide-zmx--ssh-options
+               (list "beta" direct-command))
+       " ")))
+    (should
+     (equal
+      (claude-code-ide-zmx--remote-attach-command "alpha" "target")
+      (mapconcat
+       #'claude-code-ide-zmx--quote
+       (append
+        '("ssh" "-t")
+        claude-code-ide-zmx--ssh-options
+        (list "alpha"
+              (claude-code-ide-zmx--remote-command
+               '("attach" "target" "false"))))
+       " ")))
+    (setf (claude-code-ide-remote-worktree--operation-launch-selection operation)
+          (claude-code-ide-remote-worktree--launch-selection "alpha"))
+    (setf (claude-code-ide-remote-worktree--operation-steps operation)
+          '((:kind bootstrap)))
+    (should (claude-code-ide-remote-worktree--launch-current-p operation))
+    (setq claude-code-ide-remote-launch-config
+          '(("alpha" :shell "/usr/bin/zsh" :shell-args ("-lc"))))
+    (should-not
+     (claude-code-ide-remote-worktree--launch-current-p operation))))
+
+
+(ert-deftest claude-code-ide-test-remote-login-environment-user-story-3-worktree-failure-refuses ()
+  "A failed login resolver reports its host and never retries direct launch."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-cli-path "omp")
+         (claude-code-ide-remote-launch-config
+          '(("fixture" :shell "/missing/login-shell" :shell-args ("-lc"))))
+         (claude-code-ide-remote-worktree--operations
+          (make-hash-table :test #'equal))
+         (operation
+          (claude-code-ide-remote-worktree--new-operation
+           'open "fixture" "/srv/repo" nil))
+         requests launched)
+    (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+          '(:host "fixture" :worktree "/srv/repo"))
+    (cl-letf
+        (((symbol-function 'claude-code-ide-remote-worktree--present-results)
+          #'ignore)
+         ((symbol-function 'claude-code-ide-zmx-remote-exec)
+          (lambda (&rest request)
+            (push request requests)
+            (funcall
+             (nth 4 request)
+             '(:status 127 :stdout ""
+                       :stderr "startup warning\nmissing login shell\n"))
+            nil)))
+      (claude-code-ide-remote-worktree--prepare-launch
+       operation (lambda (&rest _) (setq launched t))))
+    (should (= (length requests) 1))
+    (should-not launched)
+    (should (eq (claude-code-ide-remote-worktree--operation-state operation)
+                'refused))
+    (should
+     (equal
+      (claude-code-ide-remote-worktree--operation-error operation)
+      (concat
+       "Host fixture: The control request failed with status 127: "
+       "startup warning\nmissing login shell")))
+    (should-not
+     (plist-get
+      (claude-code-ide-remote-worktree--operation-snapshot operation)
+      :launch))))
 
 (ert-deftest claude-code-ide-test-remote-worktree-canceled-attachment-does-not-create-terminal ()
   "Cancellation during an existing-target read prevents terminal creation and Agent replacement."
@@ -28092,21 +28367,35 @@ form.  A local directory keeps using the real captured native form."
         (kill-buffer claude-code-ide-remote-worktree--results-buffer))
       (kill-buffer origin))))
 
-(ert-deftest claude-code-ide-test-remote-worktree-launch-selection-before-preparation ()
-  "A changed global Agent cannot replace the request's selection during preparation."
+(ert-deftest claude-code-ide-test-remote-worktree-existing-open-bypasses-launch-settings ()
+  "An existing target opens without reading invalid fresh-launch settings."
   (let* ((claude-code-ide-remote-hosts '("fixture"))
-         (claude-code-ide-cli-path "omp")
-         (claude-code-ide-remote-launch-config nil)
-         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
-         (operation (claude-code-ide-remote-worktree--new-operation
-                     'open "fixture" "/srv/repo" nil))
-         requests)
-    (setq claude-code-ide-cli-path "claude")
-    (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
-               (lambda (&rest args) (push args requests))))
-      (should-error (claude-code-ide-remote-worktree--prepare-launch operation #'ignore)
-                    :type 'user-error))
-    (should-not requests)))
+         (claude-code-ide-remote-launch-config
+          '(("fixture" :environment ("SKIP_TMUX=1"))))
+         (claude-code-ide-remote-worktree--operations
+          (make-hash-table :test #'equal))
+         (operation
+          (claude-code-ide-remote-worktree--new-operation
+           'open "fixture" "/srv/repo" nil))
+         (session
+          (claude-code-ide-session-create
+           :id "existing" :host "fixture" :directory "/srv/repo"
+           :zmx-name "existing-agent" :cli-type 'omp)))
+    (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
+          '(:host "fixture" :worktree "/srv/repo"))
+    (cl-letf (((symbol-function 'claude-code-ide--preferred-session)
+               (lambda (&rest _) session))
+              ((symbol-function 'claude-code-ide-remote-worktree--finish) #'ignore))
+      (claude-code-ide-remote-worktree--open-selected operation))
+    (should-not
+     (claude-code-ide-remote-worktree--operation-launch-selection operation))
+    (should
+     (equal
+      (plist-get
+       (plist-get (claude-code-ide-remote-worktree--operation-results operation)
+                  :attachment-target)
+       :name)
+      "existing-agent"))))
 
 (ert-deftest claude-code-ide-test-remote-worktree-launch-selection-after-approval ()
   "Changed host launch arguments invalidate an already approved dispatch."
@@ -28118,6 +28407,8 @@ form.  A local directory keeps using the real captured native form."
          (operation (claude-code-ide-remote-worktree--new-operation
                      'open "fixture" "/srv/repo" nil))
          requests)
+    (setf (claude-code-ide-remote-worktree--operation-launch-selection operation)
+          (claude-code-ide-remote-worktree--launch-selection "fixture"))
     (setf (claude-code-ide-remote-worktree--operation-snapshot operation)
           (list :launch (claude-code-ide-remote-worktree--launch-spec operation))
           (claude-code-ide-remote-worktree--operation-steps operation) '((:kind bootstrap))

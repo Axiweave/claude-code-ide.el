@@ -135,6 +135,36 @@ offers explicit attachment instead of another launch.
 Reattachment reuses the same =zmx attach NAME false= guard used by
 [[*Attach Existing Agents][existing attachment]].
 
+
+** Fresh-Agent Login Environment
+
+An exact host entry in =claude-code-ide-remote-launch-config= can include
+=:environment= with its =:shell= and =:shell-args= pair. The environment
+value is an optional list of literal =NAME=VALUE= strings. Names must be
+unique shell variable names. =ZMX_SESSION= and =ZMX_SESSION_PREFIX= are reserved.
+
+=:shell= and =:shell-args= are required together. The shell path must be
+absolute. The argument list must be nonempty and must make the selected shell
+execute the package command that follows it. The package does not append
+another command-mode argument.
+
+A fresh sibling applies the environment before configured shell startup,
+directory selection, and zmx target creation. It clears =ZMX_SESSION= and
+=ZMX_SESSION_PREFIX= after startup files run and immediately before zmx
+starts. For example, =:environment ("SKIP_TMUX=1")= can prevent a remote
+startup file from replacing the Agent launch with tmux.
+
+A Worktree operation keeps its verified zmx bootstrap outside the login
+environment. Preparation applies the environment before it resolves the
+Agent through a separate result channel. The generated target bootstrap
+applies the same environment, starts the selected shell, restores the owned
+Worktree directory, and calls the unchanged runner Agent entry.
+
+Startup warnings and errors remain terminal output. A missing shell, failed
+startup file, or missing Agent stops that launch and reports the selected
+host. The package does not retry with direct launch. Existing targets and
+Sessions remain unchanged.
+
 ** Agent Protection
 
 Before removal, movement, history rewriting, or cleanup, Emacs runs a

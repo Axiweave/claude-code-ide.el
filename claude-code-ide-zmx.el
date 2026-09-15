@@ -75,10 +75,13 @@ connect."
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-remote-launch-config nil
-  "Remote Agent overrides keyed by exact configured host.
-Each value is a property list with optional `:executable' and `:args'.
-The default executable is the globally selected Agent's standard command.
-Remote arguments default to an empty list, without local CLI or MCP flags."
+  "Remote Agent launch settings keyed by exact configured host.
+Each value is a property list with optional `:executable', `:args',
+and `:environment'.  Environment entries use Emacs's NAME=VALUE
+format.  The optional `:shell' and `:shell-args' pair initializes
+fresh Agents.  The default executable is the globally selected
+Agent's standard command.  Remote arguments and environment entries
+default to empty lists, without local CLI or MCP settings."
   :type '(alist :key-type string :value-type plist)
   :group 'claude-code-ide)
 
@@ -243,6 +246,22 @@ Only a control character makes an otherwise arbitrary string unsafe
 for `claude-code-ide-zmx--quote' to carry across the wire."
   (and (stringp value) (not (string-match-p "[[:cntrl:]\u007f-\u009f]" value))))
 
+(defun claude-code-ide-zmx--copy-environment (environment)
+  "Validate and copy literal NAME=VALUE entries from ENVIRONMENT."
+  (unless (proper-list-p environment)
+    (user-error "The remote launch environment must be a list"))
+  (let (names result)
+    (dolist (entry environment)
+      (unless (and (claude-code-ide-zmx--valid-argument-p entry)
+                   (string-match "\\`\\([A-Za-z_][A-Za-z0-9_]*\\)=" entry)
+                   (not (member (match-string 1 entry)
+                                '("ZMX_SESSION" "ZMX_SESSION_PREFIX")))
+                   (not (member (match-string 1 entry) names)))
+        (user-error "The remote launch environment contains an invalid or duplicate entry"))
+      (push (match-string 1 entry) names)
+      (push (copy-sequence entry) result))
+    (nreverse result)))
+
 (defun claude-code-ide-zmx--remote-launch-spec (host)
   "Return validated, copied remote Agent settings for HOST."
   (claude-code-ide-zmx--validate-host host)
@@ -254,6 +273,11 @@ for `claude-code-ide-zmx--quote' to carry across the wire."
            (default-value 'claude-code-ide-cli-path)))
          (executable (or (plist-get config :executable) (symbol-name cli-type)))
          (args (plist-get config :args))
+         (shell (plist-get config :shell))
+         (shell-args (plist-get config :shell-args))
+         (environment
+          (claude-code-ide-zmx--copy-environment
+           (plist-get config :environment)))
          (fields config)
          seen)
     (unless (and (proper-list-p config) (zerop (% (length config) 2)))
@@ -261,7 +285,9 @@ for `claude-code-ide-zmx--quote' to carry across the wire."
     (while fields
       (let ((key (pop fields)))
         (pop fields)
-        (unless (and (memq key '(:executable :args)) (not (memq key seen)))
+        (unless (and (memq key '(:executable :args :environment
+                                             :shell :shell-args))
+                     (not (memq key seen)))
           (user-error "The remote Agent override contains an unknown or duplicate key"))
         (push key seen)))
     (unless (and (claude-code-ide-zmx--valid-argument-p executable)
@@ -270,9 +296,27 @@ for `claude-code-ide-zmx--quote' to carry across the wire."
                  (proper-list-p args)
                  (cl-every #'claude-code-ide-zmx--valid-argument-p args))
       (user-error "The remote Agent executable or argument list is invalid"))
-    (list :cli-type cli-type
-          :executable (copy-sequence executable)
-          :args (mapcar #'copy-sequence args))))
+    (let ((has-shell (not (null (memq :shell seen))))
+          (has-shell-args (not (null (memq :shell-args seen)))))
+      (unless (eq has-shell has-shell-args)
+        (user-error "The remote shell and argument list must be configured together"))
+      (when (and (memq :environment seen) (not has-shell))
+        (user-error "The remote launch environment requires a configured shell"))
+      (when has-shell
+        (unless (and (claude-code-ide-zmx--valid-directory-p shell)
+                     (consp shell-args)
+                     (proper-list-p shell-args)
+                     (cl-every #'claude-code-ide-zmx--valid-argument-p shell-args))
+          (user-error "The remote shell executable or argument list is invalid")))
+      (append
+       (list :cli-type cli-type
+             :executable (copy-sequence executable)
+             :args (mapcar #'copy-sequence args))
+       (and (memq :environment seen)
+            (list :environment environment))
+       (and has-shell
+            (list :shell (copy-sequence shell)
+                  :shell-args (mapcar #'copy-sequence shell-args)))))))
 
 (defun claude-code-ide-zmx--exec-command (program argv &optional directory)
   "Return a POSIX command running PROGRAM with literal ARGV.
@@ -284,6 +328,18 @@ syntax."
    (if directory (concat "cd " (claude-code-ide-zmx--quote directory) " && ") "")
    "exec "
    (mapconcat #'claude-code-ide-zmx--quote (cons program argv) " ")))
+
+(defun claude-code-ide-zmx--login-command
+    (command shell shell-args &optional environment)
+  "Wrap COMMAND with SHELL, SHELL-ARGS, and ENVIRONMENT when configured."
+  (if shell
+      (concat
+       "exec "
+       (mapconcat #'claude-code-ide-zmx--quote
+                  (append (and environment (cons "env" environment))
+                          (list shell) shell-args (list command))
+                  " "))
+    command))
 
 (defun claude-code-ide-zmx-remote-exec
     (host operation program argv callback &optional directory name output-limit)
@@ -747,7 +803,8 @@ so no shell or Agent is left behind and the client exits nonzero.")
              " "))
 
 (defun claude-code-ide-zmx--remote-create-command
-    (host directory name executable args)
+    (host directory name executable args
+          &optional shell shell-args environment)
   "Build an interactive SSH command creating and attaching NAME on HOST."
   (claude-code-ide-zmx--validate-host host)
   (unless (claude-code-ide-zmx--valid-directory-p directory)
@@ -759,21 +816,32 @@ so no shell or Agent is left behind and the client exits nonzero.")
                (proper-list-p args)
                (cl-every #'claude-code-ide-zmx--valid-argument-p args))
     (user-error "The remote Agent executable or argument list is invalid"))
-  (mapconcat
-   #'claude-code-ide-zmx--quote
-   (append
-    '("ssh" "-t")
-    claude-code-ide-zmx--ssh-options
-    (list
-     host
-     (claude-code-ide-zmx--exec-command
-      "env"
-      (append '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
-                "zmx" "attach")
-              (list name executable)
-              args)
-      directory)))
-   " "))
+  (unless
+      (or (and (null shell) (null shell-args))
+          (and (claude-code-ide-zmx--valid-directory-p shell)
+               (consp shell-args)
+               (proper-list-p shell-args)
+               (cl-every #'claude-code-ide-zmx--valid-argument-p shell-args)))
+    (user-error "The remote shell executable or argument list is invalid"))
+  (setq environment
+        (claude-code-ide-zmx--copy-environment environment))
+  (let ((command
+         (claude-code-ide-zmx--exec-command
+          "env"
+          (append
+           '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX")
+           (list "zmx" "attach" name executable)
+           args)
+          directory)))
+    (mapconcat
+     #'claude-code-ide-zmx--quote
+     (append
+      '("ssh" "-t")
+      claude-code-ide-zmx--ssh-options
+      (list host
+            (claude-code-ide-zmx--login-command
+             command shell shell-args environment)))
+     " ")))
 
 (defun claude-code-ide-zmx-wrap-command (name &optional cmd)
   "Return a shell command attaching to zmx session NAME.

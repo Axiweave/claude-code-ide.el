@@ -1844,7 +1844,10 @@ Both paths skip local Agent builders, MCP startup, and local zmx wrapping."
                 (claude-code-ide-zmx--remote-create-command
                  host working-dir zmx-name
                  (plist-get launch-spec :executable)
-                 (plist-get launch-spec :args))
+                 (plist-get launch-spec :args)
+                 (plist-get launch-spec :shell)
+                 (plist-get launch-spec :shell-args)
+                 (plist-get launch-spec :environment))
               (claude-code-ide-zmx--remote-attach-command host zmx-name)))
            (buffer-name
             (generate-new-buffer-name
