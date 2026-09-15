@@ -117,7 +117,7 @@
 (declare-function claude-code-ide-send-file "claude-code-ide" (arg))
 (declare-function claude-code-ide-send-file-from-root "claude-code-ide" ())
 (declare-function claude-code-ide-send-file-from-home "claude-code-ide" ())
-(declare-function claude-code-ide-implement-todo "claude-code-ide" (arg))
+(declare-function claude-code-ide-send-project "claude-code-ide" ())
 
 ;; Declare variables
 (defvar claude-code-ide-cli-path)
@@ -809,7 +809,7 @@ This never contacts a host while the menu itself is displayed."
     ;; ("W" "Toggle recent window" claude-code-ide-toggle-recent)
     ]
    ["Interaction"
-    ("i" "Implement TODO" claude-code-ide-implement-todo)
+    ("i" "Insert" claude-code-ide-insert-menu)
     ("@" "Send current file @path" claude-code-ide-send-current-file)
     ("#" "Send current file path[:range]" claude-code-ide-send-current-file-line-reference)
     ("f" "Send file @path" claude-code-ide-send-file)
@@ -820,6 +820,11 @@ This never contacts a host while the menu itself is displayed."
    ["Submenus"
     ("<f12>" "Configuration" claude-code-ide-config-menu)
     ("<f11>" "Debugging" claude-code-ide-debug-menu)]])
+
+(transient-define-prefix claude-code-ide-insert-menu ()
+  "Claude Code insert menu."
+  ["Insert"
+   ("p" "Send project @path" claude-code-ide-send-project)])
 
 (transient-define-prefix claude-code-ide-config-menu ()
   "Claude Code configuration menu."

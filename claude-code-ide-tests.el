@@ -10333,9 +10333,12 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
         (should (equal (buffer-string) ";; TODO: add support\n"))
         (should-not sent-prompt)))))
 
-(ert-deftest claude-code-ide-test-transient-exposes-implement-todo ()
-  "Test the main transient exposes the TODO implementation command."
-  (should (transient-get-suffix 'claude-code-ide-menu "i")))
+(ert-deftest claude-code-ide-test-transient-insert-menu-sends-project ()
+  "Test `i' opens the insert menu and `p' sends a project."
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-menu "i") :command)
+                 'claude-code-ide-insert-menu))
+  (should (equal (plist-get (claude-code-ide-tests--transient-suffix-plist 'claude-code-ide-insert-menu "p") :command)
+                 'claude-code-ide-send-project)))
 
 (ert-deftest claude-code-ide-test-transient-exposes-current-file-line-reference ()
   "Test the main transient exposes the absolute path with line binding."
