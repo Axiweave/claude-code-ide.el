@@ -4631,9 +4631,13 @@ Dired when it fails or returns a non-buffer."
       (claude-code-ide-manager--advance-layout-epoch)
       (window-state-put window-state (frame-root-window) 'safe)
       (setq claude-code-ide-manager--current-session-key session-key)
+      ;; A layout captured while the manager sidebar was selected (slot
+      ;; keys, Avy switch) must not hand focus back to the sidebar.
       (let* ((selected-buffer (and selected-name (get-buffer selected-name)))
              (target-window
               (or (and selected-buffer
+                       (not (with-current-buffer selected-buffer
+                              (derived-mode-p 'claude-code-ide-manager-mode)))
                        (get-buffer-window selected-buffer))
                   (and session-buffer (get-buffer-window session-buffer))
                   (and remote (claude-code-ide--show-session-buffer session-buffer)))))
