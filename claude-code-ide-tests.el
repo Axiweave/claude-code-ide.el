@@ -26061,6 +26061,46 @@ displayed last."
           (should-not (file-exists-p (expand-file-name "effect" root))))
       (delete-directory root t))))
 
+(ert-deftest claude-code-ide-test-remote-worktree-watchdog-releases-caller-streams ()
+  "A guard that returns before its budget releases the caller's stream.
+A leaked clock inherits that stream, so a remote control request waits
+for the dead clock instead of the returned command."
+  (let* ((root (make-temp-file "cci-watchdog-streams-" t))
+         (runner (expand-file-name "runner.sh" root))
+         (timer (expand-file-name "sleep" root))
+         (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+         (process-environment
+          (cons (concat "PATH=" root ":" (getenv "PATH")) process-environment))
+         start)
+    (unwind-protect
+        (progn
+          (copy-file claude-code-ide-remote-worktree--runner-file runner)
+          ;; The clock outlives the guarded read, so a kept clock stays visible.
+          (with-temp-file timer (insert "#!/bin/sh\nexec /bin/sleep 3\n"))
+          (with-temp-file (expand-file-name "manifest" root)
+            (insert "protocol=cci-worktree-1\n"
+                    "operation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                    "attempt=" attempt "\nkind=open\nsteps=1\n"))
+          (with-temp-file (expand-file-name "plan.sh" root)
+            (insert "cci_watchdog_run 30 /bin/sleep 0.05 || return \"$?\"\n"
+                    "cci_step 1 backend-create " (claude-code-ide-zmx--quote root)
+                    " /usr/bin/true\n"))
+          (dolist (file '("runner.sh" "sleep"))
+            (set-file-modes (expand-file-name file root) #o700))
+          (dolist (file '("manifest" "plan.sh"))
+            (set-file-modes (expand-file-name file root) #o600))
+          ;; Reading the pipe to end of file is what a control request does.
+          (setq start (float-time))
+          (should (zerop (call-process
+                          "/bin/sh" nil nil nil "-c"
+                          (concat (claude-code-ide-zmx--quote runner) " run "
+                                  (claude-code-ide-zmx--quote root) " "
+                                  (claude-code-ide-zmx--quote attempt)
+                                  " | cat >/dev/null"))))
+          (should (< (- (float-time) start) 2))
+          (should (file-exists-p (expand-file-name "step-1.entered" root))))
+      (delete-directory root t))))
+
 (ert-deftest claude-code-ide-test-remote-worktree-prerequisites-never-fall-back ()
   "Missing remote tools, view support, or hook trust cannot start a local substitute."
   (require 'claude-code-ide-remote-project)

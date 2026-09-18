@@ -565,12 +565,19 @@ cci_watchdog_run() {
   ( ulimit -f 128; "$@" </dev/null >/dev/null 2>&1 ) &
   worker=$!
   identity=$(ps -o lstart= -o args= -p "$worker" 2>/dev/null)
+  # The watcher owns its clock as a child that its own TERM handler kills,
+  # and it keeps none of the caller's streams.  A watchdog that returns
+  # early must leave no process holding the caller's ssh channel open for
+  # the rest of the budget.
   (
-    sleep "$budget"
+    sleep "$budget" &
+    clock=$!
+    trap 'kill -TERM "$clock" 2>/dev/null; exit 143' TERM INT
+    wait "$clock"
     current=$(ps -o lstart= -o args= -p "$worker" 2>/dev/null)
     [ -n "$identity" ] && [ "$identity" = "$current" ] \
       && kill -KILL "$worker" 2>/dev/null
-  ) &
+  ) </dev/null >/dev/null 2>&1 &
   watcher=$!
   wait "$worker"
   status=$?
