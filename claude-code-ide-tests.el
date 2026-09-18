@@ -20035,6 +20035,7 @@ default, so the default must not track the last saved value."
          (claude-code-ide-manager--layouts (make-hash-table :test #'equal))
          (claude-code-ide-manager--items nil)
          (claude-code-ide-manager--current-session-key nil)
+         (claude-code-ide-manager--remote-repositories nil)
          (claude-code-ide-manager-persist-state nil)
          (claude-code-ide-remote-hosts '("host-a" "host-b"))
          (claude-code-ide-cli-path "/missing/omp")
@@ -20187,6 +20188,42 @@ default, so the default must not track the last saved value."
        (claude-code-ide-manager-refresh-items '(:type global))
        (should-not (claude-code-ide-manager--item-by-session-key "saved"))
        (should-not requests)))))
+
+(ert-deftest claude-code-ide-test-remote-attach-records-known-repository ()
+  "Adopting a remote session records its directory for the remote Worktree menu."
+  (claude-code-ide-tests--with-remote-targets
+   (let ((claude-code-ide-terminal-initialization-delay 0))
+     (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+               ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
+               ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata) #'ignore)
+               ((symbol-function 'claude-code-ide--install-terminal-resize-observer) #'ignore)
+               ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                (lambda (name &rest _)
+                  (let* ((buffer (generate-new-buffer name))
+                         (process (make-pipe-process
+                                   :name "cci-record-client" :buffer buffer
+                                   :noquery t :sentinel #'ignore)))
+                    (with-current-buffer buffer
+                      (setq-local major-mode 'ghostel-mode))
+                    (push buffer buffers)
+                    (push process clients)
+                    (cons buffer process)))))
+       (should (claude-code-ide--attach-zmx-entry
+                '(:host "host-a" :name "v12") "/srv/v12x/" "/missing/omp"))
+       ;; A local adoption names no host, so it records nothing.
+       (should (claude-code-ide--attach-zmx-entry
+                '(:name "local") (make-temp-file "cci-local-" t) "/missing/omp"))
+       (should (equal claude-code-ide-manager--remote-repositories
+                      '(("host-a" "/srv/v12x/"))))
+       ;; The reader behind the remote Worktree menu offers that directory.
+       (let (collection)
+         (cl-letf (((symbol-function 'completing-read)
+                    (lambda (_prompt candidates &rest _)
+                      (setq collection candidates)
+                      (car candidates))))
+           (should (equal (claude-code-ide-manager--read-remote-repository "host-a")
+                          "/srv/v12x/"))
+           (should (equal collection '("/srv/v12x/")))))))))
 
 (ert-deftest claude-code-ide-test-remote-failed-attach-retains-and-reattaches-same-id ()
   "Failed attachment retains one target and explicit reattach preserves it."

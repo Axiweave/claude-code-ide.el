@@ -2269,6 +2269,8 @@ Session ID when reattaching a remembered item.  Deduplicates by
 instead of opening a second client, and an otherwise-unspecified
 SESSION-ID falls back to a remembered target's own Session ID so a
 fresh attach reuses its identity rather than creating a duplicate row.
+A remote session's host directory is recorded as a known repository, so
+the remote Worktree menu can offer it later.
 Return the new or existing session, or nil when creation returns nil
 or another request already owns this target.  INTENT-VALID optionally
 guards a feature-owned attachment before terminal creation."
@@ -2281,20 +2283,31 @@ guards a feature-owned attachment before terminal creation."
                          (and host
                               (claude-code-ide--remembered-target-session-id host zmx-name))))
          (pending (and host session-id
-                       (claude-code-ide--remote-target-pending-reason session-id))))
-    (cond
-     (live live)
-     (pending
-      (claude-code-ide-log "%s on %s: %s already in progress" zmx-name host pending)
-      nil)
-     (t
-      (let ((claude-code-ide-cli-path cli-path)
-            (claude-code-ide--suppress-initial-display t))
-        (if host
-            (claude-code-ide--create-session
-             directory nil nil zmx-name host session-id intent-valid)
-          (claude-code-ide--create-session (file-name-as-directory directory)
-                                           nil nil zmx-name)))))))
+                       (claude-code-ide--remote-target-pending-reason session-id)))
+         (session
+          (cond
+           (live live)
+           (pending
+            (claude-code-ide-log "%s on %s: %s already in progress"
+                                 zmx-name host pending)
+            nil)
+           (t
+            (let ((claude-code-ide-cli-path cli-path)
+                  (claude-code-ide--suppress-initial-display t))
+              (if host
+                  (claude-code-ide--create-session
+                   directory nil nil zmx-name host session-id intent-valid)
+                (claude-code-ide--create-session (file-name-as-directory directory)
+                                                 nil nil zmx-name)))))))
+    ;; Adoption is where a session started outside Emacs first reveals its
+    ;; host directory, so remember it here.  The remote Worktree menu then
+    ;; offers that directory as a known repository.
+    (when (and session
+               host
+               (member host claude-code-ide-remote-hosts)
+               (claude-code-ide-zmx--valid-directory-p directory))
+      (claude-code-ide-manager--record-remote-repository host directory))
+    session))
 
 (defun claude-code-ide--attach-zmx-entries (entries)
   "Adopt every zmx entry in ENTRIES without prompting.
