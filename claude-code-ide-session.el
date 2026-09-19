@@ -383,6 +383,12 @@ Use paste input when PASTE is non-nil."
 (defvar claude-code-ide-session--editor-request nil
   "Accepted editor request (REQUEST-ID . SESSION-BUFFER) awaiting its answer.")
 
+(defvar claude-code-ide-session--editor-window nil
+  "Session buffer and window that last received an editor key, as a cons.
+The prompt of that Session opens in that window, so a binding that
+selects another window first opens the prompt there.  A request from
+another Session keeps its own window.")
+
 (defun claude-code-ide-session--editor-nonce ()
   "Return this client's editor nonce, creating it once."
   (or claude-code-ide-session--editor-nonce
@@ -405,16 +411,19 @@ Use paste input when PASTE is non-nil."
 (defun claude-code-ide-session-send-control-g ()
   "Send C-g to the terminal in the current Session buffer.
 In an Oh My Pi Session the key carries this client's editor nonce, so
-a prompt buffer the Agent opens lands in this Emacs.  The key goes as
-the kitty CSI-u sequence: zmx forwards a non-leader client's write only
-when it holds a printable, CR, or a CSI key, and a raw BEL is neither.
-The Agent accepts CSI-u ctrl+g in legacy mode too."
+a prompt buffer the Agent opens lands in this Emacs, in the window this
+key was pressed in.  The key goes as the kitty CSI-u sequence: zmx
+forwards a non-leader client's write only when it holds a printable,
+CR, or a CSI key, and a raw BEL is neither.  The Agent accepts CSI-u
+ctrl+g in legacy mode too."
   (interactive)
   (claude-code-ide-session--ensure-session-buffer)
   (if (eq (claude-code-ide--current-cli-type) 'omp)
       (progn
         (setq quit-flag nil)
         (deactivate-mark)
+        (setq claude-code-ide-session--editor-window
+              (cons (current-buffer) (selected-window)))
         (claude-code-ide-session-send-string
          (concat "\e_pi:editor-open;" (claude-code-ide-session--editor-nonce)
                  "\e\\\e[103;5u")))
@@ -424,7 +433,8 @@ The Agent accepts CSI-u ctrl+g in legacy mode too."
 (defun claude-code-ide-session-send-control-g-marked ()
   "Send C-g through `claude-code-ide-session-send-control-g'.
 Fall through to the shadowed binding outside terminal-input mode or
-outside an Oh My Pi Session."
+outside an Oh My Pi Session.  The shadowed binding receives the prefix
+argument, so a binding that acts on it still does."
   (interactive)
   (let ((binding (claude-code-ide-session--shadowed-binding (kbd "C-g"))))
     (if (claude-code-ide-session--editor-handoff-p binding)
@@ -434,12 +444,15 @@ outside an Oh My Pi Session."
 (defun claude-code-ide-session-send-return-marked ()
   "Send Return to the terminal, marked with this client's editor nonce.
 Fall through to the shadowed binding outside terminal-input mode or
-outside an Oh My Pi Session."
+outside an Oh My Pi Session.  Like C-g, the key records its window for
+the prompt buffer the Agent may open in answer."
   (interactive)
   (let ((binding (claude-code-ide-session--shadowed-binding (kbd "RET"))))
     (if (claude-code-ide-session--editor-handoff-p binding)
         (progn
           (ghostel--on-user-input)
+          (setq claude-code-ide-session--editor-window
+                (cons (current-buffer) (selected-window)))
           ;; ponytail: raw default \r; Kitty keyboard mode would need ghostel--send-encoded.
           (claude-code-ide-session-send-string
            (concat "\e_pi:editor-submit;" (claude-code-ide-session--editor-nonce)
@@ -464,6 +477,19 @@ outside an Oh My Pi Session."
   "Answer the accepted editor request with `cancel'."
   (claude-code-ide-session--editor-answer "cancel"))
 
+(defun claude-code-ide-session--editor-target-window (request)
+  "Return the window REQUEST should open its prompt in.
+That is the window that received its editor key, when that key belongs
+to REQUEST's Session and the window is still alive.  Otherwise use the
+Session's own window, so a slow open cannot take over a window the user
+selected meanwhile."
+  (let* ((session (cdr request))
+         (record claude-code-ide-session--editor-window)
+         (window (and (eq (car-safe record) session) (cdr record))))
+    (if (window-live-p window)
+        window
+      (get-buffer-window session))))
+
 (defun claude-code-ide-session--editor-visit (buffer)
   "Show BUFFER as the prompt buffer for the accepted editor request.
 On any error, answer `cancel', kill BUFFER, and re-signal."
@@ -475,11 +501,11 @@ On any error, answer `cancel', kill BUFFER, and re-signal."
                     #'claude-code-ide-session--editor-done nil t)
           (add-hook 'with-editor-post-cancel-hook
                     #'claude-code-ide-session--editor-cancel nil t))
-        ;; The open may be slow (remote RPC).  Land in the Session's window,
-        ;; not in whatever window the user selected meanwhile, so a visible
-        ;; companion (Magit) is never replaced behind the manager's back.
-        (when-let* ((window (get-buffer-window
-                             (cdr claude-code-ide-session--editor-request))))
+        ;; Replace the buffer of the window the key was pressed in.  Killing
+        ;; the prompt restores that window's previous buffer, and the Session
+        ;; keeps its own window.
+        (when-let* ((window (claude-code-ide-session--editor-target-window
+                             claude-code-ide-session--editor-request)))
           (select-window window))
         (switch-to-buffer buffer))
     ((error quit)

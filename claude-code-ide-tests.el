@@ -15681,6 +15681,7 @@ are stubbed."
   `(let ((claude-code-ide-cli-path ,cli)
          (claude-code-ide-session--editor-nonce "n0nce")
          (claude-code-ide-session--editor-request nil)
+         (claude-code-ide-session--editor-window nil)
          (ghostel-map (make-sparse-keymap))
          (,sent nil))
      (define-key ghostel-map (kbd "C-g") #'ghostel-send-C-g)
@@ -15726,6 +15727,37 @@ scrolled-back window keeps its position."
     (claude-code-ide-session-send-control-g-marked)
     (should (equal sent '("\e_pi:editor-open;n0nce\e\\\e[103;5u")))
     (should-not (memq 'on-user-input sent))))
+
+(ert-deftest claude-code-ide-test-session-editor-c-g-records-pressed-window ()
+  "Test that C-g records the window it was pressed in for the prompt.
+A binding that moves to another window first therefore opens the prompt
+there; a plain C-g records the Session's own window."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (save-window-excursion
+      (delete-other-windows)
+      (let ((session-buffer (current-buffer))
+            (session-window (selected-window))
+            (other-window (split-window-right)))
+        (with-current-buffer session-buffer
+          (claude-code-ide-session-send-control-g))
+        (should (equal claude-code-ide-session--editor-window
+                       (cons session-buffer session-window)))
+        (select-window other-window)
+        (with-current-buffer session-buffer
+          (claude-code-ide-session-send-control-g))
+        (should (eq (cdr claude-code-ide-session--editor-window) other-window))
+        (should (eq (car claude-code-ide-session--editor-window) session-buffer))
+        (select-window session-window)
+        (with-current-buffer session-buffer
+          (claude-code-ide-session-send-return-marked))
+        (should (eq (cdr claude-code-ide-session--editor-window) session-window))
+        (should (equal (seq-filter
+                        (lambda (item)
+                          (and (stringp item)
+                               (string-prefix-p "\e_pi:editor-open" item)))
+                        sent)
+                       (make-list 2 "\e_pi:editor-open;n0nce\e\\\e[103;5u")))))))
 
 (ert-deftest claude-code-ide-test-session-editor-return-sends-marker-then-cr ()
   "Test that RET in an Oh My Pi Session runs user-input handling, then the marked CR.
@@ -15968,6 +16000,8 @@ The prompt must not replace that companion buffer."
                 (let ((session-window (selected-window))
                       (companion-window (split-window)))
                   (set-window-buffer companion-window companion)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-send-control-g))
                   (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
                   (select-window companion-window)
                   (funcall (nth 2 opened) (list :status 'completed :buffer prompt))
@@ -15978,6 +16012,120 @@ The prompt must not replace that companion buffer."
                            #'with-editor-kill-buffer-noop t))
             (kill-buffer prompt)
             (kill-buffer companion)))))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-opens-in-pressed-window ()
+  "Test that the prompt replaces the buffer of the window C-g was pressed in.
+The Session window keeps its own buffer, and killing the prompt hands the
+recorded window back to its previous buffer."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n"))
+        (companion (generate-new-buffer "cc-companion")))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil)))
+            (let ((session-buffer (current-buffer)))
+              (save-window-excursion
+                (delete-other-windows)
+                (set-window-buffer (selected-window) session-buffer)
+                (let* ((session-window (selected-window))
+                       (companion-window (split-window-right)))
+                  (select-window companion-window)
+                  (switch-to-buffer companion)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-send-control-g))
+                  (should (eq (cdr claude-code-ide-session--editor-window)
+                              companion-window))
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-editor-request "r11" "n0nce" file))
+                  (let ((prompt (find-buffer-visiting file)))
+                    (should (eq (window-buffer companion-window) prompt))
+                    (should (eq (window-buffer session-window) session-buffer))
+                    (should (eq (selected-window) companion-window))
+                    (with-current-buffer prompt
+                      (with-editor-finish nil)))
+                  (should (equal (car sent) "\e_pi:editor-done;r11\e\\"))
+                  (should-not claude-code-ide-session--editor-request)
+                  (should (eq (window-buffer companion-window) companion)))))))
+      (when-let* ((buffer (find-buffer-visiting file)))
+        (kill-buffer buffer))
+      (when (buffer-live-p companion) (kill-buffer companion))
+      (delete-file file))))
+
+(ert-deftest claude-code-ide-test-session-editor-dead-target-window-falls-back ()
+  "Test that a recorded window that died still gets the prompt in the Session.
+A slow open can outlive the window the key was pressed in."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n")))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil)))
+            (let ((session-buffer (current-buffer)))
+              (save-window-excursion
+                (delete-other-windows)
+                (set-window-buffer (selected-window) session-buffer)
+                (let* ((session-window (selected-window))
+                       (other-window (split-window-right)))
+                  (select-window other-window)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-send-control-g))
+                  (delete-window other-window)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-editor-request "r12" "n0nce" file))
+                  (let ((prompt (find-buffer-visiting file)))
+                    (should (eq (window-buffer session-window) prompt))
+                    (with-current-buffer prompt
+                      (with-editor-finish nil))))))))
+      (when-let* ((buffer (find-buffer-visiting file)))
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(ert-deftest claude-code-ide-test-session-editor-other-session-ignores-recorded-window ()
+  "Test that a request from another Session opens in its own window.
+A recorded window belongs to the Session that took the key, so it must
+not pull another Session's prompt into itself."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n"))
+        (companion (generate-new-buffer "cc-companion")))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil)))
+            (let ((session-buffer (current-buffer))
+                  (other-session (generate-new-buffer "*claude-code[test-other-session]*")))
+              (unwind-protect
+                  (save-window-excursion
+                    (delete-other-windows)
+                    (with-current-buffer other-session
+                      (setq-local major-mode 'ghostel-mode))
+                    (set-window-buffer (selected-window) other-session)
+                    (let* ((other-window (selected-window))
+                           (recorded-window (split-window-right)))
+                      (set-window-buffer recorded-window companion)
+                      (select-window recorded-window)
+                      (with-current-buffer session-buffer
+                        (claude-code-ide-session-send-control-g))
+                      (should (eq (cdr claude-code-ide-session--editor-window)
+                                  recorded-window))
+                      (with-current-buffer other-session
+                        (claude-code-ide-session-editor-request "r13" "n0nce" file))
+                      (should (eq (window-buffer other-window)
+                                  (find-buffer-visiting file)))
+                      (should (eq (window-buffer recorded-window) companion))
+                      (with-current-buffer (find-buffer-visiting file)
+                        (with-editor-finish nil))))
+                (kill-buffer other-session)))))
+      (when-let* ((buffer (find-buffer-visiting file)))
+        (kill-buffer buffer))
+      (when (buffer-live-p companion) (kill-buffer companion))
+      (delete-file file))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-remote-failure-cancels ()
   "Test that a failed remote open answers cancel after the ack."

@@ -842,6 +842,8 @@ The unbound command =claude-code-ide-session-send-control-g= sends C-g through G
 
 For Oh My Pi Sessions, =C-g= and =RET= in terminal-input mode carry a per-Emacs nonce, and =claude-code-ide-session-send-control-g= carries it too.
 The Agent then opens its prompt buffer in the Emacs that pressed the key, even when another Emacs started the Session or attached it over a remote host.
+The prompt buffer opens in the window that received the key, and that window gets its previous buffer back when the prompt is closed.
+A key binding that selects another window first opens the prompt there and keeps the Agent terminal visible.
 This needs an Agent started after the upgrade. Copy mode and line mode keep their own keys, so a line-mode =/todo edit= still uses =$EDITOR=.
 
 *** Session Customization
