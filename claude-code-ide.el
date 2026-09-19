@@ -1116,6 +1116,35 @@ normal remote attachment behavior and retains a disconnected row.
         (apply #'claude-code-ide--cleanup-session-resources session keep-buffer
                (and disposition (list disposition)))))))
 
+(defun claude-code-ide--verify-remembered-remote-target (session-id)
+  "Forget SESSION-ID's disconnected row once its remote target is gone.
+A dropped link and an exited Agent both end the attach process, so the
+exit path keeps a disconnected row and cannot tell them apart on its
+own.  Ask the host once: a listed zmx session keeps the row, a
+confirmed absence removes it.  A failed or slow query keeps the row.
+A live Session again under SESSION-ID, or an in-flight request on the
+same target, cancels the check."
+  (when-let* ((item (claude-code-ide-manager--item-by-session-key session-id))
+              (host (claude-code-ide-manager-item-host item))
+              (name (claude-code-ide-manager-item-zmx-name item))
+              ((not (claude-code-ide--get-session session-id)))
+              ((not (claude-code-ide--remote-target-pending-reason session-id))))
+    (condition-case err
+        (claude-code-ide-zmx--call-remote
+         host '("list" "--short")
+         (lambda (outcome)
+           (when (and (not (claude-code-ide--get-session session-id))
+                      (not (claude-code-ide--remote-target-pending-reason session-id))
+                      (eq t (claude-code-ide-zmx--list-absence-check
+                             host name outcome)))
+             (claude-code-ide-log
+              "Forget %s on %s: its zmx session is gone" name host)
+             (claude-code-ide-manager-session-ended session-id t)))
+         (format "claude-code-ide-remote-verify-%s" session-id))
+      (error
+       (claude-code-ide-log "Keep the row for %s; the check failed: %s"
+                            session-id (error-message-string err))))))
+
 ;;; CLI Detection
 
 (defun claude-code-ide--cli-type-for-command (command)
@@ -1911,10 +1940,19 @@ Both paths skip local Agent builders, MCP startup, and local zmx wrapping."
                     "Remote agent %s on %s exited abnormally (code %s)"
                     zmx-name host (match-string 1 event)))
                  (when (string-match-p "finished\\|exited\\|killed\\|terminated" event)
-                   (claude-code-ide--cleanup-on-exit
-                    session-id nil proc
-                    (and launch-mode (not launch-ready)
-                         'failed-remote-launch)))))
+                   ;; Killing the Session buffer inside cleanup re-enters
+                   ;; this sentinel with the Session already gone, so only
+                   ;; the call that still owns it checks the host.  An
+                   ;; Attach that failed before readiness keeps its row and
+                   ;; its recorded error instead.
+                   (let ((owned (claude-code-ide--get-session session-id)))
+                     (claude-code-ide--cleanup-on-exit
+                      session-id nil proc
+                      (and launch-mode (not launch-ready)
+                           'failed-remote-launch))
+                     (when (and owned launch-ready)
+                       (claude-code-ide--verify-remembered-remote-target
+                        session-id))))))
               (with-current-buffer buffer
                 (add-hook
                  'kill-buffer-hook

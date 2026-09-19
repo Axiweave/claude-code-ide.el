@@ -20509,6 +20509,131 @@ default, so the default must not track the last saved value."
        (should (claude-code-ide-manager--item-by-session-key "other"))
        (should-not requests)))))
 
+(ert-deftest claude-code-ide-test-remote-verified-exit-forgets-row ()
+  "A target the host no longer lists proves the Agent exited, so its row goes."
+  (claude-code-ide-tests--with-remote-targets
+   (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
+   (should (claude-code-ide-manager--item-by-session-key "gone"))
+   (claude-code-ide--verify-remembered-remote-target "gone")
+   (should (= (length requests) 1))
+   (should (equal (caar requests) "host-a"))
+   (should (equal (cadar requests) '("list" "--short")))
+   (reply "")
+   (claude-code-ide-manager-refresh-items '(:type global))
+   (should-not (claude-code-ide-manager--item-by-session-key "gone"))))
+
+(ert-deftest claude-code-ide-test-remote-verified-exit-keeps-listed-target ()
+  "A target the host still lists keeps its disconnected row."
+  (claude-code-ide-tests--with-remote-targets
+   (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
+   (claude-code-ide--verify-remembered-remote-target "kept")
+   (reply "other\nsame\n")
+   (claude-code-ide-manager-refresh-items '(:type global))
+   (let ((item (claude-code-ide-manager--item-by-session-key "kept")))
+     (should item)
+     (should-not (claude-code-ide-manager-item-live-p item)))))
+
+(ert-deftest claude-code-ide-test-remote-verified-exit-keeps-row-on-failed-check ()
+  "A failed or timed-out check never removes a row."
+  (dolist (outcome '((255 nil) (0 t)))
+    (claude-code-ide-tests--with-remote-targets
+     (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
+     (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
+                (lambda (&rest _) (ert-fail "An unconfirmed check removed a row"))))
+       (claude-code-ide--verify-remembered-remote-target "kept")
+       (reply "" (car outcome) (cadr outcome)))
+     (claude-code-ide-manager-refresh-items '(:type global))
+     (should (claude-code-ide-manager--item-by-session-key "kept")))))
+
+(ert-deftest claude-code-ide-test-remote-verified-exit-skips-live-session ()
+  "A live Session under the same id cancels the check before any request."
+  (claude-code-ide-tests--with-remote-targets
+   (add-target "live" "host-a")
+   (claude-code-ide--verify-remembered-remote-target "live")
+   (should-not requests)
+   (should (claude-code-ide--get-session "live"))))
+
+(ert-deftest claude-code-ide-test-remote-verified-exit-keeps-reattached-row ()
+  "A reattach that lands during the check keeps its live row."
+  (claude-code-ide-tests--with-remote-targets
+   (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
+   (claude-code-ide--verify-remembered-remote-target "gone")
+   (add-target "gone" "host-a")
+   (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
+              (lambda (&rest _) (ert-fail "The check removed a reattached row"))))
+     (reply ""))
+   (claude-code-ide-manager-refresh-items '(:type global))
+   (should (claude-code-ide--get-session "gone"))
+   (should (claude-code-ide-manager--item-by-session-key "gone"))))
+
+(ert-deftest claude-code-ide-test-remote-verified-exit-runs-from-the-sentinel ()
+  "An Attach process exit checks the host before the row is kept."
+  (claude-code-ide-tests--with-remote-targets
+   (let ((claude-code-ide-terminal-initialization-delay 0)
+         (claude-code-ide--suppress-initial-display t)
+         (claude-code-ide--session-cli-type 'omp)
+         session process)
+     (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+               ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                (lambda (name _directory _cmd _env)
+                  (let* ((buffer (generate-new-buffer name))
+                         (process (make-pipe-process
+                                   :name "cci-remote-terminal" :buffer buffer
+                                   :noquery t :sentinel #'ignore)))
+                    (with-current-buffer buffer
+                      (setq-local major-mode 'ghostel-mode)
+                      (setq-local ghostel--process process))
+                    (push buffer buffers)
+                    (cons buffer process)))))
+       (setq session (claude-code-ide--create-remote-session
+                      "/tmp/shared/" "same" "host-a" nil)
+             process (claude-code-ide-session-process session))
+       (should (claude-code-ide-manager--item-by-session-key
+                (claude-code-ide-session-id session)))
+       (funcall (process-sentinel process) process "finished\n")
+       (should-not (claude-code-ide--get-session
+                    (claude-code-ide-session-id session)))
+       (should (claude-code-ide-manager--item-by-session-key
+                (claude-code-ide-session-id session)))
+       (should (= (length requests) 1))
+       (should (equal (cadar requests) '("list" "--short")))
+       (reply "")
+       (claude-code-ide-manager-refresh-items '(:type global))
+       (should-not (claude-code-ide-manager--item-by-session-key
+                    (claude-code-ide-session-id session)))))))
+
+(ert-deftest claude-code-ide-test-remote-verified-exit-skips-unready-attach ()
+  "An Attach that dies before readiness keeps its row and contacts no host."
+  (claude-code-ide-tests--with-remote-targets
+   (let ((claude-code-ide-terminal-initialization-delay 0)
+         (claude-code-ide--suppress-initial-display t)
+         (claude-code-ide--session-cli-type 'omp)
+         session-id)
+     (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+               ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                (lambda (name _directory _cmd _env)
+                  (let* ((buffer (generate-new-buffer name))
+                         (process (make-pipe-process
+                                   :name "cci-remote-terminal" :buffer buffer
+                                   :noquery t :sentinel #'ignore)))
+                    (with-current-buffer buffer
+                      (setq-local major-mode 'ghostel-mode)
+                      (setq-local ghostel--process process))
+                    (push buffer buffers)
+                    (cons buffer process))))
+               ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
+                (lambda (session)
+                  (setq session-id (claude-code-ide-session-id session))
+                  ;; The Agent died after the Session was registered but
+                  ;; before attachment finished.
+                  (funcall (process-sentinel (claude-code-ide-session-process session))
+                           (claude-code-ide-session-process session) "finished\n"))))
+       (claude-code-ide--create-remote-session "/tmp/shared/" "same" "host-a" nil)
+       (should session-id)
+       (should-not requests)
+       (claude-code-ide-manager-refresh-items '(:type global))
+       (should (claude-code-ide-manager--item-by-session-key session-id))))))
+
 (ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
   "Failed or timed-out SSH cannot validate a target from partial output."
   (dolist (outcome '((:status 255 :stdout "same\n" :stderr "SSH failed")

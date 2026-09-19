@@ -1031,9 +1031,11 @@ thirty-second deadline, and cancel its process if the user quits."
       (when (process-live-p process)
         (delete-process process)))))
 
-(defun claude-code-ide-zmx--stop-list-check (host name outcome)
+(defun claude-code-ide-zmx--list-absence-check (host name outcome)
   "Return t when NAME is confirmed absent from HOST's short-list OUTCOME.
-Return a failure string describing what went wrong otherwise."
+Return a failure string describing what went wrong otherwise.
+An empty list counts as absent, so a host with no sessions verifies
+an exit as well as one that no longer lists NAME."
   (if (not (claude-code-ide-zmx--remote-request-ok-p outcome))
       (claude-code-ide-zmx--remote-request-failure host "list --short" outcome)
     (condition-case err
@@ -1085,7 +1087,7 @@ can recover that ownership token from either phase alone."
          (phase2-callback
            (list-outcome)
            (condition-case err
-               (let ((check (claude-code-ide-zmx--stop-list-check host name list-outcome)))
+               (let ((check (claude-code-ide-zmx--list-absence-check host name list-outcome)))
                  (if (eq check t)
                      (finish (list :host host :name name :request kill-process :verified t))
                    (unconfirmed check)))
