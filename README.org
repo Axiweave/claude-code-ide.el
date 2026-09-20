@@ -489,6 +489,7 @@ The manager can:
 - Keep one manual order across flat and grouped global views
 - Edit and pin the complete session order for one manager scope
 - Restore per-session window layouts when you switch back
+- Put the sidebar cursor on the current Session when focus enters the sidebar
 
 New manager layouts and explicit resets use =claude-code-ide-manager-layout-preset=.
 Each preset selects the companion type and side. The old separate side preference no longer controls layouts.

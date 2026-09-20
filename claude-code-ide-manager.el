@@ -2241,6 +2241,51 @@ markers, which take precedence over the pin marker."
                      (claude-code-ide-manager--sidebar-window selected-scope)))
           (select-window sidebar-window))))))
 
+(defvar claude-code-ide-manager--focused-window nil
+  "Window the last command finished in.
+`post-command-hook' compares it with the window of the next command,
+which is how entering the sidebar becomes visible.")
+
+(defun claude-code-ide-manager--park-cursor-on-current-session (window)
+  "Park WINDOW's cursor on the Session the frame currently shows.
+Prefer the Session a visible window displays.  Fall back to the Session
+the manager last used when no Session window is visible or the Session
+has no row left, so an exited Session yields to a live one."
+  (let* ((frame (window-frame window))
+         (buffer (window-buffer window))
+         (scope (claude-code-ide-manager--scope-from-buffer buffer))
+         (candidates
+          (list (claude-code-ide-manager--visible-layout-session-key frame)
+                claude-code-ide-manager--current-session-key
+                (claude-code-ide-manager--scope-active-session-key scope))))
+    (with-current-buffer buffer
+      (catch 'parked
+        (dolist (session-key candidates)
+          (when (and session-key
+                     (claude-code-ide-manager--move-point-to-session-key
+                      session-key))
+            (set-window-point window (point))
+            (throw 'parked (point))))))))
+
+(defun claude-code-ide-manager--park-sidebar-cursors ()
+  "Park every visible manager cursor on the Session its frame shows.
+A layout snapshot must not record another Session's row as a sidebar
+cursor, so capture parks the cursors before it reads the window state."
+  (dolist (buffer (claude-code-ide-manager--manager-buffers))
+    (dolist (window (get-buffer-window-list buffer nil t))
+      (claude-code-ide-manager--park-cursor-on-current-session window))))
+
+(defun claude-code-ide-manager--park-cursor-on-focus-entry ()
+  "Park the sidebar cursor on the current Session when focus enters it.
+Run from `post-command-hook'.  Focus marks the Session in use, so a
+sidebar visit must not resume on the row an earlier visit left behind."
+  (let ((window (selected-window)))
+    (unless (eq window claude-code-ide-manager--focused-window)
+      (setq claude-code-ide-manager--focused-window window)
+      (when (and (window-live-p window)
+                 (claude-code-ide-manager--valid-sidebar-window-p window))
+        (claude-code-ide-manager--park-cursor-on-current-session window)))))
+
 (defun claude-code-ide-manager--session-status-snapshot ()
   "Return the current buffer's manager-visible idle/working status."
   (list (bound-and-true-p claude-code-ide-session-idle-enabled)
@@ -2335,7 +2380,11 @@ markers, which take precedence over the pin marker."
   (unless (memq #'claude-code-ide-manager--refresh-on-window-configuration-change
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
-              #'claude-code-ide-manager--refresh-on-window-configuration-change)))
+              #'claude-code-ide-manager--refresh-on-window-configuration-change))
+  (unless (memq #'claude-code-ide-manager--park-cursor-on-focus-entry
+                post-command-hook)
+    (add-hook 'post-command-hook
+              #'claude-code-ide-manager--park-cursor-on-focus-entry)))
 
 (with-eval-after-load 'claude-code-ide-session-idle
   (claude-code-ide-manager--install-idle-refresh-hooks))
@@ -3549,13 +3598,19 @@ With a negative ARG, hide the sidebar."
    arg))
 
 (defun claude-code-ide-manager--move-point-to-session-key (session-key)
-  "Move point to the row for SESSION-KEY in the manager buffer."
+  "Move point to the row for SESSION-KEY in the manager buffer.
+Return the row's position when the buffer holds such a row, else nil."
   (goto-char (point-min))
-  (while (and (not (eobp))
-              (not (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                          session-key)))
-    (forward-line 1))
-  (beginning-of-line))
+  (let (found)
+    (while (and (not (eobp))
+                (not (setq found
+                           (equal
+                            (get-text-property
+                             (point) 'claude-code-ide-manager-session-key)
+                            session-key))))
+      (forward-line 1))
+    (beginning-of-line)
+    (and found (point))))
 
 (defun claude-code-ide-manager--sync-point-to-session-key (scope session-key)
   "Move manager buffer point for SCOPE to SESSION-KEY when the buffer exists."
@@ -4486,7 +4541,12 @@ opens it in remote Magit.  Return the new operation ID."
   (claude-code-ide-manager--move-row-at-point 1))
 
 (defun claude-code-ide-manager--capture-layout (session-key)
-  "Capture current frame layout for SESSION-KEY."
+  "Capture current frame layout for SESSION-KEY.
+The frame snapshot includes the manager sidebars, so park their cursors
+on the Sessions the frame shows first.  Otherwise the snapshot stores
+whichever row the switch left behind, and the next restore lands the
+cursor there."
+  (claude-code-ide-manager--park-sidebar-cursors)
   (let* ((previous (gethash session-key claude-code-ide-manager--layouts))
          (shell (gethash (claude-code-ide-manager--shell-owner-key session-key)
                          claude-code-ide-manager--companion-shells))
