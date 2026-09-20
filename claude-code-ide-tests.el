@@ -9125,33 +9125,6 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
          (dolist (buffer (list agent-a agent-b view-a view-b))
            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
 
-(ert-deftest claude-code-ide-test-manager-layout-preset-restores-manager-selection ()
-  "Ordinary navigation restores the selected manager window when it survives."
-  (claude-code-ide-tests--with-grouped-state
-   (save-window-excursion
-     (let* ((agent-a (generate-new-buffer "*claude-code[focus-a]*"))
-            (agent-b (generate-new-buffer "*claude-code[focus-b]*"))
-            (view (generate-new-buffer "*saved-focus-view*"))
-            (claude-code-ide-manager-layout-preset 'magit-left)
-            (claude-code-ide-manager-status-buffer-function (lambda (_) view)))
-       (unwind-protect
-           (progn
-             (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id (car entry) :directory temporary-file-directory
-                 :buffer (cdr entry) :process (cdr entry) :cli-type 'omp)))
-             (claude-code-ide-manager-reset-layout "a")
-             (let ((sidebar (claude-code-ide-manager--show-sidebar '(:type global))))
-               (select-window sidebar)
-               (let ((saved-buffer (window-buffer sidebar)))
-                 (claude-code-ide-manager-switch-to-session "b")
-                 (claude-code-ide-manager-switch-to-session "a")
-                 (should (eq saved-buffer (window-buffer (selected-window))))
-                 (should (get-buffer-window agent-a)))))
-         (dolist (buffer (list agent-a agent-b view))
-           (when (buffer-live-p buffer) (kill-buffer buffer))))))))
-
 (ert-deftest claude-code-ide-test-manager-layout-preset-old-layout-precedes-shell-default ()
   "An old native layout does not gain a shell from the new default."
   (claude-code-ide-tests--with-grouped-state

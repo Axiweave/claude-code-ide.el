@@ -238,6 +238,7 @@ If a companion cannot open, I must retain access to the Agent and understand the
   An inaccessible directory MUST produce an explanation and leave the Agent usable.
 - **FR-007**: The selected preset MUST apply when the manager builds a new default layout or the user explicitly resets a layout.
   A normal return to a Session MUST retain its saved arrangement and selected window when restoration succeeds.
+  A saved selection that points at the manager sidebar MUST NOT take focus from the Session window (amended 2026-09-20, commit 24b160d).
   Returning to a saved layout with an exited or missing companion shell MUST NOT start a replacement shell automatically.
   The system MUST show the old output when available and explain how to start a replacement with an explicit shell-preset reset.
   The Agent MUST remain usable.
