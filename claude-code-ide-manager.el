@@ -2247,17 +2247,18 @@ markers, which take precedence over the pin marker."
 which is how entering the sidebar becomes visible.")
 
 (defun claude-code-ide-manager--park-cursor-on-current-session (window)
-  "Park WINDOW's cursor on the Session the frame currently shows.
-Prefer the Session a visible window displays.  Fall back to the Session
-the manager last used when no Session window is visible or the Session
-has no row left, so an exited Session yields to a live one."
+  "Park WINDOW's cursor on the Session the sidebar highlights.
+The active Session carries the highlight, so the cursor and the highlight
+agree.  Yield in turn to the Session a visible window displays and to the
+Session the frame last used when a candidate holds no row, so an exited
+Session does not block the move."
   (let* ((frame (window-frame window))
          (buffer (window-buffer window))
          (scope (claude-code-ide-manager--scope-from-buffer buffer))
          (candidates
-          (list (claude-code-ide-manager--visible-layout-session-key frame)
-                claude-code-ide-manager--current-session-key
-                (claude-code-ide-manager--scope-active-session-key scope))))
+          (list (claude-code-ide-manager--scope-active-session-key scope)
+                (claude-code-ide-manager--visible-layout-session-key frame)
+                claude-code-ide-manager--current-session-key)))
     (with-current-buffer buffer
       (catch 'parked
         (dolist (session-key candidates)
@@ -2268,7 +2269,7 @@ has no row left, so an exited Session yields to a live one."
             (throw 'parked (point))))))))
 
 (defun claude-code-ide-manager--park-sidebar-cursors ()
-  "Park every visible manager cursor on the Session its frame shows.
+  "Park every visible manager cursor on its active Session.
 A layout snapshot must not record another Session's row as a sidebar
 cursor, so capture parks the cursors before it reads the window state."
   (dolist (buffer (claude-code-ide-manager--manager-buffers))
@@ -2276,11 +2277,16 @@ cursor, so capture parks the cursors before it reads the window state."
       (claude-code-ide-manager--park-cursor-on-current-session window))))
 
 (defun claude-code-ide-manager--park-cursor-on-focus-entry ()
-  "Park the sidebar cursor on the current Session when focus enters it.
+  "Park the sidebar cursor on the active Session when focus enters it.
 Run from `post-command-hook'.  Focus marks the Session in use, so a
-sidebar visit must not resume on the row an earlier visit left behind."
+sidebar visit must not resume on the row an earlier visit left behind.
+
+A minibuffer window is not an entry.  A command that prompts the user
+selects it and then returns, so counting it would re-park the cursor and
+pull it off the row the user chose."
   (let ((window (selected-window)))
-    (unless (eq window claude-code-ide-manager--focused-window)
+    (unless (or (window-minibuffer-p window)
+                (eq window claude-code-ide-manager--focused-window))
       (setq claude-code-ide-manager--focused-window window)
       (when (and (window-live-p window)
                  (claude-code-ide-manager--valid-sidebar-window-p window))

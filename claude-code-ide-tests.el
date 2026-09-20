@@ -4517,51 +4517,41 @@ store its own row, or every switch back lands on the last target."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest claude-code-ide-test-manager-focus-entry-parks-cursor-on-current-session ()
-  "Entering the sidebar puts the cursor on the Session the frame displays.
-Focus marks the Session in use, so a visit must not resume on the row
-some earlier visit left behind."
+(ert-deftest claude-code-ide-test-manager-focus-entry-parks-cursor-on-active-session ()
+  "Entering the sidebar puts the cursor on the highlighted Session.
+A visit must not resume on the row some earlier visit left behind, even
+when the frame displays another Session."
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
         (process-a (make-pipe-process :name "cc-manager-entry-a" :buffer nil))
         (process-b (make-pipe-process :name "cc-manager-entry-b" :buffer nil))
-        (agent-b (generate-new-buffer "*cc-manager-entry-agent-b*"))
+        (agent-a (generate-new-buffer "*cc-manager-entry-agent-a*"))
         key-a key-b manager-buffer)
     (unwind-protect
         (save-window-excursion
           (setq key-a
                 (claude-code-ide-session-id
-                 (claude-code-ide-tests--put-session "/tmp/entry-a" process-a))
+                 (claude-code-ide-tests--put-session
+                  "/tmp/entry-a" process-a agent-a))
                 key-b
                 (claude-code-ide-session-id
-                 (claude-code-ide-tests--put-session
-                  "/tmp/entry-b" process-b agent-b)))
-          (setq claude-code-ide-manager--items
-                (list (make-claude-code-ide-manager-item
-                       :session-key key-a
-                       :display-name "a"
-                       :secondary-text "/tmp/entry-a"
-                       :order-key 1
-                       :live-p t)
-                      (make-claude-code-ide-manager-item
-                       :session-key key-b
-                       :display-name "b"
-                       :secondary-text "/tmp/entry-b"
-                       :order-key 2
-                       :live-p t)))
+                 (claude-code-ide-tests--put-session "/tmp/entry-b" process-b)))
           (delete-other-windows)
           (let* ((scope '(:type global))
                  (content-window (selected-window))
                  (sidebar-window (claude-code-ide-manager--show-sidebar scope)))
             (setq manager-buffer (window-buffer sidebar-window))
-            (set-window-buffer content-window agent-b)
+            (set-window-buffer content-window agent-a)
             (with-current-buffer manager-buffer
               (claude-code-ide-manager--render scope)
-              ;; A stale cursor from an earlier visit, and a stale stored key.
+              ;; A stale cursor from an earlier visit.
               (claude-code-ide-manager--move-point-to-session-key key-a)
               (set-window-point sidebar-window (point)))
+            ;; The frame displays a, and the sidebar highlights b.
             (setq claude-code-ide-manager--current-session-key key-a)
-            (claude-code-ide-manager--set-scope-active-session-key scope key-a)
+            (claude-code-ide-manager--set-scope-active-session-key scope key-b)
+            ;; A real switch saves this state, and the focus command reloads it.
+            (claude-code-ide-manager--save-state)
             (setq claude-code-ide-manager--focused-window content-window)
             (select-window content-window)
             (call-interactively #'claude-code-ide-manager-focus-global)
@@ -4578,38 +4568,46 @@ some earlier visit left behind."
       (ignore-errors (delete-process process-b))
       (when-let* ((window (get-buffer-window manager-buffer)))
         (delete-window window))
-      (dolist (buffer (list manager-buffer agent-b))
+      (dolist (buffer (list manager-buffer agent-a))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest claude-code-ide-test-manager-focus-entry-ignores-exited-and-hidden ()
-  "Focus entry falls back when no Session window shows the current Session.
-The frame displays no Session, and the stored Session left no row, so
-the sidebar's own active Session is the only candidate left."
+(ert-deftest claude-code-ide-test-manager-focus-entry-yields-past-a-missing-session ()
+  "Focus entry parks on a live Session when the active one holds no row.
+The frame's displayed Session takes over first, and the frame's stored
+key takes over when no Session window is visible at all."
   (claude-code-ide-tests--reset-manager-state)
   (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
-        (process-b (make-pipe-process :name "cc-manager-gone-b" :buffer nil))
-        key-b manager-buffer)
+        (process-b (make-pipe-process :name "cc-manager-yield-b" :buffer nil))
+        (process-c (make-pipe-process :name "cc-manager-yield-c" :buffer nil))
+        (agent-b (generate-new-buffer "*cc-manager-yield-agent-b*"))
+        key-b key-c manager-buffer)
     (unwind-protect
         (save-window-excursion
           (setq key-b
                 (claude-code-ide-session-id
-                 (claude-code-ide-tests--put-session "/tmp/gone-b" process-b)))
+                 (claude-code-ide-tests--put-session
+                  "/tmp/yield-b" process-b agent-b))
+                key-c
+                (claude-code-ide-session-id
+                 (claude-code-ide-tests--put-session "/tmp/yield-c" process-c)))
           (delete-other-windows)
           (let* ((scope '(:type global))
                  (content-window (selected-window))
                  (sidebar-window (claude-code-ide-manager--show-sidebar scope)))
             (setq manager-buffer (window-buffer sidebar-window))
-            (set-window-buffer content-window
-                               (get-buffer-create "*cc-gone-content*"))
+            (set-window-buffer content-window agent-b)
             (with-current-buffer manager-buffer
               (claude-code-ide-manager--render scope)
-              (goto-char (point-min)))
+              (claude-code-ide-manager--move-point-to-session-key key-c)
+              (set-window-point sidebar-window (point)))
+            ;; The active and stored Session both left no row.
+            (setq claude-code-ide-manager--current-session-key "exited-session")
+            (claude-code-ide-manager--set-scope-active-session-key
+             scope "exited-session")
+            (claude-code-ide-manager--save-state)
             (setq claude-code-ide-manager--focused-window content-window)
             (select-window content-window)
-            ;; The frame shows no Session, and this Session left no row.
-            (setq claude-code-ide-manager--current-session-key "exited-session")
-            (claude-code-ide-manager--set-scope-active-session-key scope key-b)
             (select-window sidebar-window)
             (let ((inhibit-message t))
               (run-hooks 'post-command-hook))
@@ -4617,13 +4615,76 @@ the sidebar's own active Session is the only candidate left."
               (goto-char (window-point sidebar-window))
               (should (equal (get-text-property
                               (point) 'claude-code-ide-manager-session-key)
+                             key-b)))
+            ;; No Session window is visible, so the frame's stored key wins.
+            (set-window-buffer content-window
+                               (get-buffer-create "*cc-yield-content*"))
+            (setq claude-code-ide-manager--current-session-key key-c)
+            (setq claude-code-ide-manager--focused-window content-window)
+            (select-window content-window)
+            (select-window sidebar-window)
+            (let ((inhibit-message t))
+              (run-hooks 'post-command-hook))
+            (with-current-buffer manager-buffer
+              (goto-char (window-point sidebar-window))
+              (should (equal (get-text-property
+                              (point) 'claude-code-ide-manager-session-key)
+                             key-c)))))
+      (ignore-errors (delete-process process-b))
+      (ignore-errors (delete-process process-c))
+      (when-let* ((window (get-buffer-window manager-buffer)))
+        (delete-window window))
+      (dolist (buffer (list manager-buffer agent-b
+                            (get-buffer "*cc-yield-content*")))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest claude-code-ide-test-manager-focus-entry-ignores-minibuffer-detour ()
+  "A prompt opened from the sidebar is not a fresh entry.
+A prompting command selects the minibuffer window and then returns.  The
+tracker must not read that as leaving and re-entering, or the cursor
+jumps off the row the user chose."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide--sessions (make-hash-table :test 'equal))
+        (process-a (make-pipe-process :name "cc-manager-prompt-a" :buffer nil))
+        (process-b (make-pipe-process :name "cc-manager-prompt-b" :buffer nil))
+        key-a key-b manager-buffer)
+    (unwind-protect
+        (save-window-excursion
+          (setq key-a
+                (claude-code-ide-session-id
+                 (claude-code-ide-tests--put-session "/tmp/prompt-a" process-a))
+                key-b
+                (claude-code-ide-session-id
+                 (claude-code-ide-tests--put-session "/tmp/prompt-b" process-b)))
+          (delete-other-windows)
+          (let* ((scope '(:type global))
+                 (sidebar-window (claude-code-ide-manager--show-sidebar scope)))
+            (setq manager-buffer (window-buffer sidebar-window))
+            (claude-code-ide-manager--set-scope-active-session-key scope key-a)
+            (with-current-buffer manager-buffer
+              (claude-code-ide-manager--render scope)
+              ;; The user sits in the sidebar with the cursor on b's row.
+              (claude-code-ide-manager--move-point-to-session-key key-b)
+              (set-window-point sidebar-window (point)))
+            (setq claude-code-ide-manager--focused-window sidebar-window)
+            (cl-letf (((symbol-function 'selected-window)
+                       (lambda () (minibuffer-window))))
+              (claude-code-ide-manager--park-cursor-on-focus-entry))
+            (should (eq claude-code-ide-manager--focused-window sidebar-window))
+            (select-window sidebar-window)
+            (claude-code-ide-manager--park-cursor-on-focus-entry)
+            (with-current-buffer manager-buffer
+              (goto-char (window-point sidebar-window))
+              (should (equal (get-text-property
+                              (point) 'claude-code-ide-manager-session-key)
                              key-b)))))
+      (ignore-errors (delete-process process-a))
       (ignore-errors (delete-process process-b))
       (when-let* ((window (get-buffer-window manager-buffer)))
         (delete-window window))
-      (dolist (buffer (list manager-buffer (get-buffer "*cc-gone-content*")))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+      (when (buffer-live-p manager-buffer)
+        (kill-buffer manager-buffer)))))
 
 (ert-deftest claude-code-ide-test-manager-default-window-width ()
   "Test manager sidebar width default is narrow enough for basename rows."
