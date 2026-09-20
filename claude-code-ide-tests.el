@@ -394,6 +394,51 @@ Ensures a clean state before each test that involves process management."
     '(:version 4 :scopes nil :layouts nil))
    (should-not claude-code-ide-manager--remote-repositories)))
 
+(ert-deftest claude-code-ide-test-manager-remote-repository-trailing-slash-dedups ()
+  "One repository is one candidate, whatever its trailing slashes.
+An Agent's own start directory and a picker choice reach the same
+history, so both spellings must converge before the picker offers
+them."
+  (claude-code-ide-tests--with-grouped-state
+   (let ((claude-code-ide-remote-hosts '("alpha")))
+     (claude-code-ide-manager--record-remote-repository "alpha" "/srv/repo/")
+     (should
+      (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
+             '("/srv/repo")))
+     ;; Every trailing slash goes, and one candidate survives.
+     (dolist (spelling '("/srv/repo" "/srv/repo///"))
+       (claude-code-ide-manager--record-remote-repository "alpha" spelling)
+       (should
+        (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
+               '("/srv/repo"))))
+     ;; An all-slash path collapses to the host root, which stays usable.
+     (dolist (case '(("/srv/repo///" "/srv/repo")
+                     ("/" "/")
+                     ("//" "/")))
+       (should (equal (claude-code-ide-manager--repository-path (car case))
+                      (cadr case))))
+     (claude-code-ide-manager--record-remote-repository "alpha" "/")
+     (should
+      (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
+             '("/" "/srv/repo")))
+     ;; Empty metadata stays invalid rather than becoming the root.
+     (should (equal (claude-code-ide-manager--repository-path "") ""))
+     (should-error (claude-code-ide-manager--record-remote-repository "alpha" "")
+                   :type 'user-error)
+     ;; History written before this rule converges on load.
+     (claude-code-ide-manager--restore-state
+      (list :version 4 :scopes nil :layouts nil
+            :remote-repositories '(("alpha" "/srv/repo/" "/srv/repo///"))))
+     (let (candidates)
+       (cl-letf (((symbol-function 'completing-read)
+                  (lambda (_prompt collection &rest _)
+                    (setq candidates collection)
+                    "/srv/repo")))
+         (should
+          (equal (claude-code-ide-manager--read-remote-repository "alpha")
+                 "/srv/repo")))
+       (should (equal candidates '("/srv/repo")))))))
+
 (ert-deftest claude-code-ide-test-manager-remote-repository-picker ()
   "The picker offers host history and accepts a remembered repository."
   (let ((claude-code-ide-manager--remote-repositories
@@ -20362,7 +20407,7 @@ default, so the default must not track the last saved value."
        (should (claude-code-ide--attach-zmx-entry
                 '(:name "local") (make-temp-file "cci-local-" t) "/missing/omp"))
        (should (equal claude-code-ide-manager--remote-repositories
-                      '(("host-a" "/srv/v12x/"))))
+                      '(("host-a" "/srv/v12x"))))
        ;; The reader behind the remote Worktree menu offers that directory.
        (let (collection)
          (cl-letf (((symbol-function 'completing-read)
@@ -20370,8 +20415,8 @@ default, so the default must not track the last saved value."
                       (setq collection candidates)
                       (car candidates))))
            (should (equal (claude-code-ide-manager--read-remote-repository "host-a")
-                          "/srv/v12x/"))
-           (should (equal collection '("/srv/v12x/")))))))))
+                          "/srv/v12x"))
+           (should (equal collection '("/srv/v12x")))))))))
 
 (ert-deftest claude-code-ide-test-remote-failed-attach-retains-and-reattaches-same-id ()
   "Failed attachment retains one target and explicit reattach preserves it."

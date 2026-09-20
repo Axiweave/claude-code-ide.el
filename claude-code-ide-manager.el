@@ -1634,8 +1634,22 @@ under the ESC prefix, so iterate that sub-keymap."
       (puthash (car entry) (cdr entry) table))
     table))
 
+(defun claude-code-ide-manager--repository-path (path)
+  "Return PATH without its trailing slashes.
+One repository reaches this history from an Agent's own start
+directory and from a picker choice, so both shapes must converge.  The
+strip is lexical, and an all-slash PATH collapses to the host root,
+which stays usable.  An empty or non-string PATH is untrusted metadata
+that passes through unchanged, for its caller to reject."
+  (if (and (stringp path) (not (string-empty-p path)))
+      (let ((trimmed (replace-regexp-in-string "/+\\'" "" path)))
+        (if (string-empty-p trimmed) "/" trimmed))
+    path))
+
 (defun claude-code-ide-manager--normalize-remote-repositories (repositories)
-  "Return validated, deduplicated, bounded REPOSITORIES metadata."
+  "Return validated, deduplicated, bounded REPOSITORIES metadata.
+Paths converge on one shape first, so two spellings of one repository
+yield one candidate."
   (let (result)
     (when (proper-list-p repositories)
       (dolist (entry repositories)
@@ -1645,18 +1659,22 @@ under the ESC prefix, so iterate that sub-keymap."
                    (not (assoc (car entry) result)))
           (let (paths)
             (dolist (path (cdr entry))
-              (when (and (< (length paths)
-                            claude-code-ide-manager--remote-repository-limit)
-                         (claude-code-ide-zmx--valid-directory-p path)
-                         (not (member path paths)))
-                (setq paths (append paths (list path)))))
+              (let ((path (claude-code-ide-manager--repository-path path)))
+                (when (and (< (length paths)
+                              claude-code-ide-manager--remote-repository-limit)
+                           (claude-code-ide-zmx--valid-directory-p path)
+                           (not (member path paths)))
+                  (setq paths (append paths (list path))))))
             (when paths
               (push (cons (copy-sequence (car entry)) paths) result))))))
     (nreverse result)))
 
 (defun claude-code-ide-manager--record-remote-repository (host repository)
-  "Record accepted HOST and REPOSITORY as the most recent target."
+  "Record accepted HOST and REPOSITORY as the most recent target.
+REPOSITORY drops its trailing slashes, so one repository stays one
+candidate however the path arrived."
   (claude-code-ide-zmx--validate-host host)
+  (setq repository (claude-code-ide-manager--repository-path repository))
   (unless (claude-code-ide-zmx--valid-directory-p repository)
     (user-error "Host %s requires an absolute repository path" host))
   (let* ((entry (assoc host claude-code-ide-manager--remote-repositories))
