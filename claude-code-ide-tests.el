@@ -13834,15 +13834,54 @@ connected sessions would silently break first-connect replay."
 (defvar claude-code-ide-tests--picker-arguments nil
   "Arguments the configured file picker received in the last test.")
 
+(defvar claude-code-ide-tests--rpc-homes nil
+  "Alist of host to account home directory for the test transport.")
+
+(defun claude-code-ide-tests--rpc-transport (operation &rest args)
+  "Answer OPERATION with ARGS for an /rpc:HOST: name.
+Only `expand-file-name' is supported, which expands a leading tilde
+against the canned home of that host, like the live rpc method."
+  (pcase operation
+    ('expand-file-name
+     (let ((name (car args)))
+       (if (string-match "\\`/rpc:\\([^:/]+\\):\\(.*\\)\\'" name)
+           (let ((host (match-string 1 name))
+                 (path (match-string 2 name))
+                 (home (cdr (assoc (match-string 1 name)
+                                   claude-code-ide-tests--rpc-homes))))
+             (unless home
+               (error "Unknown rpc host %s" host))
+             (concat "/rpc:" host ":"
+                     (if (string-prefix-p "~" path)
+                         ;; HOME has no trailing slash, so the join keeps
+                         ;; the single separator the live transport writes.
+                         (concat (directory-file-name home)
+                                 (string-remove-prefix "~" path))
+                       path)))
+         name)))
+    (_ (error "Unsupported rpc operation %S" operation))))
+
+(defun claude-code-ide-tests--with-rpc-transport (homes function)
+  "Call FUNCTION with a transport that expands tildes for HOMES.
+HOMES is an alist of host to account home directory."
+  (let ((claude-code-ide-tests--rpc-homes homes)
+        (file-name-handler-alist
+         (cons '("\\`/rpc:" . claude-code-ide-tests--rpc-transport)
+               file-name-handler-alist)))
+    (funcall function)))
+
 (defun claude-code-ide-tests--reject-remote-name-dispatch (function)
   "Call FUNCTION, failing when a name primitive receives an RPC name.
-Reference generation must strip the editor prefix by string work,
-never by dispatching an RPC name to its file name handler."
+Reference generation strips the editor prefix by string work, never by
+dispatching an RPC name to its file name handler.  A name that carries
+a tilde is the one exception, because only its transport knows the
+account home of its host."
   (let ((expand (symbol-function 'expand-file-name))
         (relative (symbol-function 'file-relative-name)))
     (cl-letf (((symbol-function 'expand-file-name)
                (lambda (name &optional directory)
-                 (when (string-prefix-p "/rpc:" name)
+                 (when (and (string-prefix-p "/rpc:" name)
+                            (not (string-match-p "~" name)))
                    (ert-fail (format "Expanded a remote name: %S" name)))
                  (funcall expand name directory)))
               ((symbol-function 'file-relative-name)
@@ -13864,7 +13903,7 @@ never by dispatching an RPC name to its file name handler."
            ;; A relative name, as a consult picker returns for a search.
            "packages/main.el"))
         (claude-code-ide-tests--picker-arguments nil)
-        sent-string)
+        sent-string browse-directory)
     (with-temp-buffer
       (let ((target (current-buffer)))
         (puthash "picker-reference"
@@ -13881,24 +13920,24 @@ never by dispatching an RPC name to its file name handler."
                   ((symbol-function 'claude-code-ide--maybe-switch-to-window)
                    #'ignore)
                   ((symbol-function 'read-file-name)
-                   (lambda (&rest _) (ert-fail "The picker ignored the configuration")))
+                   (lambda (_prompt directory &rest _)
+                     (setq browse-directory directory)
+                     ;; A live prompt returns the expanded host-local name.
+                     "/rpc:v12mac:/Users/yufu/packages/main.el"))
                   ((symbol-function 'project-current)
                    (lambda (&rest _) (ert-fail "Remote picker read the local project"))))
-          (dolist (case '((nil "/rpc:v12mac:/Users/yufu/v12x/"
-                           "@packages/main.el ")
-                          ;; `h' always sends an absolute host-local path.
-                          (t "/rpc:v12mac:/Users/yufu/v12x/"
-                             "@/Users/yufu/v12x/packages/main.el ")))
-            (ert-info ((format "Picker seam: %S" case))
-              (pcase-let ((`(,home ,directory ,expected) case))
-                (setq sent-string nil
-                      claude-code-ide-tests--picker-arguments nil)
-                (if home
-                    (claude-code-ide-send-file-from-home)
-                  (claude-code-ide-send-file nil))
-                (should (equal sent-string expected))
-                (should (equal claude-code-ide-tests--picker-arguments
-                               (list directory "v12mac")))))))))))
+          (claude-code-ide-send-file nil)
+          (should (equal sent-string "@packages/main.el "))
+          (should (equal claude-code-ide-tests--picker-arguments
+                         '("/rpc:v12mac:/Users/yufu/v12x/" "v12mac")))
+          ;; `h' browses with `read-file-name', so the picker stays unused.
+          (setq sent-string nil
+                claude-code-ide-tests--picker-arguments nil
+                browse-directory nil)
+          (claude-code-ide-send-file-from-home)
+          (should (equal sent-string "@/Users/yufu/packages/main.el "))
+          (should (equal browse-directory "/rpc:v12mac:~/"))
+          (should-not claude-code-ide-tests--picker-arguments))))))
 
 (ert-deftest claude-code-ide-test-send-file-from-home-remote-target ()
   "A remote Session receives the host-local absolute path without a prefix."
@@ -13934,8 +13973,7 @@ never by dispatching an RPC name to its file name handler."
                 (claude-code-ide-tests--reject-remote-name-dispatch
                  (lambda () (claude-code-ide-send-file-from-home))))
               (should (equal sent-string expected))
-              (should (equal browse-directory
-                             "/rpc:v12mac:/Users/yufu/v12x/")))))))))
+              (should (equal browse-directory "/rpc:v12mac:~/")))))))))
 
 (ert-deftest claude-code-ide-test-send-file-from-home-remote-rejects-local-file ()
   "A remote Session rejects a local pick instead of sending a local path."
@@ -14871,6 +14909,44 @@ inside the target session's directory."
                   (should requested)
                   (should-not sent-string))
               (setq buffer-file-name nil))))))))
+
+(ert-deftest claude-code-ide-test-send-file-from-home-resolves-a-tilde-pick ()
+  "A home pick that keeps the tilde resolves through its transport.
+The prompt can return a name relative to the home directory, and
+`file-name-absolute-p' accepts that name, so the package must ask the
+transport of that host to expand it."
+  (dolist (case '(("/rpc:v12mac:~/Downloads/Notes.pdf"
+                   "@/Users/yufu/Downloads/Notes.pdf ")
+                  ("/rpc:v12mac:/Users/yufu/Downloads/Notes.pdf"
+                   "@/Users/yufu/Downloads/Notes.pdf ")))
+    (ert-info ((format "Home pick: %S" case))
+      (pcase-let ((`(,pick ,expected) case))
+        (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+              (claude-code-ide-remote-hosts '("v12mac"))
+              sent-string)
+          (with-temp-buffer
+            (let ((target (current-buffer)))
+              (puthash "remote-home"
+                       (claude-code-ide-session-create
+                        :id "remote-home" :buffer target
+                        :host "v12mac" :directory "/Users/yufu/v12x")
+                       claude-code-ide--sessions)
+              (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                         (lambda () target))
+                        ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                         (lambda () nil))
+                        ((symbol-function 'claude-code-ide--terminal-send-string)
+                         (lambda (text &optional _paste) (setq sent-string text)))
+                        ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                         #'ignore)
+                        ((symbol-function 'read-file-name)
+                         (lambda (_prompt _directory &rest _) pick)))
+                (claude-code-ide-tests--with-rpc-transport
+                 '(("v12mac" . "/Users/yufu/"))     ; the account home
+                 (lambda ()
+                   (claude-code-ide-tests--reject-remote-name-dispatch
+                    (lambda () (claude-code-ide-send-file-from-home))))))
+              (should (equal sent-string expected)))))))))
 
 (ert-deftest claude-code-ide-test-send-file-remote-target ()
   "A remote target browses its Session directory and drops the prefix.

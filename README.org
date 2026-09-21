@@ -194,7 +194,8 @@ and send a path without the editor's remote connection prefix.
 =f= searches the Session directory on that host, and =h= the account home directory.
 =f= and =F= send a path relative to the Session directory, and =h= an absolute path.
 Set =claude-code-ide-file-reference-picker-function= to a flat search such as =fd=
-through =consult= to pick a file by search instead of by directory.
+through =consult= to pick a file by search for =f= instead of by directory.
+A prefix argument, and =h=, keep the =read-file-name= prompt.
 
 ** Multi-Project Support
 

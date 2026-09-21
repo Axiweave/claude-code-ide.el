@@ -17,6 +17,7 @@ Cases that cover this specification:
 - `claude-code-ide-test-send-file`
 - `claude-code-ide-test-send-project`
 - `claude-code-ide-test-send-file-uses-configured-picker`
+- `claude-code-ide-test-send-file-from-home-resolves-a-tilde-pick`
 
 Helper `claude-code-ide-tests--reject-remote-name-dispatch` fails a test that
 passes an RPC name to `expand-file-name` or `file-relative-name`.
@@ -43,4 +44,5 @@ In a running Emacs with a remote Session:
    `File: /rpc:HOST:/<session-directory>/`.
 4. Pick a file inside the Session directory. The Agent receives a relative path.
 5. Set `claude-code-ide-file-reference-picker-function` to a test function.
-   `f` and `h` both call it with the search directory and the Session host.
+   `f` calls it with the search directory and the Session host.
+   `F` and `h` keep the `read-file-name` prompt.

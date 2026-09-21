@@ -54,7 +54,7 @@ A picker never sends a path that the receiving Agent cannot resolve.
 
 ### Edge Cases
 
-- Reference generation never dispatches an RPC name to a file name handler. The conversion uses string work only.
+- Reference generation converts a host-local path by string work. A picked name that keeps a tilde dispatches to its transport, because only that transport knows the account home of its host.
 - A local target keeps the local home directory for `h`, and the flat project file list for `f`.
 - The remote home is named without a remote call, because the transport expands the trailing tilde.
 - A host without the remote Project module fails before insertion, as in spec 009.
@@ -68,11 +68,12 @@ A picker never sends a path that the receiving Agent cannot resolve.
 - **FR-004**: The `f` and `F` actions MUST relativize the host-local path against the Session directory when the path lies inside it.
 - **FR-005**: The `h` action MUST send the absolute host-local path, inside or outside the Session directory.
 - **FR-006**: A pick from a file context that does not match the target Session MUST produce an explanation and no reference.
-- **FR-007**: Reference generation MUST NOT pass an RPC name to `expand-file-name` or `file-relative-name`.
+- **FR-007**: Reference generation MUST NOT pass an RPC name to `file-relative-name`, and MUST NOT pass an RPC name without a tilde to `expand-file-name`. The conversion strips the editor prefix and relativizes by string work.
 - **FR-008**: A local target MUST keep the current local behavior: the local home directory for `h`, and the flat project file list for `f`.
 - **FR-009**: The transport encoding MUST come from `claude-code-ide-remote-project`, never from the command code.
-- **FR-010**: The `f` and `h` actions MUST read their file through `claude-code-ide-file-reference-picker-function` when it is set.  The function MUST receive the search directory and the Session host, and it MUST return an absolute file name or a name relative to that directory.
+- **FR-010**: The `f` action MUST read its file through `claude-code-ide-file-reference-picker-function` when it is set.  The function MUST receive the search directory and the Session host, and it MUST return an absolute file name or a name relative to that directory.
 - **FR-011**: A name relative to an editor remote directory MUST resolve without a transport call.
+- **FR-012**: `F` and `h` MUST browse with `read-file-name`, so a search picker cannot replace the directory prompt they exist to offer.
 
 ## Key Entities
 
@@ -84,6 +85,6 @@ A picker never sends a path that the receiving Agent cannot resolve.
 
 - **SC-001**: A remote `h` reference contains no `/rpc:` text and starts with `/`.
 - **SC-002**: A remote `f` reference inside the Session directory is relative to that directory.
-- **SC-003**: No test observes an RPC name in `expand-file-name` or `file-relative-name`.
+- **SC-003**: No test observes a tilde-free RPC name in `expand-file-name`, and none observes an RPC name in `file-relative-name`.
 - **SC-004**: All local picker tests keep their current expectations.
-- **SC-005**: A configured picker receives the Session directory and the Session host for both actions.
+- **SC-005**: A configured picker receives the Session directory and the Session host for `f`, and `h` browses with `read-file-name`.
