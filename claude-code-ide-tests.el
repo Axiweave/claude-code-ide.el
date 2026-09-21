@@ -14912,9 +14912,9 @@ inside the target session's directory."
 
 (ert-deftest claude-code-ide-test-send-file-from-home-resolves-a-tilde-pick ()
   "A home pick that keeps the tilde resolves through its transport.
-The prompt can return a name relative to the home directory, and
-`file-name-absolute-p' accepts that name, so the package must ask the
-transport of that host to expand it."
+`abbreviate-file-name' writes an account home with a tilde, and
+`file-name-absolute-p' accepts such a name, so the package must ask
+the RPC client of that host to expand it."
   (dolist (case '(("/rpc:v12mac:~/Downloads/Notes.pdf"
                    "@/Users/yufu/Downloads/Notes.pdf ")
                   ("/rpc:v12mac:/Users/yufu/Downloads/Notes.pdf"
@@ -14942,11 +14942,16 @@ transport of that host to expand it."
                         ((symbol-function 'read-file-name)
                          (lambda (_prompt _directory &rest _) pick)))
                 (claude-code-ide-tests--with-rpc-transport
-                 '(("v12mac" . "/Users/yufu/"))     ; the account home
+                 '(("v12mac" . "/Users/yufu/"))  ; the account home
                  (lambda ()
-                   (claude-code-ide-tests--reject-remote-name-dispatch
-                    (lambda () (claude-code-ide-send-file-from-home))))))
-              (should (equal sent-string expected)))))))))
+                   ;; Batch has no RPC client, so declare it available.
+                   (cl-letf (((symbol-function
+                               'claude-code-ide-remote-project-target-available-p)
+                              (lambda () t)))
+                     (claude-code-ide-tests--reject-remote-name-dispatch
+                      (lambda ()
+                        (claude-code-ide-send-file-from-home))))))
+                (should (equal sent-string expected))))))))))
 
 (ert-deftest claude-code-ide-test-send-file-remote-target ()
   "A remote target browses its Session directory and drops the prefix.
