@@ -13831,6 +13831,9 @@ connected sessions would silently break first-connect replay."
         (should (equal sent-string
                        (concat "@" home "docs/notes.txt" " ")))))))
 
+(defvar claude-code-ide-tests--picker-arguments nil
+  "Arguments the configured file picker received in the last test.")
+
 (defun claude-code-ide-tests--reject-remote-name-dispatch (function)
   "Call FUNCTION, failing when a name primitive receives an RPC name.
 Reference generation must strip the editor prefix by string work,
@@ -13850,6 +13853,52 @@ never by dispatching an RPC name to its file name handler."
                                      file directory)))
                  (funcall relative file directory))))
       (funcall function))))
+
+(ert-deftest claude-code-ide-test-send-file-uses-configured-picker ()
+  "A configured picker searches the target directory and names its host."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts '("v12mac"))
+        (claude-code-ide-file-reference-picker-function
+         (lambda (directory host)
+           (setq claude-code-ide-tests--picker-arguments (list directory host))
+           ;; A relative name, as a consult picker returns for a search.
+           "packages/main.el"))
+        (claude-code-ide-tests--picker-arguments nil)
+        sent-string)
+    (with-temp-buffer
+      (let ((target (current-buffer)))
+        (puthash "picker-reference"
+                 (claude-code-ide-session-create
+                  :id "picker-reference" :buffer target
+                  :host "v12mac" :directory "/Users/yufu/v12x")
+                 claude-code-ide--sessions)
+        (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                   (lambda () target))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (text &optional _paste) (setq sent-string text)))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                   #'ignore)
+                  ((symbol-function 'read-file-name)
+                   (lambda (&rest _) (ert-fail "The picker ignored the configuration")))
+                  ((symbol-function 'project-current)
+                   (lambda (&rest _) (ert-fail "Remote picker read the local project"))))
+          (dolist (case '((nil "/rpc:v12mac:/Users/yufu/v12x/"
+                           "@packages/main.el ")
+                          ;; `h' always sends an absolute host-local path.
+                          (t "/rpc:v12mac:/Users/yufu/v12x/"
+                             "@/Users/yufu/v12x/packages/main.el ")))
+            (ert-info ((format "Picker seam: %S" case))
+              (pcase-let ((`(,home ,directory ,expected) case))
+                (setq sent-string nil
+                      claude-code-ide-tests--picker-arguments nil)
+                (if home
+                    (claude-code-ide-send-file-from-home)
+                  (claude-code-ide-send-file nil))
+                (should (equal sent-string expected))
+                (should (equal claude-code-ide-tests--picker-arguments
+                               (list directory "v12mac")))))))))))
 
 (ert-deftest claude-code-ide-test-send-file-from-home-remote-target ()
   "A remote Session receives the host-local absolute path without a prefix."
@@ -13885,7 +13934,8 @@ never by dispatching an RPC name to its file name handler."
                 (claude-code-ide-tests--reject-remote-name-dispatch
                  (lambda () (claude-code-ide-send-file-from-home))))
               (should (equal sent-string expected))
-              (should (equal browse-directory "/rpc:v12mac:~/")))))))))
+              (should (equal browse-directory
+                             "/rpc:v12mac:/Users/yufu/v12x/")))))))))
 
 (ert-deftest claude-code-ide-test-send-file-from-home-remote-rejects-local-file ()
   "A remote Session rejects a local pick instead of sending a local path."

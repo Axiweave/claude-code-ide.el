@@ -191,6 +191,10 @@ The action does not resolve SSH aliases or establish new connections.
 Local behavior and the separate =#= action remain unchanged.
 The =f=, =F=, and =h= actions browse the Session host through the editor transport
 and send a path without the editor's remote connection prefix.
+=f= searches the Session directory on that host, and =h= the account home directory.
+=f= and =F= send a path relative to the Session directory, and =h= an absolute path.
+Set =claude-code-ide-file-reference-picker-function= to a flat search such as =fd=
+through =consult= to pick a file by search instead of by directory.
 
 ** Multi-Project Support
 

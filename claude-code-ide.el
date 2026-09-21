@@ -411,6 +411,20 @@ Returns nil if no session buffer currently has a visible window."
              claude-code-ide--sessions)
     found))
 
+(defcustom claude-code-ide-file-reference-picker-function nil
+  "Function that reads a file name to reference for the target Session.
+The function is called with SEARCH-DIRECTORY, the directory to search,
+and HOST, the Session host or nil for a local Session.  It returns an
+absolute file name, or a file name relative to SEARCH-DIRECTORY, which
+the package resolves without a transport call.
+
+A nil value uses the built-in picker: `read-file-name' from
+SEARCH-DIRECTORY, or the project file list for a local Session without
+a prefix argument.  Set this to a flat search such as `fd' through
+`consult' to pick a remote file by search instead of by directory."
+  :type '(choice (const :tag "Built-in picker" nil) function)
+  :group 'claude-code-ide)
+
 (defun claude-code-ide--reference-target-buffer ()
   "Return the session buffer a file reference would be sent to, or nil.
 Prefers any session buffer visible on this frame, then falls back
@@ -421,8 +435,28 @@ to the project-associated session."
 (defun claude-code-ide--absolute-name (name directory)
   "Return NAME as an absolute file name, resolved against DIRECTORY.
 A NAME that is already absolute is returned unchanged, so an editor
-remote name never reaches its file name handler."
-  (if (file-name-absolute-p name) name (expand-file-name name directory)))
+remote name never reaches its file name handler.  An editor remote
+DIRECTORY joins NAME by string, for the same reason."
+  (cond
+   ((file-name-absolute-p name) name)
+   ((string-prefix-p "/rpc:" directory)
+    (concat directory (unless (string-suffix-p "/" directory) "/") name))
+   (t (expand-file-name name directory))))
+
+(defun claude-code-ide--pick-file-name (directory host &optional from-directory)
+  "Return a file name to reference, searched in DIRECTORY on HOST.
+HOST non-nil names that machine in the prompt.  FROM-DIRECTORY non-nil
+forces the built-in `read-file-name' picker.  Otherwise
+`claude-code-ide-file-reference-picker-function' picks the file when
+it is set.  A pick that names no absolute file resolves against
+DIRECTORY."
+  (claude-code-ide--absolute-name
+   (if (and (null from-directory)
+            claude-code-ide-file-reference-picker-function)
+       (funcall claude-code-ide-file-reference-picker-function directory host)
+     (read-file-name (if host (format "File (%s): " host) "File: ")
+                     directory))
+   directory))
 
 (defun claude-code-ide--reference-remote-session (target-buffer)
   "Return the remote Session that TARGET-BUFFER references, or nil.
@@ -473,13 +507,27 @@ path and never relativize it against the Session directory."
 (defun claude-code-ide--reference-browse-directory (target-buffer)
   "Return the directory a home reference browses for TARGET-BUFFER.
 A remote Session browses the home directory of its account on the
-Session host through the editor's transport, so remote completion
-works.  Every other target browses the local home directory."
+Session host through the editor's transport, expanded to an absolute
+directory.  A picked name then joins that directory by string, so the
+transport never expands a relative name.  When the transport cannot
+expand the home, the Session directory serves as the browse root.
+Every other target browses the local home directory."
   (if-let* ((session (claude-code-ide--reference-remote-session target-buffer)))
       (progn
         (require 'claude-code-ide-remote-project)
-        (claude-code-ide-remote-project-rpc-home
-         (claude-code-ide-session-host session)))
+        (let* ((host (claude-code-ide-session-host session))
+               (directory (claude-code-ide-session-directory session))
+               (home (ignore-errors
+                       (expand-file-name
+                        (claude-code-ide-remote-project-rpc-home host)))))
+          (cond
+           ((and (claude-code-ide-zmx--valid-directory-p home)
+                 (string-prefix-p "/rpc:" home)
+                 (not (string-match-p "~" home)))
+            home)
+           ((claude-code-ide-zmx--valid-directory-p directory)
+            (claude-code-ide-remote-project-rpc-directory host directory))
+           (t (claude-code-ide-remote-project-rpc-home host)))))
     (expand-file-name "~/")))
 
 (defun claude-code-ide--send-reference-body (reference-body)
@@ -3194,11 +3242,13 @@ recent visible file-visiting buffer on the current frame."
 ;;;###autoload
 (defun claude-code-ide-send-file (arg)
   "Send a project file path with @ prefix to the Claude Code terminal.
-With prefix ARG, use `read-file-name' from the project root instead of
+With prefix ARG, use `read-file-name' from the Session directory or the
+project root instead of the configured search picker, and instead of
 `completing-read' over project files.
-A remote Session reads files on that Session's host through the
-editor's transport, because a project file list cannot enumerate a
-remote host.  The reference then omits the editor's connection prefix."
+A remote Session searches on that Session's host through the editor's
+transport, because a project file list costs a remote process per
+prompt and keeps no cache.  The reference then omits the editor's
+connection prefix."
   (interactive "P")
   (let* ((target-buffer (claude-code-ide--reference-target-buffer))
          (session (claude-code-ide--reference-remote-session target-buffer))
@@ -3210,10 +3260,14 @@ remote host.  The reference then omits the editor's connection prefix."
                       (claude-code-ide-session-host session)
                       (claude-code-ide-session-directory session)))
                  (project-root project)))
-         (file (if (or arg session)
-                   (read-file-name "File: " root)
-                 (claude-code-ide--absolute-name
-                  (completing-read "File: " (project-files project)) root)))
+         (host (and session (claude-code-ide-session-host session)))
+         (file (cond
+                (arg (claude-code-ide--pick-file-name root host t))
+                ((or claude-code-ide-file-reference-picker-function session)
+                 (claude-code-ide--pick-file-name root host))
+                (t (claude-code-ide--absolute-name
+                    (completing-read "File: " (project-files project))
+                    root))))
          (reference-body
           (concat "@" (claude-code-ide--file-reference-path
                        file target-buffer t))))
@@ -3237,12 +3291,14 @@ which relativizes the path to the session directory when possible.
 A remote Session browses the home directory of its account on that
 Session's host and receives the host-local absolute path without the
 editor's remote connection prefix.  A file from another file context
-is rejected."
+is rejected.  The configured search picker reads the file when it is
+set, and `read-file-name' reads it otherwise."
   (interactive)
   (let* ((target-buffer (claude-code-ide--reference-target-buffer))
+         (session (claude-code-ide--reference-remote-session target-buffer))
          (directory (claude-code-ide--reference-browse-directory target-buffer))
-         (file (claude-code-ide--absolute-name
-                (read-file-name "File: " directory) directory))
+         (file (claude-code-ide--pick-file-name
+                directory (and session (claude-code-ide-session-host session))))
          (reference-body
           (concat "@" (claude-code-ide--file-reference-path
                        file target-buffer t t))))

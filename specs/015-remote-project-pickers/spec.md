@@ -58,6 +58,7 @@ A picker never sends a path that the receiving Agent cannot resolve.
 - A local target keeps the local home directory for `h`, and the flat project file list for `f`.
 - The remote home is named without a remote call, because the transport expands the trailing tilde.
 - A host without the remote Project module fails before insertion, as in spec 009.
+- A configured picker decides the search tool, the prompt, and the fallback when the host cannot run that tool.
 
 ## Requirements *(mandatory)*
 
@@ -70,6 +71,8 @@ A picker never sends a path that the receiving Agent cannot resolve.
 - **FR-007**: Reference generation MUST NOT pass an RPC name to `expand-file-name` or `file-relative-name`.
 - **FR-008**: A local target MUST keep the current local behavior: the local home directory for `h`, and the flat project file list for `f`.
 - **FR-009**: The transport encoding MUST come from `claude-code-ide-remote-project`, never from the command code.
+- **FR-010**: The `f` and `h` actions MUST read their file through `claude-code-ide-file-reference-picker-function` when it is set.  The function MUST receive the search directory and the Session host, and it MUST return an absolute file name or a name relative to that directory.
+- **FR-011**: A name relative to an editor remote directory MUST resolve without a transport call.
 
 ## Key Entities
 
@@ -83,3 +86,4 @@ A picker never sends a path that the receiving Agent cannot resolve.
 - **SC-002**: A remote `f` reference inside the Session directory is relative to that directory.
 - **SC-003**: No test observes an RPC name in `expand-file-name` or `file-relative-name`.
 - **SC-004**: All local picker tests keep their current expectations.
+- **SC-005**: A configured picker receives the Session directory and the Session host for both actions.
