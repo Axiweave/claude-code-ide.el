@@ -13831,6 +13831,114 @@ connected sessions would silently break first-connect replay."
         (should (equal sent-string
                        (concat "@" home "docs/notes.txt" " ")))))))
 
+(defun claude-code-ide-tests--reject-remote-name-dispatch (function)
+  "Call FUNCTION, failing when a name primitive receives an RPC name.
+Reference generation must strip the editor prefix by string work,
+never by dispatching an RPC name to its file name handler."
+  (let ((expand (symbol-function 'expand-file-name))
+        (relative (symbol-function 'file-relative-name)))
+    (cl-letf (((symbol-function 'expand-file-name)
+               (lambda (name &optional directory)
+                 (when (string-prefix-p "/rpc:" name)
+                   (ert-fail (format "Expanded a remote name: %S" name)))
+                 (funcall expand name directory)))
+              ((symbol-function 'file-relative-name)
+               (lambda (file &optional directory)
+                 (when (or (string-prefix-p "/rpc:" file)
+                           (string-prefix-p "/rpc:" (or directory "")))
+                   (ert-fail (format "Relativized a remote name: %S %S"
+                                     file directory)))
+                 (funcall relative file directory))))
+      (funcall function))))
+
+(ert-deftest claude-code-ide-test-send-file-from-home-remote-target ()
+  "A remote Session receives the host-local absolute path without a prefix."
+  (dolist (case '(("/rpc:v12mac:/Users/yufu/notes.txt"
+                   "@/Users/yufu/notes.txt ")
+                  ("/rpc:v12mac:/Users/yufu/v12x/packages/main.el"
+                   "@/Users/yufu/v12x/packages/main.el ")))
+    (ert-info ((format "Remote home reference: %S" case))
+      (pcase-let ((`(,pick ,expected) case))
+        (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+              (claude-code-ide-remote-hosts '("v12mac"))
+              (file-name-handler-alist nil)
+              sent-string browse-directory)
+          (with-temp-buffer
+            (let ((target (current-buffer)))
+              (puthash "remote-home"
+                       (claude-code-ide-session-create
+                        :id "remote-home" :buffer target
+                        :host "v12mac" :directory "/Users/yufu/v12x")
+                       claude-code-ide--sessions)
+              (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                         (lambda () target))
+                        ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                         (lambda () nil))
+                        ((symbol-function 'claude-code-ide--terminal-send-string)
+                         (lambda (text &optional _paste) (setq sent-string text)))
+                        ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                         #'ignore)
+                        ((symbol-function 'read-file-name)
+                         (lambda (_prompt dir &rest _)
+                           (setq browse-directory dir)
+                           pick)))
+                (claude-code-ide-tests--reject-remote-name-dispatch
+                 (lambda () (claude-code-ide-send-file-from-home))))
+              (should (equal sent-string expected))
+              (should (equal browse-directory "/rpc:v12mac:/Users/yufu/v12x/")))))))))
+
+(ert-deftest claude-code-ide-test-send-file-from-home-remote-rejects-local-file ()
+  "A remote Session rejects a local pick instead of sending a local path."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts '("v12mac"))
+        sent-string)
+    (with-temp-buffer
+      (let ((target (current-buffer)))
+        (puthash "remote-home"
+                 (claude-code-ide-session-create
+                  :id "remote-home" :buffer target
+                  :host "v12mac" :directory "/Users/yufu/v12x")
+                 claude-code-ide--sessions)
+        (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                   (lambda () target))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (text &optional _paste) (setq sent-string text)))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                   #'ignore)
+                  ((symbol-function 'read-file-name)
+                   (lambda (_prompt _dir &rest _) "/Users/yufu/notes.txt")))
+          (should-error (claude-code-ide-send-file-from-home) :type 'user-error)
+          (should-not sent-string))))))
+
+(ert-deftest claude-code-ide-test-send-file-from-home-keeps-absolute-path ()
+  "A local Session receives the absolute path even inside its own directory."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (home (expand-file-name "~/"))
+        sent-string browse-directory)
+    (with-temp-buffer
+      (let ((target (current-buffer)))
+        (puthash "local-home"
+                 (claude-code-ide-session-create
+                  :id "local-home" :buffer target :directory "/work")
+                 claude-code-ide--sessions)
+        (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                   (lambda () target))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (text &optional _paste) (setq sent-string text)))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                   #'ignore)
+                  ((symbol-function 'read-file-name)
+                   (lambda (_prompt dir &rest _)
+                     (setq browse-directory dir)
+                     "/work/src/main.el")))
+          (claude-code-ide-send-file-from-home)
+          (should (equal sent-string "@/work/src/main.el "))
+          (should (equal browse-directory home)))))))
+
 (ert-deftest claude-code-ide-test-send-project ()
   "Send-project sends the picked project root as an absolute @ reference."
   (let ((sent-string nil)
