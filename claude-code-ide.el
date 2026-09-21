@@ -437,10 +437,11 @@ to the project-associated session."
 
 (defun claude-code-ide--reference-tilde-name-p (name)
   "Return non-nil when NAME needs its transport to resolve a tilde.
-NAME is an editor remote name that carries a tilde, such as the name
-`abbreviate-file-name' writes for an account home.  Only the RPC client
-knows that home, so the name expands only when that client is
-available."
+NAME is an editor remote name that carries a tilde.  A live prompt
+produces one: `abbreviate-file-name' writes the account home that way,
+`substitute-in-file-name' leaves it unchanged, and `read-file-name'
+returns the name it read.  Only the RPC client knows that home, so the
+name expands only when that client is available."
   (and (string-prefix-p "/rpc:" name)
        (string-match-p "~" name)
        (require 'claude-code-ide-remote-project nil t)
