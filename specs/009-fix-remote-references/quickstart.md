@@ -52,7 +52,7 @@ New regression cases:
 - `claude-code-ide-test-send-current-file-remote-rejects-context`
 - `claude-code-ide-test-send-current-file-remote-containment`
 - `claude-code-ide-test-send-current-file-without-remote-module`
-- `claude-code-ide-test-send-file-preserves-remote-target-policy`
+- `claude-code-ide-test-send-file-preserves-remote-target-policy` (superseded by spec 015; replaced by `claude-code-ide-test-send-file-remote-target`)
 
 Expected result: zero unexpected results, including the reported reference, context rejection, directory containment, and existing local command behavior.
 

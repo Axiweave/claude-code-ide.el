@@ -820,6 +820,12 @@ Callers outside this package must use this name instead of building
 the transport encoding themselves."
   (claude-code-ide-remote-project--rpc-directory host directory))
 
+(defun claude-code-ide-remote-project-rpc-home (host)
+  "Return an RPC file name for HOST's account home directory.
+The transport expands the trailing tilde against the remote account,
+so no remote call is needed to name the directory."
+  (claude-code-ide-remote-project--as-directory (format "/rpc:%s:~" host)))
+
 (defun claude-code-ide-remote-project--key-directory (key)
   "Return the exact directory KEY's registered buffer should show.
 Only the default Magit provider normalizes to the repository root,

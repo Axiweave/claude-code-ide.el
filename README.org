@@ -188,7 +188,9 @@ A file outside that directory uses its absolute host-local path without the RPC 
 The RPC destination must exactly match the Session's configured destination.
 Different destinations, unsupported remote routes, and missing Session context produce an error before insertion.
 The action does not resolve SSH aliases or establish new connections.
-Local behavior and the separate =#=, =f=, =F=, and =h= actions remain unchanged.
+Local behavior and the separate =#= action remain unchanged.
+The =f=, =F=, and =h= actions browse the Session host through the editor transport
+and send a path without the editor's remote connection prefix.
 
 ** Multi-Project Support
 

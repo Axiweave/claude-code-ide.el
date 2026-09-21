@@ -10,7 +10,7 @@ This phase does not reproduce the user-reported failure again or modify runtime 
 
 **Decision**: Extend `claude-code-ide--file-reference-path` with an optional `remote-aware` argument. Only `claude-code-ide-send-current-file` passes a non-nil value.
 
-**Rationale**: The formatter already owns relative-versus-absolute selection. Its other direct caller, `claude-code-ide-send-file`, must retain its current contract under the specification’s scope restriction.
+**Rationale**: The formatter already owns relative-versus-absolute selection. Its other direct caller, `claude-code-ide-send-file`, must retain its current contract under the specification’s scope restriction. Superseded by spec 015, which removes that restriction.
 
 The optional argument represents two required policies, not future flexibility. It defaults to the unchanged behavior for file-picker actions. Current-file local behavior also remains unchanged.
 

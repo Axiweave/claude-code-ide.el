@@ -91,7 +91,7 @@ See [research.md](research.md) for decisions, alternatives, source evidence, and
 Resolved questions:
 
 - The transient `@` action invokes `claude-code-ide-send-current-file`, not the MCP at-mention command.
-- Two direct callers share `claude-code-ide--file-reference-path`. Only current-file behavior changes under this specification.
+- Two direct callers share `claude-code-ide--file-reference-path`. Only current-file behavior changes under this specification. Superseded by spec 015, which extends the conversion to the pickers.
 - The existing RPC parser preserves exact configured destinations, including destination text such as `user@v12mac`.
 - Target identity comes from the live Session object, not manager remembered-target state or terminal `default-directory`.
 - Relative conversion uses bare paths and does not require a remote filesystem operation.

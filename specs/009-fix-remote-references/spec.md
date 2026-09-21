@@ -6,6 +6,10 @@
 
 **Status**: Draft
 
+**Superseded in part** by `specs/015-remote-project-pickers`. The scope
+restriction below kept the `f`, `F`, and `h` pickers on their old contract.
+Spec 015 converts those pickers too.
+
 **Input**: User description: "for remote; the transient @ will send like @/rpc:v12mac:/Users/yufu/v12x/packages/core/lib/executor.ts#L316. how can we get an actual relative path? packages/.../executor.ts"
 
 ## User Scenarios & Testing *(mandatory)*

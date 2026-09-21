@@ -13885,7 +13885,7 @@ never by dispatching an RPC name to its file name handler."
                 (claude-code-ide-tests--reject-remote-name-dispatch
                  (lambda () (claude-code-ide-send-file-from-home))))
               (should (equal sent-string expected))
-              (should (equal browse-directory "/rpc:v12mac:/Users/yufu/v12x/")))))))))
+              (should (equal browse-directory "/rpc:v12mac:~/")))))))))
 
 (ert-deftest claude-code-ide-test-send-file-from-home-remote-rejects-local-file ()
   "A remote Session rejects a local pick instead of sending a local path."
@@ -14822,28 +14822,67 @@ inside the target session's directory."
                   (should-not sent-string))
               (setq buffer-file-name nil))))))))
 
-(ert-deftest claude-code-ide-test-send-file-preserves-remote-target-policy ()
-  "The file picker retains its existing path policy for a remote target."
+(ert-deftest claude-code-ide-test-send-file-remote-target ()
+  "A remote target browses its Session directory and drops the prefix.
+Supersedes claude-code-ide-test-send-file-preserves-remote-target-policy:
+spec 015 extends the reference conversion to the project pickers."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts '("v12mac"))
+        sent-string browse-directory)
+    (with-temp-buffer
+      (let ((target (current-buffer)))
+        (puthash "picker-reference"
+                 (claude-code-ide-session-create
+                  :id "picker-reference" :buffer target
+                  :host "v12mac" :directory "/Users/yufu/v12x")
+                 claude-code-ide--sessions)
+        (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                   (lambda () target))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                   (lambda () nil))
+                  ((symbol-function 'claude-code-ide--terminal-send-string)
+                   (lambda (text &optional _paste) (setq sent-string text)))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                   #'ignore)
+                  ((symbol-function 'project-current)
+                   (lambda (&rest _) (ert-fail "Remote picker read the local project")))
+                  ((symbol-function 'read-file-name)
+                   (lambda (_prompt dir &rest _)
+                     (setq browse-directory dir)
+                     "/rpc:v12mac:/Users/yufu/v12x/packages/main.el")))
+          (claude-code-ide-tests--reject-remote-name-dispatch
+           (lambda () (claude-code-ide-send-file nil)))
+          (should (equal sent-string "@packages/main.el "))
+          (should (equal browse-directory "/rpc:v12mac:/Users/yufu/v12x/")))))))
+
+(ert-deftest claude-code-ide-test-send-file-remote-rejects-local-pick ()
+  "A remote target rejects a local pick instead of sending a local path."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts '("v12mac"))
         sent-string)
     (with-temp-buffer
       (let ((target (current-buffer)))
         (puthash "picker-reference"
                  (claude-code-ide-session-create
                   :id "picker-reference" :buffer target
-                  :host "v12mac" :directory "/work")
+                  :host "v12mac" :directory "/Users/yufu/v12x")
                  claude-code-ide--sessions)
         (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
                    (lambda () target))
-                  ((symbol-function 'project-current) (lambda (&rest _) '(vc . "/work/")))
-                  ((symbol-function 'project-root) (lambda (_) "/work/"))
-                  ((symbol-function 'read-file-name) (lambda (&rest _) "/work/a.ts"))
-                  ((symbol-function 'claude-code-ide--find-prompt-buffer) (lambda () nil))
+                  ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                   (lambda () nil))
                   ((symbol-function 'claude-code-ide--terminal-send-string)
                    (lambda (text &optional _paste) (setq sent-string text)))
-                  ((symbol-function 'claude-code-ide--maybe-switch-to-window) #'ignore))
-          (claude-code-ide-send-file-from-root)
-          (should (equal sent-string "@a.ts ")))))))
+                  ((symbol-function 'claude-code-ide--maybe-switch-to-window)
+                   #'ignore)
+                  ((symbol-function 'project-current)
+                   (lambda (&rest _) (ert-fail "Remote picker read the local project")))
+                  ((symbol-function 'read-file-name)
+                   (lambda (&rest _) "/work/a.ts")))
+          (dolist (command (list (lambda () (claude-code-ide-send-file nil))
+                                 (lambda () (claude-code-ide-send-file-from-root))))
+            (should-error (funcall command) :type 'user-error)
+            (should-not sent-string)))))))
 
 (ert-deftest claude-code-ide-test-send-current-file-line-reference ()
   "Test send-current-file-line-reference sends an absolute path by default."

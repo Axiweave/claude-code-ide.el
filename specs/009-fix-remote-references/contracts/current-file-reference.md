@@ -61,7 +61,7 @@ Errors leave the terminal, connection, Session directory, host approval, and sou
 - Preserve existing target selection and prompt-buffer preference.
 - A prompt buffer does not supply missing remote target identity.
 - Preserve local project-root fallback when no target Session is known.
-- Preserve the separate `#`, `f`, `F`, and `h` command contracts.
+- Preserve the separate `#`, `f`, `F`, and `h` command contracts. Superseded for `f`, `F`, and `h` by spec 015.
 - Apply the same current-file contract to supported Agents without Agent-specific path conversion.
 
 See [data-model.md](../data-model.md) for value ownership and [quickstart.md](../quickstart.md) for validation steps.
