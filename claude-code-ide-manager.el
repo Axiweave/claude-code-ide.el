@@ -1400,6 +1400,8 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "k") #'claude-code-ide-manager-previous-line)
 (define-key claude-code-ide-manager-mode-map (kbd "C-j") #'claude-code-ide-manager-next-project-group)
 (define-key claude-code-ide-manager-mode-map (kbd "C-k") #'claude-code-ide-manager-previous-project-group)
+(define-key claude-code-ide-manager-mode-map (kbd "]") #'claude-code-ide-manager-next-priority-session)
+(define-key claude-code-ide-manager-mode-map (kbd "[") #'claude-code-ide-manager-previous-priority-session)
 (define-key claude-code-ide-manager-mode-map (kbd "o") #'claude-code-ide-manager-open)
 (define-key claude-code-ide-manager-mode-map (kbd "w") #'claude-code-ide-manager-new-worktree)
 (define-key claude-code-ide-manager-mode-map (kbd "W") #'claude-code-ide-manager-remote-worktree-menu)

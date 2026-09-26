@@ -7832,6 +7832,15 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
      (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
      (jump "01-input-a" command))))
 
+(ert-deftest claude-code-ide-test-manager-priority-sidebar-keys ()
+  "The pass keys belong to the manager sidebar, not the global map."
+  (dolist (binding '(("]" . claude-code-ide-manager-next-priority-session)
+                     ("[" . claude-code-ide-manager-previous-priority-session)))
+    (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd (car binding)))
+                (cdr binding)))
+    (should-not (eq (lookup-key global-map (kbd (car binding)))
+                    (cdr binding)))))
+
 (ert-deftest claude-code-ide-test-manager-priority-previous-pops-visit-history ()
   "Back walks the pass trail, and the forward pass resumes without repeats."
   (claude-code-ide-tests--with-priority-sessions
