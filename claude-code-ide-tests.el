@@ -14155,6 +14155,43 @@ account home of its host."
                   (should (equal sent-string "@src/main.el#L2 "))))
             (kill-buffer test-source-buf)))))))
 
+(ert-deftest claude-code-ide-test-omp-selection-reference ()
+  "Preserve selection bounds and use the target agent's reference syntax."
+  (dolist (case '((omp nil "@/tmp/bridge.ts ")
+                  (omp single "read \"/tmp/bridge.ts:2\" ")
+                  (omp multiple "read \"/tmp/bridge.ts:2-3\" ")
+                  (claude multiple "@/tmp/bridge.ts#L2-3 ")
+                  (codex multiple "@/tmp/bridge.ts#L2-3 ")
+                  (pi multiple "@/tmp/bridge.ts#L2-3 ")))
+    (with-temp-buffer
+      (let ((target (current-buffer))
+            (claude-code-ide-switch-to-window-on-send nil))
+        (setq-local claude-code-ide--session-cli-type (car case))
+        (with-temp-buffer
+          (let ((prompt (current-buffer)))
+            (with-temp-buffer
+              (setq-local buffer-file-name "/tmp/bridge.ts")
+              (setq-local claude-code-ide--session-cli-type 'claude)
+              (insert "first\nsecond\nthird\nfourth\n")
+              (goto-char (point-min))
+              (forward-line 1)
+              (let ((transient-mark-mode t)
+                    (mark-active (not (null (cadr case)))))
+                (set-mark (point))
+                (setq mark-active (not (null (cadr case))))
+                (if (eq (cadr case) 'single)
+                    (end-of-line)
+                  (forward-line 2))
+                (cl-letf (((symbol-function 'claude-code-ide--reference-target-buffer)
+                           (lambda () target))
+                          ((symbol-function 'claude-code-ide--find-prompt-buffer)
+                           (lambda () prompt))
+                          ((symbol-function 'project-current) (lambda (&rest _) nil))
+                          ((symbol-function 'evil-visual-state-p) (lambda () nil)))
+                  (claude-code-ide-send-current-file)
+                  (should (equal (with-current-buffer prompt (buffer-string))
+                                 (nth 2 case))))))))))))
+
 (ert-deftest claude-code-ide-test-prompt-buffer-patterns-default ()
   "Test that prompt buffer patterns defcustom has correct defaults."
   (should (listp claude-code-ide-prompt-buffer-patterns))

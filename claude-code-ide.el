@@ -3221,9 +3221,11 @@ RANGE is a cons cell of 1-based start and end lines."
 The path is relative to the target session's directory, or the
 absolute path when the file lies outside it (e.g. a file from a
 different project).  When an evil visual selection or Emacs region
-is active, appends a line range suffix like #L12-14 (or #L12 for a
-single line).  Remote files require a Session on the exact configured
-RPC destination.  Their references omit the editor's connection prefix.
+is active, appends #L12-14 (or #L12 for a single line) for other agents.
+For Oh My Pi, sends read \"path:12-14\" instead.  Without a selection,
+sends @path for automatic attachment, subject to the agent's size limits.
+Remote files require a Session on the exact configured RPC destination.
+Their references omit the editor's connection prefix.
 When called from Dired or Treemacs, uses the file at point.
 When called from a Claude Code session buffer, uses the most
 recent visible file-visiting buffer on the current frame."
@@ -3240,9 +3242,13 @@ recent visible file-visiting buffer on the current frame."
                            file target-buffer t))
                     (range (when ctx-buf
                              (claude-code-ide--get-selection-line-range)))
+                    (omp (with-current-buffer (or target-buffer (current-buffer))
+                           (eq (claude-code-ide--current-cli-type) 'omp)))
                     (suffix (claude-code-ide--format-selection-line-suffix
-                             range "#L")))
-               (concat "@" path suffix)))))
+                             range (if omp ":" "#L"))))
+               (if (and omp range)
+                   (concat "read " (prin1-to-string (concat path suffix)))
+                 (concat "@" path suffix))))))
       (if target-buffer
           (with-current-buffer target-buffer
             (claude-code-ide--send-reference-body reference-body))
