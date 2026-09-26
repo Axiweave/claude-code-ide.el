@@ -3222,8 +3222,8 @@ The path is relative to the target session's directory, or the
 absolute path when the file lies outside it (e.g. a file from a
 different project).  When an evil visual selection or Emacs region
 is active, appends #L12-14 (or #L12 for a single line) for other agents.
-For Oh My Pi, sends read \"path:12-14\" instead.  Without a selection,
-sends @path for automatic attachment, subject to the agent's size limits.
+For Oh My Pi, sends @path:12-14 instead.  This is a textual reference,
+not an automatic range attachment.  Without a selection, sends @path.
 Remote files require a Session on the exact configured RPC destination.
 Their references omit the editor's connection prefix.
 When called from Dired or Treemacs, uses the file at point.
@@ -3246,9 +3246,7 @@ recent visible file-visiting buffer on the current frame."
                            (eq (claude-code-ide--current-cli-type) 'omp)))
                     (suffix (claude-code-ide--format-selection-line-suffix
                              range (if omp ":" "#L"))))
-               (if (and omp range)
-                   (concat "read " (prin1-to-string (concat path suffix)))
-                 (concat "@" path suffix))))))
+               (concat "@" path suffix)))))
       (if target-buffer
           (with-current-buffer target-buffer
             (claude-code-ide--send-reference-body reference-body))

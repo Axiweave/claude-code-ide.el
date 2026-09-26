@@ -14158,8 +14158,8 @@ account home of its host."
 (ert-deftest claude-code-ide-test-omp-selection-reference ()
   "Preserve selection bounds and use the target agent's reference syntax."
   (dolist (case '((omp nil "@/tmp/bridge.ts ")
-                  (omp single "read \"/tmp/bridge.ts:2\" ")
-                  (omp multiple "read \"/tmp/bridge.ts:2-3\" ")
+                  (omp single "@/tmp/bridge.ts:2 ")
+                  (omp multiple "@/tmp/bridge.ts:2-3 ")
                   (claude multiple "@/tmp/bridge.ts#L2-3 ")
                   (codex multiple "@/tmp/bridge.ts#L2-3 ")
                   (pi multiple "@/tmp/bridge.ts#L2-3 ")))
@@ -14170,12 +14170,13 @@ account home of its host."
         (with-temp-buffer
           (let ((prompt (current-buffer)))
             (with-temp-buffer
-              (setq-local buffer-file-name "/tmp/bridge.ts")
               (setq-local claude-code-ide--session-cli-type 'claude)
               (insert "first\nsecond\nthird\nfourth\n")
               (goto-char (point-min))
               (forward-line 1)
-              (let ((transient-mark-mode t)
+              ;; Restore the filename before cleanup, including assertion failures.
+              (let ((buffer-file-name "/tmp/bridge.ts")
+                    (transient-mark-mode t)
                     (mark-active (not (null (cadr case)))))
                 (set-mark (point))
                 (setq mark-active (not (null (cadr case))))
