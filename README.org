@@ -32,7 +32,7 @@ This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manz
 
 - Automatic project detection and session management
 - Terminal integration with full color support using =ghostel=
-- Image-aware =s-v= / =H-v= paste for Claude Code, Codex, and Oh My Pi through =ghostel=
+- Image-aware =s-v= / =H-v= paste for local Claude Code, Codex, and Oh My Pi, plus the verified remote OMP route
 - CLI-specific start, continue, and resume commands for Claude Code, Codex, OpenCode, Pi, and Oh My Pi
 - Claude Code MCP protocol implementation for IDE integration
 - Tool support for file operations, editor state, and workspace info
@@ -989,9 +989,23 @@ Claude Code IDE adds custom keybindings to the terminal for easier interaction:
 | =S-<return>= | =claude-code-ide-insert-newline= | Insert a newline in the prompt       |
 | =C-c C-c=   | =claude-code-ide-session-send-interrupt= | Send interrupt to the session |
 | =C-<escape>= | =claude-code-ide-send-escape=    | Send escape key to cancel operations |
-| =s-v= / =H-v= | =claude-code-ide-session-paste-clipboard= | Paste text normally, or forward clipboard images to Claude Code, Codex, and Oh My Pi |
+| =s-v= / =H-v= | =claude-code-ide-session-paste-clipboard= | Paste text, local CLI images, or images through the verified remote OMP route |
 
 These keybindings are automatically set up for the Ghostel backend and only apply within Claude Code terminal buffers.
+
+Local Claude Code, Codex, and OMP keep their direct =C-v= clipboard path.
+Remote OMP uses the existing terminal connection with matching Ghostel 0.54.0 native support, the verified OMP receiver, and lossless zmx input backpressure.
+Stock zmx 0.8.1 can discard large input when its queue fills. See [[file:docs/remote.org][the remote guide]] for the candidate requirements.
+Generic OSC 5522 support alone is not sufficient.
+Other remote CLIs keep their previous behavior and receive no new capability message.
+Valid text paste and keybinding precedence remain unchanged.
+
+The remote attachment must own zmx input.
+If another client owns input, type normally in the intended Session before another image paste.
+An old unmarked attachment must reattach.
+After a timeout or disconnect, inspect the Agent before another paste because delivery can remain unconfirmed.
+The package never retries or sends a file-path substitute.
+See [[file:docs/remote.org][the remote guide]] for requirements and [[file:specs/014-remote-image-paste/quickstart.md][the acceptance record]] for measured results and open checks.
 
 **** Terminal Reflow Glitch Prevention (Temporary)
 

@@ -39,6 +39,8 @@
 (declare-function ghostel-send-C-c "ghostel" ())
 (declare-function ghostel-send-C-g "ghostel" ())
 (declare-function ghostel-yank "ghostel" ())
+(declare-function ghostel-paste-events-supported-p "ghostel" (&optional buffer))
+(declare-function ghostel-paste-clipboard "ghostel" (&optional buffer))
 
 (declare-function ghostel--on-user-input "ghostel" ())
 (declare-function with-editor-mode "with-editor" (&optional arg))
@@ -52,6 +54,11 @@
 (declare-function claude-code-ide--current-cli-type "claude-code-ide" ())
 (declare-function claude-code-ide--session-for-buffer "claude-code-ide" (&optional buffer))
 (declare-function claude-code-ide-session-host "claude-code-ide" (session))
+(declare-function claude-code-ide-session-directory "claude-code-ide" (session))
+(declare-function claude-code-ide-session-zmx-name "claude-code-ide" (session))
+(declare-function claude-code-ide-session-process "claude-code-ide" (session))
+(declare-function claude-code-ide-zmx--require-input-leader
+                  "claude-code-ide-zmx" (host name marker))
 (declare-function claude-code-ide-session-idle-record-activity
                   "claude-code-ide-session-idle" (&optional buffer))
 (declare-function claude-code-ide--touch-session-for-buffer
@@ -330,35 +337,108 @@ Use paste input when PASTE is non-nil."
         (ghostel--send-string string))
     (claude-code-ide-session--record-activity)))
 
-(defun claude-code-ide-session--clipboard-image-p ()
-  "Return non-nil when the GUI clipboard advertises an image target."
-  (condition-case nil
-      (let ((targets (gui-get-selection 'CLIPBOARD 'TARGETS)))
-        (and (or (listp targets) (vectorp targets))
-             (cl-some
-              (lambda (target)
-                (when (symbolp target)
-                  (setq target (symbol-name target)))
-                (and (stringp target)
-                     (let ((name (downcase target)))
-                       (or (string-prefix-p "image/" name)
-                           (member name '("png" "jpeg" "jpg" "gif" "tiff"
-                                          "webp" "bmp" "public.png"
-                                          "public.jpeg" "public.jpg"
-                                          "public.gif" "public.tiff"
-                                          "public.webp" "public.bmp"
-                                          "bitmap" "dib" "dibv5"))))))
-              targets)))
-    (error nil)))
+(defun claude-code-ide-session--clipboard-image-p (&optional require-data)
+  "Return non-nil when the GUI clipboard advertises an image target.
+When REQUIRE-DATA is non-nil, refuse unavailable or empty clipboard data."
+  (let ((targets
+         (condition-case nil
+             (gui-get-selection 'CLIPBOARD 'TARGETS)
+           (error
+            (when require-data
+              (user-error "The GUI clipboard is unavailable. Copy an image in a graphical session before another paste"))))))
+    (when (and require-data
+               (not (and (or (listp targets) (vectorp targets))
+                         (cl-some
+                          (lambda (target)
+                            (and (or (symbolp target) (stringp target))
+                                 (not (member target
+                                              '(nil "" TARGETS "TARGETS"
+                                                TIMESTAMP "TIMESTAMP"
+                                                MULTIPLE "MULTIPLE"
+                                                SAVE_TARGETS "SAVE_TARGETS")))))
+                          targets))))
+      (if (display-graphic-p)
+          (user-error "The clipboard has no usable data. Copy an image or text before another paste")
+        (user-error "The GUI clipboard is unavailable. Copy an image in a graphical session before another paste")))
+    (and (or (listp targets) (vectorp targets))
+         (cl-some
+          (lambda (target)
+            (when (symbolp target)
+              (setq target (symbol-name target)))
+            (and (stringp target)
+                 (let ((name (downcase target)))
+                   (or (string-prefix-p "image/" name)
+                       (member name '("png" "jpeg" "jpg" "gif" "tiff"
+                                      "webp" "bmp" "public.png"
+                                      "public.jpeg" "public.jpg"
+                                      "public.gif" "public.tiff"
+                                      "public.webp" "public.bmp"
+                                      "bitmap" "dib" "dibv5"))))))
+          targets))))
+
+(defconst claude-code-ide-session--paste-event-clis '(omp)
+  "CLIs with the verified terminal clipboard receiver.")
+
+(defvar-local claude-code-ide-session--paste-preflight nil
+  "Non-nil while this Session command checks the clipboard and input owner.")
 
 (defun claude-code-ide-session-paste-clipboard ()
-  "Paste from the clipboard, forwarding images to Claude, Codex, and Oh My Pi."
+  "Paste the clipboard into this Session.
+Use terminal image delivery for remote OMP.  Keep local image and text routes."
   (interactive)
   (claude-code-ide-session--ensure-ghostel-buffer)
-  (if (and (claude-code-ide-session--clipboard-image-p)
-           (memq (claude-code-ide--current-cli-type) '(claude codex omp)))
-      (claude-code-ide-session-send-string "\026")
-    (ghostel-yank)))
+  (let* ((buffer (current-buffer))
+         (session (claude-code-ide--session-for-buffer))
+         (host (and session (claude-code-ide-session-host session)))
+         (directory (and session (claude-code-ide-session-directory session)))
+         (name (and session (claude-code-ide-session-zmx-name session)))
+         (process (and (boundp 'ghostel--process) ghostel--process))
+         (marker (and (processp process) (process-get process 'cci-zmx-client)))
+         (cli-type (claude-code-ide--current-cli-type))
+         (remote-image-cli
+          (and host (memq cli-type claude-code-ide-session--paste-event-clis))))
+    (when remote-image-cli
+      (when claude-code-ide-session--paste-preflight
+        (user-error "An image paste check is already active. Wait for its outcome before another paste"))
+      (setq claude-code-ide-session--paste-preflight t))
+    (unwind-protect
+        (cl-labels
+            ((same-attachment-p
+               ()
+               (and (buffer-live-p buffer)
+                    (eq buffer (current-buffer))
+                    (eq session (claude-code-ide--session-for-buffer buffer))
+                    (equal host (claude-code-ide-session-host session))
+                    (equal directory (claude-code-ide-session-directory session))
+                    (equal name (claude-code-ide-session-zmx-name session))
+                    (eq process (claude-code-ide-session-process session))
+                    (eq process (and (boundp 'ghostel--process) ghostel--process))
+                    (process-live-p process)
+                    (equal marker (process-get process 'cci-zmx-client))
+                    (eq cli-type (claude-code-ide--current-cli-type)))))
+          (let ((image (save-current-buffer
+                         (claude-code-ide-session--clipboard-image-p remote-image-cli))))
+            (cond
+             ((and image remote-image-cli)
+              (unless (same-attachment-p)
+                (user-error "The Session attachment changed. Select the intended Session before another image paste"))
+              (unless (and (fboundp 'ghostel-paste-events-supported-p)
+                           (fboundp 'ghostel-paste-clipboard)
+                           (save-current-buffer
+                             (ghostel-paste-events-supported-p buffer)))
+                (user-error "This Ghostel build cannot deliver clipboard images. Use a local Session or install native paste support"))
+              (save-current-buffer
+                (claude-code-ide-zmx--require-input-leader host name marker))
+              (unless (same-attachment-p)
+                (user-error "The Session attachment changed. Select the intended Session before another image paste"))
+              (when (ghostel-paste-clipboard buffer)
+                (claude-code-ide-session--record-activity)))
+             ((and image (memq cli-type '(claude codex omp)))
+              (claude-code-ide-session-send-string "\026"))
+             (t (ghostel-yank)))))
+      (when (and remote-image-cli (buffer-live-p buffer))
+        (with-current-buffer buffer
+          (setq claude-code-ide-session--paste-preflight nil))))))
 
 (defun claude-code-ide-session-send-escape ()
   "Send Escape to the terminal in the current Session buffer."

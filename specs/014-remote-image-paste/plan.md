@@ -8,6 +8,30 @@ The setup script reported `014-remote-image-paste` as the feature identifier. Pl
 creates feature artifacts and does not create a commit. The constitution requires work
 on the current branch, so the branch stays `main` as it did for feature 013.
 
+## Foundation gate: verified on 2026-09-26
+
+T001, T002, T003, and T004 are complete. The GUI clipboard returned the synthetic PNG bytes unchanged through the `image/png` target.
+The native API migration passed its build, Zig checks, 34 graphics checks, and smoke checks through both PTY paths.
+The build used `zig-out`. The installed and live native modules remain unchanged.
+See [the migration evidence](research.md#t003-native-api-migration-passed).
+
+The original scope allowed stock zmx upgrades but prohibited source changes.
+Live acceptance later confirmed input loss in stock zmx 0.8.1.
+The user approved a zmx backpressure fix, regression checks, and private candidates.
+Installation needs separate approval. No further model turns are authorized.
+A disposable local check verified mode 5522 replay and read-only leader identification through a tracked client marker.
+See [the stock upgrade check](research.md#stock-upgrade-check-081).
+
+The installed local zmx is 0.8.1. Existing local and remote Session daemons answered `print-env`, but their attachments lack a package marker.
+A disposable adoption check verified that a new attachment can add a marker without restarting the Agent.
+T005 identified the host bridge design and the limits of host-only timeout reporting.
+A host cannot withdraw queued response bytes.
+The approved OMP receiver now validates transfer integrity and enforces the receiver commit deadline.
+The wire contract records unconfirmed delivery and busy refusal.
+T005R passed focused checks, both package type checks, and an actual local CLI receiver-to-editor smoke run.
+See [the failure boundary](research.md#t005-host-bridge-and-end-to-end-failure-boundary)
+and [the native wire proof](research.md#approved-receiver-design-scope-and-native-wire-proof).
+
 ## Summary
 
 Make an image on the local clipboard reach an Agent that runs on another host, using
@@ -15,18 +39,26 @@ the terminal paste-event clipboard standard (OSC 5522 with private mode 5522). T
 local terminal serves the clipboard, so the Agent's host needs no clipboard and
 receives no file.
 
-Two repositories change, in this order:
+Four repositories are now in scope:
 
-1. **Ghostel** gains native paste-event support: bump the pinned ghostty dependency to
-   a commit containing `ghostty_terminal_paste` and mode 5522, install the terminal
-   clipboard-read callback, paste through the new API, and expose one capability
-   predicate and one paste command to Elisp.
-2. **claude-code-ide.el** routes a paste gesture in a remote Session of an
+1. **Ghostel** gains native paste-event support through its direct Zig `ghostty-vt` module.
+   The dependency update also needs API migration, not just a pin change.
+   Ghostel must expose one capability predicate and one paste command to Elisp.
+2. **OMP** gains receiver expiry and transfer validation under the revised wire contract.
+   The receiver must validate the complete image before its final editor commit.
+   Existing local and legacy terminal routes must keep their behavior.
+   Verified receipt requires a recognized container whose format matches the declared MIME type.
+   Only that route enables the shared validator's `requireKnownFormat` argument.
+   Ordinary attachments and provider context retain full decoding when the header parser cannot identify the format.
+   Both validation modes retain strict base64 validation and rejection of recognized-format disagreement.
+3. **claude-code-ide.el** routes a paste gesture in a remote Session of an
    OSC 5522-capable Agent to that command, and keeps today's `C-v` route for local
    Sessions and for Agents without the client side.
+4. **zmx** gains lossless input backpressure without changing its IPC format or leadership rules.
+   Its private candidate must preserve queued input when the PTY reader stalls.
 
-The multiplexer needs no change. Stock zmx already forwards the read request to the
-local terminal and carries the leader client's answer back to the Agent.
+The approved zmx exception covers input backpressure and its regression checks only.
+The package retains the existing zmx interfaces and attachment lifecycle.
 
 ## Technical Context
 
@@ -34,18 +66,19 @@ local terminal and carries the leader client's answer back to the Agent.
 Ghostel interface. Zig 0.16.0 for the Ghostel native module, as its build already
 requires.
 
-**Primary Dependencies**: Ghostel as the sole terminal runtime, its native module built
-against libghostty-vt, stock zmx (0.7.1 and 0.8.0 verified by the package), OpenSSH,
-and one Agent that implements the client side of OSC 5522 (`omp` today). The package
-adds no dependency and no hard require.
+**Primary Dependencies**: Ghostel, libghostty-vt, zmx, OpenSSH, and an OSC 5522-capable Agent (`omp` today).
+The existing package supports zmx 0.7.1 and 0.8.0 for other operations.
+Stock zmx 0.8.1 supplies the required replay and owner-query interfaces, but does not reliably preserve large input.
+The remote image route also needs the approved backpressure correction. Unrelated operations keep their current compatibility.
 
-**Storage**: None. No Session field, no persistence, no file. The image exists in
-memory for the duration of one exchange.
+**Storage**: No transfer persistence or Session field. Image transport remains in memory.
+OMP may use its ordinary attachment storage after verified receipt.
 
 **Testing**: ERT in `claude-code-ide-tests.el` for the route decision and the
 explanations, gated by `./scripts/compile-and-test.sh`. Zig unit tests plus Elisp and
 native tests in Ghostel (`make test-zig`, `make test-native`). One live end-to-end
 walkthrough from [quickstart.md](quickstart.md).
+The approved receiver prerequisite also needs Bun receiver tests, editor-boundary checks, and an actual local TUI smoke run.
 
 **Target Platform**: Emacs on macOS or X11 with a graphical clipboard, attached to an
 Agent on an approved POSIX remote host through SSH, zmx, and Ghostel.
@@ -58,20 +91,17 @@ decision adds no measurable delay to a text paste. A local Session's paste path 
 as fast as today, because it keeps the current code path.
 
 **Constraints**: No required dependency. The package loads, byte-compiles, and passes
-its suite with no Ghostel module support present (Principle III). The image bytes are
-never modified, never written to a file, and never replaced by a path (FR-005, FR-017).
+its suite with no Ghostel module support present (Principle III).
+The transport never modifies image bytes, creates an image file, or substitutes a path (FR-005, FR-017).
 The clipboard is read only for a gesture in the serving Session (FR-006, FR-007). Host
 approval, authentication, session ownership, and start, attach, reattach, detach, and
 Stop behavior do not change (FR-012).
 
-**Scale/Scope**: One paste command in Ghostel, three native wiring points, one
-capability predicate in the package, and one route decision. One Agent gains the
-behavior. One terminal pin moves forward.
+**Scale/Scope**: One Ghostel capability predicate and paste command, native clipboard handoff, shared package routing, and verified OMP receipt.
+The receiver adds integrity checks, commit-time expiry, and cancellation through existing Session and TUI ownership points.
 
-No technical context item remains unresolved. Two implementation-time checks are
-recorded in [research.md](research.md) under "Open items": the new pin's exported
-surface under Ghostel's build, and the availability of a byte-level image read from the
-macOS GUI selection.
+The native API migration and GUI byte access passed.
+The clipboard handoff, package attachment identity, and integrated receiver path still need implementation evidence.
 
 ## Constitution Check
 
@@ -85,7 +115,7 @@ macOS GUI selection.
 | IV. Ghostel-only terminal support | Pass | Pass | All terminal interaction goes through the Session buffer and its owned process. The new capability lives in Ghostel, the sole terminal runtime. No alternative terminal, no terminal choice, no fallback renderer. |
 | V. Simplicity and compatibility | Pass | Pass | One capability predicate and one paste entry point. No version arithmetic in the package, no new dependency, no configuration option. The Ghostel paste commands keep their current code paths. |
 | VI. Local and remote workflow parity | Pass | Pass | The same gesture produces the same attachment on both. The one difference, the transport, is required by the remote constraint that the Agent cannot read the local clipboard, and it is named in the spec. Local behavior is unchanged. Every refusal is explicit. |
-| ADR 0001 zmx-backed sessions | Pass | Pass | zmx stays the process owner. The feature relies on its existing forwarding and leadership rules and changes neither. |
+| ADR 0001 zmx-backed sessions | Pass | Pass | zmx stays the process owner. T041 corrects input backpressure under the approved exception. IPC, leadership rules, and attachment lifecycle remain unchanged. |
 | ADR 0003 session directory stays bare | Pass | Pass | No directory, path, or file enters any command or message. The transport carries MIME bytes only. |
 | Repository workflow | Pass | Pass | Work on the current checkout. Planning creates artifacts and no commit. No issue tracker. |
 
@@ -96,7 +126,7 @@ Required remote difference, stated per Principle VI:
 | Transport | The Agent's host has no local clipboard, so the local terminal must serve the bytes. |
 | No capability available | The installed terminal build, or the multiplexer's leadership state, can prevent delivery. The Session explains it instead of substituting an operation. |
 
-No gate violation and no unresolved clarification remains.
+The approved receiver decisions and T005R verification close the foundation gate. Original story implementation can now start.
 
 ## Project Structure
 
@@ -134,7 +164,7 @@ scripts/compile-and-test.sh  # Required implementation gate, unchanged
 
 ```text
 build.zig.zon                # ghostty pin moves to the commit containing mode 5522 support
-src/GhostelTerm.zig          # Paste through ghostty_terminal_paste; clipboard-read option
+src/GhostelTerm.zig          # Direct Zig paste and clipboard-read effects
 src/handler.zig              # Clipboard read routing to the host, beside the OSC 52 arms
 src/module.zig               # Exported capability query, if a native symbol is needed
 src/version.zig              # Module version, raised with the capability
@@ -145,9 +175,21 @@ test/                        # Zig unit tests for packets, grants, chunking, rej
 Makefile                     # Existing test targets, unchanged
 ```
 
+### Source code, OMP repository
+
+```text
+packages/coding-agent/src/utils/enhanced-paste.ts
+packages/coding-agent/src/modes/controllers/input-controller.ts
+packages/coding-agent/src/modes/interactive-mode.ts
+packages/tui/src/tui.ts
+packages/coding-agent/test/   # Receiver and actual editor-boundary checks
+packages/tui/test/            # Terminal lifecycle behavior where required
+```
+
 **Structure Decision**: Keep the protocol in the terminal library and the route
 decision in the package's shared session layer. Add no Emacs-side protocol parser, no
-adapter per Agent, and no new configuration option. The multiplexer is untouched.
+adapter per Agent, and no new configuration option.
+The only multiplexer change is the approved input-backpressure correction and its regression checks.
 
 ## Phase 0: Research Results
 
@@ -160,36 +202,32 @@ Resolved decisions:
 - Offer the route to Agents that implement the client side. That is `omp` today.
 - Bump Ghostel's ghostty pin to the merge commit of upstream PR `#13978`, because the
   current pin parses OSC 5522 and drops it.
-- Give Ghostel the three host obligations: secure random for grants, the clipboard-read
-  callback, and pasting through `ghostty_terminal_paste`.
-- Treat zmx as passthrough. The read request reaches the local terminal, and the
-  leader client's answer reaches the Agent. A non-leading client's answer is lost, and
-  the Session explains that condition.
+- Give Ghostel secure randomness, a synchronous clipboard-read callback, and the direct Zig handler's paste operation.
+- Retain the verified zmx replay and tracked-environment interfaces. Correct input backpressure under the approved scope exception.
 - Keep the local `C-v` route. Use the terminal route only for a remote Session of a
   capable Agent.
 - Detect capability through one Ghostel predicate, never through version comparison.
-- Verify at three seams plus one live walkthrough.
+- Verify native framing, receiver commit, package routing, and the live walkthrough.
 
 ## Phase 1: Design
 
 ### Terminal capability, Ghostel native module
 
-Move the `ghosts` dependency pin in `build.zig.zon` to ghostty commit
-`e4240606752e5e4eb480b69104d75db0054f71c8` or a later commit on `main` containing the
-same support. The bump is one line plus a verified build; no vendored file is edited by
-hand.
+The candidate ghostty pin is `e4240606752e5e4eb480b69104d75db0054f71c8`.
+T003 migrated the scrollback, stream-constructor, relative-placement, and image-data APIs.
+The candidate passed its build and targeted checks with Zig 0.16.0.
+The upstream sources remain unchanged.
 
 Install the three host obligations:
 
-1. **Secure random.** Provide the sys random-secure implementation the grant minting
-   needs, or confirm and document the platform default the module already inherits.
-2. **Clipboard read.** Install the terminal clipboard-read callback when a terminal is
-   created. On a request, hand the MIME type and the granted flag to Elisp through the
-   existing deferred-effect path, and reply from Elisp with base64 chunks.
-3. **Paste.** Replace the paste encoding call with `ghostty_terminal_paste`, passing
-   the clipboard's available MIME types and a MIME reader. The terminal layer then
-   chooses between a paste event, bracketed paste, and a plain paste, and rejects an
-   unsafe payload instead of writing it.
+1. **Secure random.** Use the existing terminal's `std.Io.Threaded` secure random path unless execution identifies a missing requirement.
+2. **Clipboard read.** Use the direct Zig `clipboard.Read` callback and reply synchronously with raw MIME bytes.
+   The candidate invalidates the callback context when it returns. The original deferred-reply design is not valid.
+   Resolve the Emacs-thread handoff before implementing this callback.
+   All inspected package Sessions use the native reader thread, so a main-thread-only callback is not sufficient.
+   Preserve read-on-request timing. Do not replace it with a gesture-time snapshot.
+3. **Paste.** Use `TerminalStream.Handler.paste` with MIME/data pairs through the existing native handler.
+   Keep protocol framing in libghostty. Preserve the old paste commands and their code paths.
 
 Keep the OSC 52 arms in `src/handler.zig` unchanged.
 
@@ -206,10 +244,10 @@ Add the two entry points of
 Keep `ghostel-yank`, `ghostel-paste`, `ghostel-paste-string`, and their keybindings on
 their current code paths. The new command is additive.
 
-Answer a read request from a stored grant only. Read the clipboard at reply time.
-Reply with a refusal when the grant is unknown or spent, when the MIME was not
-advertised, or when the selection holds nothing usable. Never send a partial DATA
-packet.
+Answer a read request only through the original upstream handler's grant.
+Read the clipboard at request time and refuse unknown, spent, expired, or out-of-policy requests.
+Prepare a complete encoded reply before transport writes.
+Transport interruption can split a packet. The verified receiver must prevent partial image attachment.
 
 Raise `src/version.zig`, `ghostel-module-install.el`, and the package metadata version
 together, so the capability predicate and the minimum module version move in step.
@@ -237,20 +275,21 @@ the existing image-capable list, with a comment naming OSC 5522. Do not add a fi
 Agent definition: the capability describes the Agent's protocol support, and one list
 keeps the shared layer as the single decision point (Principle I).
 
-Keep `claude-code-ide-session--clipboard-image-p` as the image test. Do not add a
-second clipboard probe.
+Keep `claude-code-ide-session--clipboard-image-p` as the package image predicate.
+Ghostel owns MIME advertisement and the authorized byte read.
 
-Explanations use the three messages contracted in
-[contracts/ghostel-package-interface.md](contracts/ghostel-package-interface.md),
-delivered as an actionable `user-error` at the point of use. Produce no message on a
-successful route and on the unchanged paths.
+Explanations follow [contracts/ghostel-package-interface.md](contracts/ghostel-package-interface.md).
+Use an actionable `user-error` at the point of refusal.
+Successful routes and unchanged legacy routes produce no new package message.
 
 ### Multiplexer
 
-Change nothing. Record the verified rules in `docs/zmx.org`: application output reaches
-the local terminal with OSC sequences intact, and the leader client's input reaches the
-Agent. Add one sentence to `docs/remote.org` about the leadership condition and its
-remedy, because it is the one remote-only failure a user can meet.
+T005 verified read-only leadership observation and mode replay through existing zmx interfaces.
+T041 completed the approved input-backpressure correction after stock zmx dropped accepted bytes.
+The private candidate preserves queued input, FIFO order, responsive control requests, and EOF handling.
+Its regression checks and private local/remote acceptance passed. See [the recorded evidence](quickstart.md#private-zmx-backpressure-correction-2026-09-27-utc).
+The exception changes neither IPC nor leadership rules, host approval, authentication, or the attachment lifecycle.
+Installation requires separate approval. The exception authorizes no further model turns or unrelated zmx changes.
 
 ### Data and interface
 
@@ -276,7 +315,7 @@ Package ERT cases, all at observable seams:
 5. A remote Session of a non-capable Agent keeps that Agent's current behavior and
    produces no new message.
 6. A clipboard with no image keeps every existing path.
-7. The three explanation messages name the condition and the action.
+7. Each refusal or unconfirmed-delivery explanation names the observed condition and a useful next action.
 8. Existing paste tests pass unchanged.
 
 Test the routing decision and its user-visible outcome. Do not assert message wording
@@ -292,6 +331,16 @@ Ghostel test design:
 - Native and Elisp: a fake application writes an OSC 5522 read request and receives the
   reply; the existing OSC 52 tests stay unchanged.
 
+OMP receiver checks:
+
+- Verify request identity, strict framing, metadata, exact byte count, and SHA-256 before image preparation.
+- Verify initial timeout, shortened timeout, and commit-time expiry when timer callbacks run late.
+- Hold actual image preparation across expiry and cancellation. Observe no pending editor mutation.
+- Refuse overlapping gestures without replacing the active attempt.
+- Preserve local image paths, text destinations, source links, and bracketed-paste ordering.
+- Exercise stop, restart, Session changes, and stale callbacks without reviving an old transfer.
+
+
 Live validation follows [quickstart.md](quickstart.md) steps 3 to 6: local parity, the
 remote end-to-end paste, a large image, and the five failure conditions.
 
@@ -300,11 +349,13 @@ then `./scripts/compile-and-test.sh`, then the live walkthrough.
 
 ## Post-Design Constitution Check
 
-The design still passes every gate above.
+Implementation checks resolved the original leadership, reattachment, and input-loss blockers through T005 and the approved T041 exception.
+The [acceptance record](quickstart.md) contains the observed gate results and private-candidate evidence.
 
-- The protocol stays in the terminal library; the package holds one route decision.
+- The protocol stays in the terminal library. The package holds one route decision.
 - The package keeps working with no Ghostel module support, and explains the refusal.
-- The multiplexer, host approval, authentication, and session lifecycles are untouched.
+- The multiplexer includes only the approved input-backpressure correction. IPC and leadership rules remain unchanged.
+- Host approval, authentication, and Session lifecycles remain unchanged. Installation requires separate approval.
 - The local paste path is byte-for-byte unchanged, so the working workflow cannot
   regress through this feature.
 - Batch tests cover both repositories, and the live walkthrough proves the chain.

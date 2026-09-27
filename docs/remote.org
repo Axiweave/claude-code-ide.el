@@ -73,6 +73,48 @@ Fresh attachment uses the discovery result.
 Remembered reattachment first checks the exact target with =zmx list --short=.
 Both paths use =zmx attach NAME false= as the final disappearance guard.
 
+* Clipboard Images
+
+The remote image route supports OMP with the verified-transfer receiver.
+The candidate path uses macOS, matching Ghostel 0.54.0 Lisp and native support, and the verified OMP receiver.
+It also needs zmx with lossless input backpressure.
+Stock zmx 0.8.1 supplies the required owner queries and mode replay, but can discard large input when its queue fills.
+See [[file:../specs/014-remote-image-paste/quickstart.md][the acceptance record]] for the checked private candidate.
+Installation still needs separate approval.
+An OMP version number or generic OSC 5522 support does not establish receiver compatibility.
+After a native module update, restart Emacs before use.
+The package does not install components or restart Emacs for a paste.
+
+1. Copy an image in the local graphical session.
+2. Select the intended remote OMP Session.
+3. Press =s-v= or =H-v=.
+4. Check the image attachment in the Agent.
+
+Ghostel reads image bytes only after that gesture authorizes the Agent's request.
+It sends the original bytes through the existing terminal connection without a transport file, format conversion, or size cap.
+The Agent's ordinary attachment rules and storage still apply.
+Local Claude Code, Codex, and OMP retain direct clipboard reads.
+Other CLIs and valid text paste retain their previous behavior.
+
+| Condition | Action |
+|-----------+--------|
+| Missing native support | Install matching Ghostel support and restart Emacs. |
+| Agent has not enabled paste events | Update the OMP receiver and reattach the Session. |
+| Old attachment has no input marker | Reattach the Session. |
+| Another zmx client owns input | Type normally in the intended Session before another paste. |
+| No graphical clipboard | Copy the image in a graphical Emacs session. |
+| Empty or unreadable image | Copy a usable image before another paste. |
+| A paste is already active | Wait for its outcome. |
+| Expired or unconfirmed delivery | Inspect the Agent's attachments before another paste. |
+
+The package makes a read-only ownership check before transmission.
+It does not take input ownership, replace an Agent, retry, or change host approval.
+The check uses the existing bounded SSH control path. Image bytes use only the terminal connection.
+The receiver rejects incomplete or invalid data and checks expiry immediately before its synchronous editor commit.
+Command return does not prove an attachment or an Agent acknowledgement.
+
+The [[file:../specs/014-remote-image-paste/quickstart.md][acceptance record]] includes exact-byte, local-parity, reattachment, failure, and large-image measurements.
+
 * Worktree Management
 
 Worktree management adds explicit remote launch, creation, and lifecycle

@@ -792,18 +792,40 @@ so no shell or Agent is left behind and the client exits nonzero.")
   "Return stock zmx arguments adopting existing session NAME without creation."
   (list "attach" name claude-code-ide-zmx--attach-guard))
 
-(defun claude-code-ide-zmx--remote-attach-command (host name)
+(defconst claude-code-ide-zmx--client-environment-name "CLAUDE_CODE_IDE_CLIENT"
+  "Tracked zmx environment entry identifying one terminal attachment.")
+
+(defun claude-code-ide-zmx--client-command (args marker &optional directory)
+  "Build a remote zmx client with ARGS, attachment MARKER, and DIRECTORY.
+Extend the effective tracking list after login-shell initialization.
+An unset list uses the stock zmx 0.8.1 defaults."
+  (unless (and (claude-code-ide-zmx--valid-argument-p marker)
+               (not (string-empty-p marker)))
+    (user-error "The remote attachment marker is invalid"))
+  (concat
+   "ZMX_TRACK_ENV=${ZMX_TRACK_ENV-DISPLAY,SSH_AUTH_SOCK,SSH_AGENT_PID,SSH_CONNECTION,WINDOWID,XAUTHORITY,KITTY_LISTEN_ON,KITTY_PID,KITTY_WINDOW_ID}\n"
+   "export ZMX_TRACK_ENV=\"${ZMX_TRACK_ENV:+${ZMX_TRACK_ENV},}"
+   claude-code-ide-zmx--client-environment-name "\"\n"
+   (claude-code-ide-zmx--exec-command
+    "env"
+    (append '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX")
+            (list (concat claude-code-ide-zmx--client-environment-name "=" marker)
+                  "zmx")
+            args)
+    directory)))
+
+(defun claude-code-ide-zmx--remote-attach-command (host name marker)
   "Build an interactive SSH command adopting existing session NAME on HOST."
   (claude-code-ide-zmx--validate-host host)
   (claude-code-ide-zmx--validate-name name)
   (mapconcat #'claude-code-ide-zmx--quote
              (append '("ssh" "-t") claude-code-ide-zmx--ssh-options
-                     (list host (claude-code-ide-zmx--remote-command
-                                 (claude-code-ide-zmx--attach-args name))))
+                     (list host (claude-code-ide-zmx--client-command
+                                 (claude-code-ide-zmx--attach-args name) marker)))
              " "))
 
 (defun claude-code-ide-zmx--remote-create-command
-    (host directory name executable args
+    (host directory name executable args marker
           &optional shell shell-args environment)
   "Build an interactive SSH command creating and attaching NAME on HOST."
   (claude-code-ide-zmx--validate-host host)
@@ -826,13 +848,8 @@ so no shell or Agent is left behind and the client exits nonzero.")
   (setq environment
         (claude-code-ide-zmx--copy-environment environment))
   (let ((command
-         (claude-code-ide-zmx--exec-command
-          "env"
-          (append
-           '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX")
-           (list "zmx" "attach" name executable)
-           args)
-          directory)))
+         (claude-code-ide-zmx--client-command
+          (append (list "attach" name executable) args) marker directory)))
     (mapconcat
      #'claude-code-ide-zmx--quote
      (append
@@ -1028,6 +1045,29 @@ thirty-second deadline, and cancel its process if the user quits."
                                 (plist-get outcome :stderr)))
             (user-error "Cannot attach %s on %s. The remote session no longer exists"
                         name host)))
+      (when (process-live-p process)
+        (delete-process process)))))
+
+(defun claude-code-ide-zmx--require-input-leader (host name marker)
+  "Require this attachment's MARKER to own input for NAME on HOST.
+Use a read-only control request.  Quit cancels only that request."
+  (unless (and (stringp marker) (not (string-empty-p marker)))
+    (user-error "This attachment has no input marker. Reattach this Session before another image paste"))
+  (claude-code-ide-zmx--validate-name name)
+  (let (outcome process)
+    (unwind-protect
+        (progn
+          (setq process
+                (claude-code-ide-zmx--call-remote
+                 host (list "print-env" name claude-code-ide-zmx--client-environment-name)
+                 (lambda (result) (setq outcome result))))
+          (while (not outcome)
+            (accept-process-output nil 0.1))
+          (unless (claude-code-ide-zmx--remote-request-ok-p outcome)
+            (user-error "Cannot verify input ownership. Check the connection and stock zmx support before another paste: %s"
+                        (claude-code-ide-zmx--remote-request-failure host "print-env" outcome)))
+          (unless (equal marker (string-trim (plist-get outcome :stdout)))
+            (user-error "Another client owns input, or its owner is unavailable. Type in this Session first, then paste again")))
       (when (process-live-p process)
         (delete-process process)))))
 

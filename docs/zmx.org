@@ -12,8 +12,12 @@ For Sessions on another host, see [[file:remote.org][Remote Agents and Project V
 * Requirements
 
 Install [[https://github.com/neurosnap/zmx][zmx]] and make its executable available to Emacs.
-This package has verified stock zmx 0.7.1 and 0.8.0.
-It does not require a patched zmx.
+This package has verified ordinary attachment with stock zmx 0.7.1 and 0.8.0.
+The remote image route has verified input-owner queries and mode 5522 replay with stock zmx 0.8.1.
+Stock zmx 0.8.1 can discard large input when its PTY queue fills.
+The remote image route also needs lossless input backpressure.
+The private =0.8.1-cci014-backpressure= candidate passed the [[file:../specs/014-remote-image-paste/quickstart.md][live acceptance checks]].
+Installation still needs separate approval.
 
 Enable persistent Sessions:
 
@@ -74,6 +78,30 @@ env -u ZMX_SESSION -u ZMX_SESSION_PREFIX zmx attach NAME false
 
 Multiple clients can attach to one zmx Session.
 Input and output belong to the same Agent process.
+
+** Remote Image Input Ownership
+
+Remote OMP image paste requires the intended Emacs attachment to own zmx input.
+Each new remote attachment carries a unique =CLAUDE_CODE_IDE_CLIENT= marker.
+The package adds that marker to =ZMX_TRACK_ENV= after the login profile runs.
+It preserves the effective tracking list, including an explicitly empty list.
+When the list is unset, it retains the stock 0.8.1 defaults.
+The package stores its marker on the local attachment process, not in persisted Session data.
+
+Before image transmission, the package queries =zmx print-env NAME CLAUDE_CODE_IDE_CLIENT= through the existing SSH control path.
+A mismatch or unavailable owner causes a refusal without terminal input or image-byte reads.
+This point-in-time query is not an atomic ownership lock.
+The feature does not modify zmx, use =zmx send=, or claim input ownership.
+
+If another client owns input, type normally in the intended Session before another paste.
+If an old attachment has no marker, reattach it before another image paste.
+If the query fails, check the connection and stock zmx support.
+The control query retains the existing thirty-second deadline and has no retry.
+=C-g= cancels only the owned query.
+
+Stock zmx 0.8.1 replayed the Agent's enabled mode 5522 to a fresh Emacs in the remote checks.
+The package sends no synthetic Agent input to enable that mode.
+See [[file:remote.org][the remote guide]] for receiver requirements and unconfirmed-delivery handling.
 
 * Detach and Stop
 

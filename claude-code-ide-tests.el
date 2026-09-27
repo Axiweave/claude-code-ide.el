@@ -15589,6 +15589,12 @@ spec 015 extends the reference conversion to the project pickers."
                (lambda (&rest _) (ert-fail "Unsupported buffer received paste")))
               ((symbol-function 'ghostel-yank)
                (lambda () (ert-fail "Unsupported buffer received clipboard input")))
+              ((symbol-function 'ghostel-paste-events-supported-p)
+               (lambda (&optional _buffer)
+                 (ert-fail "Unsupported buffer reached the image capability check")))
+              ((symbol-function 'ghostel-paste-clipboard)
+               (lambda (&optional _buffer)
+                 (ert-fail "Unsupported buffer received an image paste")))
               ((symbol-function 'ghostel-send-C-c)
                (lambda () (ert-fail "Unsupported buffer received an interrupt")))
               ((symbol-function 'ghostel-send-C-g)
@@ -16013,94 +16019,348 @@ spec 015 extends the reference conversion to the project pickers."
         (should sent)
         (should activity-called)))))
 
-(ert-deftest claude-code-ide-test-session-paste-clipboard-sends-control-v-for-image-capable-clis ()
-  "Test that image clipboard targets send raw control-V for Claude, Codex, and Oh My Pi."
-  (should (require 'claude-code-ide-session nil t))
-  (dolist (cli-type '(claude codex omp))
-    (let ((sent nil)
-          (yanked nil))
-      (cl-letf (((symbol-function 'gui-get-selection)
-                 (lambda (&rest _args) [image/png]))
-                ((symbol-function 'claude-code-ide-session-send-string)
-                 (lambda (string &optional paste)
-                   (setq sent (cons string paste))))
-                ((symbol-function 'ghostel-yank)
-                 (lambda () (setq yanked t))))
+(defun claude-code-ide-tests--clipboard-route
+    (cli-type host targets support &optional refusal owner)
+  "Observe one paste for CLI-TYPE on HOST with clipboard TARGETS.
+SUPPORT is t, nil, or `absent'.  REFUSAL rejects the provider request.
+OWNER supplies the remote input marker, or `unmarked' for an old attachment."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        (claude-code-ide-remote-hosts (and host (list host)))
+        input messages failure queries)
+    (with-temp-buffer
+      (let ((other-buffer (current-buffer)))
+        (claude-code-ide--put-session
+         (claude-code-ide-session-create
+          :id "paste-other" :directory "/other-project/"
+          :buffer other-buffer :host (unless host "other.example")
+          :cli-type 'omp))
         (with-temp-buffer
-          (setq-local major-mode 'ghostel-mode)
-          (setq-local claude-code-ide--session-cli-type cli-type)
-          (claude-code-ide-session-paste-clipboard)
-          (should (equal sent '("\026")))
-          (should-not yanked))))))
+          (setq-local major-mode 'ghostel-mode
+                      claude-code-ide--session-cli-type cli-type)
+          (let* ((buffer (current-buffer))
+                 (process (make-pipe-process
+                           :name "paste-fixture" :buffer buffer :noquery t))
+                 capability-checked
+                 (session
+                  (claude-code-ide--put-session
+                   (claude-code-ide-session-create
+                    :id "paste-focused" :directory "/project/"
+                    :process process :zmx-name "paste-focused"
+                    :buffer buffer :host host :cli-type cli-type))))
+            (setq-local ghostel--process process)
+            (process-put process 'cci-zmx-client
+                         (unless (eq owner 'unmarked) "client-focused"))
+            (should (eq (claude-code-ide--session-for-buffer) session))
+            (cl-letf (((symbol-function 'display-graphic-p)
+                       (lambda (&rest _) (not (eq targets 'no-gui))))
+                      ((symbol-function 'gui-get-selection)
+                       (lambda (selection target &rest _)
+                         (should (eq selection 'CLIPBOARD))
+                         ;; The package detects formats.  Only Ghostel reads bytes.
+                         (should (eq target 'TARGETS))
+                         (pcase targets
+                           ('error (error "Clipboard unavailable"))
+                           ('no-gui nil)
+                           (_ targets))))
+                      ((symbol-function 'claude-code-ide-zmx--call-remote)
+                       (lambda (target args callback &optional _name)
+                         (push (list target args) queries)
+                         (should (equal target host))
+                         (should (equal args '("print-env" "paste-focused"
+                                               "CLAUDE_CODE_IDE_CLIENT")))
+                         (funcall callback
+                                  (list :status 0
+                                        :stdout (if (functionp owner)
+                                                    (funcall owner session)
+                                                  (or owner "client-focused"))
+                                        :stderr ""))
+                         nil))
+                      ((symbol-function 'claude-code-ide-session-send-string)
+                       (lambda (string &optional paste)
+                         (push (list 'send string paste) input)))
+                      ((symbol-function 'ghostel-yank)
+                       (lambda () (push '(yank) input)))
+                      ((symbol-function 'ghostel-paste-string)
+                       (lambda (&rest args)
+                         (push (cons 'text args) input)))
+                      ((symbol-function 'ghostel-paste-events-supported-p)
+                       (unless (eq support 'absent)
+                         (lambda (&optional target)
+                           (should (eq (or target (current-buffer)) buffer))
+                           (setq capability-checked t)
+                           support)))
+                      ((symbol-function 'ghostel-paste-clipboard)
+                       (unless (eq support 'absent)
+                         (lambda (&optional target)
+                           (should capability-checked)
+                           (should (eq support t))
+                           (should (eq (or target (current-buffer)) buffer))
+                           (should
+                            (eq (claude-code-ide--session-for-buffer
+                                 (or target (current-buffer)))
+                                session))
+                           (when refusal
+                             (user-error "Clipboard image unavailable. Copy another image"))
+                           (push (list 'image (claude-code-ide-session-id session))
+                                 input)
+                           t)))
+                      ((symbol-function 'message)
+                       (lambda (format-string &rest args)
+                         (push (apply #'format format-string args) messages))))
+              (condition-case err
+                  (claude-code-ide-session-paste-clipboard)
+                (user-error (setq failure err))))
+            (list :input (nreverse input) :queries (nreverse queries)
+                  :messages (nreverse messages) :error failure)))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-sends-control-v-for-image-capable-clis ()
+  "Local image CLIs keep direct clipboard reads with all optional support states."
+  (dolist (cli-type '(claude codex omp))
+    (dolist (support '(t nil absent))
+      (ert-info ((format "CLI %S, support %S" cli-type support))
+        (let ((result (claude-code-ide-tests--clipboard-route
+                       cli-type nil [image/png UTF8_STRING] support)))
+          (should (equal (plist-get result :input) '((send "\026" nil))))
+          (should-not (plist-get result :error))
+          (should-not (plist-get result :messages)))))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-recognizes-image-target-vectors ()
-  "Test that common GUI image target vectors send raw control-V."
-  (should (require 'claude-code-ide-session nil t))
+  "Common GUI image target vectors retain the local image route."
   (dolist (targets '([image/png] [public.png] [BITMAP] [DIB] [DIBV5]))
-    (let ((sent nil)
-          (yanked nil))
-      (cl-letf (((symbol-function 'gui-get-selection)
-                 (lambda (&rest _args) targets))
-                ((symbol-function 'claude-code-ide-session-send-string)
-                 (lambda (string &optional paste)
-                   (setq sent (cons string paste))))
-                ((symbol-function 'ghostel-yank)
-                 (lambda () (setq yanked t))))
-        (with-temp-buffer
-          (setq-local major-mode 'ghostel-mode)
-          (setq-local claude-code-ide--session-cli-type 'claude)
-          (claude-code-ide-session-paste-clipboard)
-          (should (equal sent '("\026")))
-          (should-not yanked))))))
+    (let ((result (claude-code-ide-tests--clipboard-route
+                   'claude nil targets 'absent)))
+      (should (equal (plist-get result :input) '((send "\026" nil))))
+      (should-not (plist-get result :error)))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-remote-omp-uses-only-terminal-image ()
+  "Remote OMP admits one terminal image operation, with no raw input or substitute."
+  (let ((result (claude-code-ide-tests--clipboard-route
+                 'omp "approved.example" [image/png UTF8_STRING] t)))
+    (should (equal (plist-get result :input) '((image "paste-focused"))))
+    (should-not (plist-get result :error))
+    ;; Admission is not an attachment acknowledgement.
+    (should-not (plist-get result :messages))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-keeps-destinations-after-reattach ()
+  "Clipboard callbacks cannot redirect ordered gestures across Session attachments."
+  (let* ((claude-code-ide--sessions (make-hash-table :test #'equal))
+         (buffers (cl-loop repeat 4 collect (generate-new-buffer " *paste-route*")))
+         (processes (cl-loop for buffer in buffers collect
+                             (make-pipe-process :name "paste-route" :buffer buffer
+                                                :noquery t)))
+         (a (claude-code-ide-session-create
+             :id "a" :host "alpha.example" :directory "/alpha/"
+             :process (nth 0 processes)
+             :zmx-name "same-name" :cli-type 'omp :buffer (nth 0 buffers)))
+         (b (claude-code-ide-session-create
+             :id "b" :host "beta.example" :directory "/beta/"
+             :process (nth 1 processes)
+             :zmx-name "same-name" :cli-type 'omp :buffer (nth 1 buffers)))
+         (received (list (cons "a" nil) (cons "b" nil)))
+         other token)
+    (unwind-protect
+        (progn
+          (cl-mapc
+           (lambda (buffer process)
+             (process-put process 'cci-zmx-client (process-name process))
+             (with-current-buffer buffer
+               (setq-local major-mode 'ghostel-mode
+                           ghostel--process process
+                           claude-code-ide--session-cli-type 'omp)))
+           buffers processes)
+          (claude-code-ide--put-session a)
+          (claude-code-ide--put-session b)
+          (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                    ((symbol-function 'gui-selection-exists-p) (lambda (&rest _) t))
+                    ((symbol-function 'gui-get-selection)
+                     (lambda (_selection target &rest _)
+                       (should (eq target 'TARGETS))
+                       (set-buffer other)
+                       [image/png]))
+                    ((symbol-function 'claude-code-ide-zmx--call-remote)
+                     (lambda (host args callback &optional _name)
+                       (should (member host '("alpha.example" "beta.example")))
+                       (should (equal args '("print-env" "same-name"
+                                             "CLAUDE_CODE_IDE_CLIENT")))
+                       (let ((session (if (equal host "alpha.example") a b)))
+                         (set-buffer other)
+                         (funcall callback
+                                  (list :status 0
+                                        :stdout (process-get
+                                                 (claude-code-ide-session-process session)
+                                                 'cci-zmx-client))))
+                       nil))
+                    ((symbol-function 'ghostel-paste-events-supported-p)
+                     (lambda (&optional _) t))
+                    ((symbol-function 'ghostel-paste-clipboard)
+                     (lambda (&optional buffer)
+                       (let* ((session (claude-code-ide--session-for-buffer buffer))
+                              (entry (assoc (claude-code-ide-session-id session) received)))
+                         (should (eq ghostel--process
+                                     (claude-code-ide-session-process session)))
+                         (should (eq buffer (claude-code-ide-session-buffer session)))
+                         (setcdr entry (append (cdr entry) (list token))))
+                       t))
+                    ((symbol-function 'claude-code-ide-session-send-string)
+                     (lambda (&rest _) (ert-fail "An image became raw input")))
+                    ((symbol-function 'ghostel-yank)
+                     (lambda () (ert-fail "An image became text"))))
+            (dotimes (index 10)
+              (ert-info ((format "gesture=%d, reattached=%S" index (>= index 6)))
+                (when (= index 6)
+                  (setf (claude-code-ide-session-buffer a) (nth 2 buffers)
+                        (claude-code-ide-session-process a) (nth 2 processes)
+                        (claude-code-ide-session-process b) (nth 3 processes)
+                        (claude-code-ide-session-buffer b) (nth 3 buffers)))
+                (let ((session (if (cl-evenp index) a b)))
+                  (setq other (claude-code-ide-session-buffer (if (eq session a) b a))
+                        token index)
+                  (with-current-buffer (claude-code-ide-session-buffer session)
+                    (claude-code-ide-session-paste-clipboard))))))
+          (should (equal received '(("a" 0 2 4 6 8) ("b" 1 3 5 7 9))))
+          (should (eq (claude-code-ide-session-process a) (nth 2 processes)))
+          (should (eq (claude-code-ide-session-process b) (nth 3 processes)))
+          (should (cl-every #'process-live-p processes))
+          (should (equal (list (claude-code-ide-session-host a)
+                              (claude-code-ide-session-directory a)
+                              (claude-code-ide-session-zmx-name a)
+                              (claude-code-ide-session-host b)
+                              (claude-code-ide-session-directory b)
+                              (claude-code-ide-session-zmx-name b))
+                         '("alpha.example" "/alpha/" "same-name"
+                           "beta.example" "/beta/" "same-name"))))
+      (mapc #'delete-process processes)
+      (mapc #'kill-buffer buffers))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-refuses-other-input-owner ()
+  "A remote image never claims input or reaches an unverified attachment."
+  (dolist (owner '("another-client" "" unmarked))
+    (ert-info ((format "owner=%S" owner))
+      (let* ((result (claude-code-ide-tests--clipboard-route
+                      'omp "approved.example" [image/png] t nil owner))
+             (failure (plist-get result :error)))
+        (should-not (plist-get result :input))
+        (should-not (plist-get result :messages))
+        (should (eq (car failure) 'user-error))
+        (when (eq owner 'unmarked)
+          (should-not (plist-get result :queries)))
+        (let ((explanation (downcase (error-message-string failure))))
+          (should (string-match-p "input\\|client\\|attachment" explanation))
+          (should (string-match-p "type\\|reattach" explanation)))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-rejects-changed-preflight-target ()
+  "An owner reply cannot authorize a changed host, directory, target, or process."
+  (dolist (field '(host directory name process marker))
+    (ert-info ((format "changed field=%S" field))
+      (let* ((result
+              (claude-code-ide-tests--clipboard-route
+               'omp "approved.example" [image/png] t nil
+               (lambda (session)
+                 (pcase field
+                   ('host (setf (claude-code-ide-session-host session) "changed.example"))
+                   ('directory (setf (claude-code-ide-session-directory session) "/changed/"))
+                   ('name (setf (claude-code-ide-session-zmx-name session) "changed"))
+                   ('process (setf (claude-code-ide-session-process session) nil))
+                   ('marker (process-put (claude-code-ide-session-process session)
+                                         'cci-zmx-client "changed")))
+                 "client-focused")))
+             (failure (plist-get result :error)))
+        (should-not (plist-get result :input))
+        (should (eq (car failure) 'user-error))
+        (should (string-match-p "Session\\|attachment" (error-message-string failure)))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-refuses-reentrant-preflight ()
+  "A nested paste cannot replace the original ownership check."
+  (let (nested)
+    (let ((result
+           (claude-code-ide-tests--clipboard-route
+            'omp "approved.example" [image/png] t nil
+            (lambda (_session)
+              (setq nested
+                    (should-error (claude-code-ide-session-paste-clipboard)
+                                  :type 'user-error))
+              "client-focused"))))
+      (should (string-match-p "active\\|wait" (downcase (error-message-string nested))))
+      (should (equal (plist-get result :input) '((image "paste-focused"))))
+      (should (= (length (plist-get result :queries)) 1))
+      (should-not (plist-get result :error)))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-refuses-empty-or-unavailable-selection ()
+  "Empty and inaccessible clipboards give distinct conditions and remedies."
+  (dolist (targets '(nil [] [TARGETS] [TIMESTAMP MULTIPLE SAVE_TARGETS] error no-gui))
+    (ert-info ((format "targets=%S" targets))
+      (let* ((result (claude-code-ide-tests--clipboard-route
+                      'omp "approved.example" targets t))
+             (failure (plist-get result :error)))
+        (should-not (plist-get result :input))
+        (should-not (plist-get result :queries))
+        (should-not (plist-get result :messages))
+        (should (eq (car failure) 'user-error))
+        (let ((explanation (downcase (error-message-string failure))))
+          (should (string-match-p "clipboard\\|selection" explanation))
+          (should (string-match-p "copy" explanation))
+          (if (memq targets '(error no-gui))
+              (progn
+                (should (string-match-p "unavailable\\|no.*gui" explanation))
+                (should (string-match-p "graphical" explanation)))
+            (should (string-match-p "empty\\|no.*\\(?:data\\|content\\)" explanation))))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-remote-omp-refuses-missing-support ()
+  "Absent interfaces and old native support refuse images without a substitute."
+  (dolist (support '(nil absent))
+    (let* ((result (claude-code-ide-tests--clipboard-route
+                    'omp "approved.example" [image/png UTF8_STRING] support))
+           (failure (plist-get result :error)))
+      (should-not (plist-get result :input))
+      (should (eq (car failure) 'user-error))
+      (let ((explanation (downcase (error-message-string failure))))
+        (should (string-match-p "ghostel\\|native\\|terminal" explanation))
+        (should (string-match-p "local\\|updat\\|upgrad\\|build\\|install" explanation))))))
+
+(ert-deftest claude-code-ide-test-session-paste-clipboard-remote-omp-preserves-provider-refusal ()
+  "A rejected image never becomes text, a path, or raw control-V."
+  (let ((result (claude-code-ide-tests--clipboard-route
+                 'omp "approved.example" [image/png UTF8_STRING] t t)))
+    (should (eq (car (plist-get result :error)) 'user-error))
+    (should-not (plist-get result :input))
+    (should-not (plist-get result :messages))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-preserves-text-yank ()
-  "Test that non-image clipboard targets use Ghostel's normal paste."
-  (should (require 'claude-code-ide-session nil t))
-  (let ((yanked nil))
-    (cl-letf (((symbol-function 'gui-get-selection)
-               (lambda (&rest _args) [UTF8_STRING]))
-              ((symbol-function 'ghostel-yank)
-               (lambda () (setq yanked t))))
-      (with-temp-buffer
-        (setq-local claude-code-ide--session-cli-type 'claude
-                    major-mode 'ghostel-mode)
-        (claude-code-ide-session-paste-clipboard)
-        (should yanked)))))
+  "Text-only clipboards keep normal paste on both hosts with any native support."
+  (dolist (host '(nil "approved.example"))
+    (dolist (cli-type '(claude codex omp pi opencode unknown-agent))
+      (dolist (support '(t nil absent))
+        (ert-info ((format "Host %S, CLI %S, support %S" host cli-type support))
+          (let ((result (claude-code-ide-tests--clipboard-route
+                         cli-type host [UTF8_STRING text/plain] support)))
+            (should (equal (plist-get result :input) '((yank))))
+            (should-not (plist-get result :error))
+            (should-not (plist-get result :messages))))))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-falls-back-for-unsupported-or-unavailable-targets ()
-  "Test that unsupported and unavailable target queries retain normal paste."
-  (should (require 'claude-code-ide-session nil t))
+  "Unsupported and unavailable target queries retain normal local paste."
   (dolist (targets '([application/pdf] nil error))
-    (let ((yanked nil))
-      (cl-letf (((symbol-function 'gui-get-selection)
-                 (lambda (&rest _args)
-                   (if (eq targets 'error)
-                       (error "Clipboard unavailable")
-                     targets)))
-                ((symbol-function 'ghostel-yank)
-                 (lambda () (setq yanked t))))
-        (with-temp-buffer
-          (setq-local claude-code-ide--session-cli-type 'claude
-                      major-mode 'ghostel-mode)
-          (claude-code-ide-session-paste-clipboard)
-          (should yanked))))))
+    (let ((result (claude-code-ide-tests--clipboard-route
+                   'claude nil targets 'absent)))
+      (should (equal (plist-get result :input) '((yank))))
+      (should-not (plist-get result :error)))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-gates-images-by-cli-capability ()
-  "Pi and OpenCode keep normal paste instead of image control sequences."
-  (dolist (cli-type '(pi opencode))
-    (let (sent yanked)
-      (cl-letf (((symbol-function 'gui-get-selection)
-                 (lambda (&rest _) [public.png]))
-                ((symbol-function 'claude-code-ide-session-send-string)
-                 (lambda (&rest _) (setq sent t)))
-                ((symbol-function 'ghostel-yank)
-                 (lambda () (setq yanked t))))
-        (with-temp-buffer
-          (setq-local claude-code-ide--session-cli-type cli-type
-                      major-mode 'ghostel-mode)
-          (claude-code-ide-session-paste-clipboard)
-          (should-not sent)
-          (should yanked))))))
+  "Unsupported and unknown CLIs preserve their image gesture on either host."
+  (dolist (host '(nil "approved.example"))
+    (dolist (cli-type (if host
+                         '(claude codex pi opencode unknown-agent)
+                       '(pi opencode unknown-agent)))
+      (dolist (support '(t nil absent))
+        (ert-info ((format "Host %S, CLI %S, support %S" host cli-type support))
+          (let ((result (claude-code-ide-tests--clipboard-route
+                         cli-type host [public.png UTF8_STRING] support)))
+            (should (equal (plist-get result :input)
+                           (if (memq cli-type '(claude codex))
+                               '((send "\026" nil))
+                             '((yank)))))
+            (should-not (plist-get result :error))
+            (should-not (plist-get result :messages))))))))
 
 (ert-deftest claude-code-ide-test-session-paste-clipboard-installs-super-v ()
   "Test that the session mode installs the clipboard paste keybinding."
@@ -19377,64 +19637,94 @@ The resync ignores pin state and stored order keys."
   (cl-letf (((symbol-function 'executable-find) (lambda (_) nil)))
     (should-error (claude-code-ide-zmx--ensure) :type 'user-error)))
 
+(defun claude-code-ide-tests--observe-zmx-client (make-command &optional tracked)
+  "Execute MAKE-COMMAND through local SSH and zmx recorders.
+Pass the literal project directory and a profile fixture to MAKE-COMMAND.
+TRACKED supplies the inherited tracking list, with nil meaning unset."
+  (unless (file-executable-p "/bin/sh")
+    (ert-skip "The client command check requires a POSIX shell"))
+  (claude-code-ide-tests--with-temp-directory
+   (lambda ()
+     (let* ((bin (expand-file-name "bin"))
+            (directory (expand-file-name "work a'b;$HOME"))
+            (login (expand-file-name "login"))
+            (process-environment (copy-sequence process-environment))
+            (exec-path (cons bin exec-path)))
+       (make-directory bin)
+       (make-directory directory)
+       (dolist
+           (entry
+            `((,(expand-file-name "ssh" bin)
+               . "#!/bin/sh\nfor command in \"$@\"; do :; done\nexec /bin/sh -c \"$command\"\n")
+              (,login
+               . "#!/bin/sh\nexport ZMX_TRACK_ENV=PROFILE_ONLY CLAUDE_CODE_IDE_CLIENT=profile\nfor command in \"$@\"; do :; done\nexec /bin/sh -c \"$command\"\n")
+              (,(expand-file-name "zmx" bin)
+               . "#!/bin/sh\nprintf '%s\\000' \"$PWD\" \"$CLAUDE_CODE_IDE_CLIENT\" \"$ZMX_TRACK_ENV\" \"${ZMX_SESSION-unset}\" \"${ZMX_SESSION_PREFIX-unset}\" \"${CCI_TEST_SETTING-unset}\" \"$@\"\n")))
+         (with-temp-file (car entry) (insert (cdr entry)))
+         (set-file-modes (car entry) #o700))
+       (setenv "PATH" (concat bin path-separator (or (getenv "PATH") "")))
+       (setenv "ZMX_TRACK_ENV" tracked)
+       (setenv "ZMX_SESSION" "parent-session")
+       (setenv "ZMX_SESSION_PREFIX" "parent-prefix")
+       (setenv "CLAUDE_CODE_IDE_CLIENT" "parent-client")
+       (setenv "CCI_TEST_SETTING" nil)
+       (let ((command (funcall make-command directory login)))
+         (with-temp-buffer
+           (should (zerop (call-process "/bin/sh" nil t nil "-c" command)))
+           (butlast (split-string (buffer-string) "\0"))))))))
+
 (ert-deftest claude-code-ide-test-zmx-wrap-existing-uses-exit-guard ()
-  "Existing-only wrap validates the name and appends the no-op guard command."
-  (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore))
-    (let ((claude-code-ide-remote-hosts '("host")))
-      (should (equal (claude-code-ide-zmx--remote-attach-command "host" "target")
-                     (mapconcat #'claude-code-ide-zmx--quote
-                                (append '("ssh" "-t") claude-code-ide-zmx--ssh-options
-                                        (list "host" (claude-code-ide-zmx--remote-command
-                                                      '("attach" "target" "false"))))
-                                " "))))
-    (should (equal (claude-code-ide-zmx-wrap-command "target")
-                   "'env' '-u' 'ZMX_SESSION' '-u' 'ZMX_SESSION_PREFIX' 'zmx' 'attach' 'target' 'false'"))
+  "Existing-only commands preserve the exact target and cannot start an Agent."
+  (let ((claude-code-ide-remote-hosts '("host")))
+    (dolist (remote '(nil t))
+      (let ((fields
+             (claude-code-ide-tests--observe-zmx-client
+              (lambda (_directory _login)
+                (if remote
+                    (claude-code-ide-zmx--remote-attach-command "host" "target" "client")
+                  (claude-code-ide-zmx-wrap-command "target"))))))
+        (should (equal (nthcdr 6 fields) '("attach" "target" "false")))
+        (should (equal (seq-subseq fields 3 5) '("unset" "unset")))))
     (should-error (claude-code-ide-zmx-wrap-command "a/b") :type 'user-error)))
 
+
 (ert-deftest claude-code-ide-test-zmx-remote-create-command-quotes-literals ()
-  "Remote creation quotes every literal and rejects invalid input before framing."
-  (let* ((claude-code-ide-remote-hosts '("host"))
-         (directory "/srv/work tree/a'b;$HOME")
-         (name "target name")
-         (executable "/opt/Agent tool/omp'run")
-         (args '("--model" "two words" "quote'\";$HOME" "$(touch nope)"))
-         (expected
-          (mapconcat
-           #'claude-code-ide-zmx--quote
-           (append
-            '("ssh" "-t")
-            claude-code-ide-zmx--ssh-options
-            (list
-             "host"
-             (claude-code-ide-zmx--exec-command
-              "env"
-              (append '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
-                        "zmx" "attach")
-                      (list name executable)
-                      args)
-              directory)))
-           " ")))
-    (should
-     (equal
-      (claude-code-ide-zmx--remote-create-command
-       "host" directory name executable args)
-      expected))
+  "Remote creation preserves literal arguments and the effective tracking list."
+  (let ((claude-code-ide-remote-hosts '("host"))
+        (name "target name")
+        (executable "/opt/Agent tool/omp'run")
+        (args '("--model" "two words" "" "quote'\";$HOME"))
+        (marker "client'\";$HOME"))
+    (dolist (tracked '(nil "" "CUSTOM,DISPLAY"))
+      (let (expected-directory)
+        (let ((fields
+               (claude-code-ide-tests--observe-zmx-client
+                (lambda (directory _login)
+                  (setq expected-directory (file-truename directory))
+                  (claude-code-ide-zmx--remote-create-command
+                   "host" directory name executable args marker))
+                tracked)))
+          (should (equal (file-truename (car fields)) expected-directory))
+          (should (equal (nth 1 fields) marker))
+          (should (equal (seq-subseq fields 3 5) '("unset" "unset")))
+          (should (equal (nthcdr 6 fields) (append (list "attach" name executable) args)))
+          (let ((names (split-string (nth 2 fields) "," t)))
+            (should (member "CLAUDE_CODE_IDE_CLIENT" names))
+            (when tracked
+              (should (equal (sort names #'string<)
+                             (sort (cons "CLAUDE_CODE_IDE_CLIENT"
+                                         (split-string tracked "," t))
+                                   #'string<))))))))
     (dolist (invalid
-             '(("host" "relative" "target" "omp" nil)
-               ("host" "/srv/repo" "a/b" "omp" nil)
-               ("host" "/srv/repo" "target" "-omp" nil)
-               ("host" "/srv/repo" "target" "omp" "--model")
-               ("host" "/srv/repo" "target" "omp" ("bad\nargument"))))
-      (let (constructed)
-        (cl-letf
-            (((symbol-function 'claude-code-ide-zmx--exec-command)
-              (lambda (&rest _)
-                (setq constructed t)
-                (ert-fail "Invalid input reached command construction"))))
-          (should-error
-           (apply #'claude-code-ide-zmx--remote-create-command invalid)
-           :type 'user-error)
-          (should-not constructed))))))
+             '(("host" "relative" "target" "omp" nil "client")
+               ("host" "/srv/repo" "a/b" "omp" nil "client")
+               ("host" "/srv/repo" "target" "-omp" nil "client")
+               ("host" "/srv/repo" "target" "omp" "--model" "client")
+               ("host" "/srv/repo" "target" "omp" ("bad\nargument") "client")
+               ("host" "/srv/repo" "target" "omp" nil "")))
+      (should-error (apply #'claude-code-ide-zmx--remote-create-command invalid)
+                    :type 'user-error))))
+
 
 (ert-deftest claude-code-ide-test-zmx-wrap-at-shared-seam-per-cli ()
   "Every CLI type gets wrapped through the shared terminal seam."
@@ -20303,12 +20593,11 @@ the Agent's self-reported hostname."
             :shell "/usr/bin/zsh" :shell-args ("-lic"))))
         (claude-code-ide-zmx-session-prefix "cci-")
         (claude-code-ide-terminal-initialization-delay 0)
-        buffer process terminal-call displayed metadata id-prefix session)
+        buffer process terminal-call displayed metadata session)
     (unwind-protect
         (cl-letf
             (((symbol-function 'make-temp-name)
               (lambda (prefix)
-                (setq id-prefix prefix)
                 (concat prefix "fixed")))
              ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
              ((symbol-function 'claude-code-ide--create-terminal-with-command)
@@ -20351,7 +20640,6 @@ the Agent's self-reported hostname."
           (setq session
                 (claude-code-ide--start-remote-sibling-session
                  "host" "/srv/repo exact"))
-          (should (equal id-prefix "claude-remote-host-"))
           (should (equal (claude-code-ide-session-id session)
                          "claude-remote-host-fixed"))
           (should (equal (claude-code-ide-session-zmx-name session)
@@ -20369,14 +20657,7 @@ the Agent's self-reported hostname."
           (should (eq displayed buffer))
           (should (eq metadata session))
           (should (equal (nth 1 terminal-call) temporary-file-directory))
-          (should (eq (nth 4 terminal-call) 'omp))
-          (should
-           (equal
-            (nth 2 terminal-call)
-            (claude-code-ide-zmx--remote-create-command
-             "host" "/srv/repo exact" "cci-omp-repo-exact-fixed"
-             "/remote/omp tool" '("--model" "remote model")
-             "/usr/bin/zsh" '("-lic")))))
+          (should (eq (nth 4 terminal-call) 'omp)))
       (when (processp process)
         (set-process-sentinel process #'ignore)
         (when (process-live-p process) (delete-process process)))
@@ -20403,16 +20684,15 @@ the Agent's self-reported hostname."
         (claude-code-ide-zmx-session-prefix "cci-")
         (claude-code-ide-terminal-initialization-delay 0)
         (live-results '(t nil))
-        buffer process sentinel terminal-command)
+        buffer process sentinel)
     (unwind-protect
         (cl-letf
             (((symbol-function 'make-temp-name)
               (lambda (prefix) (concat prefix "fixed")))
              ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
              ((symbol-function 'claude-code-ide--create-terminal-with-command)
-              (lambda (name _directory command _environment)
-                (setq terminal-command command
-                      buffer (generate-new-buffer name)
+              (lambda (name _directory _command _environment)
+                (setq buffer (generate-new-buffer name)
                       process
                       (make-pipe-process
                        :name "cci-failed-remote-sibling" :buffer buffer
@@ -20443,23 +20723,9 @@ the Agent's self-reported hostname."
               (lambda (&rest _) (ert-fail "Rollback killed a remote zmx target")))
              ((symbol-function 'claude-code-ide-zmx-kill)
               (lambda (&rest _) (ert-fail "Rollback killed a remote zmx target"))))
-          (let ((error-data
-                 (should-error
-                  (claude-code-ide--start-remote-sibling-session
-                   "host-a" "/srv/repo")
-                  :type 'user-error)))
-            (should
-             (equal
-              (error-message-string error-data)
-              (concat
-               "Cannot start cci-omp-repo-fixed on host-a: "
-               "The terminal exited or Session ownership changed during initialization"))))
-          (should
-           (equal
-            terminal-command
-            (claude-code-ide-zmx--remote-create-command
-             "host-a" "/srv/repo" "cci-omp-repo-fixed" "omp" nil
-             "/missing/login-shell" '("-lc"))))
+          (should-error
+           (claude-code-ide--start-remote-sibling-session "host-a" "/srv/repo")
+           :type 'user-error)
           (should (= (hash-table-count claude-code-ide--sessions) 0))
           (should-not
            (claude-code-ide-manager--item-by-session-key
@@ -20951,16 +21217,14 @@ default, so the default must not track the last saved value."
          (claude-code-ide-terminal-initialization-delay 0)
          (claude-code-ide-remote-launch-config
           '(("host-a" :environment ("SKIP_TMUX=1"))))
-         (available nil)
-         terminal-command)
+         (available nil))
      (cl-letf
          (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
           ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
           ((symbol-function 'claude-code-ide--register-session)
            #'claude-code-ide--put-session)
           ((symbol-function 'claude-code-ide--create-terminal-with-command)
-           (lambda (name _directory command _environment)
-             (setq terminal-command command)
+           (lambda (name _directory _command _environment)
              (unless available (user-error "Ghostel is unavailable"))
              (let* ((buffer (generate-new-buffer name))
                     (process (make-pipe-process
@@ -20995,9 +21259,6 @@ default, so the default must not track the last saved value."
        (should (claude-code-ide-manager--item-by-session-key "stable"))
        (setq available t)
        (claude-code-ide--reattach-remote-session "stable")
-       (should
-        (equal terminal-command
-               (claude-code-ide-zmx--remote-attach-command "host-a" "same")))
        (let ((session (claude-code-ide--get-session "stable")))
          (should (process-live-p (claude-code-ide-session-process session)))
          (should (equal (claude-code-ide-session-custom-name session) "Saved"))
@@ -28670,41 +28931,20 @@ for the dead clock instead of the returned command."
        :type 'user-error))))
 
 (ert-deftest claude-code-ide-test-remote-login-environment-user-story-1-sibling-command ()
-  "A sibling initializes both target creation and its Agent login environment."
+  "The attachment marker follows profile setup without replacing its tracking list."
   (let* ((claude-code-ide-remote-hosts '("host"))
-         (directory "/srv/work tree/a'b;$HOME")
-         (name "target name")
-         (executable "/opt/Agent tool/omp'run")
-         (args '("--model" "two words" "$(touch nope)"))
-         (shell "/usr/bin/zsh")
-         (shell-args '("-lic"))
-         (environment '("SKIP_TMUX=1"))
-         (target
-          (claude-code-ide-zmx--exec-command
-           "env"
-           (append
-            '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
-              "zmx" "attach")
-            (list name executable)
-            args)
-           directory))
-         (expected
-          (mapconcat
-           #'claude-code-ide-zmx--quote
-           (append
-            '("ssh" "-t")
-            claude-code-ide-zmx--ssh-options
-            (list "host"
-                  (claude-code-ide-zmx--login-command
-                   target shell shell-args environment)))
-           " "))
-         (actual
-          (claude-code-ide-zmx--remote-create-command
-           "host" directory name executable args shell shell-args environment)))
-    (should (equal actual expected))
-    (let ((first (string-match (regexp-quote shell) actual)))
-      (should first)
-      (should-not (string-match (regexp-quote shell) actual (1+ first))))))
+         (fields
+          (claude-code-ide-tests--observe-zmx-client
+           (lambda (directory login)
+             (claude-code-ide-zmx--remote-create-command
+              "host" directory "target name" "omp" '("--model" "two words")
+              "after-profile" login '("-lc")
+              '("CCI_TEST_SETTING=outer" "ZMX_TRACK_ENV=OUTER_ONLY"))))))
+    (should (equal (nth 1 fields) "after-profile"))
+    (should (equal (split-string (nth 2 fields) "," t)
+                   '("PROFILE_ONLY" "CLAUDE_CODE_IDE_CLIENT")))
+    (should (equal (nth 5 fields) "outer"))
+    (should (equal (nthcdr 6 fields) '("attach" "target name" "omp" "--model" "two words")))))
 
 (ert-deftest claude-code-ide-test-remote-login-environment-user-story-1-worktree-command ()
   "Worktree preparation resolves and starts the Agent inside the selected shell."
@@ -28776,52 +29016,26 @@ for the dead clock instead of the returned command."
   (let* ((claude-code-ide-remote-hosts '("alpha" "beta"))
          (claude-code-ide-cli-path "omp")
          (claude-code-ide-remote-launch-config
-          '(("alpha" :shell "/usr/bin/zsh" :shell-args ("-lic"))))
+          '(("alpha" :shell "/missing/login-shell" :shell-args ("-lic"))))
          (claude-code-ide-remote-worktree--operations
           (make-hash-table :test #'equal))
          (operation
           (claude-code-ide-remote-worktree--new-operation
-           'open "alpha" "/srv/repo" nil))
-         (direct-command
-          (claude-code-ide-zmx--exec-command
-           "env"
-           '("-u" "ZMX_SESSION" "-u" "ZMX_SESSION_PREFIX"
-             "zmx" "attach" "target" "omp")
-           "/srv/repo")))
-    (should (equal (plist-get
-                    (claude-code-ide-zmx--remote-launch-spec "alpha")
-                    :shell)
-                   "/usr/bin/zsh"))
+           'open "alpha" "/srv/repo" nil)))
     (should-not
      (plist-get (claude-code-ide-zmx--remote-launch-spec "beta") :shell))
-    (should
-     (equal
-      (claude-code-ide-zmx--remote-create-command
-       "beta" "/srv/repo" "target" "omp" nil)
-      (mapconcat
-       #'claude-code-ide-zmx--quote
-       (append '("ssh" "-t") claude-code-ide-zmx--ssh-options
-               (list "beta" direct-command))
-       " ")))
-    (should
-     (equal
-      (claude-code-ide-zmx--remote-attach-command "alpha" "target")
-      (mapconcat
-       #'claude-code-ide-zmx--quote
-       (append
-        '("ssh" "-t")
-        claude-code-ide-zmx--ssh-options
-        (list "alpha"
-              (claude-code-ide-zmx--remote-command
-               '("attach" "target" "false"))))
-       " ")))
+    (let ((fields
+           (claude-code-ide-tests--observe-zmx-client
+            (lambda (_directory _login)
+              (claude-code-ide-zmx--remote-attach-command "alpha" "target" "client")))))
+      (should (equal (nthcdr 6 fields) '("attach" "target" "false"))))
     (setf (claude-code-ide-remote-worktree--operation-launch-selection operation)
           (claude-code-ide-remote-worktree--launch-selection "alpha"))
     (setf (claude-code-ide-remote-worktree--operation-steps operation)
           '((:kind bootstrap)))
     (should (claude-code-ide-remote-worktree--launch-current-p operation))
     (setq claude-code-ide-remote-launch-config
-          '(("alpha" :shell "/usr/bin/zsh" :shell-args ("-lc"))))
+          '(("alpha" :shell "/missing/login-shell" :shell-args ("-lc"))))
     (should-not
      (claude-code-ide-remote-worktree--launch-current-p operation))))
 

@@ -43,11 +43,11 @@ The user expects the transfer to use the Session's own terminal connection. The 
 
 **Why this priority**: A transfer that leaves files behind or asks the user to clean up would be a different feature with a different cost and privacy profile.
 
-**Independent Test**: Paste an image into a remote Session, then search the remote host for new files created around the transfer. Confirm that none carry the image, and that the Session's working directory is unchanged.
+**Independent Test**: Paste an image into a remote Session and check for transfer-created files. Exclude ordinary Agent attachment storage. Confirm unchanged working directory.
 
 **Acceptance Scenarios**:
 
-1. **Given** a remote Session, **When** the user pastes an image, **Then** no new file containing that image exists on the remote host.
+1. **Given** a remote Session, **When** the user pastes an image, **Then** the transport creates no image file on the remote host. The Agent may use its ordinary attachment storage after verified receipt.
 2. **Given** a remote Session on a host the user has not approved, **When** the user starts or attaches the Session, **Then** the existing host-approval and attachment rules are unchanged.
 3. **Given** a finished transfer, **When** the user continues working, **Then** no cleanup command, no prompt, and no additional confirmation is required.
 
@@ -65,7 +65,7 @@ When the image cannot reach the Agent, the user learns why in the Session and ke
 
 1. **Given** a terminal that lacks the paste-event capability, **When** the user pastes an image into a remote Session, **Then** the Session explains that the terminal cannot deliver clipboard images and names the supported alternative.
 2. **Given** a local terminal copy that is not the copy delivering input to the Agent, **When** the user pastes an image, **Then** the Session names that condition and the one action that restores delivery, sends nothing, and changes no terminal ownership.
-3. **Given** a remote host that becomes unreachable during the transfer, **When** the transfer fails, **Then** no partial image is attached and the Session reports the failure.
+3. **Given** a remote host that becomes unreachable during transfer, **When** delivery becomes uncertain, **Then** the Session reports delivery unconfirmed. The receiver must reject incomplete image data.
 4. **Given** an unreadable or empty image on the clipboard, **When** the user pastes it, **Then** the Session reports the condition and attaches nothing.
 
 ---
@@ -76,26 +76,26 @@ When the image cannot reach the Agent, the user learns why in the Session and ke
 - **EC-02 — Large screenshot**: A full-screen or retina screenshot can exceed several megabytes. The transfer sends the image unchanged, and the Agent's existing size rules decide the outcome, exactly as for a local paste. The package adds no size cap of its own.
 - **EC-03 — Clipboard changes mid-transfer**: The user copies something else while the transfer is in flight. The transfer reflects the clipboard state at the moment the Agent reads it, exactly as today's local paste does. It never mixes two images and never attaches a partial image.
 - **EC-04 — Multiple Sessions, multiple Emacsen**: Several Sessions can exist, local and remote, in one Emacs and in several. A gesture in one Session never attaches an image to another.
-- **EC-05 — Terminal without native support**: An older terminal backend, or a Ghostel build without the capability, keeps its current behavior and explains the limitation at the point of use.
+- **EC-05 — Terminal without native support**: A remote image paste for a protocol-capable Agent reports missing terminal support and sends nothing. Local Sessions, valid text paste, and unsupported Agents keep their current behavior.
 - **EC-06 — No GUI clipboard**: An Emacs process without access to a graphical selection (terminal Emacs, remote Emacs) has no image to serve. The Session explains the condition instead of attaching something else.
 - **EC-07 — Text paste paths stay intact**: Multi-line collapse, large-paste handling, bracketed paste, and raw text paste keep their current behavior.
 - **EC-08 — Session identity**: The gesture applies to the focused Session only, including after an Emacs restart that reattaches an existing Agent.
-- **EC-09 — Repeated gestures**: Two consecutive pastes of different images deliver two distinct attachments in order.
+- **EC-09 — Repeated gestures**: After the first paste finishes, the user copies and pastes a different image. The two attachments remain distinct and ordered. An overlapping gesture receives a busy explanation and does not replace the active attempt.
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
 - **FR-001**: A paste-image gesture in a Session buffer MUST deliver the locally copied image to the Agent of that Session when both the terminal and the Agent support image transfer, regardless of the host that runs the Agent.
-- **FR-002**: The gesture MUST preserve current behavior for every other payload: text clipboards, Agents that do not accept images, and Sessions whose terminal cannot transfer images.
+- **FR-002**: Valid text paste, local Sessions, and Agents without the client-side protocol MUST keep their current behavior. For a protocol-capable remote Agent, missing terminal support MUST cause an explained refusal with no transmission, as FR-009 requires.
 - **FR-003**: The transferred image MUST arrive as the Agent's ordinary image attachment, with the same attachment semantics, ordering, and size limits as an image pasted into a local Session.
-- **FR-004**: Every gesture MUST produce exactly one explicit outcome: an attached image, a preserved text paste, or a user-visible explanation. The feature MUST NOT fail silently and MUST NOT report an attachment that did not reach the Agent.
-- **FR-005**: The feature MUST NOT substitute a different operation for the image. It MUST NOT paste a local path, a remote path, or a file created for the transfer, and it MUST NOT write the image to the Agent's host disk.
+- **FR-004**: Every gesture MUST produce an attached image, preserved text paste, or user-visible explanation. The feature MUST NOT fail silently or report an unobserved attachment. After connection loss, it MAY report delivery unconfirmed when attachment remains possible. It MUST NOT retry automatically or claim that queued bytes were canceled.
+- **FR-005**: The feature MUST NOT substitute a path, text placeholder, or transfer-created file for the image. The transport MUST NOT write image files to the Agent's host. Ordinary Agent attachment storage after verified receipt remains outside this restriction.
 - **FR-006**: The feature MUST read the local clipboard only in response to a paste gesture in a Session. It MUST NOT read the clipboard in the background, at startup, or for another Session's gesture.
 - **FR-007**: The read authorization created by a gesture MUST cover that gesture only. It MUST NOT authorize later reads, reads by another program, or reads of a different clipboard location.
 - **FR-008**: The image bytes MUST be served from the local machine that holds the clipboard, so the Agent's host needs no clipboard of its own.
 - **FR-009**: When the terminal cannot deliver clipboard images, or the local terminal copy is not the copy delivering input to the Agent, the Session MUST state the condition and the one action that restores delivery, and MUST send nothing. The Session MUST stay usable, MUST NOT attempt to take over input ownership from another client, and MUST NOT change its terminal, its target, or its Agent.
-- **FR-010**: A transfer that cannot complete, or that exceeds the time budget, MUST attach nothing and MUST report the failure. A partially transferred image MUST NOT be attached.
+- **FR-010**: The receiver MUST reject incomplete, mixed, or invalid image data before attachment. An attempt that expires before its receiver commit decision MUST NOT commit. The receiver MUST check expiry immediately before synchronous editor mutation under the documented clock model. Connection loss after possible delivery MUST produce an unconfirmed-delivery explanation, not a claim of non-attachment.
 - **FR-011**: Remote Sessions MUST match local Sessions for the gesture, the resulting attachment, ordering, size limits, the acknowledgement, and the visible outcome. Parity applies to the visible result, not to the mechanism. Any required difference MUST be explicit in the user-visible behavior. *(Principle VI)*
 - **FR-012**: The feature MUST NOT change host approval, authentication, host-key checking, connection limits, session ownership, or start, attach, reattach, detach, and Stop behavior.
 - **FR-013**: The feature MUST NOT add a required dependency. When the terminal's native support is absent, the package and its test suite MUST still load, byte-compile, and pass. *(Principle III)*
@@ -103,6 +103,19 @@ When the image cannot reach the Agent, the user learns why in the Session and ke
 - **FR-015**: The image that reaches the Agent MUST remain usable for the Agent's vision features: the Agent can read its dimensions and discuss its contents.
 - **FR-016**: A local Session MUST keep its current direct clipboard read as its primary path. The terminal-mediated path MUST serve a Session whose Agent cannot read the local clipboard, so the feature adds a path and does not replace the local mechanism.
 - **FR-017**: The feature MUST NOT resize, recompress, transcode, or cap the image. The image bytes MUST reach the Agent unchanged, and the Agent's existing attachment rules MUST decide the accepted size and format, exactly as for a local paste.
+
+An attachment acknowledgement is the Agent's visible acknowledgement, not a newly required protocol packet.
+A successful paste-command return or PTY write does not prove that acknowledgement.
+FR-004, FR-010, and FR-011 still require the actual attachment outcome and failure behavior.
+The absence of a protocol acknowledgement does not, by itself, prove that OMP needs changes.
+
+The user approved these receiver-design decisions:
+
+- The receiver commit decision defines deadline admission. A later display update is not a hard real-time guarantee.
+- SC-002 remains a measured ten-second acceptance target on the supported route.
+- An uncertain connection outcome receives an explicit explanation, without automatic retry.
+- Overlapping gestures receive a busy explanation. Distinct-image ordering assumes the prior paste finished before the next clipboard change.
+- The no-partial-attachment requirement remains unchanged.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -122,11 +135,10 @@ When the image cannot reach the Agent, the user learns why in the Session and ke
 - **SC-004**: After the feature, the existing paste test suite passes unchanged, including text paste, non-image Agents, and keybinding precedence.
 - **SC-005**: Paste gestures in one Session never attach an image to another Session: ten gestures alternating between two Sessions attach exactly ten images, five to each.
 - **SC-006**: No clipboard read occurs without a paste gesture in a Session: a tracked session with zero gestures records zero reads.
-- **SC-007**: A user who has never used the feature completes a remote image paste within 60 seconds of reading the Session's own guidance, without leaving the Session buffer.
 
 ## Assumptions
 
-- The Agents that gain the behavior are those that implement the client side of the paste-event standard. That set is one Agent today (Oh My Pi). Agents that do not accept images, and Agents without a client-side implementation, keep their current text paste.
+- The enhanced route requires the verified-transfer receiver profile in OMP. OSC 5522 support alone does not establish that profile. Other Agents keep their current behavior and receive no new message.
 - The terminal-side clipboard capability is in scope for this feature and is sequenced before the package-side wiring. The package MUST degrade explicitly while the capability is absent, and MUST keep working against a terminal build that lacks it.
 - Local Sessions keep the direct clipboard read as their primary path. The terminal-mediated path serves Sessions whose Agent cannot read the local clipboard, so the feature adds a path and does not replace the local mechanism.
 - The transfer uses the Session's existing terminal connection. No new network path, port forward, or service is introduced.
@@ -134,11 +146,12 @@ When the image cannot reach the Agent, the user learns why in the Session and ke
   paste-event private mode), which the Agent side already implements for at least one supported Agent.
   Its wire details belong to the plan, not to this specification.
 - Emacs runs with access to a graphical selection when the user pastes an image. Terminal-only Emacs explains the limitation.
-- Session multiplexer client rules are unchanged. When the local terminal copy cannot deliver input to the Agent, the feature reports the condition instead of reworking the multiplexer.
+- Session multiplexer leadership rules and IPC remain unchanged. The user approved a zmx input-backpressure fix after live acceptance confirmed dropped bytes.
+- This exception permits private candidates and regression checks. Installation needs separate approval. It does not permit more model turns.
 - Out of scope: screenshots captured by the package, OCR, image editing, image annotation, new keybindings, file-based transfer of the image, and any change to how Agents store or send images afterwards.
 
 ## Dependencies
 
-- The supported terminal backend provides the paste-event clipboard capability, including mode reporting, a one-time read authorization, and chunked data transfer. This feature delivers that capability. An older backend build keeps today's behavior and is explained at the point of use.
+- The terminal backend must provide mode reporting, one-time read authorization, and chunked image transfer. This feature delivers that capability. An older backend refuses the new remote image route with an explanation. Existing local and text routes remain unchanged.
 - At least one Agent implements the client side of the same standard.
 - The Session multiplexer must forward the terminal's response bytes to the Agent when the local terminal copy is the input leader.

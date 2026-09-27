@@ -1,9 +1,8 @@
 # Data Model: Remote Image Paste
 
-This feature adds no stored data, no schema, and no persisted state. It adds one
-routing decision, one capability probe, and one transient protocol exchange. The
-entities below describe what must exist in memory during a paste, and what must never
-be stored.
+This feature adds no persisted application data or database schema.
+It adds a route decision, a capability probe, and transient host and receiver state.
+The wire metadata has a fixed schema, but no transfer state survives the attempt.
 
 ## Entity: Paste route
 
@@ -15,7 +14,7 @@ The decision the package makes when the user presses the paste gesture.
 | `host` | The Session's host, or nil for a local Session | Nil means local. A non-nil value must already be an approved exact host. |
 | `clipboard-has-image-p` | `gui-get-selection 'CLIPBOARD 'TARGETS` scan, as today (`claude-code-ide-session--clipboard-image-p`) | Existing rule: an `image/*` target or a known image target symbol. |
 | `terminal-paste-events-p` | The Ghostel capability predicate | Absent predicate, or a nil result, means unsupported. |
-| `agent-paste-events-p` | Static set of CLI types that implement the client side | `omp` today (research R2). |
+| `agent-paste-events-p` | Private set of CLI types eligible for the route | `omp` today. Its installed receiver must also support the verified profile. |
 
 Route rules, in order:
 
@@ -33,8 +32,8 @@ sent.
 
 ## Entity: Local clipboard content
 
-The data the read reply may carry. Never persisted, never written to a file, never
-copied to the Agent's host.
+The host serves these bytes in memory. The transport never creates an image file.
+OMP may use its ordinary attachment storage after verified receipt.
 
 | Field | Source | Validation |
 |---|---|---|
@@ -57,8 +56,8 @@ The one-time authorization the terminal mints for a paste event.
 | Field | Owner | Validation |
 |---|---|---|
 | `password` | Minted by the terminal layer from a secure random source | Nonempty; single use. |
-| `mime-types` | The available types at gesture time | Nonempty. |
-| `lifecycle` | Terminal | Consumed by the matching read request, or discarded when the gesture ends. |
+| `mime-types` | Host attempt policy, not the upstream grant table | Only advertised representations may be served. |
+| `lifecycle` | Original upstream handler, with host cancellation | Consumed once or removed when the attempt expires, fails, or ends. |
 
 Rules:
 
@@ -66,6 +65,22 @@ Rules:
 - A request without the grant is answered with a refusal, not with data.
 - The grant never authorizes a second read, a different MIME set, or a read from
   another Session (spec FR-007).
+
+## Entity: Verified receiver attempt
+
+| Field | Owner | Validation |
+|---|---|---|
+| Request ID | OMP receiver | Fresh `ghostel-v1-` UUID. Required on each response packet. |
+| Selected MIME | OMP receiver | Must match the advertised image and metadata. |
+| Image bytes | OMP receiver | Exact declared count and SHA-256 before preparation. |
+| Deadline | OMP receiver | Request-start time plus the remaining host budget. Never extended. |
+| Commit permission | OMP receiver | Single use, active, unexpired, and bound to the original Session and editor. |
+| Phase | OMP receiver | Reading, preparing, committed, or canceled. |
+
+The watchdog remains active through asynchronous image preparation.
+A busy attempt refuses another gesture rather than replacing its state.
+Packets or continuations from a canceled attempt cannot modify another attempt.
+No field here is a second grant store.
 
 ## Entity: Capability report
 
@@ -85,18 +100,24 @@ The transient protocol state for one paste. Nothing here survives the gesture.
 idle
   -> mode enabled by the application          (application writes CSI ? 5522 h)
   -> gesture: terminal sends the event        (MIME list + grant, no data)
-  -> application asks for one MIME            (OSC 5522 read with the grant)
-  -> terminal asks the host for that MIME     (clipboard read callback, granted)
-  -> host replies with chunks                 (base64 data packets)
-  -> application attaches the image           (its own `[Image #N]` behavior)
+  -> application requests metadata and image  (one granted read with a fresh ID)
+  -> terminal reads the selected image once   (authorized clipboard callback)
+  -> terminal sends metadata and image        (upstream packet encoding)
+  -> receiver verifies bytes and expiry
+  -> receiver prepares the image               (ordinary Agent processing)
+  -> guarded synchronous editor commit
   -> idle
 
-failure paths, all terminal-side or host-side:
+failure paths:
   no grant                     -> refusal packet, no data
   MIME unavailable             -> refusal packet, no data
   no GUI selection             -> refusal packet, no data
-  non-leading local client     -> answer never reaches the Agent; the Session explains
+  non-leading local client     -> preflight refusal, no transmission or takeover
   unsafe text payload          -> rejected by the pasting API, nothing written
+  malformed or incomplete data -> receiver refusal, no attachment
+  receiver deadline expired    -> no commit, explanation
+  overlapping gesture          -> busy explanation, active attempt unchanged
+  connection outcome unknown   -> delivery unconfirmed, no automatic retry
 ```
 
 ## Invariants
@@ -104,8 +125,8 @@ failure paths, all terminal-side or host-side:
 1. A gesture in one Session never attaches an image to another Session.
 2. An image reaches the Agent only as an attachment the Agent itself created from
    MIME data. No path, file, or textual substitute is ever sent (spec FR-005).
-3. Every gesture ends in one visible outcome: an attachment, an unchanged text paste,
-   or an explanation (spec FR-004).
+3. Every gesture produces an attachment, unchanged text paste, or explanation.
+   A lost connection may leave delivery unconfirmed (spec FR-004).
 4. No clipboard read occurs without a gesture (spec FR-006).
-5. The Agent's host receives bytes only; it stores nothing and needs no clipboard
-   (spec FR-005, FR-008).
+5. The transport creates no image file on the Agent host and needs no remote clipboard.
+   Ordinary Agent attachment storage remains unchanged (spec FR-005, FR-008).

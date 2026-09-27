@@ -1954,16 +1954,20 @@ Both paths skip local Agent builders, MCP startup, and local zmx wrapping."
             (if existing-item
                 (claude-code-ide-manager-item-created-at existing-item)
               now))
+           (client-marker
+            (make-temp-name
+             (format "cci-%d-%d-" (emacs-pid) (time-convert nil 'integer))))
            (cmd
             (if launch-mode
                 (claude-code-ide-zmx--remote-create-command
                  host working-dir zmx-name
                  (plist-get launch-spec :executable)
                  (plist-get launch-spec :args)
+                 client-marker
                  (plist-get launch-spec :shell)
                  (plist-get launch-spec :shell-args)
                  (plist-get launch-spec :environment))
-              (claude-code-ide-zmx--remote-attach-command host zmx-name)))
+              (claude-code-ide-zmx--remote-attach-command host zmx-name client-marker)))
            (buffer-name
             (generate-new-buffer-name
              (format "*claude-code[%s@%s]*"
@@ -1990,6 +1994,7 @@ Both paths skip local Agent builders, MCP startup, and local zmx wrapping."
                     process (cdr buffer-and-process))
               (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
                 (user-error "Ghostel did not start a live process for the new buffer"))
+              (process-put process 'cci-zmx-client client-marker)
               ;; Ghostel reuses the remote prefix of `default-directory'
               ;; on each OSC 7 report.  Without one it builds
               ;; /scp:HOST: from the Agent's self-reported hostname, and

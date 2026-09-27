@@ -33,7 +33,10 @@ paste-event support (constitution Principle III).
 - Signals an actionable `user-error` when the module cannot perform the paste. The
   message names the missing capability. The function never falls back to sending
   clipboard text as keystrokes.
-- Returns non-nil on a completed paste attempt.
+- Returns non-nil when Ghostel admits the paste attempt, not when the transfer or Agent attachment completes.
+- The caller must not report attachment success from this return value.
+- Empty or unreadable image data causes an explanation and no image data transmission.
+- Valid text input keeps its current path. An unavailable image must not cause a text or path substitute.
 
 ### C3. Unchanged behavior
 
@@ -71,12 +74,16 @@ action that restores delivery:
 
 | Condition | Message content |
 |---|---|
-| Terminal lacks native support | The installed Ghostel build cannot deliver clipboard images; the supported alternative is a local Session or a Ghostel build with native paste support. |
-| Local terminal client is not the input leader | Another client owns the input for this Session; the action is to type in this Session first (or detach the other client), then paste again. |
-| CLI has no client-side implementation | This Agent cannot accept a terminal clipboard image; an Agent that supports OSC 5522 paste events can. |
+| Terminal lacks native support | The installed Ghostel build cannot deliver clipboard images. Use a local Session or a Ghostel build with native paste support. |
+| Local terminal client is not the input leader | Another client owns input for this Session. Type in this Session first, then paste again. |
+| CLI has no client-side implementation | Preserve the current route with no new message. |
+| No GUI selection or no usable clipboard data | Name the unavailable clipboard condition. Ask the user to copy an image in a graphical session before another paste. |
+| OMP lacks the verified-transfer receiver profile | The receiver cannot validate this image transfer. Update OMP before another remote image paste. |
+| A verified attempt is still active | An image paste is already active. Wait for its outcome before another paste. |
+| Connection loss after possible delivery | Delivery is unconfirmed. Check the Agent's attachment before deciding whether to paste again. |
 
-Rules: no message is produced on a successful route, and no message replaces the
-gesture with a different operation.
+Successful routes and unchanged legacy routes produce no new package message.
+A refusal must not replace the gesture with another operation.
 
 ## Compatibility matrix
 
@@ -84,7 +91,8 @@ gesture with a different operation.
 |---|---|---|---|
 | Any | none | unchanged | `C-v`, or text paste |
 | Older, no predicate | `omp` | explained refusal | nothing |
-| With native support | `omp` | terminal paste | paste event, then clipboard data |
+| With native support | verified `omp` receiver | verified terminal paste | paste event, then metadata and image |
+| With native support | OSC 5522-only `omp` | explained receiver-upgrade refusal | no image bytes |
 | With native support, non-leading client | `omp` | explained refusal | nothing |
 
 ## Verification obligations
@@ -95,3 +103,18 @@ gesture with a different operation.
   interfaces, and by keeping the existing paste tests passing unchanged.
 - The live walkthrough in [quickstart.md](../quickstart.md) proves the two together on
   a real remote Session.
+
+## Receiver obligations under the approved design
+
+OMP owns the final attachment decision.
+It validates the active request ID, metadata, MIME, byte count, digest, and deadline before committing an image.
+Its initial watchdog starts before the read request and remains active through image preparation.
+The final commit gate checks expiry even when the timer callback has not run.
+All asynchronous preparation finishes before the gate permits synchronous editor mutations.
+
+A busy receiver refuses the new gesture without replacing the active attempt.
+Stop, disable, or Session identity changes cancel uncommitted receiver work.
+Late packets and stale preparation results cannot attach to another Session or revive an expired attempt.
+
+The wire contract defines the verified-transfer profile.
+T005R now has focused checks and actual local CLI editor evidence. Remote delivery remains an original story acceptance check.
