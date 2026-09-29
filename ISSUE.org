@@ -85,7 +85,12 @@ tramp-rpc has a Magit prefetch (=tramp-rpc-magit.el=). After =git update-index -
 - Local workaround (user config, =lisp/init-tramp.el=): =leo/tramp-rpc-magit-drop-full-name-prefetch= removes the 5 entries. Measured live: 87 to 82 prefetch commands, and a ramhorn =SAGA-sdk= refresh went from 17.3 s to 0.37-0.45 s. Keep this item open until upstream fixes the entries, then remove the advice.
 
 ** TODO MG3: =remote-worktree-bootstrap-requires-owned-execution= is flaky under load
-It failed in 2 full suites (the second while testing the pin-order editor fix, which does not touch Worktree code). Each time it passed 3 of 3 times alone. It uses real shells with =sleep= and a background =attach=.
+It failed in 3 full suites (the second and third while I tested manager fixes that do not touch Worktree code). Each time it passed 3 of 3 times alone. It uses real shells with =sleep= and a background =attach=.
+
+** TODO MG4: A late companion worker still splits the Agent window after the user changes the layout
+=claude-code-ide-manager-switch-to-session= starts a worker for =first-display=, =reattach=, or =replacement= (=claude-code-ide-manager.el:5147-5172=). When the worker finishes, =claude-code-ide-manager--display-remote-project-view= splits the Agent window if the view is not visible. The request check compares only the layout epoch, and a file visit does not advance the epoch. While the worker runs, the intent has no =:view=, so the pre-command and post-command hooks do not observe any user command either. A user who opens a file or rearranges windows during preparation still gets Magit split in afterwards.
+- The worker now takes about 1 s on v12mac, down from 7 s, and SAGA-sdk no longer takes 17 s (MG1 workaround). So this window is now short.
+- Upgrade path: advance the layout epoch, or mark the request stale, when a user command changes the Agent window's frame layout during preparation.
 
 * Emacs performance (live profiler reports, 2026-09-29)
 
