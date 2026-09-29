@@ -69,3 +69,31 @@ The request keeps the buffer object from the accept time.
 
 ** TODO A10: Nested tmux drops the editor request
 tmux 3.3 and later drop the =DCS tmux;= wrapper unless =allow-passthrough on= is set.
+
+* Emacs performance (live profiler reports, 2026-09-29)
+
+These items stay open after the 2026-09-29 fixes. Those fixes removed the Spacemacs frame title (5.5% CPU), the per-dispatch tramp-rpc version check (3-7% of allocation), the =format-spec= call in the ghostel title (3.2% CPU), =locate-library= in the =use-package= =:ensure= advice (41.9% CPU in one profile), and the =better-jumper= data in saved cc-manager layouts.
+
+** TODO PR1: =ghostel--pixel-anchor= costs about 5% of CPU samples
+Each ghostel redraw calls =window-text-pixel-size= from =ghostel--pixel-anchor= (=site-lisp/ghostel/lisp/ghostel.el:4820=). It was 4.5% self in the 03:41 profile and 4.8% (434 of 9115 samples) after the fixes. The cost is Emacs layout, not Lisp.
+- A live probe counted 265 calls in 20 s. Only 47 (18%) had the same buffer tick, window size, target, and window start as the previous call. A cache on these inputs would save little.
+- =ghostel-window-padding-balance= is =top=, so the loop over the other windows does not run.
+- Upgrade path: skip anchors while output streams faster than the display can show, or measure fewer lines.
+
+** TODO PR2: claude-code-ide always runs uncompiled
+=scripts/compile-and-test.sh= deletes all =.elc= and =.eln= files after each run. Emacs loads the =.el= files, and native compilation never starts, because it needs an =.elc= file. The hot functions =claude-code-ide-manager--save-state= and =claude-code-ide-session-idle--filter-advice= run in the interpreter.
+- Upgrade path: keep the =.elc= files after the test run, or compile to a separate directory. =load-prefer-newer= is now =t= in the dotfiles, so an edited =.el= file wins over an older =.elc= file.
+
+** TODO PR3: Old saved layouts keep their =better-jumper= data until the next capture
+The capture now binds =window-persistent-parameters= to the side-window parameters only. The 20 layouts saved before this fix still have the jump history, so the state file is 275 KB. It was 717 KB before the fix. =persist-save= was still 48 of 9115 samples and 33 MB in a 30 s profile.
+- A layout gets smaller when the Session switches and the manager captures it again. Layouts that the manager never captures again stay large until the 20-layout cap drops them.
+
+** TODO PR4: Each =process-live-p= on an =/rpc:= connection goes through two file-handler dispatches
+tramp.el builds the =process-status= advice at run time (=tramp-add-external-operation=, =tramp.el:2633=), so the advice is an uncompiled lambda. Each call runs =find-file-name-handler=, then =tramp-rpc-file-name-handler=, then =tramp-rpc-handle-process-status=, then =tramp-run-real-handler=. =process-status= was 8.6% inclusive of CPU in the 03:41 profile. =file-remote-p=, =tramp-connectable-p=, and =tramp-get-connection-property= start these calls.
+- The profile keeps 16 frames, so it does not show the callers above them.
+- Next step: set =profiler-max-stack-depth= to 64 and profile again to find the callers.
+
+** TODO PR5: Garbage collection pauses average 162 ms
+100 collections took 16.2 s in 14.4 min of uptime (=gc-cons-threshold= 100 MB, =gc-cons-percentage= 0.1). "Automatic GC" was 7.6% of CPU samples.
+- A lower threshold does not make each pause shorter. The mark phase scans all live data, so it gives more pauses of about the same length.
+- Upgrade path: allocate less. In the 03:50 memory profile, the largest allocators that these fixes do not touch are =accept-process-output= (12%) and =completing-read-default= (6%, in the Spacemacs help browser).
