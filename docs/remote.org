@@ -587,12 +587,18 @@ The old tests asserted process ownership and mutex serialization rather than use
 
 *** Repair and lifetime rules
 
-On an =ns= build, =claude-code-ide-remote-project-prepare= starts a main-thread timer that calls =thread-yield= every 0.05 seconds.
+On an =ns= build, =claude-code-ide-remote-project-prepare= starts a main-thread timer that calls =thread-yield= every 0.005 seconds.
 The timer starts before =make-thread= and remains active until that worker exits.
 It must continue after health succeeds, through Magit preparation and any deferred connection cancellation.
 The worker's outer =unwind-protect= cancels the timer.
 If worker creation fails, the main thread abandons the attempt and cancels its timers.
 Idle Sessions retain no scheduler timer.
+
+The worker binds =tramp-rpc-poll-interval= to 0.005 seconds.
+The transport is locked to the main thread, or unlocked after a worker created it, so the main thread can take a response first.
+The worker then finds the response only on its next poll.
+With the 0.05 s yield period and the default 0.1 s poll, each RPC call in the worker cost 100-150 ms, against about 15 ms on the main thread.
+A Magit status refresh makes about 27 sequential Git calls, so a companion view took 7 s instead of about 1.2 s.
 
 The repair removes the per-call process-ownership advice and the global mutex.
 The connection and server-start guards still release transport locks that the creating worker owns.

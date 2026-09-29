@@ -40,6 +40,7 @@
 (defvar tramp-rpc-deploy-never-deploy)
 (defvar tramp-rpc-deploy-remote-binary-path)
 (defvar tramp-rpc-ssh-args)
+(defvar tramp-rpc-poll-interval)
 (defvar claude-code-ide-manager-status-buffer-function)
 (defvar magit-display-buffer-function)
 (defvar magit-display-buffer-noselect)
@@ -1328,6 +1329,11 @@ longer owns its Session's display."
    (current-thread))
   (let ((claude-code-ide-remote-project--worker-attempt attempt)
         (tramp-error-show-message-timeout nil)
+        ;; A transport that another thread locked, or that is unlocked,
+        ;; can deliver a response to the main thread, so this worker sees
+        ;; it only on its next poll.  The default 0.1 s poll made each
+        ;; Magit git call cost 100-150 ms instead of about 20.
+        (tramp-rpc-poll-interval 0.005)
         (inhibit-interaction t))
     (condition-case error-data
         (progn
@@ -1387,10 +1393,11 @@ longer owns its Session's display."
   "Start ATTEMPT's worker thread named LABEL.
 Return ATTEMPT, or abandon it when the thread cannot start."
   (let (;; The NS event loop can hold the Lisp lock while idle.
-        ;; Yield on the main thread until this worker exits.
+        ;; Yield on the main thread until this worker exits.  The
+        ;; period bounds the latency of each RPC call in the worker.
         (yield-timer
          (when (featurep 'ns)
-           (run-at-time 0 0.05 #'thread-yield)))
+           (run-at-time 0 0.005 #'thread-yield)))
         worker)
     (unwind-protect
         (progn
