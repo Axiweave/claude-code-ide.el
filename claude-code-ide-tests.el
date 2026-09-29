@@ -24908,6 +24908,9 @@ result arrives never has that result applied to the row now at its key."
          (switch-to-buffer view replace-view t)
          (delete-other-windows terminal keep-terminal t)
          (dired-find-file view replace-view t)
+         ;; `find-file' reads the minibuffer, whose commands run the
+         ;; same hooks before the outer command finishes.
+         (find-file view minibuffer-replace-view t)
          (kill-buffer view kill-view t)
          (describe-function terminal replace-view nil)))
     (save-window-excursion
@@ -24949,6 +24952,11 @@ result arrives never has that result applied to the row now at its key."
                 (pcase (nth 2 case)
                   ('delete-view (delete-window view-window))
                   ('replace-view
+                   (set-window-buffer view-window other))
+                  ('minibuffer-replace-view
+                   (cl-letf (((symbol-function 'minibuffer-depth) (lambda () 1)))
+                     (claude-code-ide-manager--remote-project-pre-command)
+                     (claude-code-ide-manager--remote-project-post-command))
                    (set-window-buffer view-window other))
                   ('keep-terminal
                    (delete-other-windows terminal-window))

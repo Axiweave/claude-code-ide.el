@@ -1213,7 +1213,9 @@ Append the current branch when SESSION-KEY is on a named branch."
        0)))))
 
 (defun claude-code-ide-manager--remote-project-pre-command ()
-  "Capture a visible remote Project-view layout before a user command."
+  "Capture a visible remote Project-view layout before a user command.
+Skip commands inside the minibuffer.  A top-level command such as
+`find-file' runs them, and their hooks would clobber its snapshot."
   (let* ((frame (selected-frame))
          (intent
           (frame-parameter
@@ -1228,30 +1230,32 @@ Append the current branch when SESSION-KEY is on a named branch."
           (and
            (buffer-live-p view)
            (get-buffer-window view frame))))
-    (set-frame-parameter
-     frame 'claude-code-ide-manager-remote-project-command
-     (when (and terminal-window view-window)
-       (list
-        :session-key (plist-get intent :session-key)
-        :attachment terminal
-        :view view
-        :view-window view-window
-        :epoch (plist-get intent :epoch)
-        :started-in-view
-        (eq (selected-window) view-window))))))
+    (when (zerop (minibuffer-depth))
+      (set-frame-parameter
+       frame 'claude-code-ide-manager-remote-project-command
+       (when (and terminal-window view-window)
+         (list
+          :session-key (plist-get intent :session-key)
+          :attachment terminal
+          :view view
+          :view-window view-window
+          :epoch (plist-get intent :epoch)
+          :started-in-view
+          (eq (selected-window) view-window)))))))
 
 (defun claude-code-ide-manager--remote-project-post-command ()
   "Record an actual user dismissal of a displayed remote Project view."
   (let* ((frame (selected-frame))
          (snapshot
-          (frame-parameter
-           frame 'claude-code-ide-manager-remote-project-command))
+          (and (zerop (minibuffer-depth))
+               (frame-parameter
+                frame 'claude-code-ide-manager-remote-project-command)))
          (intent
           (frame-parameter
            frame 'claude-code-ide-manager-remote-project-display)))
-    (set-frame-parameter
-     frame 'claude-code-ide-manager-remote-project-command nil)
     (when snapshot
+      (set-frame-parameter
+       frame 'claude-code-ide-manager-remote-project-command nil)
       (let* ((session-key (plist-get snapshot :session-key))
              (attachment (plist-get snapshot :attachment))
              (view (plist-get snapshot :view))

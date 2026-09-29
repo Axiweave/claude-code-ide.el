@@ -467,6 +467,8 @@ It never joins the shared Magit/Dired registry above and is never adopted into a
 ** Dismissal, Reset, and Cancellation
 
 Closing a Project-view window suppresses automatic display for that Session.
+A command that starts in that window and replaces its buffer also counts as a close, for example =find-file= or Magit =RET=.
+Commands that run inside the minibuffer of such a command do not end the observation.
 The suppression survives navigation and remote reattachment during the current Emacs process.
 Other Sessions that share the buffer keep their own display intent.
 An ordinary manager switch, including a switch to a local Session, does not suppress the view.
