@@ -1073,7 +1073,7 @@ them."
          (interprogram-cut-function nil)
          (interprogram-paste-function nil))
      (row "b2")
-     (forward-line -1)
+     (forward-line -2)
      (kill-region (point) (point-max))
      (goto-char (point-min))
      (yank))
@@ -1217,12 +1217,12 @@ them."
           (insert (buffer-substring (point) (line-beginning-position 2))))
          ('foreign-key
           (row "a2")
-          (re-search-forward "^[0-9]+\\. ")
+          (re-search-forward "^ *[0-9]+\\. ")
           (put-text-property (point) (line-end-position)
                              'claude-code-ide-manager-session-key "foreign"))
          ('changed-label
           (row "a2")
-          (re-search-forward "^[0-9]+\\. ")
+          (re-search-forward "^ *[0-9]+\\. ")
           (subst-char-in-region (point) (1+ (point)) ?a ?q))
          ('missing-row
           (row "a2")
@@ -18417,11 +18417,11 @@ not pull another Session's prompt into itself."
     (let ((snapshot '(("one" . "same")
                       ("two" . "same"))))
       (claude-code-ide-manager--render-pin-order-editor snapshot)
-      (should (equal (buffer-string) "1. same\n2. same\n"))
+      (should (equal (buffer-string) "    1. same\n    2. same\n"))
       (goto-char (point-min))
       (dolist (expected-key '("one" "two"))
-        (should (looking-at "[0-9]+\\. same$"))
-        (let ((name-start (+ (line-beginning-position) 3))
+        (should (looking-at " *[0-9]+\\. same$"))
+        (let ((name-start (+ (line-beginning-position) 7))
               (name-end (line-end-position)))
           (should-not
            (get-text-property
@@ -18450,24 +18450,24 @@ not pull another Session's prompt into itself."
      '(("one" . "same")
        ("two" . "same")))
     (claude-code-ide-manager-pin-order-move-down)
-    (should (equal (buffer-string) "1. same\n2. same\n"))
+    (should (equal (buffer-string) "    1. same\n    2. same\n"))
     (goto-char (point-min))
     (should
      (equal
-      (get-text-property 4 'claude-code-ide-manager-session-key)
+      (get-text-property 8 'claude-code-ide-manager-session-key)
       "two"))
     (forward-line 1)
     (should
      (equal
       (get-text-property
-       (+ (line-beginning-position) 3)
+       (+ (line-beginning-position) 7)
        'claude-code-ide-manager-session-key)
       "one"))
     (claude-code-ide-manager-pin-order-move-up)
     (goto-char (point-min))
     (should
      (equal
-      (get-text-property 4 'claude-code-ide-manager-session-key)
+      (get-text-property 8 'claude-code-ide-manager-session-key)
       "one"))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-preserves-linewise-kill-yank-identities ()
@@ -18487,13 +18487,13 @@ not pull another Session's prompt into itself."
       (goto-char (point-max))
       (yank))
     (should (equal (buffer-string)
-                   "2. same\n3. last\n1. same\n"))
+                   "    2. same\n    3. last\n    1. same\n"))
     (goto-char (point-min))
     (dolist (expected-key '("two" "three" "one"))
       (should
        (equal
         (get-text-property
-         (+ (line-beginning-position) 3)
+         (+ (line-beginning-position) 7)
          'claude-code-ide-manager-session-key)
         expected-key))
       (forward-line 1))))
@@ -18520,7 +18520,7 @@ not pull another Session's prompt into itself."
                      (line-beginning-position 2))
         (goto-char (point-max))
         (yank))
-      (should (equal (buffer-string) "2. same\n1. same\n"))
+      (should (equal (buffer-string) "    2. same\n    1. same\n"))
       (cl-letf
           (((symbol-function 'claude-code-ide-manager--live-sessions)
             (lambda () sessions)))
@@ -18820,20 +18820,20 @@ not pull another Session's prompt into itself."
            (goto-char (point-min))
            (forward-line 1)
            (put-text-property
-            (+ (line-beginning-position) 3) (line-end-position)
+            (+ (line-beginning-position) 7) (line-end-position)
             'claude-code-ide-manager-session-key "one"))
           ('missing-key
            (remove-text-properties
-            (+ (line-beginning-position) 3) (line-end-position)
+            (+ (line-beginning-position) 7) (line-end-position)
             '(claude-code-ide-manager-session-key nil)))
           ('foreign-key
            (put-text-property
-            (+ (line-beginning-position) 3) (line-end-position)
+            (+ (line-beginning-position) 7) (line-end-position)
             'claude-code-ide-manager-session-key "foreign"))
           ('changed-label
            (subst-char-in-region
-            (+ (line-beginning-position) 3)
-            (+ (line-beginning-position) 4)
+            (+ (line-beginning-position) 7)
+            (+ (line-beginning-position) 8)
             ?s ?x)))
         (cl-letf
             (((symbol-function 'claude-code-ide-manager--live-sessions)
@@ -19018,18 +19018,18 @@ The resync ignores pin state and stored order keys."
                    (claude-code-ide-manager--sorted-items items)))
       (claude-code-ide-manager--render-pin-order-editor
        claude-code-ide-manager--pin-order-snapshot)
-      (should (equal (buffer-string) "1. alpha\n2. beta\n"))
+      (should (equal (buffer-string) "    1. alpha\n    2. beta\n"))
       (cl-letf
           (((symbol-function 'claude-code-ide-manager-refresh-items)
             (lambda (&optional _scope _state-loaded-p) items))
            ((symbol-function 'claude-code-ide-manager--refresh-sidebar-state)
             (lambda (&optional _scope _reassert) nil)))
         (claude-code-ide-manager-set-sort-by 'created-at)
-        (should (equal (buffer-string) "1. beta\n2. alpha\n"))
+        (should (equal (buffer-string) "    1. beta\n    2. alpha\n"))
         (should (equal claude-code-ide-manager--pin-order-snapshot
                        '(("two" . "beta") ("one" . "alpha"))))
         (claude-code-ide-manager-toggle-sort-reverse)
-        (should (equal (buffer-string) "1. alpha\n2. beta\n"))))))
+        (should (equal (buffer-string) "    1. alpha\n    2. beta\n"))))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-sort-resync-requires-live-items ()
   "A sort change from an editor whose scope has no items signals an error."
@@ -19049,7 +19049,7 @@ The resync ignores pin state and stored order keys."
                   (claude-code-ide-manager--pin-order-item-names items))
       (claude-code-ide-manager--render-pin-order-editor
        claude-code-ide-manager--pin-order-snapshot)
-      (should (equal (buffer-string) "1. alpha\n"))
+      (should (equal (buffer-string) "    1. alpha\n"))
       (cl-letf
           (((symbol-function 'claude-code-ide-manager-refresh-items)
             (lambda (&optional _scope _state-loaded-p) nil))
@@ -19057,7 +19057,7 @@ The resync ignores pin state and stored order keys."
             (lambda (&optional _scope _reassert) nil)))
         (should-error (claude-code-ide-manager-set-sort-by 'created-at)
                       :type 'user-error)
-        (should (equal (buffer-string) "1. alpha\n"))))))
+        (should (equal (buffer-string) "    1. alpha\n"))))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-title-stays-single-line ()
   "The pin-order editor flattens title line breaks without losing identity."
@@ -19090,7 +19090,7 @@ The resync ignores pin state and stored order keys."
         (claude-code-ide-manager--render-pin-order-editor snapshot)
         (should
          (equal (buffer-string)
-                "1. project - Reviewing session state\n2. project\n"))
+                "    1. project - Reviewing session state\n    2. project\n"))
         (cl-letf
             (((symbol-function 'claude-code-ide-manager--live-sessions)
               (lambda () (list session-one session-two))))
@@ -19522,7 +19522,7 @@ The resync ignores pin state and stored order keys."
                       ("two" . "same"))))
             (should
              (equal (buffer-string)
-                    "1. same - Reviewing session state\n2. same\n"))
+                    "    1. same - Reviewing session state\n    2. same\n"))
             (setf (claude-code-ide-session-title first-session)
                   "Changed title")
             (should
@@ -19531,7 +19531,7 @@ The resync ignores pin state and stored order keys."
                       ("two" . "same"))))
             (should
              (equal (buffer-string)
-                    "1. same - Reviewing session state\n2. same\n"))
+                    "    1. same - Reviewing session state\n    2. same\n"))
             (claude-code-ide-manager-pin-order-cancel)
             (should-not (buffer-live-p editor))
             (should (eq (window-buffer content-window) content-buffer))

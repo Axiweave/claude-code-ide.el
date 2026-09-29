@@ -2575,8 +2575,9 @@ of its own."
           (puthash (claude-code-ide-manager-item-session-key item) key groups)
           (unless (equal key previous-group)
             (push (list key
-                        (if host (format "[%s] %s" host (car heading)) (car heading))
-                        (claude-code-ide-manager--echo-path (cdr heading) host))
+                        (if host (format "[%s]\n  %s" host (car heading)) (car heading))
+                        (claude-code-ide-manager--echo-path (cdr heading) host)
+                        host)
                   headings)
             (setq previous-group key))))
       (setq claude-code-ide-manager--pin-order-grouping
@@ -2585,6 +2586,10 @@ of its own."
                   (mapcar #'claude-code-ide-manager-item-session-key
                           (claude-code-ide-manager--sorted-items
                            items nil claude-code-ide-manager--pin-order-scope 'flat)))))))
+
+(defun claude-code-ide-manager--pin-order-number (index)
+  "Return the row number for INDEX, aligned like a manager sidebar row."
+  (format "%5d." index))
 
 (defun claude-code-ide-manager--render-pin-order-editor (snapshot)
   "Render ordered SNAPSHOT rows with captured project headings."
@@ -2597,10 +2602,16 @@ of its own."
              for group = (and groups (gethash session-key groups))
              do
              (when (and headings (equal (caar headings) group))
-               (let ((heading (pop headings)))
+               (let ((heading (pop headings))
+                     (start (point)))
                  (claude-code-ide-manager--insert-group-heading
-                  (nth 1 heading) (nth 2 heading) (car heading))))
-             (insert (format "%d. " index))
+                  (nth 1 heading) (nth 2 heading) (car heading))
+                 (when-let* ((host (nth 3 heading))
+                             (face 'claude-code-ide-manager-host-face))
+                   (add-text-properties
+                    start (+ start (length host) 2)
+                    (list 'face face 'font-lock-face face)))))
+             (insert (claude-code-ide-manager--pin-order-number index) " ")
              (let ((name-start (point)))
                (insert name)
                (add-text-properties
@@ -2611,7 +2622,7 @@ of its own."
     (goto-char (or (text-property-not-all
                     (point-min) (point-max) 'claude-code-ide-manager-session-key nil)
                    (point-min)))
-    (beginning-of-line)))
+    (back-to-indentation)))
 
 (defun claude-code-ide-manager--pin-order-resync ()
   "Rebuild the order editor with current sorting and its captured view."
@@ -2634,9 +2645,9 @@ of its own."
       (while (< (point) (point-max))
         (unless (or (looking-at-p "^$")
                     (get-text-property (point) 'claude-code-ide-manager-group-heading))
-          (unless (looking-at "[0-9]+\\.")
+          (unless (looking-at " *[0-9]+\\.")
             (user-error "Cannot renumber malformed row %d" index))
-          (replace-match (format "%d." index) t t)
+          (replace-match (claude-code-ide-manager--pin-order-number index) t t)
           (setq index (1+ index)))
         (forward-line 1)))))
 
@@ -2644,7 +2655,7 @@ of its own."
   "Return the hidden Session ID on the current numbered editor row."
   (save-excursion
     (beginning-of-line)
-    (when (looking-at "[0-9]+\\. ")
+    (when (looking-at " *[0-9]+\\. ")
       (get-text-property (match-end 0) 'claude-code-ide-manager-session-key))))
 
 (defun claude-code-ide-manager--pin-order-move-row (direction)
@@ -2688,12 +2699,19 @@ of its own."
   (claude-code-ide-manager--pin-order-move-row 1))
 
 (defun claude-code-ide-manager--pin-order-block-starts ()
-  "Return group heading line positions in buffer order."
+  "Return group heading start positions in buffer order.
+A remote heading spans a host line and a project line but starts one block."
   (save-excursion
     (goto-char (point-min))
     (let (starts)
       (while (< (point) (point-max))
-        (when (get-text-property (point) 'claude-code-ide-manager-group-heading)
+        (when-let* ((identity (get-text-property
+                               (point) 'claude-code-ide-manager-group-heading))
+                    ((or (bobp)
+                         (not (equal identity
+                                     (get-text-property
+                                      (1- (point))
+                                      'claude-code-ide-manager-group-heading))))))
           (push (point) starts))
         (forward-line 1))
       (nreverse starts))))
@@ -2751,19 +2769,23 @@ of its own."
          ((and groups (get-text-property (point) 'claude-code-ide-manager-group-heading))
           (let* ((identity (get-text-property (point) 'claude-code-ide-manager-group-heading))
                  (heading (assoc identity headings))
-                 (end (line-end-position)))
+                 (end (and heading (+ (point) (length (nth 1 heading))))))
             (unless (and heading
+                         (<= end (point-max))
+                         (memq (char-after end) '(?\n nil))
                          (equal (buffer-substring-no-properties (point) end) (nth 1 heading))
                          (not (text-property-not-all
                                (point) end 'claude-code-ide-manager-group-heading identity))
                          (not (text-property-not-all
                                (point) end 'claude-code-ide-manager-session-key nil)))
               (user-error "A project heading changed or appears more than once"))
+            ;; Skip the project line of a two-line remote heading.
+            (goto-char end)
             (setq headings (remove heading headings)
                   current-group identity)))
          (t
           (cl-incf row-number)
-          (unless (looking-at "[0-9]+\\. \\(.+\\)$")
+          (unless (looking-at " *[0-9]+\\. \\(.+\\)$")
             (user-error "Malformed row %d" row-number))
           (let* ((name (match-string-no-properties 1))
                  (name-start (match-beginning 1))
@@ -2964,13 +2986,15 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
 
 (defun claude-code-ide-manager--insert-group-heading (text path &optional identity)
   "Insert non-selectable heading TEXT with PATH and optional IDENTITY."
-  (let ((start (point)))
+  (let ((start (point))
+        (face (if (eq (car-safe identity) 'host)
+                  'claude-code-ide-manager-host-face
+                'font-lock-keyword-face)))
     (insert text "\n")
+    ;; `font-lock-face' survives Font Lock in the text-mode order editor.
     (set-text-properties
      start (point)
-     (list 'face (if (eq (car-safe identity) 'host)
-                     'claude-code-ide-manager-host-face
-                   'font-lock-keyword-face)
+     (list 'face face 'font-lock-face face
            'help-echo path
            'claude-code-ide-manager-group-heading identity 'rear-nonsticky t))))
 
