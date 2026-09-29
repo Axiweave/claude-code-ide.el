@@ -16511,7 +16511,7 @@ are stubbed."
   (declare (indent 2))
   `(let ((claude-code-ide-cli-path ,cli)
          (claude-code-ide-session--editor-nonce "n0nce")
-         (claude-code-ide-session--editor-request nil)
+         (claude-code-ide-session--editor-requests nil)
          (claude-code-ide-session--editor-window nil)
          (ghostel-map (make-sparse-keymap))
          (,sent nil))
@@ -16676,9 +16676,9 @@ is rebuilt here with the same bindings."
       (should-not sent))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-one-buffer-for-two-windows ()
-  "Test that one Session shown in two windows opens exactly one prompt buffer.
-The Agent sends one request per keystroke on its pty, so a second
-request while one is accepted is ignored, and the prompt shows once."
+  "Test that one request opens exactly one prompt buffer.
+Every buffer attached to the Session receives the same request, so a
+repeat of an accepted request id is ignored, and the prompt shows once."
   (should (require 'claude-code-ide-session nil t))
   (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n")))
     (unwind-protect
@@ -16694,14 +16694,15 @@ request while one is accepted is ignored, and the prompt shows once."
                         ((symbol-function 'claude-code-ide-session-host)
                          (lambda (_) nil)))
                 (claude-code-ide-session-editor-request "r11" "n0nce" file)
-                (claude-code-ide-session-editor-request "r12" "n0nce" file)
+                (claude-code-ide-session-editor-request "r11" "n0nce" file)
                 (should (equal sent '("\e_pi:editor-ack;r11\e\\")))
                 (let ((prompt (find-buffer-visiting file)))
                   (should prompt)
                   (should (= 1 (length (get-buffer-window-list prompt))))
                   (should (= 1 (length (get-buffer-window-list session-buffer))))
                   (should (eq (window-buffer (selected-window)) prompt))
-                  (should (equal (car claude-code-ide-session--editor-request) "r11"))
+                  (should (equal (mapcar #'car claude-code-ide-session--editor-requests)
+                                 '("r11")))
                   (with-current-buffer prompt
                     (with-editor-cancel nil)))))))
       (when (file-exists-p file) (delete-file file)))))
@@ -16723,12 +16724,12 @@ request while one is accepted is ignored, and the prompt shows once."
             (should (equal sent '("\e_pi:editor-ack;r1\e\\")))
             (should (equal (buffer-file-name visited) file))
             (should (buffer-local-value 'with-editor-mode visited))
-            (should (equal claude-code-ide-session--editor-request
-                           (cons "r1" (current-buffer))))
+            (should (equal claude-code-ide-session--editor-requests
+                           (list (cons "r1" (current-buffer)))))
             (with-current-buffer visited
               (with-editor-finish nil))
             (should (equal (car sent) "\e_pi:editor-done;r1\e\\"))
-            (should-not claude-code-ide-session--editor-request)))
+            (should-not claude-code-ide-session--editor-requests)))
       (delete-file file))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-cancel-answers-cancel ()
@@ -16748,8 +16749,67 @@ request while one is accepted is ignored, and the prompt shows once."
             (with-current-buffer visited
               (with-editor-cancel nil))
             (should (equal (car sent) "\e_pi:editor-cancel;r2\e\\"))
-            (should-not claude-code-ide-session--editor-request)))
+            (should-not claude-code-ide-session--editor-requests)))
       (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-survives-find-file-hook-buffer-leak ()
+  "Test that a `find-file-hook' leaving another buffer current still edits the prompt.
+`find-file-noselect' returns the current buffer after its hooks, so the
+with-editor hooks must still land on the buffer that visits the file."
+  (should (require 'claude-code-ide-session nil t))
+  (let* ((file (make-temp-file "cc-editor-" nil ".md" "draft\n"))
+         (leak (generate-new-buffer " *leak*"))
+         (leak-hook (lambda () (set-buffer leak)))
+         (visited nil))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (add-hook 'find-file-hook leak-hook 90)
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (setq visited buffer))))
+            (claude-code-ide-session-editor-request "r20" "n0nce" file)
+            (should (equal (buffer-file-name visited) file))
+            (should-not (buffer-local-value 'with-editor-mode leak))
+            (with-current-buffer visited
+              (with-editor-finish nil))
+            (should (equal (car sent) "\e_pi:editor-done;r20\e\\"))))
+      (remove-hook 'find-file-hook leak-hook)
+      (kill-buffer leak)
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest claude-code-ide-test-session-editor-request-unanswered-prompt-blocks-nothing ()
+  "Test that a prompt that never answered neither blocks nor answers a later request.
+The Agent sends a new request only after the old one ended on its side,
+so a later request opens its own prompt, and each prompt answers its own id."
+  (should (require 'claude-code-ide-session nil t))
+  (let ((first (make-temp-file "cc-editor-" nil ".md" "one\n"))
+        (second (make-temp-file "cc-editor-" nil ".md" "two\n"))
+        (visited nil))
+    (unwind-protect
+        (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (push buffer visited))))
+            (claude-code-ide-session-editor-request "r21" "n0nce" first)
+            (claude-code-ide-session-editor-request "r22" "n0nce" second)
+            (should (equal (reverse sent)
+                           '("\e_pi:editor-ack;r21\e\\" "\e_pi:editor-ack;r22\e\\")))
+            (with-current-buffer (find-buffer-visiting first)
+              (with-editor-finish nil))
+            (should (equal (car sent) "\e_pi:editor-done;r21\e\\"))
+            (should (equal (mapcar #'car claude-code-ide-session--editor-requests) '("r22")))
+            (with-current-buffer (find-buffer-visiting second)
+              (with-editor-cancel nil))
+            (should (equal (car sent) "\e_pi:editor-cancel;r22\e\\"))
+            (should-not claude-code-ide-session--editor-requests)))
+      (dolist (file (list first second))
+        (when (file-exists-p file) (delete-file file))))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-ignores-foreign-nonce ()
   "Test that another client's nonce, or a non-Session buffer, gets no answer."
@@ -16759,18 +16819,18 @@ request while one is accepted is ignored, and the prompt shows once."
                (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
       (claude-code-ide-session-editor-request "r3" "other" "/tmp/x.md")
       (should-not sent)
-      (should-not claude-code-ide-session--editor-request))
+      (should-not claude-code-ide-session--editor-requests))
     (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
                (lambda (&optional _) nil)))
       (claude-code-ide-session-editor-request "r3" "n0nce" "/tmp/x.md")
       (should-not sent)
-      (should-not claude-code-ide-session--editor-request))
+      (should-not claude-code-ide-session--editor-requests))
     (let ((claude-code-ide-session--editor-nonce nil))
       (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
                  (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
         (claude-code-ide-session-editor-request "r3" "" "/tmp/x.md")
         (should-not sent)
-        (should-not claude-code-ide-session--editor-request)))))
+        (should-not claude-code-ide-session--editor-requests)))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-remote-uses-rpc-open-file ()
   "Test that a remote Session visits the path through `claude-code-ide-remote-project-open-file'."
@@ -16878,7 +16938,7 @@ recorded window back to its previous buffer."
                     (with-current-buffer prompt
                       (with-editor-finish nil)))
                   (should (equal (car sent) "\e_pi:editor-done;r11\e\\"))
-                  (should-not claude-code-ide-session--editor-request)
+                  (should-not claude-code-ide-session--editor-requests)
                   (should (eq (window-buffer companion-window) companion)))))))
       (when-let* ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
@@ -16975,7 +17035,7 @@ not pull another Session's prompt into itself."
         (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
         (should (equal (reverse sent)
                        '("\e_pi:editor-ack;r5\e\\" "\e_pi:editor-cancel;r5\e\\")))
-        (should-not claude-code-ide-session--editor-request)))))
+        (should-not claude-code-ide-session--editor-requests)))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-remote-preflight-sends-no-ack ()
   "Test that an unapproved host or unavailable RPC signals before any packet."
@@ -16999,7 +17059,7 @@ not pull another Session's prompt into itself."
         (should-error (claude-code-ide-session-editor-request "r7" "n0nce" "/tmp/remote.md")
                       :type 'user-error))
       (should-not sent)
-      (should-not claude-code-ide-session--editor-request))))
+      (should-not claude-code-ide-session--editor-requests))))
 
 (ert-deftest claude-code-ide-test-session-editor-visit-failure-cancels-and-kills ()
   "Test that a display failure after the ack cancels once and leaves no buffer."
@@ -17017,7 +17077,7 @@ not pull another Session's prompt into itself."
             (claude-code-ide-session-editor-request "r8" "n0nce" file)
             (should (equal (reverse sent)
                            '("\e_pi:editor-ack;r8\e\\" "\e_pi:editor-cancel;r8\e\\")))
-            (should-not claude-code-ide-session--editor-request)
+            (should-not claude-code-ide-session--editor-requests)
             (should-not (find-buffer-visiting file)))
           (setq sent nil)
           (let ((buffer (generate-new-buffer " *remote prompt*")))
@@ -17035,7 +17095,7 @@ not pull another Session's prompt into itself."
               (claude-code-ide-session-editor-request "r9" "n0nce" "/tmp/remote.md")
               (should (equal (reverse sent)
                              '("\e_pi:editor-ack;r9\e\\" "\e_pi:editor-cancel;r9\e\\")))
-              (should-not claude-code-ide-session--editor-request)
+              (should-not claude-code-ide-session--editor-requests)
               (should-not (buffer-live-p buffer)))))
       (delete-file file))))
 
@@ -17056,7 +17116,7 @@ not pull another Session's prompt into itself."
         (should (equal (reverse sent)
                        '("\e_pi:editor-ack;r10\e\\" "\e_pi:editor-cancel;r10\e\\")))
         (should (equal messages '("Prompt open failed: disk gone")))
-        (should-not claude-code-ide-session--editor-request)))))
+        (should-not claude-code-ide-session--editor-requests)))))
 
 (ert-deftest claude-code-ide-test-find-prompt-buffer-matches-remote-localname ()
   "Test that a remote prompt buffer matches by its local name part."
@@ -17085,7 +17145,9 @@ not pull another Session's prompt into itself."
                   :type 'user-error)))
 
 (ert-deftest claude-code-ide-test-remote-project-open-file-visits-through-worker ()
-  "Test that open-file runs the worker's file branch and calls back with the buffer."
+  "Test that open-file runs the worker's file branch and calls back with the buffer.
+The callback gets the buffer that visits the file, even when
+`find-file-noselect' returns another buffer a hook left current."
   (should (require 'claude-code-ide-remote-project nil t))
   (let* ((claude-code-ide-remote-hosts '("box"))
          (buffer (generate-new-buffer " *rpc file*"))
@@ -17105,7 +17167,10 @@ not pull another Session's prompt into itself."
                   ((symbol-function 'find-file-noselect)
                    (lambda (file &rest _)
                      (should (equal file "/rpc:box:/tmp/omp-prompt.md"))
-                     buffer))
+                     (current-buffer)))
+                  ((symbol-function 'find-buffer-visiting)
+                   (lambda (file &rest _)
+                     (and (equal file "/rpc:box:/tmp/omp-prompt.md") buffer)))
                   ((symbol-function 'run-at-time)
                    (lambda (_ _ fn &rest args) (apply fn args))))
           (claude-code-ide-remote-project-open-file

@@ -7,7 +7,7 @@ All values are runtime only. Nothing is persisted.
 | Field | Type | Owner | Rule |
 | --- | --- | --- | --- |
 | `claude-code-ide-session--editor-nonce` | global string | Emacs process | Random token created on first use from `random` and the PID. Empty string never occurs. Different Emacs processes have different values with overwhelming probability. |
-| `claude-code-ide-session--editor-request` | global cons `(REQUEST-ID . SESSION-BUFFER)` | Emacs process | The one accepted request. Nil when none. |
+| `claude-code-ide-session--editor-requests` | global list of `(REQUEST-ID . SESSION-BUFFER)` | Emacs process | Accepted requests that have not answered. A request id is accepted once. Each prompt buffer answers only its own entry. |
 
 Relationship: one Emacs process, one nonce. The nonce identifies the initiating Emacs, not the Session or the buffer.
 

@@ -15,7 +15,7 @@ The public command `claude-code-ide-session-send-control-g` sends the marked key
 
 ## Nonce
 
-`claude-code-ide-session--editor-nonce` is one value per Emacs process, created on first use from `random` and the PID. It never changes and is never persisted. `claude-code-ide-session--editor-request` holds the one accepted request as `(REQUEST-ID . SESSION-BUFFER)`; the handler rejects a new request while it is set.
+`claude-code-ide-session--editor-nonce` is one value per Emacs process, created on first use from `random` and the PID. It never changes and is never persisted. `claude-code-ide-session--editor-requests` lists the accepted requests as `(REQUEST-ID . SESSION-BUFFER)` until each one answers. The handler ignores a request id that is already in the list, so two buffers attached to one Session open one prompt. A prompt that never answers blocks no later request, because the Agent sends a new request only after the old one ended on its side.
 
 ## Handler
 
@@ -26,20 +26,20 @@ Registered once in the global `ghostel-eval-cmds` under `with-eval-after-load 'g
 | Condition | Result |
 | --- | --- |
 | `(claude-code-ide--session-for-buffer (current-buffer))` is nil, meaning no live Session owner in the registry | Return nil. Send nothing. Show nothing. |
-| `NONCE` is empty or differs from this client's nonce, or a request is already accepted | Return nil. Send nothing. |
+| `NONCE` is empty or differs from this client's nonce, or `REQUEST-ID` is already accepted | Return nil. Send nothing. |
 | Session host is set and the remote feature does not provide the operation (`(or (fboundp 'claude-code-ide-remote-project-open-file) (and (require 'claude-code-ide-remote-project nil t) (fboundp 'claude-code-ide-remote-project-open-file)))`, the manager's pattern at `claude-code-ide-manager.el:201-203` plus a second `fboundp` because `require` never reloads a provided feature), or `claude-code-ide-remote-hosts` omits the host, or RPC support is unavailable | Signal an actionable `user-error`. Ghostel catches it and shows the message. Send nothing. |
 | Otherwise | Send `pi:editor-ack;REQUEST-ID` now. Start the visit. Return non-nil. |
 
 The ack is a claim, not proof of a buffer. The preflight above catches the cheap failures (no client, no admission) before the ack, so the Agent falls back to `$EDITOR`. A failure after the ack (connection error, unreadable file, `find-file-noselect` or display signal) sends `pi:editor-cancel;REQUEST-ID` once, kills any buffer it opened, and shows one `message`. The Agent then keeps its previous text, which is the same outcome as a user cancel. The Agent does not retry with `$EDITOR` after an ack, because it has already handed the file to Emacs.
 
-Visit, local Session: `run-at-time 0`, then `find-file-noselect PATH` and `claude-code-ide-session--editor-visit`. The handler itself runs inside Ghostel's native VT callback, so no file or window work happens there. The timer skips the visit when the accepted request changed meanwhile.
+Visit, local Session: `run-at-time 0`, then `find-file-noselect PATH` and `claude-code-ide-session--editor-visit` on the buffer that `find-buffer-visiting` finds for `PATH`. `find-file-noselect` returns whichever buffer a `find-file-hook` left current, so its return value is not the prompt buffer. The handler itself runs inside Ghostel's native VT callback, so no file or window work happens there. The timer skips the visit when the request was already answered.
 
-Visit, remote Session: `(claude-code-ide-remote-project-open-file HOST PATH CALLBACK)`. On `:buffer`, `claude-code-ide-session--editor-visit` runs in the callback, unless the accepted request changed meanwhile. On `:error`, send cancel and one `message`. `ponytail:` an Agent interrupt during a slow remote open is not pushed to Emacs. The buffer can still appear after the Agent gave up. Its answers carry a stale id, which the Agent ignores (FR-008), and the buffer closes on finish or cancel. Upgrade path when this bites: an Agent → Emacs `claude-code-ide-session-editor-abort "<id>"` OSC that marks the id invalid so the callback kills the buffer instead of displaying it.
+Visit, remote Session: `(claude-code-ide-remote-project-open-file HOST PATH CALLBACK)`. On `:buffer`, `claude-code-ide-session--editor-visit` runs in the callback, unless the request was already answered. On `:error`, send cancel and one `message`. `ponytail:` an Agent interrupt during a slow remote open is not pushed to Emacs. The buffer can still appear after the Agent gave up. Its answers carry a stale id, which the Agent ignores (FR-008), and the buffer closes on finish or cancel. Upgrade path when this bites: an Agent → Emacs `claude-code-ide-session-editor-abort "<id>"` OSC that marks the id invalid so the callback kills the buffer instead of displaying it.
 
-`claude-code-ide-session--editor-visit BUFFER`:
+`claude-code-ide-session--editor-visit REQUEST BUFFER`:
 
 1. Enable `with-editor-mode`.
-2. Add buffer-local hooks. `with-editor-post-finish-hook` sends `pi:editor-done;REQUEST-ID` and `with-editor-post-cancel-hook` sends `pi:editor-cancel;REQUEST-ID`. Both run after `with-editor-return` has saved (and, on cancel, deleted) the file (`with-editor.el:334-345,355-364,374-397`), so the Agent never reads stale content and never removes the file while Emacs still saves it. Both run in a temporary buffer after the prompt buffer is killed, so the answer goes to the Session buffer recorded in `claude-code-ide-session--editor-request`.
+2. Add buffer-local hooks that close over REQUEST. `with-editor-post-finish-hook` sends `pi:editor-done;REQUEST-ID` and `with-editor-post-cancel-hook` sends `pi:editor-cancel;REQUEST-ID`, each at most once. Both run after `with-editor-return` has saved (and, on cancel, deleted) the file (`with-editor.el:334-345,355-364,374-397`), so the Agent never reads stale content and never removes the file while Emacs still saves it. Both run in a temporary buffer after the prompt buffer is killed, so the answer goes to the Session buffer recorded in REQUEST. A prompt answers only its own request id.
 3. Display with `switch-to-buffer`, as the existing `with-editor-server-window-alist` entries do for prompt patterns. `with-editor-server-window-alist` is not touched.
 
 ## Remote file operation
@@ -48,7 +48,7 @@ Visit, remote Session: `(claude-code-ide-remote-project-open-file HOST PATH CALL
 
 - Preflight, synchronous, before any connection: `claude-code-ide-zmx--validate-host` (membership in `claude-code-ide-remote-hosts`, the module's admission policy for explicit callback attempts, `:255-263`), absolute `PATH`, `claude-code-ide-remote-project-target-available-p`. Each failure signals a `user-error` that names the missing approval or the missing client. A file open is not a Project view, so `claude-code-ide-remote-project-view-hosts` does not apply.
 - File name: `(concat (claude-code-ide-remote-project-rpc-directory HOST (file-name-directory PATH)) (file-name-nondirectory PATH))`.
-- The attempt carries one new field, `file`. The owned worker (`:1296-1345`) gains one branch for it: after the health check, `find-file-noselect` under `inhibit-interaction`, then `run-at-time 0` a new `--finish-file-success` that rechecks `--attempt-current-p` and calls `CALLBACK`. No view registry, no publication. The existing 30-second deadline, `--finish-failure`, and `claude-code-ide-remote-project-cancel-target` apply. No main-thread timer.
+- The attempt carries one new field, `file`. The owned worker (`:1296-1345`) gains one branch for it: after the health check, `find-file-noselect` under `inhibit-interaction`, then the buffer that `find-buffer-visiting` finds for `file` (a hook or an RPC wait can leave another buffer current, which `find-file-noselect` then returns), then `run-at-time 0` a new `--finish-file-success` that rechecks `--attempt-current-p` and calls `CALLBACK`. No view registry, no publication. The existing 30-second deadline, `--finish-failure`, and `claude-code-ide-remote-project-cancel-target` apply. No main-thread timer.
 - `CALLBACK` runs once on the main thread with `(:status completed :buffer BUFFER)` or `(:status failed :error STRING)`, the same shape `open-target` uses.
 
 A dead originating Session buffer at finish or cancel time sends nothing and only closes the prompt buffer.

@@ -1356,7 +1356,11 @@ longer owns its Session's display."
                    (result
                     (cond
                      (file
-                      (list :buffer (find-file-noselect file)))
+                      ;; `find-file-noselect' returns whatever buffer a hook
+                      ;; or RPC wait left current, so look the file up by name.
+                      (find-file-noselect file)
+                      (list :buffer (or (find-buffer-visiting file)
+                                        (error "No buffer visits %s" file))))
                      (shell-p
                       (claude-code-ide-remote-project--prepare-shell attempt))
                      (t

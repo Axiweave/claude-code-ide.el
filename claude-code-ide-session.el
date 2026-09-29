@@ -460,8 +460,10 @@ Use terminal image delivery for remote OMP.  Keep local image and text routes."
 (defvar claude-code-ide-session--editor-nonce nil
   "Per-client random nonce that marks this Emacs's editor keystrokes.")
 
-(defvar claude-code-ide-session--editor-request nil
-  "Accepted editor request (REQUEST-ID . SESSION-BUFFER) awaiting its answer.")
+(defvar claude-code-ide-session--editor-requests nil
+  "Accepted editor requests awaiting an answer, as (REQUEST-ID . SESSION-BUFFER).
+Each prompt buffer answers only its own request, so a prompt that never
+answers blocks no later request.")
 
 (defvar claude-code-ide-session--editor-window nil
   "Session buffer and window that last received an editor key, as a cons.
@@ -539,23 +541,16 @@ the prompt buffer the Agent may open in answer."
                    "\e\\\r")))
       (when binding (call-interactively binding)))))
 
-(defun claude-code-ide-session--editor-answer (kind)
-  "Send the KIND answer packet for the accepted editor request, if any."
-  (when-let* ((request claude-code-ide-session--editor-request))
-    (setq claude-code-ide-session--editor-request nil)
+(defun claude-code-ide-session--editor-answer (request kind)
+  "Send the KIND answer packet for the accepted REQUEST, at most once."
+  (when (memq request claude-code-ide-session--editor-requests)
+    (setq claude-code-ide-session--editor-requests
+          (delq request claude-code-ide-session--editor-requests))
     (when (buffer-live-p (cdr request))
       (with-current-buffer (cdr request)
         (when (derived-mode-p 'ghostel-mode)
           (claude-code-ide-session-send-omp-packet
            (concat "editor-" kind) (car request)))))))
-
-(defun claude-code-ide-session--editor-done ()
-  "Answer the accepted editor request with `done'."
-  (claude-code-ide-session--editor-answer "done"))
-
-(defun claude-code-ide-session--editor-cancel ()
-  "Answer the accepted editor request with `cancel'."
-  (claude-code-ide-session--editor-answer "cancel"))
 
 (defun claude-code-ide-session--editor-target-window (request)
   "Return the window REQUEST should open its prompt in.
@@ -570,26 +565,27 @@ selected meanwhile."
         window
       (get-buffer-window session))))
 
-(defun claude-code-ide-session--editor-visit (buffer)
-  "Show BUFFER as the prompt buffer for the accepted editor request.
+(defun claude-code-ide-session--editor-visit (request buffer)
+  "Show BUFFER as the prompt buffer for the accepted REQUEST.
 On any error, answer `cancel', kill BUFFER, and re-signal."
   (condition-case err
       (progn
         (with-current-buffer buffer
           (with-editor-mode 1)
           (add-hook 'with-editor-post-finish-hook
-                    #'claude-code-ide-session--editor-done nil t)
+                    (lambda () (claude-code-ide-session--editor-answer request "done"))
+                    nil t)
           (add-hook 'with-editor-post-cancel-hook
-                    #'claude-code-ide-session--editor-cancel nil t))
+                    (lambda () (claude-code-ide-session--editor-answer request "cancel"))
+                    nil t))
         ;; Replace the buffer of the window the key was pressed in.  Killing
         ;; the prompt restores that window's previous buffer, and the Session
         ;; keeps its own window.
-        (when-let* ((window (claude-code-ide-session--editor-target-window
-                             claude-code-ide-session--editor-request)))
+        (when-let* ((window (claude-code-ide-session--editor-target-window request)))
           (select-window window))
         (switch-to-buffer buffer))
     ((error quit)
-     (claude-code-ide-session--editor-cancel)
+     (claude-code-ide-session--editor-answer request "cancel")
      (when (buffer-live-p buffer)
        (with-current-buffer buffer
          (with-editor-mode -1)
@@ -613,11 +609,11 @@ On any error, answer `cancel', kill BUFFER, and re-signal."
 (defun claude-code-ide-session--editor-visit-or-cancel (request thunk)
   "Call THUNK to visit the buffer for REQUEST when it is still accepted.
 On any error answer `cancel' once and show one message."
-  (when (eq request claude-code-ide-session--editor-request)
+  (when (memq request claude-code-ide-session--editor-requests)
     (condition-case err
         (funcall thunk)
       ((error quit)
-       (claude-code-ide-session--editor-cancel)
+       (claude-code-ide-session--editor-answer request "cancel")
        (message "Prompt open failed: %s" (error-message-string err))))))
 
 (defun claude-code-ide-session--editor-local-visit (request path)
@@ -626,7 +622,12 @@ On any error answer `cancel' once and show one message."
    0 nil
    #'claude-code-ide-session--editor-visit-or-cancel request
    (lambda ()
-     (claude-code-ide-session--editor-visit (find-file-noselect path)))))
+     ;; `find-file-noselect' returns whatever buffer a `find-file-hook'
+     ;; left current, so look the prompt up by its file name.
+     (find-file-noselect path)
+     (claude-code-ide-session--editor-visit
+      request (or (find-buffer-visiting path)
+                  (error "No buffer visits %s" path))))))
 
 (defun claude-code-ide-session--editor-remote-visit (request host path)
   "Visit PATH on HOST for REQUEST through the remote Project RPC transport."
@@ -639,12 +640,13 @@ On any error answer `cancel' once and show one message."
       request
       (lambda ()
         (if (eq (plist-get result :status) 'completed)
-            (claude-code-ide-session--editor-visit (plist-get result :buffer))
+            (claude-code-ide-session--editor-visit request (plist-get result :buffer))
           (error "Remote prompt open failed: %s" (plist-get result :error))))))))
 
 (defun claude-code-ide-session-editor-request (request-id nonce path)
   "Answer an Oh My Pi editor request from the current Session buffer.
-Accept only when NONCE is this client's and no request is pending.
+Accept only when NONCE is this client's and REQUEST-ID is not already
+accepted, so two buffers attached to one Session open one prompt.
 Run every synchronous guard first, so a `user-error' sends no `ack'
 and the Agent falls back to its own editor.  Then send `ack' for
 REQUEST-ID and visit PATH locally or through the Session's remote host.
@@ -652,20 +654,20 @@ Both visits run later, outside Ghostel's native VT callback."
   (when (and (stringp nonce)
              (not (string-empty-p nonce))
              (equal nonce claude-code-ide-session--editor-nonce)
-             (null claude-code-ide-session--editor-request))
+             (not (assoc request-id claude-code-ide-session--editor-requests)))
     (when-let* ((session (claude-code-ide--session-for-buffer)))
       (let ((host (claude-code-ide-session-host session))
             (request (cons request-id (current-buffer))))
         (when host
           (claude-code-ide-session--editor-remote-preflight host))
-        (setq claude-code-ide-session--editor-request request)
+        (push request claude-code-ide-session--editor-requests)
         (claude-code-ide-session-send-omp-packet "editor-ack" request-id)
         (condition-case err
             (if host
                 (claude-code-ide-session--editor-remote-visit request host path)
               (claude-code-ide-session--editor-local-visit request path))
           ((error quit)
-           (claude-code-ide-session--editor-cancel)
+           (claude-code-ide-session--editor-answer request "cancel")
            (signal (car err) (cdr err))))))))
 
 (with-eval-after-load 'ghostel
