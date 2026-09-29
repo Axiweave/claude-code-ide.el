@@ -134,6 +134,9 @@
 (defconst claude-code-ide-manager--remote-repository-limit 20
   "Maximum remembered remote repositories per host.")
 
+(defconst claude-code-ide-manager--layout-limit 20
+  "Maximum persisted session layouts, most recently used first.")
+
 (defconst claude-code-ide-manager--empty-persisted-state
   `(:version ,claude-code-ide-manager--state-version
              :scopes nil :layouts nil :remote-repositories nil)
@@ -465,6 +468,17 @@ Those commands write their own :history stack, so
 
 (defvar claude-code-ide-manager--layouts (make-hash-table :test 'equal)
   "Saved layouts keyed by session key.")
+
+(defconst claude-code-ide-manager--layout-persistent-parameters
+  '((window-side . writable) (window-slot . writable)
+    (clone-of . t) (context . writable))
+  "Window parameters captured into a persisted layout's `:window-state'.
+Bound as `window-persistent-parameters' while capturing a layout, so
+third-party window parameters (for example `better-jumper' jump
+history) that other packages register globally are not pulled into
+the persisted state.  This mirrors Emacs's own defaults plus the
+`window-side'/`window-slot' pair Emacs adds when a side window such as
+the manager sidebar is created.")
 
 (defvar claude-code-ide-manager--companion-shells (make-hash-table :test 'equal)
   "Runtime shell buffer objects keyed by canonical Session ID.")
@@ -1572,8 +1586,18 @@ under the ESC prefix, so iterate that sub-keymap."
       (nreverse persistable))))
 
 (defun claude-code-ide-manager--serialize-layouts ()
-  "Return persisted layout data as an alist."
-  (let (layouts)
+  "Return persisted layout data as an alist.
+All layouts are kept as candidates: none are dropped just because a
+session is not currently enumerable, since remote zmx sessions may
+not be known yet at startup.  Candidates whose session key is in
+`claude-code-ide-manager--all-items' sort before unknown ones, and
+ties break by `:captured-at' descending (missing counts as 0).  The
+result is capped at `claude-code-ide-manager--layout-limit' entries
+so persisted state stays bounded."
+  (let ((known-keys (make-hash-table :test 'equal))
+        layouts)
+    (dolist (item (claude-code-ide-manager--all-items))
+      (puthash (claude-code-ide-manager-item-session-key item) t known-keys))
     (maphash
      (lambda (session-key layout)
        (push
@@ -1582,7 +1606,18 @@ under the ESC prefix, so iterate that sub-keymap."
          (claude-code-ide-manager--persistable-layout layout))
         layouts))
      claude-code-ide-manager--layouts)
-    (nreverse layouts)))
+    (setq layouts
+          (sort layouts
+                (lambda (a b)
+                  (let ((a-known (and (gethash (car a) known-keys) t))
+                        (b-known (and (gethash (car b) known-keys) t)))
+                    (if (not (eq a-known b-known))
+                        a-known
+                      (> (or (plist-get (cdr a) :captured-at) 0)
+                         (or (plist-get (cdr b) :captured-at) 0)))))))
+    (if (> (length layouts) claude-code-ide-manager--layout-limit)
+        (cl-subseq layouts 0 claude-code-ide-manager--layout-limit)
+      layouts)))
 
 (defun claude-code-ide-manager--serialize-scope-state ()
   "Return persisted scope view state as an alist."
@@ -1748,12 +1783,17 @@ candidate however the path arrived."
        claude-code-ide-manager--persisted-state))))
 
 (defun claude-code-ide-manager--save-state ()
-  "Persist current manager state when enabled."
+  "Persist current manager state when enabled.
+Skips the disk write when the freshly serialized state matches the
+last state written, since `persist-save' still pays for a full print
+and file write even when nothing changed."
   (when claude-code-ide-manager-persist-state
     (claude-code-ide-manager--persist-register)
-    (setq claude-code-ide-manager--persisted-state
-          (claude-code-ide-manager--serialize-state))
-    (persist-save 'claude-code-ide-manager--persisted-state)))
+    (let ((state (claude-code-ide-manager--serialize-state))
+          (previous claude-code-ide-manager--persisted-state))
+      (setq claude-code-ide-manager--persisted-state state)
+      (unless (equal state previous)
+        (persist-save 'claude-code-ide-manager--persisted-state)))))
 
 (defun claude-code-ide-manager--initialize ()
   "Initialize manager persistence for the current Emacs session."
@@ -4586,7 +4626,11 @@ cursor there."
           (list :session-key session-key
                 :preset (plist-get previous :preset)
                 :companion-kind (plist-get previous :companion-kind)
-                :window-state (window-state-get (frame-root-window) t)
+                :captured-at (float-time)
+                :window-state
+                (let ((window-persistent-parameters
+                       claude-code-ide-manager--layout-persistent-parameters))
+                  (window-state-get (frame-root-window) t))
                 :selected-buffer-name (buffer-name (window-buffer (selected-window)))))
          (session-buffer (claude-code-ide-manager--session-buffer session-key)))
     (when (or (and (buffer-live-p shell) (get-buffer-window shell (selected-frame)))
@@ -4827,7 +4871,8 @@ Dired when it fails or returns a non-buffer."
        session-key attachment view-buffer))
     (let ((layout (copy-sequence (gethash session-key claude-code-ide-manager--layouts))))
       (setq layout (plist-put layout :preset (plist-get request :preset))
-            layout (plist-put layout :companion-kind (plist-get request :companion-kind)))
+            layout (plist-put layout :companion-kind (plist-get request :companion-kind))
+            layout (plist-put layout :captured-at (float-time)))
       (when shell-p
         (setq layout (plist-put layout :shell-buffer view-buffer)
               layout (plist-put layout :shell-buffer-name (buffer-name view-buffer))))
@@ -4956,7 +5001,8 @@ A replay uses FRAME's current request.  Adopt a shell only after display."
              (message "Cannot open companion: %s. Press R to retry"
                       (error-message-string err)))))))
     (let ((layout (list :preset (plist-get request :preset)
-                        :companion-kind (plist-get request :companion-kind)))
+                        :companion-kind (plist-get request :companion-kind)
+                        :captured-at (float-time)))
           (shell (gethash (claude-code-ide-manager--shell-owner-key session-key)
                           claude-code-ide-manager--companion-shells)))
       (when (and (buffer-live-p shell) (get-buffer-window shell (selected-frame)))

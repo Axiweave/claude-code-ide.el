@@ -8589,6 +8589,63 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                 (kill-buffer buffer)))
             (list session-a session-b status-buffer (get-buffer "*cc-focus*"))))))
 
+(ert-deftest claude-code-ide-test-manager-serialize-layouts-prunes-unknown-and-caps ()
+  "Serialized layouts drop unknown sessions and cap the most recent ones."
+  (claude-code-ide-tests--reset-manager-state)
+  (let (items)
+    (dotimes (index 22)
+      (let ((key (format "session-%02d" index)))
+        (push (make-claude-code-ide-manager-item
+               :session-key key :display-name key :secondary-text key
+               :order-key index :live-p t)
+              items)
+        (puthash key (list :captured-at (float index))
+                 claude-code-ide-manager--layouts)))
+    (setq claude-code-ide-manager--items (nreverse items))
+    (puthash "gone" (list :captured-at 999.0) claude-code-ide-manager--layouts)
+    (let ((serialized (claude-code-ide-manager--serialize-layouts)))
+      (should (= (length serialized) claude-code-ide-manager--layout-limit))
+      (should-not (assoc "gone" serialized))
+      (should (assoc "session-21" serialized))
+      (should (assoc "session-02" serialized))
+      (should-not (assoc "session-01" serialized))
+      (should-not (assoc "session-00" serialized)))))
+
+(ert-deftest claude-code-ide-test-manager-serialize-layouts-keeps-unknown-under-cap ()
+  "Unknown sessions are kept, sorted after known ones, when under the cap."
+  (claude-code-ide-tests--reset-manager-state)
+  (let (items)
+    (dotimes (index 3)
+      (let ((key (format "known-%d" index)))
+        (push (make-claude-code-ide-manager-item
+               :session-key key :display-name key :secondary-text key
+               :order-key index :live-p t)
+              items)
+        (puthash key (list :captured-at (float index))
+                 claude-code-ide-manager--layouts)))
+    (setq claude-code-ide-manager--items (nreverse items))
+    (puthash "unknown" (list :captured-at 999.0) claude-code-ide-manager--layouts)
+    (let ((serialized (claude-code-ide-manager--serialize-layouts)))
+      (should (= (length serialized) 4))
+      (should (assoc "unknown" serialized))
+      (should (> (cl-position "unknown" serialized :key #'car :test #'equal)
+                 (cl-position "known-0" serialized :key #'car :test #'equal))))))
+
+(ert-deftest claude-code-ide-test-manager-save-state-skips-unchanged-write ()
+  "A second save-state call with unchanged content skips the disk write."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t)
+        (save-count 0))
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "one" :display-name "one"
+                 :secondary-text "one" :order-key 1 :live-p t)))
+    (cl-letf (((symbol-function 'persist-save)
+               (lambda (&rest _) (cl-incf save-count))))
+      (claude-code-ide-manager--save-state)
+      (claude-code-ide-manager--save-state)
+      (should (= save-count 1)))))
+
 (ert-deftest claude-code-ide-test-manager-restore-layout-keeps-restored-manager-window-unowned ()
   "Test direct layout restore does not normalize the manager window into a sidebar."
   (claude-code-ide-tests--reset-manager-state)
@@ -24658,6 +24715,7 @@ result arrives never has that result applied to the row now at its key."
               (let ((persisted
                      (cdar
                       (claude-code-ide-manager--serialize-layouts))))
+                (should persisted)
                 (should-not
                  (plist-member persisted :project-view-buffer))))
             (with-current-buffer view
