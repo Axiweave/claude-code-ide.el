@@ -85,7 +85,7 @@ tramp-rpc has a Magit prefetch (=tramp-rpc-magit.el=). After =git update-index -
 - Local workaround (user config, =lisp/init-tramp.el=): =leo/tramp-rpc-magit-drop-full-name-prefetch= removes the 5 entries. Measured live: 87 to 82 prefetch commands, and a ramhorn =SAGA-sdk= refresh went from 17.3 s to 0.37-0.45 s. Keep this item open until upstream fixes the entries, then remove the advice.
 
 ** TODO MG3: =remote-worktree-bootstrap-requires-owned-execution= is flaky under load
-It failed once in the full suite, passed 3 of 3 times alone, and passed in the next full run. It uses real shells with =sleep= and a background =attach=.
+It failed in 2 full suites (the second while testing the pin-order editor fix, which does not touch Worktree code). Each time it passed 3 of 3 times alone. It uses real shells with =sleep= and a background =attach=.
 
 * Emacs performance (live profiler reports, 2026-09-29)
 
