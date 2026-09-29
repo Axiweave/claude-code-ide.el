@@ -1,0 +1,71 @@
+#+TITLE: Open Issues
+
+Known problems that have no fix yet. Each item names its spec entry, which has the evidence.
+
+* Worktree ([[file:specs/016-worktree-audit/invariants.md][specs/016]])
+
+** TODO R6: Concurrent operations on one repository are not serialized
+Nothing serializes two operations on the same host and repository. Git locks each ref and index write. Each step re-checks its captured refs and Worktree before it runs. A clash probably fails a step and ends =unknown=. This is not verified.
+- Upgrade path: a =mkdir= lock per repository common dir in the runner admission.
+
+** TODO M2: Native move capture depends on Magit internals
+=--capture-native= depends on the statement order inside =magit-worktree-move=. It does not advise =expand-file-name= or =file-exists-p=. A Magit change can capture the wrong argv or fail.
+
+** TODO L5: A retry after an Agent switch has an unclear refusal
+=--retry-ready= reuses the old =:launch=. =--launch-current-p= rejects it. The user sees only "The operation changed during confirmation".
+
+** TODO R7: A TOCTOU window on the bootstrap name (uncertain)
+See =remote-worktree-runner.sh:1014-1022=. It needs a second writer in the private directory, which has mode 0700.
+
+** TODO R8: A truncated diagnostic has no marker
+The runner sends at most 64 KiB of a diagnostic and does not say that it cut the text.
+
+** TODO R9: Raw bytes in a diagnostic are not cleaned
+The diagnostic decode and =--display-text= keep raw bytes above =#x10ffff=.
+
+** TODO M3: Push-suffix advice uses cached interactive forms
+The package reads the interactive forms once at load time. It does not see a later redefinition of a suffix.
+
+** TODO M4: The confirmation deferral has no upper bound
+The confirmation waits for the user with no timeout. The approval signature check still stops a stale plan.
+
+** TODO L6: Retained operations are never pruned
+=--operations= keeps every result until Emacs exits. =docs/remote.org= documents this.
+
+** TODO L7: =--fail= does not clear =request=, and =--release= has no guard
+No failure path depends on either today.
+
+** TODO G3: The repository scope does not refresh local branch metadata
+Only the global scope refreshes it (=manager.el:2411=).
+
+** TODO G4: The Session directory may not follow a remote move (uncertain)
+Not reproduced.
+
+** TODO PF1: The wt merge reads run one after the other
+=--prepare-merge= reads the merge target, then the merge settings. The reads are independent. A parallel read saves one remote round trip.
+
+** TODO PF2: Postcondition reads run one after the other
+=--read-extra-conditions= sends each read after the previous one. The reads are async, so the UI does not block.
+
+* Attached-editor handoff ([[file:specs/010-attached-editor-handoff/invariants.md][specs/010]])
+
+** TODO Z1: zmx drops answer packets from a client that is not the input leader
+zmx forwards input from such a client only when =util.isUserInput= passes. An APC-only =pi:editor-*= answer does not pass. The Agent then stays pending.
+- Upgrade path: add a key that passes the gate to each answer, or let zmx forward =pi:= APC input.
+
+** TODO A6: The 500 ms ack window is too short for a busy Emacs
+Ghostel runs the handler on the main thread. A main thread that is busy for more than 500 ms misses the window.
+
+** TODO A7: The Agent abandons a file that Emacs accepted late
+After a late ack, the Agent opens =$EDITOR= and deletes the file when that editor exits. The Emacs =done= then has a stale id.
+- Upgrade path (A6, A7): a longer window with an explicit decline from Emacs, or an Agent → Emacs abort before the fallback.
+
+** TODO E5: The answer goes to a dead Session buffer after a reattach
+The request keeps the buffer object from the accept time.
+- Upgrade path: find the current Session buffer by Session id when the answer is sent.
+
+** TODO E1: The user =C-g= wrapper also sends the marker in copy mode
+=leo/claude-code-ide-session-send-ctrl-g= in the user config calls =claude-code-ide-session-send-control-g= in every Ghostel mode.
+
+** TODO A10: Nested tmux drops the editor request
+tmux 3.3 and later drop the =DCS tmux;= wrapper unless =allow-passthrough on= is set.
