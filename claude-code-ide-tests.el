@@ -1066,17 +1066,27 @@ them."
                   '(git "beta" "/work/repo-b/.git")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-cut-pastes-group ()
-  "Linewise cut and paste saves physical group order despite stale numbers."
+  "Linewise cut and paste saves physical group order despite stale numbers.
+The cut runs with `kill-ring-deindent-mode' on when Emacs has it.  That
+mode re-inserts the remote project line's indentation without properties."
   (claude-code-ide-tests--with-grouped-order-editor
    (let ((kill-ring nil)
          (select-enable-clipboard nil)
          (interprogram-cut-function nil)
-         (interprogram-paste-function nil))
-     (row "b2")
-     (forward-line -2)
-     (kill-region (point) (point-max))
-     (goto-char (point-min))
-     (yank))
+         (interprogram-paste-function nil)
+         (deindent (and (require 'indent-aux nil t)
+                        (not kill-ring-deindent-mode))))
+     (when deindent (kill-ring-deindent-mode 1))
+     (unwind-protect
+         (progn
+           (row "b2")
+           (forward-line -2)
+           (kill-region (point) (point-max))
+           (goto-char (point-min))
+           (yank)
+           ;; The pasted heading keeps its color.
+           (should (get-text-property (point-min) 'font-lock-face)))
+       (when deindent (kill-ring-deindent-mode -1))))
    ;; Mix a normal group command with a manual move.
    (goto-char (point-min))
    (claude-code-ide-manager-pin-order-move-group-down)

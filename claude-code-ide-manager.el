@@ -1510,7 +1510,17 @@ under the ESC prefix, so iterate that sub-keymap."
 (define-derived-mode claude-code-ide-manager-pin-order-mode text-mode
   "CC-Pin-Order"
   "Major mode for editing the complete manager pin order."
-  (setq truncate-lines t))
+  (setq truncate-lines t)
+  ;; `kill-ring-deindent-mode' advises the global filter and re-inserts
+  ;; killed indentation without text properties.  Cut rows and headings
+  ;; must keep their hidden Session and heading identities.
+  (setq-local filter-buffer-substring-function #'buffer-substring--filter)
+  ;; Yank strips these by default, so a pasted heading would lose its
+  ;; color and path tooltip.
+  (setq-local yank-excluded-properties
+              (if (listp yank-excluded-properties)
+                  (cl-set-difference yank-excluded-properties '(font-lock-face help-echo))
+                yank-excluded-properties)))
 
 (defun claude-code-ide-manager--serialize-item (item)
   "Convert manager ITEM to a persistable plist."
