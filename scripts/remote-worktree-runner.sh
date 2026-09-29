@@ -281,7 +281,10 @@ cci_atomic_kv() {
     rm -f "$tmp"
     return 1
   }
-  mv -f "$tmp" "$path"
+  mv -f "$tmp" "$path" || {
+    rm -f "$tmp"
+    return 1
+  }
 }
 
 # --- Manifest admission --------------------------------------------------

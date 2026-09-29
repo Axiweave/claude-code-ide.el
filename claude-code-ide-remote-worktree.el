@@ -324,11 +324,11 @@ Return nil for a local filename.  Reject unsupported remote routes."
                       (funcall fail (error-message-string error-data))))
                  (funcall
                   fail
-                  (cond ((plist-get result :timeout) "The control request exceeded 30 seconds")
-                        ((plist-get result :overflow) "The control request exceeded its output limit")
-                        ((plist-get result :cancelled) "The control request was canceled")
-                        (t (format "The control request failed with status %s: %s"
-                                   (plist-get result :status)
+                  (cond ((plist-get result :timeout) (format "The %s request exceeded 30 seconds" purpose))
+                        ((plist-get result :overflow) (format "The %s request exceeded its output limit" purpose))
+                        ((plist-get result :cancelled) (format "The %s request was canceled" purpose))
+                        (t (format "The %s request failed with status %s: %s"
+                                   purpose (plist-get result :status)
                                    (string-trim (plist-get result :stderr)))))))))
            (or directory (plist-get target :directory))
            (format "cci-worktree-control-%s"
@@ -1541,7 +1541,7 @@ This includes registration pruning."
          (resolver
           (concat
            "set -eu; program=$(command -v \"$1\"); "
-           "case \"$program\" in /*) [ -f \"$program\" ] && [ -x \"$program\" ]; "
+           "case \"$program\" in /*) [ -f \"$program\" ] && [ -x \"$program\" ] || exit 1; "
            "printf '%s\\n' \"$program\""
            (and shell " >&3")
            ";; *) exit 1;; esac"))
@@ -1988,7 +1988,7 @@ This includes registration pruning."
                 " if [ -z \"$base\" ]; then base=$(\"$git\" config --get \"lane.$branch.base\" || :); if [ -n \"$base\" ] && ! \"$git\" rev-parse --verify --quiet --end-of-options \"$base^{commit}\" >/dev/null; then base=; fi; fi;"
                 "fi;"
                 "base=${base:-$default}; base=${base#refs/heads/};"
-                "\"$git\" show-ref --verify --quiet \"refs/heads/$base\";"
+                "\"$git\" show-ref --verify --quiet \"refs/heads/$base\" || { printf 'No local branch %s for the merge destination\\n' \"$base\" >&2; exit 1; };"
                 "printf '%s\\000%s\\000' \"$default\" \"$base\"")
               " ")
              "cci-merge-target" git (symbol-name backend) (plist-get snapshot :branch)
@@ -2106,7 +2106,7 @@ This includes registration pruning."
     (claude-code-ide-remote-worktree--control
      operation "worktree-move-destination" "/bin/sh"
      (list "-c"
-           "set -eu; source=$1; destination=$2; lane=\"$3/.lane/trees\"; if [ -d \"$lane\" ]; then lane=$(cd \"$lane\" && pwd -P); case \"$source\" in \"$lane\"/*) echo 'Lane Worktrees cannot move' >&2; exit 1;; esac; fi; if [ -d \"$destination\" ]; then destination=\"$destination/$(basename \"$source\")\"; fi; parent=$(dirname \"$destination\"); name=$(basename \"$destination\"); parent=$(cd \"$parent\" && pwd -P); destination=\"$parent/$name\"; [ ! -e \"$destination\" ] && [ ! -L \"$destination\" ]; printf '%s\\n' \"$destination\""
+           "set -eu; source=$1; destination=$2; lane=\"$3/.lane/trees\"; if [ -d \"$lane\" ]; then lane=$(cd \"$lane\" && pwd -P); case \"$source\" in \"$lane\"/*) echo 'Lane Worktrees cannot move' >&2; exit 1;; esac; fi; if [ -d \"$destination\" ]; then destination=\"$destination/$(basename \"$source\")\"; fi; parent=$(dirname \"$destination\"); name=$(basename \"$destination\"); parent=$(cd \"$parent\" && pwd -P); destination=\"$parent/$name\"; if [ -e \"$destination\" ] || [ -L \"$destination\" ]; then printf 'The move destination is occupied: %s\\n' \"$destination\" >&2; exit 1; fi; printf '%s\\n' \"$destination\""
            "cci-move-destination" source destination (plist-get snapshot :main-worktree))
      (lambda (stdout)
        (let ((resolved (string-remove-suffix "\n" stdout)))

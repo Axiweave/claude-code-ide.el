@@ -29041,12 +29041,11 @@ for the dead clock instead of the returned command."
     (should (equal (nth 2 control) "/bin/sh"))
     (should
      (equal
-      (nth 3 control)
+      (seq-take (nth 3 control) 11)
       '("-c" "exec 3>&1; exec 1>&2; exec \"$@\""
         "cci-login-resolver" "env" "SKIP_TMUX=1" "/usr/bin/zsh" "-lic"
-        "exec \"$@\"" "cci-login-environment" "/bin/sh" "-c"
-        "set -eu; program=$(command -v \"$1\"); case \"$program\" in /*) [ -f \"$program\" ] && [ -x \"$program\" ]; printf '%s\\n' \"$program\" >&3;; *) exit 1;; esac"
-        "cci-agent-program" "omp")))
+        "exec \"$@\"" "cci-login-environment" "/bin/sh" "-c")))
+    (should (equal (last (nth 3 control) 2) '("cci-agent-program" "omp")))
     (should (equal (nth 5 control) "/srv/worktree"))
     (let* ((snapshot
             (claude-code-ide-remote-worktree--operation-snapshot operation))
@@ -29140,7 +29139,7 @@ for the dead clock instead of the returned command."
      (equal
       (claude-code-ide-remote-worktree--operation-error operation)
       (concat
-       "Host fixture: The control request failed with status 127: "
+       "Host fixture: The worktree-agent-program request failed with status 127: "
        "startup warning\nmissing login shell")))
     (should-not
      (plist-get
@@ -29738,6 +29737,41 @@ form.  A local directory keeps using the real captured native form."
                   (claude-code-ide-remote-worktree--make-operation :kind 'push)
                   (lambda () (magit-git-push "main" "origin/main" '("--force-with-lease"))))
                  '("push" "-v" "--force-with-lease" "origin" "main:main"))))))))
+
+(ert-deftest claude-code-ide-test-remote-worktree-move-refuses-occupied-destination ()
+  "Native move preparation refuses an occupied destination before confirmation."
+  (let* ((root (file-truename (make-temp-file "cci-move-" t)))
+         (main (expand-file-name "main" root))
+         (source (expand-file-name "feature" root)))
+    (unwind-protect
+        (progn
+          (make-directory main)
+          (make-directory source)
+          (make-directory (expand-file-name "taken" root))
+          (make-directory (expand-file-name "into/feature" root) t)
+          (write-region "" nil (expand-file-name "file" root))
+          (make-symbolic-link "missing" (expand-file-name "dangling" root))
+          (cl-letf (((symbol-function 'claude-code-ide-remote-worktree--control)
+                     (lambda (_operation _purpose program argv callback &rest _)
+                       (with-temp-buffer
+                         (if (zerop (apply #'call-process program nil (list t nil) nil argv))
+                             (funcall callback (buffer-string))
+                           (user-error "Move destination refused"))))))
+            (dolist (case '(("free" . t) ("taken" . t) ("into" . nil)
+                            ("file" . nil) ("dangling" . nil)))
+              (let* ((destination (expand-file-name (car case) root))
+                     (operation
+                      (claude-code-ide-remote-worktree--make-operation
+                       :kind 'move
+                       :snapshot (list :backend 'wt :worktree source :main-worktree main)
+                       :options (list :native-argv (list "worktree" "move" source destination))))
+                     accepted)
+                (condition-case nil
+                    (claude-code-ide-remote-worktree--prepare-move
+                     operation (lambda (_) (setq accepted t)))
+                  (user-error nil))
+                (should (eq accepted (cdr case)))))))
+      (delete-directory root t))))
 
 (ert-deftest claude-code-ide-test-remote-worktree-dispatch-waits-for-owned-admission ()
   "A runner barrier keeps dispatch pending until owned admission and later completion."
