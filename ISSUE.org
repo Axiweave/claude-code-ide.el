@@ -70,6 +70,20 @@ The request keeps the buffer object from the accept time.
 ** TODO A10: Nested tmux drops the editor request
 tmux 3.3 and later drop the =DCS tmux;= wrapper unless =allow-passthrough on= is set.
 
+* Remote Magit companion ([[file:docs/remote.org][docs/remote.org]], "Repair and lifetime rules")
+
+** TODO MG1: The tramp-rpc Magit prefetch lists every ignored file
+tramp-rpc has a Magit prefetch (=tramp-rpc-magit.el=). After =git update-index --refresh= exits 0, it sends about 87 git commands in one =commands.run_parallel= call and serves Magit from the results (=tramp-rpc.el:2264-2280=). One of these commands is =git ls-files -z --full-name --others --ignored --exclude-standard= (=tramp-rpc-magit.el:390=). It lists every ignored file in the working tree.
+- ramhorn =~/SAGA-sdk= (626 GB, mostly ignored): this command takes 17.2 s and prints 624 MB. Every status refresh of that repo takes about 17 s. Without this command, a refresh takes 0.5-0.8 s.
+- My first probe charged the 17 s to =update-index --refresh=, because the prefetch runs inside that =process-file= call. It is not racy git.
+- The prefetch runs only when =update-index --refresh= exits 0. It exits 1 when tracked files have changes, as in both v12mac Agent worktrees (113 and 134 changed files). There the prefetch is skipped, and a refresh takes 0.6-0.8 s with 37 RPC calls. With the prefetch forced, even without =--ignored=, a refresh took 1.5-1.7 s. The v12mac prefetch also sent 3 file-metadata batches (517 entries) and moved 18.9 MB, 16.9 MB of it from the =--ignored= listing.
+- Magit uses =--ignored= only in its ignored-files commands and sections (=magit-git.el:1160-1230=). The user status hook has no ignored-files section.
+- Upstream =origin/HEAD= (9ca02be) still has the command. It came in with 7e0d529 "perf: speed remote Magit status expansion" (2026-06-25). No upstream issue mentions it.
+- Upgrade path: remove the entry from the prefetch, or run it only when a section needs it. As a local fix, a =:filter-return= advice on =tramp-rpc-magit--prefetch-git-commands= can drop it, but that function is private.
+
+** TODO MG3: =remote-worktree-bootstrap-requires-owned-execution= is flaky under load
+It failed once in the full suite, passed 3 of 3 times alone, and passed in the next full run. It uses real shells with =sleep= and a background =attach=.
+
 * Emacs performance (live profiler reports, 2026-09-29)
 
 These items stay open after the 2026-09-29 fixes. Those fixes removed the Spacemacs frame title (5.5% CPU), the per-dispatch tramp-rpc version check (3-7% of allocation), the =format-spec= call in the ghostel title (3.2% CPU), =locate-library= in the =use-package= =:ensure= advice (41.9% CPU in one profile), and the =better-jumper= data in saved cc-manager layouts.
