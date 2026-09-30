@@ -13271,6 +13271,27 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
       (setq claude-code-ide-mcp-server--session-count 0)
       (clrhash claude-code-ide-mcp-server--sessions))))
 
+(ert-deftest claude-code-ide-mcp-server-test-session-ended-twice-keeps-sibling ()
+  "A repeated end for one session must not stop the server for another."
+  (let ((claude-code-ide-mcp-server--session-count 0)
+        (claude-code-ide-mcp-server--sessions (make-hash-table :test 'equal))
+        (buffer (get-buffer-create "*test-buffer-double-end*"))
+        stopped)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-mcp-server--stop-server)
+                   (lambda () (setq stopped t))))
+          (claude-code-ide-mcp-server-session-started "a" "/tmp/a" buffer)
+          (claude-code-ide-mcp-server-session-started "b" "/tmp/b" buffer)
+          ;; Sentinel and failed-launch handler both report "a".
+          (claude-code-ide-mcp-server-session-ended "a")
+          (claude-code-ide-mcp-server-session-ended "a")
+          (should (= claude-code-ide-mcp-server--session-count 1))
+          (should-not stopped)
+          (claude-code-ide-mcp-server-session-ended "b")
+          (should (= claude-code-ide-mcp-server--session-count 0))
+          (should stopped))
+      (kill-buffer buffer))))
+
 (ert-deftest claude-code-ide-mcp-server-test-config-with-session-id ()
   "Test MCP config generation with session ID."
   ;; Mock the server port

@@ -260,11 +260,14 @@ Increments the session counter."
 
 (defun claude-code-ide-mcp-server-session-ended (&optional session-id)
   "Notify that a Claude session has ended.
-If SESSION-ID is provided, unregister that specific session.
+If SESSION-ID is provided, unregister that specific session, and do
+nothing when it is no longer registered: the sentinel and a failed
+launch can both report the same exit, and counting it twice would stop
+the shared server under other live sessions.
 Decrements the session counter and stops server if no sessions remain."
-  (when session-id
-    (claude-code-ide-mcp-server-unregister-session session-id))
-  (when (> claude-code-ide-mcp-server--session-count 0)
+  (when (and (or (null session-id)
+                 (claude-code-ide-mcp-server-unregister-session session-id))
+             (> claude-code-ide-mcp-server--session-count 0))
     (cl-decf claude-code-ide-mcp-server--session-count)
     (claude-code-ide-debug "MCP session ended. Count: %d"
                            claude-code-ide-mcp-server--session-count)
@@ -310,10 +313,12 @@ This is useful for generating --allowedTools lists."
   (claude-code-ide-debug "Registered MCP session %s for project %s" session-id project-dir))
 
 (defun claude-code-ide-mcp-server-unregister-session (session-id)
-  "Unregister the session with SESSION-ID."
+  "Unregister the session with SESSION-ID.
+Return non-nil when SESSION-ID was registered."
   (when (gethash session-id claude-code-ide-mcp-server--sessions)
     (remhash session-id claude-code-ide-mcp-server--sessions)
-    (claude-code-ide-debug "Unregistered MCP session %s" session-id)))
+    (claude-code-ide-debug "Unregistered MCP session %s" session-id)
+    t))
 
 (defun claude-code-ide-mcp-server-get-session-context (&optional session-id)
   "Get the context for SESSION-ID or the current session.
