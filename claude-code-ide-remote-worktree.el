@@ -2882,34 +2882,41 @@ Use `claude-code-ide-remote-worktree-show' to inspect the retained result."
                    (setf (claude-code-ide-remote-worktree--operation-request operation) nil)
                    (if (plist-get result :error)
                        (claude-code-ide-remote-worktree--fail operation (plist-get result :error))
-                     (let* ((session (seq-find
-                                      (lambda (item)
-                                        (equal (plist-get item :name) (cdr (assoc "name" bootstrap))))
-                                      (plist-get result :sessions)))
-                            (directory (and session (claude-code-ide-remote-worktree--agent-directory session)))
-                            (identity (mapcar (lambda (key) (plist-get session key))
-                                              '(:name :pid :created :cmd :start_dir)))
-                            (previous (plist-get
-                                       (claude-code-ide-remote-worktree--operation-results operation)
-                                       :bootstrap-identity)))
-                       (if (not (and directory (not (plist-get session :error))
-                                     (equal (plist-get session :cmd) expected-command)
-                                     (or (not previous) (equal identity previous))))
-                           (funcall callback fresh)
-                         (claude-code-ide-remote-worktree--metadata
-                          operation (list directory)
-                          (lambda (records)
-                            (let ((record (car records)))
-                              (setq fresh
-                                    (plist-put fresh :bootstrap-verified
-                                               (and (eq (plist-get record :kind) 'git)
-                                                    (equal (plist-get record :worktree-path)
-                                                           (cdr (assoc "directory" bootstrap)))
-                                                    (equal (plist-get record :common-dir)
-                                                           (plist-get fresh :repository)))))
-                              (when (plist-get fresh :bootstrap-verified)
-                                (setq fresh (plist-put fresh :bootstrap-identity identity)))
-                              (funcall callback fresh)))))))))))))))
+                     ;; Like `--control': an error in the continuation
+                     ;; must fail this operation, not only reach the
+                     ;; transport's generic message.
+                     (condition-case error-data
+                         (let* ((session (seq-find
+                                          (lambda (item)
+                                            (equal (plist-get item :name) (cdr (assoc "name" bootstrap))))
+                                          (plist-get result :sessions)))
+                                (directory (and session (claude-code-ide-remote-worktree--agent-directory session)))
+                                (identity (mapcar (lambda (key) (plist-get session key))
+                                                  '(:name :pid :created :cmd :start_dir)))
+                                (previous (plist-get
+                                           (claude-code-ide-remote-worktree--operation-results operation)
+                                           :bootstrap-identity)))
+                           (if (not (and directory (not (plist-get session :error))
+                                         (equal (plist-get session :cmd) expected-command)
+                                         (or (not previous) (equal identity previous))))
+                               (funcall callback fresh)
+                             (claude-code-ide-remote-worktree--metadata
+                              operation (list directory)
+                              (lambda (records)
+                                (let ((record (car records)))
+                                  (setq fresh
+                                        (plist-put fresh :bootstrap-verified
+                                                   (and (eq (plist-get record :kind) 'git)
+                                                        (equal (plist-get record :worktree-path)
+                                                               (cdr (assoc "directory" bootstrap)))
+                                                        (equal (plist-get record :common-dir)
+                                                               (plist-get fresh :repository)))))
+                                  (when (plist-get fresh :bootstrap-verified)
+                                    (setq fresh (plist-put fresh :bootstrap-identity identity)))
+                                  (funcall callback fresh))))))
+                       (error
+                        (claude-code-ide-remote-worktree--fail
+                         operation (error-message-string error-data)))))))))))))
 
 (defun claude-code-ide-remote-worktree--read-extra-conditions (operation evidence fresh callback)
   "Read remaining Git facts, then call CALLBACK with FRESH."

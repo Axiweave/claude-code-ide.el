@@ -29044,6 +29044,22 @@ for the dead clock instead of the returned command."
        operation evidence '(:repository "/srv/repo/.git") (lambda (value) (setq checked value)))
       (should-not (plist-get checked :bootstrap-verified)))))
 
+(ert-deftest claude-code-ide-test-remote-worktree-bootstrap-continuation-error-fails-operation ()
+  "An error after the zmx discovery reply marks the Operation failed."
+  (let* ((claude-code-ide-remote-hosts '("fixture"))
+         (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal))
+         (operation (claude-code-ide-remote-worktree--new-operation 'open "fixture" "/srv/worktree" nil))
+         (evidence (list :bootstrap '(("name" . "owned") ("directory" . "/srv/worktree"))))
+         failed)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-discover-remote)
+               (lambda (_host callback &rest _)
+                 (funcall callback (list :sessions nil))))
+              ((symbol-function 'claude-code-ide-remote-worktree--fail)
+               (lambda (_operation diagnostic) (setq failed diagnostic))))
+      (claude-code-ide-remote-worktree--read-bootstrap
+       operation evidence nil (lambda (_) (error "Continuation broke")))
+      (should (equal failed "Continuation broke")))))
+
 (ert-deftest claude-code-ide-test-remote-worktree-external-agent-never-replaced ()
   "Normal open selects an external Agent. Only explicit sibling intent starts another."
   (save-window-excursion
