@@ -1786,10 +1786,17 @@ candidate however the path arrived."
     (setq claude-code-ide-manager--current-session-key nil)))
 
 (defun claude-code-ide-manager--load-state ()
-  "Load persisted manager state when enabled."
+  "Load persisted manager state when enabled.
+An unreadable state file, such as one truncated by a crash during
+`persist-save', only drops the saved state.  It must not abort loading
+the package."
   (when claude-code-ide-manager-persist-state
     (claude-code-ide-manager--persist-register)
-    (persist-load 'claude-code-ide-manager--persisted-state)
+    (condition-case err
+        (persist-load 'claude-code-ide-manager--persisted-state)
+      (error
+       (message "claude-code-ide: ignoring unreadable manager state: %s"
+                (error-message-string err))))
     (when (and (listp claude-code-ide-manager--persisted-state)
                (memq (or (plist-get claude-code-ide-manager--persisted-state :version) 0)
                      '(1 2 3 4)))

@@ -2907,6 +2907,15 @@ A `working' or `needs-input' state is left alone by the same clear."
                               :selected-buffer-name)
                    "*persisted*"))))
 
+(ert-deftest claude-code-ide-test-manager-unreadable-state-does-not-abort-load ()
+  "A truncated state file leaves empty state instead of breaking package load."
+  (claude-code-ide-tests--reset-manager-state)
+  (let ((claude-code-ide-manager-persist-state t))
+    (cl-letf (((symbol-function 'persist-load)
+               (lambda (_) (signal 'end-of-file '("truncated")))))
+      (claude-code-ide-manager--initialize))
+    (should-not claude-code-ide-manager--items)))
+
 (ert-deftest claude-code-ide-test-manager-collects-live-sessions ()
   "Test manager builds items from live session directories."
   (claude-code-ide-tests--reset-manager-state)
