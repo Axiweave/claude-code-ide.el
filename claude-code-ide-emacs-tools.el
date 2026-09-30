@@ -43,6 +43,21 @@
 
 ;;; Tool Functions
 
+(defun claude-code-ide-mcp--format-xref-item (item)
+  "Format xref ITEM as \"FILE:LINE: SUMMARY\".
+A location whose buffer is gone reports line 0, so one bad item does
+not drop the whole result list."
+  (let* ((location (xref-item-location item))
+         (line (or (ignore-errors
+                     (let ((marker (xref-location-marker location)))
+                       (with-current-buffer (marker-buffer marker)
+                         (save-excursion
+                           (goto-char marker)
+                           (line-number-at-pos)))))
+                   0)))
+    (format "%s:%d: %s"
+            (xref-location-group location) line (xref-item-summary item))))
+
 (defun claude-code-ide-mcp-xref-find-references (identifier file-path)
   "Find references to IDENTIFIER in the current session's project.
 FILE-PATH specifies which file's buffer context to use for the search.
@@ -60,17 +75,7 @@ This function uses the session context to operate in the correct project."
                     (format "No xref backend available for %s" file-path)
                   (let ((xref-items (xref-backend-references backend identifier-str)))
                     (if xref-items
-                        (mapcar (lambda (item)
-                                  (let* ((location (xref-item-location item))
-                                         (file (xref-location-group location))
-                                         (marker (xref-location-marker location))
-                                         (line (with-current-buffer (marker-buffer marker)
-                                                 (save-excursion
-                                                   (goto-char marker)
-                                                   (line-number-at-pos))))
-                                         (summary (xref-item-summary item)))
-                                    (format "%s:%d: %s" file line summary)))
-                                xref-items)
+                        (mapcar #'claude-code-ide-mcp--format-xref-item xref-items)
                       (format "No references found for '%s'" identifier-str)))))
             (error
              (format "Error searching for '%s' in %s: %s"
@@ -102,17 +107,7 @@ This function uses the session context to operate in the correct project."
                  (t
                   (let ((xref-items (xref-backend-apropos backend pattern-str)))
                     (if xref-items
-                        (mapcar (lambda (item)
-                                  (let* ((location (xref-item-location item))
-                                         (file (xref-location-group location))
-                                         (marker (xref-location-marker location))
-                                         (line (with-current-buffer (marker-buffer marker)
-                                                 (save-excursion
-                                                   (goto-char marker)
-                                                   (line-number-at-pos))))
-                                         (summary (xref-item-summary item)))
-                                    (format "%s:%d: %s" file line summary)))
-                                xref-items)
+                        (mapcar #'claude-code-ide-mcp--format-xref-item xref-items)
                       (format "No symbols found matching pattern '%s'" pattern-str))))))
             (error
              (format "Error searching for pattern '%s' in %s: %s"
