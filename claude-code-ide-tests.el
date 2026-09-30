@@ -13319,6 +13319,39 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
         (should (equal (alist-get 'message (alist-get 'error reply))
                        "Unknown tool: nope"))))))
 
+(ert-deftest claude-code-ide-test-ediff-quit-ignores-diff-replaced-during-prompt ()
+  "The accept prompt answers only the diff it asked about."
+  (let* ((active-diffs (make-hash-table :test #'equal))
+         (session (make-claude-code-ide-mcp-session :id "s" :active-diffs active-diffs))
+         (buffer-b (generate-new-buffer "*cc-ediff-quit-b*"))
+         completed)
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-with-idle-timer)
+                   (lambda (_delay _repeat fn) (funcall fn)))
+                  ((symbol-function 'claude-code-ide-mcp-complete-deferred)
+                   (lambda (_session _tool result _key)
+                     (push (alist-get 'text (car result)) completed))))
+          ;; A new openDiff for the same tab replaces the entry and kills
+          ;; the old proposed buffer while the prompt waits.
+          (puthash "tab" `((buffer-B . ,buffer-b)) active-diffs)
+          (cl-letf (((symbol-function 'y-or-n-p)
+                     (lambda (_)
+                       (kill-buffer buffer-b)
+                       (puthash "tab" '((buffer-B . nil)) active-diffs)
+                       t)))
+            (claude-code-ide-mcp--handle-ediff-quit "tab" session))
+          (should-not completed)
+          (should-not (alist-get 'responded (gethash "tab" active-diffs)))
+          ;; An unchanged diff still gets its answer.
+          (setq buffer-b (generate-new-buffer "*cc-ediff-quit-b*"))
+          (with-current-buffer buffer-b (insert "new"))
+          (puthash "tab" `((buffer-B . ,buffer-b)) active-diffs)
+          (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+            (claude-code-ide-mcp--handle-ediff-quit "tab" session))
+          (should (equal completed '("FILE_SAVED")))
+          (should (alist-get 'responded (gethash "tab" active-diffs))))
+      (when (buffer-live-p buffer-b) (kill-buffer buffer-b)))))
+
 (ert-deftest claude-code-ide-mcp-server-test-config-with-session-id ()
   "Test MCP config generation with session ID."
   ;; Mock the server port

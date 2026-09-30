@@ -691,35 +691,35 @@ session."
           ;; Defer the response to ensure ediff cleanup completes first
           (run-with-idle-timer claude-code-ide-mcp-handlers-idle-timer-delay nil
                                (lambda ()
-                                 (if accept-changes
-                                     ;; User accepted changes
-                                     (let ((final-content (with-current-buffer buffer-B
-                                                            (buffer-string))))
-                                       ;; Don't save the file - let Claude Code handle the actual file modification
-                                       ;; Just return the content that should be saved
+                                 ;; The prompt and this idle wait let MCP
+                                 ;; messages run.  A `close_tab' or a new
+                                 ;; `openDiff' for TAB-NAME replaces or
+                                 ;; removes DIFF-INFO; its deferred reply
+                                 ;; then belongs to someone else.
+                                 (when (eq diff-info (gethash tab-name active-diffs))
+                                   (if (and accept-changes (buffer-live-p buffer-B))
+                                       ;; User accepted changes
+                                       (let ((final-content (with-current-buffer buffer-B
+                                                              (buffer-string))))
+                                         ;; Don't save the file - let Claude Code handle the actual file modification
+                                         ;; Just return the content that should be saved
 
-                                       ;; Send FILE_SAVED response with the new content
-                                       (claude-code-ide-mcp-complete-deferred
-                                        final-session
-                                        "openDiff"
-                                        (list `((type . "text") (text . "FILE_SAVED"))
-                                              `((type . "text") (text . ,final-content)))
-                                        tab-name)
+                                         ;; Send FILE_SAVED response with the new content
+                                         (claude-code-ide-mcp-complete-deferred
+                                          final-session
+                                          "openDiff"
+                                          (list `((type . "text") (text . "FILE_SAVED"))
+                                                `((type . "text") (text . ,final-content)))
+                                          tab-name))
 
-                                       ;; Mark that we've responded so close_tab knows ediff should be cleaned up
-                                       (when final-session
-                                         (let ((session-diffs (claude-code-ide-mcp--get-active-diffs final-session)))
-                                           (puthash tab-name
-                                                    (cons '(responded . t) diff-info)
-                                                    session-diffs))))
-
-                                   ;; User rejected changes - send DIFF_REJECTED response
-                                   (claude-code-ide-mcp-complete-deferred
-                                    final-session
-                                    "openDiff"
-                                    (list `((type . "text") (text . "DIFF_REJECTED"))
-                                          `((type . "text") (text . ,tab-name)))
-                                    tab-name)
+                                     ;; User rejected changes, or the proposed
+                                     ;; buffer is gone - send DIFF_REJECTED
+                                     (claude-code-ide-mcp-complete-deferred
+                                      final-session
+                                      "openDiff"
+                                      (list `((type . "text") (text . "DIFF_REJECTED"))
+                                            `((type . "text") (text . ,tab-name)))
+                                      tab-name))
 
                                    ;; Mark that we've responded so close_tab knows ediff should be cleaned up
                                    ;; Don't clean up immediately - let ediff quit process complete first
