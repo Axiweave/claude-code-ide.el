@@ -984,19 +984,27 @@ When SESSION-ID is nil, retain the legacy directory key."
       ;; Remove session from registry
       (remhash session-id claude-code-ide-mcp--sessions)
 
-      ;; Invalidate cache in all buffers that belong to this project
-      (dolist (buffer (buffer-list))
-        (with-current-buffer buffer
-          (when (or (eq claude-code-ide-mcp--buffer-session-cache session)
-                    (and claude-code-ide-mcp--buffer-project-cache
-                         (string= claude-code-ide-mcp--buffer-project-cache
-                                  project-dir)))
-            (claude-code-ide-mcp--invalidate-buffer-cache))))
+      ;; Invalidate cache in all buffers that belong to this project.
+      ;; After the last session, also drop the buffer-local hooks that
+      ;; `openFile' added, since nothing reads the cache any more.
+      (let ((last-session-p (= 0 (hash-table-count claude-code-ide-mcp--sessions))))
+        (dolist (buffer (buffer-list))
+          (with-current-buffer buffer
+            (when (or (eq claude-code-ide-mcp--buffer-session-cache session)
+                      (and claude-code-ide-mcp--buffer-project-cache
+                           (string= claude-code-ide-mcp--buffer-project-cache
+                                    project-dir)))
+              (claude-code-ide-mcp--invalidate-buffer-cache))
+            (when last-session-p
+              (remove-hook 'after-save-hook
+                           #'claude-code-ide-mcp--invalidate-buffer-cache t)
+              (remove-hook 'after-change-major-mode-hook
+                           #'claude-code-ide-mcp--invalidate-buffer-cache t))))
 
-      ;; Remove hooks if no more sessions
-      (when (= 0 (hash-table-count claude-code-ide-mcp--sessions))
-        (remove-hook 'post-command-hook #'claude-code-ide-mcp--track-selection)
-        (remove-hook 'post-command-hook #'claude-code-ide-mcp--track-active-buffer))
+        ;; Remove hooks if no more sessions
+        (when last-session-p
+          (remove-hook 'post-command-hook #'claude-code-ide-mcp--track-selection)
+          (remove-hook 'post-command-hook #'claude-code-ide-mcp--track-active-buffer)))
 
       (claude-code-ide-debug "MCP server stopped for %s"
                              (file-name-nondirectory
