@@ -13292,6 +13292,33 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
           (should stopped))
       (kill-buffer buffer))))
 
+(ert-deftest claude-code-ide-mcp-server-test-rpc-errors-keep-code-and-id ()
+  "Protocol errors reach the client with their own code and request id."
+  (skip-unless (condition-case nil
+                   (progn (require 'web-server) t)
+                 (error nil)))
+  (require 'claude-code-ide-mcp-http-server)
+  (let* ((mock-process (make-claude-code-ide-mcp-server-tests--mock-process))
+         (mock-request (make-instance 'ws-request :process mock-process))
+         (claude-code-ide-mcp-server-tools nil))
+    (cl-letf (((symbol-function 'ws-headers)
+               (lambda (_) '((:POST . "/mcp/s"))))
+              ((symbol-function 'ws-body)
+               (lambda (_)
+                 "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"nope\"}}"))
+              ((symbol-function 'ws-response-header)
+               #'claude-code-ide-mcp-server-tests--mock-ws-response-header)
+              ((symbol-function 'ws-send)
+               #'claude-code-ide-mcp-server-tests--mock-ws-send))
+      (catch 'close-connection
+        (claude-code-ide-mcp-http-server--handle-post mock-request))
+      (let ((reply (json-parse-string claude-code-ide-mcp-server-tests--last-response
+                                      :object-type 'alist)))
+        (should (equal (alist-get 'id reply) 7))
+        (should (equal (alist-get 'code (alist-get 'error reply)) -32602))
+        (should (equal (alist-get 'message (alist-get 'error reply))
+                       "Unknown tool: nope"))))))
+
 (ert-deftest claude-code-ide-mcp-server-test-config-with-session-id ()
   "Test MCP config generation with session ID."
   ;; Mock the server port

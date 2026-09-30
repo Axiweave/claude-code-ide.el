@@ -62,6 +62,8 @@
 (defvar claude-code-ide-mcp-http-server--server nil
   "The web-server instance.")
 
+(define-error 'json-rpc-error "JSON-RPC error")
+
 
 ;;; Helper Functions
 
@@ -151,16 +153,23 @@ with the appropriate session context."
               ;; Still close the connection for HTTP transport
               (claude-code-ide-mcp-http-server--send-empty-response request))
           ;; Process the request with session context
-          (let* ((claude-code-ide-mcp-server--current-session-id url-session-id)
-                 (result (claude-code-ide-mcp-http-server--dispatch method params)))
-            (claude-code-ide-debug "MCP response result computed")
-            ;; Send response
-            (claude-code-ide-mcp-http-server--send-json-response
-             request 200
-             `((jsonrpc . "2.0")
-               (id . ,id)
-               (result . ,result)))
-            (claude-code-ide-debug "MCP response sent"))))
+          (let ((claude-code-ide-mcp-server--current-session-id url-session-id))
+            (pcase (condition-case rpc-error
+                       (cons 'result
+                             (claude-code-ide-mcp-http-server--dispatch method params))
+                     ;; DATA is (CODE MESSAGE) from the signaling site.
+                     (json-rpc-error (cons 'error (cdr rpc-error))))
+              (`(result . ,result)
+               (claude-code-ide-debug "MCP response result computed")
+               (claude-code-ide-mcp-http-server--send-json-response
+                request 200
+                `((jsonrpc . "2.0")
+                  (id . ,id)
+                  (result . ,result)))
+               (claude-code-ide-debug "MCP response sent"))
+              (`(error ,code ,message)
+               (claude-code-ide-mcp-http-server--send-json-error
+                request id code message))))))
 
     (json-parse-error
      (claude-code-ide-mcp-http-server--send-json-error
