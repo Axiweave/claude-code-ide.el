@@ -1079,8 +1079,15 @@ responses."
                   (let* ((response (claude-code-ide-mcp--make-response id `((content . ,result))))
                          (json-response (json-encode response)))
                     (claude-code-ide-debug "Sending deferred response: %s" json-response)
-                    (websocket-send-text client json-response)
-                    (claude-code-ide-debug "Deferred response sent"))
+                    ;; The socket may close while the user answers the
+                    ;; diff prompt; that must not abort their command.
+                    (condition-case err
+                        (progn
+                          (websocket-send-text client json-response)
+                          (claude-code-ide-debug "Deferred response sent"))
+                      (error
+                       (claude-code-ide-debug "Failed to send deferred response %s: %s"
+                                              lookup-key err))))
                 (claude-code-ide-debug "No client connected for session, cannot send deferred response")))
           (claude-code-ide-debug "No deferred response found for %s" lookup-key))))))
 
