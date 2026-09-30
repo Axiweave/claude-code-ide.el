@@ -589,11 +589,14 @@ Final display may use a different window than terminal creation."
        (eq ghostel--input-mode 'copy)))
 
 (defun claude-code-ide--terminal-working-resize-observer (original-fn &rest args)
-  "Suppress working detection while ORIGINAL-FN resizes the Session."
-  (when (and (derived-mode-p 'ghostel-mode)
-             (claude-code-ide--session-buffer-p (current-buffer)))
-    (claude-code-ide-session-working-suppress-after-resize
-     (current-buffer)))
+  "Suppress working detection while ORIGINAL-FN resizes the Session.
+A suppression error is logged and never stops the resize."
+  (condition-case err
+      (when (and (derived-mode-p 'ghostel-mode)
+                 (claude-code-ide--session-buffer-p (current-buffer)))
+        (claude-code-ide-session-working-suppress-after-resize
+         (current-buffer)))
+    (error (claude-code-ide-debug "Resize suppression failed: %S" err)))
   (apply original-fn args))
 
 (defun claude-code-ide--terminal-reflow-filter (original-fn &rest args)

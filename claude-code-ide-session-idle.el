@@ -554,26 +554,33 @@ triggers synchronously while processing this same output (e.g. a
 completion notification via `leo/ghostel--notify-claude-idle') stand
 as the final word, instead of being immediately clobbered by this
 generic \"output arrived\" bookkeeping.  Content-free invocations are
-ignored entirely; see `claude-code-ide-session-idle--real-activity-p'."
-  (let* ((process (car args))
-         (output (nth 1 args))
-         (process-buffer (ignore-errors
-                           (process-buffer process)))
-         (target-buffer (or process-buffer (current-buffer))))
-    (when (and (claude-code-ide-session-idle--real-activity-p output)
-               (buffer-live-p target-buffer)
-               (with-current-buffer target-buffer (derived-mode-p 'ghostel-mode))
-               (claude-code-ide-session-buffer-p target-buffer))
-      (with-current-buffer target-buffer
-        (claude-code-ide-session-idle-record-activity)
-        (claude-code-ide-session-working-record-output)))
-    (apply orig-fn args)))
+ignored entirely; see `claude-code-ide-session-idle--real-activity-p'.
+A bookkeeping error is logged and never stops ORIG-FN, which writes the
+terminal output."
+  (condition-case err
+      (let* ((process (car args))
+             (output (nth 1 args))
+             (process-buffer (ignore-errors
+                               (process-buffer process)))
+             (target-buffer (or process-buffer (current-buffer))))
+        (when (and (claude-code-ide-session-idle--real-activity-p output)
+                   (buffer-live-p target-buffer)
+                   (with-current-buffer target-buffer (derived-mode-p 'ghostel-mode))
+                   (claude-code-ide-session-buffer-p target-buffer))
+          (with-current-buffer target-buffer
+            (claude-code-ide-session-idle-record-activity)
+            (claude-code-ide-session-working-record-output))))
+    (error (claude-code-ide-debug "Idle output bookkeeping failed: %S" err)))
+  (apply orig-fn args))
 
 (defun claude-code-ide-session-working--ghostel-focus-advice (orig-fn &rest args)
-  "Suppress working detection while Ghostel reports a focus change."
-  (when (and (derived-mode-p 'ghostel-mode)
-             (claude-code-ide-session-buffer-p (current-buffer)))
-    (claude-code-ide-session-working-suppress-after-resize))
+  "Suppress working detection while Ghostel reports a focus change.
+A suppression error is logged and never stops ORIG-FN."
+  (condition-case err
+      (when (and (derived-mode-p 'ghostel-mode)
+                 (claude-code-ide-session-buffer-p (current-buffer)))
+        (claude-code-ide-session-working-suppress-after-resize))
+    (error (claude-code-ide-debug "Focus suppression failed: %S" err)))
   (apply orig-fn args))
 
 (defun claude-code-ide-session-working--install-ghostel-focus-observer ()

@@ -17502,6 +17502,29 @@ The callback gets the buffer that visits the file, even when
             (should-not debug-calls)))
       (kill-buffer session-buffer))))
 
+(ert-deftest claude-code-ide-test-ghostel-advice-errors-never-drop-terminal-work ()
+  "A failing observer still lets Ghostel write output, report focus, and resize."
+  (should (require 'claude-code-ide-session-idle nil t))
+  (let ((session-buffer (generate-new-buffer "*claude-code[test-advice-error]*"))
+        ran)
+    (unwind-protect
+        (with-current-buffer session-buffer
+          (setq-local major-mode 'ghostel-mode)
+          (cl-letf (((symbol-function 'process-buffer) (lambda (_) session-buffer))
+                    ((symbol-function 'claude-code-ide-session-buffer-p)
+                     (lambda (_) (error "Bad predicate")))
+                    ((symbol-function 'claude-code-ide--session-buffer-p)
+                     (lambda (_) (error "Bad predicate"))))
+            (dolist (advice (list #'claude-code-ide-session-idle--filter-advice
+                                  #'claude-code-ide-session-working--ghostel-focus-advice
+                                  #'claude-code-ide--terminal-working-resize-observer))
+              (setq ran nil)
+              (should (eq (funcall advice (lambda (&rest _) (setq ran t) 'done)
+                                   'mock-process "output")
+                          'done))
+              (should ran))))
+      (kill-buffer session-buffer))))
+
 
 
 
