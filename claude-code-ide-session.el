@@ -27,6 +27,7 @@
 
 ;; External declarations shared with the main package.
 (defvar ghostel-enable-url-detection)
+(defvar ghostel-enable-file-detection)
 (defvar ghostel--process)
 (defvar ghostel-mode-hook)
 (defvar ghostel-module-auto-install)
@@ -204,6 +205,7 @@ return the string to insert."
   (setq-local blink-cursor-mode nil)
   (setq-local cursor-type nil)
   (setq-local ghostel-enable-url-detection nil)
+  (setq-local ghostel-enable-file-detection nil)
   (when (featurep 'hl-line)
     (hl-line-mode -1))
   (face-remap-add-relative 'nobreak-space :inherit 'default))

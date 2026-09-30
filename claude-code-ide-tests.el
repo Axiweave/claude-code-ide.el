@@ -111,6 +111,8 @@
 ;; === Mock ghostel module ===
 (defvar ghostel-enable-url-detection t
   "Mock Ghostel URL detection setting.")
+(defvar ghostel-enable-file-detection t
+  "Mock Ghostel file detection setting.")
 (defvar ghostel--term nil
   "Mock Ghostel terminal object.")
 (defvar ghostel--term-rows nil
@@ -15471,14 +15473,16 @@ spec 015 extends the reference conversion to the project pickers."
         (claude-code-ide-cli-extra-flags "")
         (mock-ghostel-buffer nil)
         (mock-process nil)
-        (url-detection-disabled-before-exec nil))
+        (link-detection-disabled-before-exec nil))
     (unwind-protect
         (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
                   ((symbol-function 'ghostel-exec)
                    (lambda (buffer _program &optional _args)
-                     (setq url-detection-disabled-before-exec
-                           (null (buffer-local-value 'ghostel-enable-url-detection
-                                                     buffer)))
+                     (setq link-detection-disabled-before-exec
+                           (not (or (buffer-local-value 'ghostel-enable-url-detection
+                                                        buffer)
+                                    (buffer-local-value 'ghostel-enable-file-detection
+                                                        buffer))))
                      (with-current-buffer buffer
                        (setq-local major-mode 'ghostel-mode))
                      (setq mock-ghostel-buffer buffer)
@@ -15499,7 +15503,7 @@ spec 015 extends the reference conversion to the project pickers."
             (should (eq (process-buffer (cdr result)) buffer))
             (with-current-buffer buffer
               (should (derived-mode-p 'ghostel-mode)))
-            (should url-detection-disabled-before-exec)))
+            (should link-detection-disabled-before-exec)))
       (when (and mock-process (process-live-p mock-process))
         (delete-process mock-process))
       (when (buffer-live-p mock-ghostel-buffer)

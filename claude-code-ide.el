@@ -78,6 +78,7 @@
 
 ;; External variable declarations
 (defvar ghostel-enable-url-detection)
+(defvar ghostel-enable-file-detection)
 (defvar ghostel--term)
 (defvar ghostel--term-rows)
 (defvar ghostel--cursor-pos)
@@ -1555,7 +1556,8 @@ Return (buffer . process) only for a live, owned terminal process."
             (claude-code-ide-debug "Starting Ghostel with command: %s" cmd)
             (claude-code-ide-debug "Working directory: %s" working-dir)
             (with-current-buffer buffer
-              (setq-local ghostel-enable-url-detection nil))
+              (setq-local ghostel-enable-url-detection nil)
+              (setq-local ghostel-enable-file-detection nil))
             (setq process
                   (ghostel-exec buffer (or shell-file-name "/bin/sh")
                                 (list "-lc" cmd)))
