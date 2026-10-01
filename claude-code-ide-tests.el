@@ -7941,6 +7941,418 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
      (should-error (call-interactively back) :type 'user-error)
      (jump "02" #'claude-code-ide-manager-previous-priority-session))))
 
+(defun claude-code-ide-tests--manager-rows ()
+  "Return (KEY . TEXT) for each global sidebar row, in buffer order.
+TEXT runs from the quick-number field to the end of the row."
+  (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+    (save-excursion
+      (cl-loop for pos from (point-min) below (point-max)
+               when (get-text-property pos 'claude-code-ide-manager-session-name-start)
+               collect (progn
+                         (goto-char pos)
+                         (cons (get-text-property pos 'claude-code-ide-manager-session-key)
+                               (buffer-substring-no-properties
+                                (- pos 4) (line-end-position))))))))
+
+(defun claude-code-ide-tests--focus-mixes (count)
+  "Return COUNT mixes of 1 to 12 priority specs from the seed \"017-focused\".
+A spec with the `idle' state, or a nil state with no flags, is quiet.
+Every other spec has a monitored status."
+  (random "017-focused")
+  (cl-loop repeat count
+           collect (cl-loop for index from 1 to (1+ (random 12))
+                            collect (cons (format "%02d" index)
+                                          (nth (random 7)
+                                               '((needs-input) (failed) (done) (working)
+                                                 (idle) (nil t t) (nil)))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-lists-exactly-monitored-sessions ()
+  "Off lists every Session.  On lists exactly the monitored ones, in the
+same order, under a count line that belongs to no Session."
+  (dolist (specs (append (claude-code-ide-tests--focus-mixes 20)
+                         '((("01" idle) ("02" nil)))))
+    (ert-info ((format "Seed %S, mix %S" "017-focused" specs))
+      (claude-code-ide-tests--with-priority-sessions
+       specs
+       (let ((claude-code-ide-manager--focus-kept-session-key nil)
+             (claude-code-ide-manager-show-session-titles nil)
+             (members (mapcar (lambda (spec) (session-key (car spec)))
+                              (cl-remove-if (lambda (spec)
+                                              (member (cdr spec) '((idle) (nil))))
+                                            specs)))
+             full)
+         (claude-code-ide-manager-refresh-items scope)
+         (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+           (let ((claude-code-ide-manager-focused-view nil))
+             (claude-code-ide-manager--render scope)
+             (setq full (mapcar #'car (claude-code-ide-tests--manager-rows)))
+             (should (= (length full) (length specs)))
+             (should (equal full (mapcar #'claude-code-ide-manager-item-session-key
+                                         (claude-code-ide-manager--sorted-items
+                                          (claude-code-ide-manager--scope-items scope)
+                                          nil scope))))
+             (should-not (string-match-p "^Focused:" (buffer-string))))
+           (let ((claude-code-ide-manager-focused-view t))
+             (claude-code-ide-manager--render scope)
+             (let ((focused (mapcar #'car (claude-code-ide-tests--manager-rows))))
+               (should (equal (sort (copy-sequence focused) #'string<)
+                              (sort (copy-sequence members) #'string<)))
+               ;; The filter removes rows and never reorders them.
+               (should (equal focused (cl-remove-if-not
+                                       (lambda (key) (member key focused)) full))))
+             (goto-char (point-min))
+             (should (equal (claude-code-ide-tests--manager-row-text)
+                            (if members
+                                (format "Focused: %d of %d" (length members) (length specs))
+                              "Focused: no Session needs attention")))
+             (should (eq (get-text-property (point) 'face) 'shadow))
+             (should-not (text-property-not-all
+                          (point) (line-beginning-position 2)
+                          'claude-code-ide-manager-session-key nil))
+             (unless members
+               (should (equal (string-trim-right (buffer-string))
+                              "Focused: no Session needs attention"))))))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-toggle-changes-only-the-view ()
+  "The toggle reports the view and changes no status, setting, saved state, or focus."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" needs-input) ("02" done) ("03" failed) ("04" nil t t) ("05" idle) ("06" nil))
+   (let ((claude-code-ide-manager-focused-view nil)
+         (claude-code-ide-manager--focus-kept-session-key nil)
+         (claude-code-ide-manager-show-session-titles nil)
+         reported)
+     (claude-code-ide-manager-refresh-items scope)
+     (claude-code-ide-manager-switch-to-session (session-key "06") nil scope)
+     (cl-flet ((snapshot ()
+                 (list (mapcar (lambda (entry)
+                                 (with-current-buffer (claude-code-ide-session-buffer (cdr entry))
+                                   (list claude-code-ide-session-agent-state
+                                         claude-code-ide-session-idle-p
+                                         claude-code-ide-session-acknowledged-agent-state)))
+                               sessions)
+                       (get 'claude-code-ide-manager-focused-view 'saved-value)
+                       (get 'claude-code-ide-manager-focused-view 'customized-value)
+                       (claude-code-ide-manager--serialize-state)
+                       claude-code-ide-manager--current-session-key
+                       (selected-window)
+                       (mapcar #'window-buffer (window-list)))))
+       (let ((before (snapshot)))
+         (cl-letf (((symbol-function 'message)
+                    (lambda (&rest args)
+                      (when (car args) (setq reported (apply #'format args))))))
+           (claude-code-ide-manager-toggle-focused-view)
+           (should (string-match-p "\\_<on (4 of 6 Sessions)" reported))
+           (should (equal (snapshot) before))
+           (claude-code-ide-manager-toggle-focused-view)
+           (should (string-match-p "\\_<off\\_>" reported))
+           (should (equal (snapshot) before))))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-customize-redraws-sidebar ()
+  "Setting the option through customize redraws the open sidebar."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" needs-input) ("02" idle))
+   (let ((claude-code-ide-manager-focused-view nil)
+         (claude-code-ide-manager--focus-kept-session-key nil)
+         (claude-code-ide-manager-show-session-titles nil))
+     (claude-code-ide-manager-refresh-items scope)
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (unwind-protect
+         (progn
+           (customize-set-variable 'claude-code-ide-manager-focused-view t)
+           (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                          (list (session-key "01"))))
+           (customize-set-variable 'claude-code-ide-manager-focused-view nil)
+           (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                          (mapcar #'session-key '("01" "02")))))
+       (put 'claude-code-ide-manager-focused-view 'customized-value nil)))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-numbers-match-rows ()
+  "Quick numbers count the visible rows, and each number switches to its row."
+  (let ((mixes (append (claude-code-ide-tests--focus-mixes 6)
+                       (list (cl-loop for index from 1 to 12
+                                      collect (list (format "%02d" index) 'working))))))
+    (dolist (view '(flat grouped))
+      (dolist (specs mixes)
+        (ert-info ((format "Seed %S, %s view, mix %S" "017-focused" view specs))
+          (claude-code-ide-tests--with-priority-sessions
+           specs
+           (let ((claude-code-ide-manager-focused-view t)
+                 (claude-code-ide-manager--focus-kept-session-key nil)
+                 (claude-code-ide-manager-show-session-titles nil)
+                 (members (mapcar (lambda (spec) (session-key (car spec)))
+                                  (cl-remove-if (lambda (spec)
+                                                  (member (cdr spec) '((idle) (nil))))
+                                                specs)))
+                 (slot 1))
+             (when (eq view 'grouped)
+               (dolist (entry sessions)
+                 (let* ((session (cdr entry))
+                        (directory (claude-code-ide-session-directory session))
+                        (project (if (cl-oddp (string-to-number (car entry)))
+                                     "/tmp/group-a" "/tmp/group-b")))
+                   (claude-code-ide--set-session-group-metadata
+                    session (list :kind 'git :host nil :directory directory
+                                  :common-dir (concat project "/.git") :project-path project
+                                  :worktree-path directory :branch (car entry)))))
+               (puthash "global" (list :view 'grouped) claude-code-ide-manager--scope-state))
+             (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
+               (claude-code-ide-manager-refresh-items scope))
+             (should (eq (claude-code-ide-manager--view scope) view))
+             (cl-flet ((rows ()
+                         (claude-code-ide-manager--render scope)
+                         (let ((rows (claude-code-ide-tests--manager-rows)))
+                           (should (equal (mapcar #'car rows)
+                                          (claude-code-ide-manager--visible-session-keys scope)))
+                           (cl-loop for (_key . text) in rows
+                                    for index from 1
+                                    do (should (string-prefix-p
+                                                (if (<= index 10) (format "%2d. " index) " -  ")
+                                                text)))
+                           rows)))
+               (let ((rows (rows)))
+                 (should (equal (sort (mapcar #'car rows) #'string<)
+                                (sort members #'string<)))
+                 (while (<= slot (min 10 (length rows)))
+                   (claude-code-ide-manager-switch-by-slot slot)
+                   (should (equal claude-code-ide-manager--current-session-key
+                                  (car (nth (1- slot) rows))))
+                   (setq rows (rows)
+                         slot (1+ slot)))
+                 ;; A number past the numbered rows does nothing.
+                 (let ((current claude-code-ide-manager--current-session-key))
+                   (claude-code-ide-manager-switch-by-slot (1+ (min 10 (length rows))))
+                   (should (equal claude-code-ide-manager--current-session-key
+                                  current))))))))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-move-swaps-visible-rows ()
+  "A row move skips hidden Sessions, so the two visible rows trade places."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" needs-input) ("02" idle) ("03" needs-input))
+   (let ((claude-code-ide-manager-focused-view t)
+         (claude-code-ide-manager--focus-kept-session-key nil)
+         (claude-code-ide-manager-show-session-titles nil))
+     (claude-code-ide-manager-refresh-items scope)
+     (claude-code-ide-manager--render scope)
+     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                    (mapcar #'session-key '("01" "03"))))
+     (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+       (claude-code-ide-manager--move-point-to-session-key (session-key "01"))
+       (claude-code-ide-manager-move-down))
+     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                    (mapcar #'session-key '("03" "01")))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-switch-keeps-target-until-left ()
+  "A switched-to Session keeps its row and number while it is active.
+After the user leaves, only a monitored status keeps the row.  A first
+visit and a return to a saved layout behave the same."
+  (pcase-dolist (`(,kind . ,stays) '(((nil t t) . nil) ((done) . nil) ((failed) . nil)
+                                     ((needs-input) . t) ((working) . t)))
+    (claude-code-ide-tests--with-priority-sessions
+     `(("01" needs-input) ("02" ,@kind) ("03" needs-input))
+     (let ((claude-code-ide-manager-focused-view t)
+           (claude-code-ide-manager--focus-kept-session-key nil)
+           (claude-code-ide-manager-show-session-titles nil)
+           (target (session-key "02")))
+       (claude-code-ide-manager-refresh-items scope)
+       (dotimes (visit 2)
+         (ert-info ((format "Target %S, visit %d" kind (1+ visit)))
+           ;; A new result arrives before each visit.
+           (with-current-buffer (session-buffer "02")
+             (setq-local claude-code-ide-session-agent-state (car kind)
+                         claude-code-ide-session-idle-p (nth 2 kind)))
+           (claude-code-ide-manager--render scope)
+           (let ((row (assoc target (claude-code-ide-tests--manager-rows))))
+             (should row)
+             (claude-code-ide-manager-switch-to-session target nil scope)
+             (should (equal (assoc target (claude-code-ide-tests--manager-rows)) row)))
+           (unless stays
+             ;; The switch acknowledged the target, so only the activation keeps it.
+             (with-current-buffer (session-buffer "02")
+               (should-not (or claude-code-ide-session-idle-p
+                               (memq claude-code-ide-session-agent-state '(done failed))))))
+           (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+           (should (eq stays (and (assoc target (claude-code-ide-tests--manager-rows))
+                                  t)))))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-active-row-needs-a-status ()
+  "Activation alone shows no row.  A status earned while active keeps one."
+  (dolist (kind '((idle) (nil)))
+    (ert-info ((format "Quiet kind %S" kind))
+      (claude-code-ide-tests--with-priority-sessions
+       `(("01" ,@kind) ("02" needs-input))
+       (let ((claude-code-ide-manager-focused-view t)
+             (claude-code-ide-manager--focus-kept-session-key nil)
+             (claude-code-ide-manager-show-session-titles nil)
+             (quiet (session-key "01")))
+         (claude-code-ide-manager-refresh-items scope)
+         (claude-code-ide-manager-switch-to-session quiet nil scope)
+         (should-not (assoc quiet (claude-code-ide-tests--manager-rows)))
+         (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+           (should-not (text-property-any (point-min) (point-max) 'face
+                                          'claude-code-ide-manager-current-session-face)))
+         (with-current-buffer (session-buffer "01")
+           (claude-code-ide-session-idle-set-agent-state 'working))
+         (claude-code-ide-manager--render scope)
+         (should (assoc quiet (claude-code-ide-tests--manager-rows)))
+         ;; A finish the user watches folds straight to the acknowledged state.
+         (cl-letf (((symbol-function
+                     'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                    (lambda (&optional _buffer) t)))
+           (with-current-buffer (session-buffer "01")
+             (claude-code-ide-session-idle-set-agent-state 'done)
+             (should (eq claude-code-ide-session-agent-state 'idle))))
+         (claude-code-ide-manager--render scope)
+         (should (assoc quiet (claude-code-ide-tests--manager-rows)))
+         (claude-code-ide-manager-switch-to-session (session-key "02") nil scope)
+         (should-not (assoc quiet (claude-code-ide-tests--manager-rows))))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-clear-all-keeps-active-row ()
+  "Clearing all idle state drops acknowledged rows but keeps the active one."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" done) ("02" done) ("03" nil t t) ("04" needs-input) ("05" working))
+   (let ((claude-code-ide-manager-focused-view t)
+         (claude-code-ide-manager--focus-kept-session-key nil)
+         (claude-code-ide-manager-show-session-titles nil))
+     (claude-code-ide-manager-refresh-items scope)
+     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                    (mapcar #'session-key '("01" "02" "03" "04" "05"))))
+     (claude-code-ide-manager-clear-all-idle-state)
+     (claude-code-ide-manager--render scope)
+     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                    (mapcar #'session-key '("01" "04" "05")))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-new-activation-rechecks-row ()
+  "A repeat switch keeps an earned row.  A return after leaving checks again."
+  (dolist (other '((needs-input) (nil)))
+    (ert-info ((format "Other Session %S" other))
+      (claude-code-ide-tests--with-priority-sessions
+       `(("01" done) ("02" ,@other))
+       (let ((claude-code-ide-manager-focused-view t)
+             (claude-code-ide-manager--focus-kept-session-key nil)
+             (claude-code-ide-manager-show-session-titles nil)
+             (earned (session-key "01")))
+         (claude-code-ide-manager-refresh-items scope)
+         (claude-code-ide-manager-switch-to-session earned nil scope)
+         (claude-code-ide-manager-switch-to-session earned nil scope)
+         (should (assoc earned (claude-code-ide-tests--manager-rows)))
+         (claude-code-ide-manager-switch-to-session (session-key "02") nil scope)
+         (claude-code-ide-manager-switch-to-session earned nil scope)
+         (should (equal claude-code-ide-manager--current-session-key earned))
+         (should-not (assoc earned (claude-code-ide-tests--manager-rows))))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-window-change-keeps-shown-session ()
+  "A Session that a window change shows keeps its row.
+The visibility handler acknowledges it in the same hook run.  Without the
+capture, the row disappears, so the test detects that race."
+  (dolist (kind '((nil t t) (done)))
+    (dolist (capture '(t nil))
+      (ert-info ((format "Shown kind %S, capture %S" kind capture))
+        (claude-code-ide-tests--with-priority-sessions
+         `(("a" working) ("b" ,@kind))
+         (let ((claude-code-ide-manager-focused-view t)
+               (claude-code-ide-manager--focus-kept-session-key nil)
+               (claude-code-ide-manager-show-session-titles nil)
+               (window-configuration-change-hook nil)
+               (shown (session-key "b")))
+           ;; The real load order: the manager first, then the idle module.
+           (claude-code-ide-manager--install-window-config-refresh-hook)
+           (add-hook 'window-configuration-change-hook
+                     #'claude-code-ide-session-idle--handle-visibility-change)
+           (unless capture
+             (remove-hook 'window-configuration-change-hook
+                          #'claude-code-ide-manager--note-focus-on-window-change))
+           (claude-code-ide-manager-refresh-items scope)
+           (claude-code-ide-manager-switch-to-session (session-key "a") nil scope)
+           (set-window-buffer (get-buffer-window (session-buffer "a"))
+                              (session-buffer "b"))
+           (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) t)))
+             (with-no-warnings (run-window-configuration-change-hook)))
+           (should (equal claude-code-ide-manager--current-session-key shown))
+           (with-current-buffer (session-buffer "b")
+             (should-not (or claude-code-ide-session-idle-p
+                             (eq claude-code-ide-session-agent-state 'done))))
+           (should (eq capture (and (assoc shown (claude-code-ide-tests--manager-rows)) t)))
+           (when capture
+             (claude-code-ide-manager-switch-to-session (session-key "a") nil scope)
+             (should-not (assoc shown (claude-code-ide-tests--manager-rows))))))))))
+
+(ert-deftest claude-code-ide-test-manager-focused-view-keeps-remote-context ()
+  "Focused rows keep their headings and labels in both arrangements.
+Hosts and groups with no focused row get no heading.  The arrangement
+switch keeps the filter, and no process starts."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("01" needs-input)
+     ("02" done nil nil nil "/work/p/")
+     ("03" working nil nil nil "/work/p-topic/")
+     ("04" idle nil nil nil "/work/q/")
+     ("05" nil nil nil nil "/work/q-topic/")
+     ("06" nil nil nil nil "/work/r/"))
+   (pcase-dolist (`(,name ,host ,project)
+                  '(("02" "alpha" "/work/p") ("03" "alpha" "/work/p")
+                    ("04" "alpha" "/work/q") ("05" "alpha" "/work/q")
+                    ("06" "beta" "/work/r")))
+     (let* ((session (cdr (assoc name sessions)))
+            (directory (claude-code-ide-session-directory session)))
+       (setf (claude-code-ide-session-host session) host)
+       (claude-code-ide--set-session-group-metadata
+        session (list :kind 'git :host host :directory directory
+                      :common-dir (concat project "/.git") :project-path project
+                      :worktree-path directory :branch name))))
+   (let ((claude-code-ide-manager-focused-view t)
+         (claude-code-ide-manager--focus-kept-session-key nil)
+         (claude-code-ide-manager-show-session-titles nil)
+         (members (sort (mapcar #'session-key '("01" "02" "03")) #'string<)))
+     (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
+       (claude-code-ide-manager-refresh-items scope))
+     (claude-code-ide-manager--render scope)
+     (cl-letf (((symbol-function 'make-process)
+                (lambda (&rest _) (ert-fail "The focused view started a process")))
+               ((symbol-function 'process-file)
+                (lambda (&rest _) (ert-fail "The focused view ran a process"))))
+       (dolist (view '(flat grouped flat))
+         (ert-info ((format "%s view" view))
+           (unless (eq view (claude-code-ide-manager--view scope))
+             (claude-code-ide-manager-toggle-grouped-view))
+           (let ((rows (claude-code-ide-tests--manager-rows)))
+             (should (equal (sort (mapcar #'car rows) #'string<) members))
+             (when (eq view 'grouped)
+               ;; Each heading has a row of its own below it, and a remote row
+               ;; sits under the heading of its host.
+               (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+                 (goto-char (point-min))
+                 (let (host group (host-rows 0) (group-rows 0))
+                   (while (not (eobp))
+                     (let* ((heading (get-text-property
+                                      (point) 'claude-code-ide-manager-group-heading))
+                            (key (get-text-property
+                                  (point) 'claude-code-ide-manager-session-key))
+                            (item (and key (claude-code-ide-manager--item-by-session-key
+                                            scope key))))
+                       (cond
+                        ((eq (car-safe heading) 'host)
+                         (should (or (null host) (> host-rows 0)))
+                         (should (or (null group) (> group-rows 0)))
+                         (setq host (cadr heading) host-rows 0 group nil))
+                        (heading
+                         (should (or (null group) (> group-rows 0)))
+                         (setq group heading group-rows 0))
+                        (item
+                         (should (equal (claude-code-ide-manager--group-key item) group))
+                         (cl-incf group-rows)
+                         (when (claude-code-ide-manager-item-host item)
+                           (should (equal (claude-code-ide-manager-item-host item) host))
+                           (cl-incf host-rows)))))
+                     (forward-line 1))
+                   (should (or (null host) (> host-rows 0)))
+                   (should (or (null group) (> group-rows 0))))))
+             (let ((full (let ((claude-code-ide-manager-focused-view nil))
+                           (claude-code-ide-manager--render scope)
+                           (claude-code-ide-tests--manager-rows))))
+               (pcase-dolist (`(,key . ,text) rows)
+                 (should (equal (substring text 4)
+                                (substring (cdr (assoc key full)) 4))))))))))))
+
 (ert-deftest claude-code-ide-test-manager-avy-switch-selects-only-current-window ()
   "Avy selects only session rows in the selected manager window."
   (claude-code-ide-tests--reset-manager-state)

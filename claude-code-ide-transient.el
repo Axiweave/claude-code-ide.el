@@ -94,6 +94,7 @@
 (declare-function claude-code-ide-manager-move-group-up "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-move-group-down "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-session-titles "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-toggle-focused-view "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-open-remote "claude-code-ide-manager" (&optional sibling))
 (declare-function claude-code-ide-manager-new-remote-worktree "claude-code-ide-manager" (&optional create-only))
 (declare-function claude-code-ide-remote-worktree-show "claude-code-ide-remote-worktree" (&optional operation-id))
@@ -143,6 +144,7 @@
 (defvar claude-code-ide-manager-sort-by)
 (defvar claude-code-ide-manager-sort-reverse)
 (defvar claude-code-ide-manager-show-session-titles)
+(defvar claude-code-ide-manager-focused-view)
 
 ;;; Helper Functions
 
@@ -747,6 +749,11 @@ This never contacts a host while the menu itself is displayed."
      :description (lambda ()
                     (format "Session titles (%s)"
                             (if claude-code-ide-manager-show-session-titles
+                                "on" "off"))))
+    ("f" claude-code-ide-manager-toggle-focused-view
+     :description (lambda ()
+                    (format "Focused view (%s)"
+                            (if claude-code-ide-manager-focused-view
                                 "on" "off"))))
     ("P" "Toggle pin" claude-code-ide-manager-toggle-pin)
     ("E" "Edit session order" claude-code-ide-manager-edit-pin-order)

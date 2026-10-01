@@ -268,7 +268,7 @@ performs no remote work."
   :type 'boolean
   :group 'claude-code-ide-manager)
 
-(defun claude-code-ide-manager--set-show-session-titles (symbol value)
+(defun claude-code-ide-manager--set-and-refresh (symbol value)
   "Set SYMBOL to VALUE and redraw every live manager sidebar."
   (set-default symbol value)
   (claude-code-ide-manager--refresh-sidebar-state))
@@ -282,7 +282,22 @@ manager sidebar, changes the view for the running Emacs only and never
 writes this value, so a restart always starts from the value here."
   :type 'boolean
   :initialize #'custom-initialize-default
-  :set #'claude-code-ide-manager--set-show-session-titles
+  :set #'claude-code-ide-manager--set-and-refresh
+  :group 'claude-code-ide-manager)
+
+(defcustom claude-code-ide-manager-focused-view nil
+  "Whether the manager sidebar shows only Sessions that need the user.
+
+The focused view lists Sessions that are working, waiting for input,
+failed, done, or idle with unseen output, numbered from 1.  The active
+Session stays while it is active when it needed the user during this
+visit.  This value decides the view an Emacs session starts with.  The
+command `claude-code-ide-manager-toggle-focused-view', bound to \\`f' in
+the manager sidebar, changes the view for the running Emacs only and
+never writes this value.  The manager state file never stores it."
+  :type 'boolean
+  :initialize #'custom-initialize-default
+  :set #'claude-code-ide-manager--set-and-refresh
   :group 'claude-code-ide-manager)
 
 (defcustom claude-code-ide-manager-pin-order-show-titles t
@@ -1151,6 +1166,16 @@ Append the current branch when SESSION-KEY is on a named branch."
 (defvar claude-code-ide-manager--current-session-key nil
   "Session key currently active in the manager frame.")
 
+(defvar claude-code-ide-manager--focus-kept-session-key nil
+  "Session that earned a focused-view row during its current activation.
+It counts only while it equals `claude-code-ide-manager--current-session-key'.")
+
+(defvar claude-code-ide-manager--focus-activation-key nil
+  "Session most recently recorded as becoming current.
+A window change records it before the manager makes it current, and
+the idle handler renders in between.  Until the keys match, the old
+current Session must not take the kept slot.")
+
 (defvar claude-code-ide-manager--command-scope nil
   "Dynamic scope override for manager command helpers.")
 
@@ -1409,6 +1434,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "G") #'claude-code-ide-manager-refresh)
 (define-key claude-code-ide-manager-mode-map (kbd "v") #'claude-code-ide-manager-toggle-grouped-view)
 (define-key claude-code-ide-manager-mode-map (kbd "V") #'claude-code-ide-manager-toggle-session-titles)
+(define-key claude-code-ide-manager-mode-map (kbd "f") #'claude-code-ide-manager-toggle-focused-view)
 (define-key claude-code-ide-manager-mode-map (kbd "RET") #'claude-code-ide-manager-switch-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "<mouse-1>") #'claude-code-ide-manager-switch-at-mouse)
 (define-key claude-code-ide-manager-mode-map (kbd "SPC") #'claude-code-ide-manager-switch-at-point-preserve-focus)
@@ -1829,6 +1855,8 @@ and file write even when nothing changed."
   (setq claude-code-ide-manager--layouts (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--companion-shells (make-hash-table :test 'equal))
   (setq claude-code-ide-manager--current-session-key nil)
+  (setq claude-code-ide-manager--focus-kept-session-key nil)
+  (setq claude-code-ide-manager--focus-activation-key nil)
   (setq claude-code-ide-manager--remote-repositories nil)
   (setq claude-code-ide-manager--persisted-state
         (copy-tree claude-code-ide-manager--empty-persisted-state)))
@@ -2127,6 +2155,27 @@ IGNORE-PIN-ORDER bypasses pins and manual keys, not group boundaries."
              (t
               (funcall fallback-predicate left right)))))))
 
+(defun claude-code-ide-manager--displayed-items (scope &optional view)
+  "Return SCOPE's Session items in sidebar order for VIEW.
+With `claude-code-ide-manager-focused-view' on, keep only members of
+the focused set.  A monitored current Session is first recorded as kept,
+so it stays after a later switch or clear acknowledges it."
+  (let ((current claude-code-ide-manager--current-session-key)
+        (items (claude-code-ide-manager--sorted-items
+                (claude-code-ide-manager--scope-items scope) nil scope view)))
+    (when (and current
+               (member claude-code-ide-manager--focus-activation-key (list nil current))
+               (< (claude-code-ide-manager--session-priority current) 5))
+      (setq claude-code-ide-manager--focus-activation-key current
+            claude-code-ide-manager--focus-kept-session-key current))
+    (if claude-code-ide-manager-focused-view
+        (cl-remove-if-not
+         (lambda (item)
+           (claude-code-ide-manager--focus-member-p
+            (claude-code-ide-manager-item-session-key item)))
+         items)
+      items)))
+
 (defun claude-code-ide-manager--slot-map (items &optional sorted-p scope view)
   "Return quick slots for ITEMS, using SCOPE and VIEW unless SORTED-P."
   (let ((slots (make-hash-table :test 'equal))
@@ -2178,6 +2227,24 @@ IGNORE-PIN-ORDER bypasses pins and manual keys, not group boundaries."
            ((claude-code-ide-manager--session-working-p session-key) 4)
            (t 5)))
     (_ 5)))
+
+(defun claude-code-ide-manager--focus-member-p (session-key)
+  "Return non-nil when SESSION-KEY belongs in the focused view.
+A Session belongs when it needs the user, or when it is the current
+Session and it needed the user during this activation."
+  (or (< (claude-code-ide-manager--session-priority session-key) 5)
+      (and (equal session-key claude-code-ide-manager--focus-kept-session-key)
+           (equal session-key claude-code-ide-manager--current-session-key))))
+
+(defun claude-code-ide-manager--note-focus-activation (session-key)
+  "Record whether SESSION-KEY earns a focused-view row as it becomes current.
+Callers run this before anything acknowledges SESSION-KEY, because
+acknowledgment drops the status that earns the row."
+  (unless (equal session-key claude-code-ide-manager--current-session-key)
+    (setq claude-code-ide-manager--focus-activation-key session-key
+          claude-code-ide-manager--focus-kept-session-key
+          (and (< (claude-code-ide-manager--session-priority session-key) 5)
+               session-key))))
 
 (defun claude-code-ide-manager--marker-gutter (item)
   "Return a fixed-width marker gutter for ITEM.
@@ -2267,24 +2334,33 @@ markers, which take precedence over the pin marker."
   "Refresh visible manager sidebars after an idle state transition."
   (claude-code-ide-manager--refresh-sidebar-state))
 
+(defun claude-code-ide-manager--window-change-session-key ()
+  "Return the Session key a window change makes current, or nil.
+This is the visible layout Session while a manager window is visible."
+  (and (cl-some (lambda (window)
+                  (claude-code-ide-manager--manager-buffer-p (window-buffer window)))
+                (window-list nil 'no-minibuf))
+       (claude-code-ide-manager--visible-layout-session-key)))
+
+(defun claude-code-ide-manager--note-focus-on-window-change ()
+  "Record focused-view membership for the Session a window change activates.
+This runs before the idle visibility handler clears that Session."
+  (unless claude-code-ide-manager--in-window-config-refresh
+    (when-let* ((session-key (claude-code-ide-manager--window-change-session-key)))
+      (claude-code-ide-manager--note-focus-activation session-key))))
+
 (defun claude-code-ide-manager--refresh-on-window-configuration-change ()
   "Reassert visible manager sidebars after window configuration changes."
   (unless claude-code-ide-manager--in-window-config-refresh
     (let* ((selected-window (selected-window))
            (selected-buffer (and (window-live-p selected-window)
                                  (window-buffer selected-window)))
-           (manager-visible-p (cl-some
-                               (lambda (window)
-                                 (claude-code-ide-manager--manager-buffer-p
-                                  (window-buffer window)))
-                               (window-list nil 'no-minibuf)))
            (selected-scope (and (claude-code-ide-manager--manager-buffer-p
                                  selected-buffer)
                                 (claude-code-ide-manager--scope-from-buffer
                                  selected-buffer)))
            (layout-session-key
-            (and manager-visible-p
-                 (claude-code-ide-manager--visible-layout-session-key)))
+            (claude-code-ide-manager--window-change-session-key))
            (layout-session-changed
             (and layout-session-key
                  (not (equal layout-session-key
@@ -2445,11 +2521,19 @@ pull it off the row the user chose."
                    #'claude-code-ide-manager--refresh-after-session-status-change)))
 
 (defun claude-code-ide-manager--install-window-config-refresh-hook ()
-  "Install a hook that keeps visible manager windows behaving like sidebars."
+  "Install a hook that keeps visible manager windows behaving like sidebars.
+Also install the focused-view capture at depth -90.  The idle module
+loads later and puts its visibility handler first at depth 0.  That
+handler acknowledges the Session a window change shows, so the capture
+must run before it."
   (unless (memq #'claude-code-ide-manager--refresh-on-window-configuration-change
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
               #'claude-code-ide-manager--refresh-on-window-configuration-change))
+  (unless (memq #'claude-code-ide-manager--note-focus-on-window-change
+                window-configuration-change-hook)
+    (add-hook 'window-configuration-change-hook
+              #'claude-code-ide-manager--note-focus-on-window-change -90))
   (unless (memq #'claude-code-ide-manager--park-cursor-on-focus-entry
                 post-command-hook)
     (add-hook 'post-command-hook
@@ -2538,8 +2622,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
 (defun claude-code-ide-manager--visible-session-keys (scope)
   "Return visible session keys for SCOPE in sidebar order."
   (mapcar #'claude-code-ide-manager-item-session-key
-          (claude-code-ide-manager--sorted-items
-           (claude-code-ide-manager--scope-items scope) nil scope)))
+          (claude-code-ide-manager--displayed-items scope)))
 
 (defun claude-code-ide-manager--item-visible-name (item &optional grouped-label)
   "Return ITEM's visible name, optionally GROUPED-LABEL, with disconnected status."
@@ -3101,15 +3184,36 @@ title, because a Session whose terminal reports none keeps a single row."
              (if claude-code-ide-manager-show-session-titles "on" "off")
              titled (length items))))
 
+(defun claude-code-ide-manager-toggle-focused-view ()
+  "Toggle the focused view in every manager sidebar.
+Changes the view for this Emacs only.  The saved value of
+`claude-code-ide-manager-focused-view' stays as it is, so a restart
+returns to it.  No Session status changes."
+  (interactive)
+  (setq claude-code-ide-manager-focused-view
+        (not claude-code-ide-manager-focused-view))
+  (claude-code-ide-manager--refresh-sidebar-state)
+  (if claude-code-ide-manager-focused-view
+      (let ((scope (claude-code-ide-manager--scope-for-command)))
+        (message "Manager focused view: on (%d of %d Sessions)"
+                 (length (claude-code-ide-manager--displayed-items scope))
+                 (length (claude-code-ide-manager--scope-items scope))))
+    (message "Manager focused view: off")))
+
 (defun claude-code-ide-manager--render (&optional scope)
   "Render the manager sidebar for SCOPE."
   (let* ((scope (or scope (claude-code-ide-manager--scope-for-command)))
-         (items (claude-code-ide-manager--sorted-items
-                 (claude-code-ide-manager--scope-items scope) nil scope))
+         (items (claude-code-ide-manager--displayed-items scope))
+         (all-items (if claude-code-ide-manager-focused-view
+                        (claude-code-ide-manager--sorted-items
+                         (claude-code-ide-manager--scope-items scope) nil scope)
+                      items))
          (visible-session-keys (mapcar #'claude-code-ide-manager-item-session-key items))
          (grouped (eq (claude-code-ide-manager--view scope) 'grouped))
-         (labels (and grouped (claude-code-ide-manager--grouped-labels items)))
-         (headings (and grouped (claude-code-ide-manager--group-headings items)))
+         ;; Labels and headings come from every Session, so a filtered
+         ;; row keeps the text it has in the full view.
+         (labels (and grouped (claude-code-ide-manager--grouped-labels all-items)))
+         (headings (and grouped (claude-code-ide-manager--group-headings all-items)))
          (active-session-key (claude-code-ide-manager--scope-active-session-key scope)))
     (with-current-buffer (claude-code-ide-manager--get-buffer scope)
       (let* ((selection-window
@@ -3128,6 +3232,13 @@ title, because a Session whose terminal reports none keeps a single row."
              (slots (claude-code-ide-manager--slot-map items t))
              previous-group previous-host)
         (erase-buffer)
+        (when claude-code-ide-manager-focused-view
+          (insert (propertize
+                   (if items
+                       (format "Focused: %d of %d" (length items) (length all-items))
+                     "Focused: no Session needs attention")
+                   'face 'shadow)
+                  "\n"))
         (dolist (item items)
           (when grouped
             (let* ((key (claude-code-ide-manager--group-key item))
@@ -3478,8 +3589,7 @@ title, because a Session whose terminal reports none keeps a single row."
 (defun claude-code-ide-manager--neighbor-in-bucket (scope session-key direction)
   "Return neighboring item for SCOPE SESSION-KEY in DIRECTION.
 DIRECTION should be -1 for up or 1 for down."
-  (let* ((sorted (claude-code-ide-manager--sorted-items
-                  (claude-code-ide-manager--scope-items scope) nil scope))
+  (let* ((sorted (claude-code-ide-manager--displayed-items scope))
          (index (cl-position session-key sorted
                              :key #'claude-code-ide-manager-item-session-key
                              :test #'equal)))
@@ -3498,8 +3608,7 @@ DIRECTION should be -1 for up or 1 for down."
 (defun claude-code-ide-manager--displayed-groups (scope)
   "Return SCOPE's displayed (GROUP-KEY . FIRST-ITEM) pairs in grouped order."
   (let (groups previous)
-    (dolist (item (claude-code-ide-manager--sorted-items
-                   (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+    (dolist (item (claude-code-ide-manager--displayed-items scope 'grouped))
       (let ((key (claude-code-ide-manager--group-key item)))
         (unless (equal key previous)
           (push (cons key item) groups)
@@ -5078,6 +5187,7 @@ session layout is updated."
     (claude-code-ide-manager--save-state))
   (unless (claude-code-ide-manager--ensure-live-target session-key scope)
     (user-error "No live session buffer for %s" session-key))
+  (claude-code-ide-manager--note-focus-activation session-key)
   (claude-code-ide--touch-session session-key)
   (let* ((layout (gethash session-key claude-code-ide-manager--layouts))
          (scope (or scope (claude-code-ide-manager--scope-for-command)))
@@ -5189,6 +5299,7 @@ default layout is rebuilt."
     (setq scope '(:type global)))
   (unless (claude-code-ide-manager--ensure-live-target session-key scope)
     (user-error "No live session buffer for %s" session-key))
+  (claude-code-ide-manager--note-focus-activation session-key)
   (let* ((request (claude-code-ide-manager--make-layout-request session-key nil t))
          (scope (or scope (claude-code-ide-manager--scope-for-command)))
          (visible-sidebar-scopes
@@ -5475,12 +5586,9 @@ A plain launch on a remote row starts a sibling Agent in that exact Worktree."
 
 (defun claude-code-ide-manager-switch-by-slot-preserve-focus (slot)
   "Switch to visible SLOT and keep focus in the manager."
-  (let* ((scope (claude-code-ide-manager--scope-for-command))
-         (items (claude-code-ide-manager--scope-items scope)))
+  (let ((scope (claude-code-ide-manager--scope-for-command)))
     (when-let* ((item (nth (1- slot)
-                           (cl-subseq (claude-code-ide-manager--sorted-items items nil scope)
-                                      0
-                                      (min 10 (length items)))))
+                           (seq-take (claude-code-ide-manager--displayed-items scope) 10)))
                 (session-key (claude-code-ide-manager-item-session-key item)))
       (claude-code-ide-manager--sync-point-to-session-key scope session-key)
       (claude-code-ide-manager-switch-to-session session-key t scope))))
@@ -5488,12 +5596,9 @@ A plain launch on a remote row starts a sibling Agent in that exact Worktree."
 (defun claude-code-ide-manager-switch-by-slot (slot)
   "Switch to visible SLOT."
   (interactive "nSlot: ")
-  (let* ((scope (claude-code-ide-manager--scope-for-command))
-         (items (claude-code-ide-manager--scope-items scope)))
+  (let ((scope (claude-code-ide-manager--scope-for-command)))
     (when-let* ((item (nth (1- slot)
-                           (cl-subseq (claude-code-ide-manager--sorted-items items nil scope)
-                                      0
-                                      (min 10 (length items)))))
+                           (seq-take (claude-code-ide-manager--displayed-items scope) 10)))
                 (session-key (claude-code-ide-manager-item-session-key item)))
       (claude-code-ide-manager--sync-point-to-session-key scope session-key)
       (claude-code-ide-manager-switch-to-session session-key nil scope))))

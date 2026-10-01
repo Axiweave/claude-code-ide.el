@@ -543,6 +543,7 @@ You can reach the manager in two ways:
   - =G= to refresh the local Session list without network requests
 - Press =?= in the sidebar to open its manager menu.
   - =v= toggles flat and grouped global views
+  - =f= toggles the focused view
   - =C-j= and =C-k= move between project groups
   - =m= refreshes cached project metadata for one configured remote host
   - =o= opens a project or worktree: in the global view it asks for the project, then for the worktree when the project has more than one. A target with a Session switches to it. =C-u o= starts a sibling Session at once. Otherwise the Start/Continue/Resume menu appears.
@@ -575,6 +576,13 @@ Quick slots are derived from the current visible order. They are not stored sepa
 Press =v= to toggle the global manager between flat and grouped views.
 Repo-local managers keep their existing view.
 The manager saves the global view choice when persistence is enabled.
+
+Press =f= to toggle the focused view.
+It shows only Sessions that need attention, numbered from 1, and the number keys follow those numbers.
+Set =claude-code-ide-manager-focused-view= to choose the view at startup.
+The =f= key changes only the running Emacs and never saves the setting.
+A Session that you handled leaves after you switch to another Session.
+A Session that waits for input stays.
 
 Git worktrees share one project heading when their canonical Git common directories match.
 Separate Git directories stay separate, even when project paths match.
@@ -705,6 +713,7 @@ When point is in the manager buffer:
 - =M-p= or =M-n= moves the project group instead when the row is its group's only row
 - =M-P= and =M-N= move the selected row's project group up or down in grouped global view
 - =v= toggles flat and grouped global views
+- =f= toggles the focused view: only Sessions that need attention, numbered from 1
 - =C-j= moves to the next project in grouped global view
 - =C-k= moves to the previous project in grouped global view
 - =? m= refreshes cached project metadata for one configured remote host

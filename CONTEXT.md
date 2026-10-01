@@ -63,6 +63,14 @@ title keeps a single line. `V` in the sidebar switches the running Emacs
 between the two, and `claude-code-ide-manager-show-session-titles` decides
 which one a fresh Emacs starts with.
 
+### Focused view
+A manager sidebar view that shows only Sessions that need the user: working,
+waiting for input, failed, done, or idle with unseen output. The active Session
+stays while it is active when it needed the user during this visit. Rows are
+numbered from 1. `f` in the sidebar switches the running Emacs between the
+focused view and the full list, and `claude-code-ide-manager-focused-view`
+decides which one a fresh Emacs starts with.
+
 ### Layout preset
 A named definition of the content and window arrangement for a managed Session.
 It is distinct from a Saved layout.
