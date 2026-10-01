@@ -1021,7 +1021,7 @@ range should be attached."
       (cons path nil)))
    ((and (derived-mode-p 'magit-status-mode)
          (fboundp 'magit-file-at-point))
-    (when-let* ((path (magit-file-at-point)))
+    (when-let* ((path (magit-file-at-point t)))
       (cons path nil)))
    ((derived-mode-p 'treemacs-mode)
     (when-let* ((path (claude-code-ide--treemacs-path-at-point)))

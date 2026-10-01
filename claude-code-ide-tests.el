@@ -13826,7 +13826,10 @@ connected sessions would silently break first-connect replay."
                     ((symbol-function 'project-root)
                      (lambda (_) "/home/user/project/"))
                     ((symbol-function 'magit-file-at-point)
-                     (lambda () "src/from-magit.el")))
+                     (lambda (&optional expand _assert)
+                       (if expand
+                           "/home/user/project/src/from-magit.el"
+                         "src/from-magit.el"))))
             (with-temp-buffer
               (let ((default-directory "/home/user/project/"))
                 (cl-letf (((symbol-function 'derived-mode-p)
@@ -13834,6 +13837,21 @@ connected sessions would silently break first-connect replay."
                   (claude-code-ide-send-current-file)
                   (should (equal sent-string "@src/from-magit.el ")))))))
       (kill-buffer terminal-buf))))
+
+(ert-deftest claude-code-ide-test-file-reference-context-magit-status-is-absolute ()
+  "A Magit status row yields an absolute file, so a remote row keeps its host.
+The relative name `magit-file-at-point' returns by default carries no
+destination, which a remote Session rejects."
+  (cl-letf (((symbol-function 'magit-file-at-point)
+             (lambda (&optional expand _assert)
+               (if expand
+                   "/rpc:v12mac:/home/user/project/src/a.el"
+                 "src/a.el"))))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'derived-mode-p)
+                 (lambda (&rest modes) (memq 'magit-status-mode modes))))
+        (should (equal (car (claude-code-ide--get-file-reference-context))
+                       "/rpc:v12mac:/home/user/project/src/a.el"))))))
 
 (ert-deftest claude-code-ide-test-send-current-file-from-treemacs ()
   "Test send-current-file uses the file at point in treemacs."
