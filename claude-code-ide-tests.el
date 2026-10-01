@@ -28228,6 +28228,7 @@ for the dead clock instead of the returned command."
          (sibling (expand-file-name "unrelated" parent))
          (runner (expand-file-name "runner.sh" root))
          (wrapper (expand-file-name "bootstrap.sh" root))
+         (hold (expand-file-name "hold" parent))
          (attempt "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
          (id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
          process expected)
@@ -28251,8 +28252,11 @@ for the dead clock instead of the returned command."
             (insert "attempt=" attempt "\nname=fixture\nstatus=0\n"))
           (dolist (file '("bootstrap-owned" "agent-exit"))
             (set-file-modes (expand-file-name file root) #o600))
+          ;; The wrapper lives until the test removes HOLD.
+          (with-temp-file hold)
           (with-temp-file wrapper
-            (insert "#!/bin/sh\nsleep 2\nprintf done > "
+            (insert "#!/bin/sh\nwhile [ -e " (claude-code-ide-zmx--quote hold) " ]; do sleep 0.01; done\n"
+                    "printf done > "
                     (claude-code-ide-zmx--quote (expand-file-name "wrapper-finished" root)) "\n"))
           (set-file-modes wrapper #o700)
           (setq process (make-process :name "cci-release-wrapper" :buffer nil :noquery t
@@ -28270,6 +28274,7 @@ for the dead clock instead of the returned command."
                                            "release" root attempt id "1" expected)))
           (should (process-live-p process))
           (should (file-directory-p root))
+          (delete-file hold)
           (while (process-live-p process) (accept-process-output process 0.05))
           (should (file-exists-p (expand-file-name "wrapper-finished" root)))
           (should (zerop (call-process "/bin/sh" nil nil nil
@@ -28280,6 +28285,7 @@ for the dead clock instead of the returned command."
             (insert-file-contents-literally sibling)
             (should (equal (buffer-string) "retain"))))
       (when process
+        (delete-file hold)
         (while (process-live-p process) (accept-process-output process 0.05)))
       (delete-directory parent t))))
 
@@ -28805,10 +28811,13 @@ for the dead clock instead of the returned command."
                (let ((id (claude-code-ide-manager--request-remote-create "fixture" main t)))
                  (setq operation (gethash id claude-code-ide-remote-worktree--operations))
                  (should-not (file-exists-p effect))
+                 ;; A mixed receipt snapshot can leave `unknown' while a timer
+                 ;; reads again.  Wait for that timer too.
                  (let ((deadline (+ (float-time) 15)))
                    (while (and (or (memq (claude-code-ide-remote-worktree--operation-state operation)
                                          '(preparing awaiting-confirmation dispatching observing checking still-running))
-                                   (claude-code-ide-remote-worktree--operation-request operation))
+                                   (claude-code-ide-remote-worktree--operation-request operation)
+                                   (claude-code-ide-remote-worktree--operation-timer operation))
                                (< (float-time) deadline))
                      (accept-process-output nil 0.02)))
                  (ert-info ((format "Public request: %S %s"
@@ -28933,6 +28942,7 @@ for the dead clock instead of the returned command."
      (let* ((bin (file-truename (make-temp-file "cci-bootstrap-" t)))
             (zmx (expand-file-name "zmx" bin))
             (sleep (expand-file-name "sleep" bin))
+            (hold (expand-file-name "hold" bin))
             (process-environment
              (append (list (concat "PATH=" bin ":" (getenv "PATH"))
                            "ZMX_SESSION=unrelated" "ZMX_SESSION_PREFIX=hidden-")
@@ -28941,7 +28951,12 @@ for the dead clock instead of the returned command."
             (claude-code-ide-remote-worktree--operations (make-hash-table :test #'equal)))
        (unwind-protect
            (progn
-             (with-temp-file sleep (insert "#!/bin/sh\nexec /bin/sleep 0.02\n"))
+             ;; Shorten only the one-second bootstrap-owned poll.  The watchdog
+             ;; clock keeps its real budget, so it never kills the inventory read.
+             (with-temp-file sleep
+               (insert "#!/bin/sh\n[ \"$1\" = 1 ] && exec /bin/sleep 0.02\nexec /bin/sleep \"$@\"\n"))
+             ;; The long Agent runs until the test removes this file.
+             (with-temp-file hold)
              (with-temp-file zmx
                (insert "#!/bin/sh\n"
                        "[ -z \"$ZMX_SESSION$ZMX_SESSION_PREFIX\" ] || exit 65\n"
@@ -28969,7 +28984,10 @@ for the dead clock instead of the returned command."
                       (branch (string-trim (claude-code-ide-tests--git "symbolic-ref" "--short" "HEAD")))
                       (repository (file-truename (expand-file-name ".git" main)))
                       (args (list "-c" (concat "printf x >> " (claude-code-ide-zmx--quote effect)
-                                               (if (eq mode 'long) "; /bin/sleep 1; exit 7" "; exit 0"))))
+                                               (if (eq mode 'long)
+                                                   (concat "; while [ -e " (claude-code-ide-zmx--quote hold)
+                                                           " ]; do /bin/sleep 0.02; done; exit 7")
+                                                 "; exit 0"))))
                       (process-environment
                        (append (list (concat "CCI_FIXTURE_MODE=" (symbol-name mode))
                                      (concat "CCI_FIXTURE_ATTACH=" attached))
@@ -28995,6 +29013,9 @@ for the dead clock instead of the returned command."
                  (dolist (file '("manifest" "bootstrap.sh" "plan.sh" "runner.sh"))
                    (set-file-modes (expand-file-name file root) #o700))
                  (should (zerop (call-process "/bin/sh" nil nil nil runner "run" root attempt)))
+                 ;; Read receipts only after the immediate Agent wrote its last one.
+                 (when (eq mode 'immediate)
+                   (claude-code-ide-tests--remote-worktree-wait-file (expand-file-name "agent-exit" root)))
                  (let ((status (with-temp-buffer
                                  (should (zerop (call-process "/bin/sh" nil t nil runner "read" root attempt id "1")))
                                  (plist-get (car (plist-get
@@ -29008,7 +29029,8 @@ for the dead clock instead of the returned command."
                          (should (eq (file-exists-p attached) (eq mode 'empty))))
                      (should (zerop status))
                      (when (eq mode 'long)
-                       (should-not (file-exists-p (expand-file-name "agent-exit" root))))
+                       (should-not (file-exists-p (expand-file-name "agent-exit" root)))
+                       (delete-file hold))
                      (let ((deadline (+ (float-time) 5)))
                        (while (and (not (file-exists-p (expand-file-name "agent-exit" root)))
                                    (< (float-time) deadline))
