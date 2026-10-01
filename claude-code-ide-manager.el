@@ -1431,7 +1431,7 @@ scope when it is visible; otherwise return the first visible scope."
   "Keymap for `claude-code-ide-manager-mode'.")
 
 (define-key claude-code-ide-manager-mode-map (kbd "g") #'claude-code-ide-manager-avy-switch)
-(define-key claude-code-ide-manager-mode-map (kbd "G") #'claude-code-ide-manager-refresh)
+(define-key claude-code-ide-manager-mode-map (kbd "G") #'claude-code-ide-manager-avy-switch-all-or-refresh)
 (define-key claude-code-ide-manager-mode-map (kbd "v") #'claude-code-ide-manager-toggle-grouped-view)
 (define-key claude-code-ide-manager-mode-map (kbd "V") #'claude-code-ide-manager-toggle-session-titles)
 (define-key claude-code-ide-manager-mode-map (kbd "f") #'claude-code-ide-manager-toggle-focused-view)
@@ -5369,6 +5369,20 @@ default layout is rebuilt."
                           (lambda (position)
                             (goto-char position)
                             (claude-code-ide-manager-switch-at-point)))))))
+
+(defun claude-code-ide-manager-avy-switch-all-or-refresh ()
+  "In the focused view, pick any Session with Avy, then go back to it.
+The sidebar shows every Session for the pick, and the focused view
+returns after the switch or a quit.  With the focused view off, run
+`claude-code-ide-manager-refresh'."
+  (interactive)
+  (if (not claude-code-ide-manager-focused-view)
+      (call-interactively #'claude-code-ide-manager-refresh)
+    (unwind-protect
+        (let ((claude-code-ide-manager-focused-view nil))
+          (claude-code-ide-manager--refresh-sidebar-state)
+          (claude-code-ide-manager-avy-switch))
+      (claude-code-ide-manager--refresh-sidebar-state))))
 
 (defun claude-code-ide-manager-switch-at-mouse (event)
   "Switch to the session clicked by mouse EVENT."

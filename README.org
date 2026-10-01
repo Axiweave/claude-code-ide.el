@@ -583,6 +583,7 @@ Set =claude-code-ide-manager-focused-view= to choose the view at startup.
 The =f= key changes only the running Emacs and never saves the setting.
 A Session that you handled leaves after you switch to another Session.
 A Session that waits for input stays.
+In the focused view, =G= shows every Session for one Avy pick and then returns to the focused view.
 
 Git worktrees share one project heading when their canonical Git common directories match.
 Separate Git directories stay separate, even when project paths match.
@@ -717,7 +718,7 @@ When point is in the manager buffer:
 - =C-j= moves to the next project in grouped global view
 - =C-k= moves to the previous project in grouped global view
 - =? m= refreshes cached project metadata for one configured remote host
-- =G= refreshes the sidebar without network requests
+- =G= refreshes the sidebar without network requests. In the focused view, =G= shows every Session for one Avy pick instead, and =? G= still refreshes
 - =1..9= jump directly to the corresponding visible slot
 - =0= jumps to slot 10
 

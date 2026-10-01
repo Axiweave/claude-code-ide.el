@@ -8241,6 +8241,45 @@ visit and a return to a saved layout behave the same."
          (should (equal claude-code-ide-manager--current-session-key earned))
          (should-not (assoc earned (claude-code-ide-tests--manager-rows))))))))
 
+(ert-deftest claude-code-ide-test-manager-focused-view-g-jumps-to-any-session ()
+  "G offers every Session for one Avy pick, then the focused view returns.
+A pick switches to a hidden Session.  A quit switches nowhere.  In both
+cases the rows after the command are the focused rows again."
+  (dolist (pick '("02" quit))
+    (ert-info ((format "Pick %S" pick))
+      (claude-code-ide-tests--with-priority-sessions
+       '(("01" needs-input) ("02" nil) ("03" working))
+       (let ((claude-code-ide-manager-focused-view t)
+             (claude-code-ide-manager-show-session-titles nil)
+             (focused (mapcar #'session-key '("01" "03")))
+             offered)
+         (claude-code-ide-manager-refresh-items scope)
+         (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+         (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows)) focused))
+         (cl-letf (((symbol-function 'avy-jump)
+                    (lambda (_regexp &rest args)
+                      (setq offered (mapcar #'car (claude-code-ide-tests--manager-rows)))
+                      (if (eq pick 'quit)
+                          (signal 'quit nil)
+                        ;; Act on the picked row the way Avy does: from its position.
+                        (let ((target (session-key pick))
+                              (pos (point-min)))
+                          (while (not (equal (get-text-property
+                                              pos 'claude-code-ide-manager-session-key)
+                                             target))
+                            (setq pos (next-single-property-change
+                                       pos 'claude-code-ide-manager-session-key)))
+                          (funcall (plist-get args :action) pos))))))
+           (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+             (condition-case nil
+                 (claude-code-ide-manager-avy-switch-all-or-refresh)
+               (quit nil))))
+         (should (equal offered (mapcar #'session-key '("01" "02" "03"))))
+         (should claude-code-ide-manager-focused-view)
+         (should (equal claude-code-ide-manager--current-session-key
+                        (session-key (if (eq pick 'quit) "01" pick))))
+         (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows)) focused)))))))
+
 (ert-deftest claude-code-ide-test-manager-focused-view-window-change-keeps-shown-session ()
   "A Session that a window change shows keeps its row.
 The visibility handler acknowledges it in the same hook run.  Without the
