@@ -15,9 +15,11 @@ Install [[https://github.com/neurosnap/zmx][zmx]] and make its executable availa
 This package has verified ordinary attachment with stock zmx 0.7.1 and 0.8.0.
 The remote image route has verified input-owner queries and mode 5522 replay with stock zmx 0.8.1.
 Stock zmx 0.8.1 can discard large input when its PTY queue fills.
-The remote image route also needs lossless input backpressure.
-The private =0.8.1-cci014-backpressure= candidate passed the [[file:../specs/014-remote-image-paste/quickstart.md][live acceptance checks]].
-Installation still needs separate approval.
+The remote image route also needs lossless input backpressure on every host that runs the Agent.
+The private =0.8.1-cci014-backpressure= candidate passed the [[file:../specs/014-remote-image-paste/quickstart.md][live acceptance checks]] on macOS ARM64.
+The same source, built for Linux x86_64 (static musl), passed the nine =test/backpressure.py= cases on =v12dev=.
+It is installed on =v12mac= and =v12dev=.
+A host that still runs stock zmx keeps the large-input loss.
 
 Enable persistent Sessions:
 

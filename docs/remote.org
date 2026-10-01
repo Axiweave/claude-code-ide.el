@@ -80,7 +80,9 @@ The candidate path uses macOS, matching Ghostel 0.54.0 Lisp and native support, 
 It also needs zmx with lossless input backpressure.
 Stock zmx 0.8.1 supplies the required owner queries and mode replay, but can discard large input when its queue fills.
 See [[file:../specs/014-remote-image-paste/quickstart.md][the acceptance record]] for the checked private candidate.
-Installation still needs separate approval.
+The private =0.8.1-cci014-backpressure= build is installed on =v12mac= (macOS ARM64) and =v12dev= (Linux x86_64).
+Only =v12mac= has live image acceptance. =v12dev= passed the =test/backpressure.py= regression only.
+A host that still runs stock zmx can lose large input.
 An OMP version number or generic OSC 5522 support does not establish receiver compatibility.
 After a native module update, restart Emacs before use.
 The package does not install components or restart Emacs for a paste.
