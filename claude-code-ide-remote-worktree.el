@@ -4360,6 +4360,35 @@ Each prompt function receives the captured host.")
 before advice is added, so a local directory keeps its exact original
 prompts and completion candidates.")
 
+(defcustom claude-code-ide-remote-worktree-capture-native-push nil
+  "Non-nil captures native Magit push commands in remote Worktrees.
+When non-nil, every command in
+`claude-code-ide-remote-worktree--push-suffixes' gets advice.  In an
+approved remote directory, that advice captures the Git command and
+runs it as an admitted Worktree operation.  When nil, no push command
+gets advice and Magit pushes natively on every host.  Set this option
+with `setopt' or Customize so the advice follows the new value."
+  :type 'boolean
+  :initialize #'custom-initialize-default
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (featurep 'magit-push)
+           (claude-code-ide-remote-worktree--sync-push-advice)))
+  :group 'claude-code-ide)
+
+(defun claude-code-ide-remote-worktree--sync-push-advice ()
+  "Add or remove the push suffix advice to match
+`claude-code-ide-remote-worktree-capture-native-push'."
+  (dolist (suffix claude-code-ide-remote-worktree--push-suffixes)
+    (cond
+     ((not claude-code-ide-remote-worktree-capture-native-push)
+      (advice-remove suffix #'claude-code-ide-remote-worktree--push-suffix-advice))
+     ((not (advice-member-p #'claude-code-ide-remote-worktree--push-suffix-advice suffix))
+      (puthash suffix (cadr (interactive-form suffix))
+               claude-code-ide-remote-worktree--push-suffix-natives)
+      (advice-add suffix :around
+                  #'claude-code-ide-remote-worktree--push-suffix-advice)))))
+
 (defun claude-code-ide-remote-worktree--push-suffix-read-args ()
   "Return the calling push suffix's resolved interactive argument list.
 Use a fixed freeform prompt set for an approved RPC directory, keyed
@@ -4440,12 +4469,7 @@ through `claude-code-ide-remote-worktree-target-for-file'."
                 #'claude-code-ide-remote-worktree--worktree-move-advice)))
 
 (with-eval-after-load 'magit-push
-  (dolist (suffix claude-code-ide-remote-worktree--push-suffixes)
-    (unless (advice-member-p #'claude-code-ide-remote-worktree--push-suffix-advice suffix)
-      (puthash suffix (cadr (interactive-form suffix))
-               claude-code-ide-remote-worktree--push-suffix-natives)
-      (advice-add suffix :around
-                  #'claude-code-ide-remote-worktree--push-suffix-advice))))
+  (claude-code-ide-remote-worktree--sync-push-advice))
 
 (provide 'claude-code-ide-remote-worktree)
 ;;; claude-code-ide-remote-worktree.el ends here

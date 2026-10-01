@@ -312,8 +312,11 @@ target Emacs 28.1 or later without that client.
 The manager provides list, open, and create.
 Backend lifecycle commands run from remote Magit through =magit-lane=
 or =magit-worktrunk= when =default-directory= names an approved remote Worktree.
-Native Magit move and push commands use capture before process creation
+Native Magit move commands use capture before process creation
 or native cleanup, then enter the same admission boundary.
+Native Magit push commands do the same only when
+=claude-code-ide-remote-worktree-capture-native-push= is non-nil.
+The default is nil, so Magit pushes natively on every host.
 Capture preserves destination interpretation, force flags, and resolved refspecs.
 Unsupported command shapes fail without execution.
 See [[file:../../magit-lane/README.org::*Remote Worktrees][the magit-lane

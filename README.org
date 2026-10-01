@@ -416,7 +416,8 @@ Remote Lane and Worktrunk sections in Magit render an explicit snapshot; they ne
 
 The manager provides list, open, and create only.
 Remote Magit supplies the supported remove, move, merge, push, and prune actions.
-Backend commands and native Magit move/push capture use the same protected operation boundary.
+Backend commands and native Magit move capture use the same protected operation boundary.
+Native Magit push capture uses it only when =claude-code-ide-remote-worktree-capture-native-push= is non-nil (default nil); otherwise Magit pushes natively.
 Native capture preserves selected force flags, destination interpretation, and resolved publication refs before execution.
 See [[file:../magit-lane/README.org][magit-lane]] and [[file:../magit-worktrunk/README.org][magit-worktrunk]] for each backend's operation table and prerequisites.
 Lane refuses movement because it owns a fixed tree location.
