@@ -17933,10 +17933,47 @@ The callback gets the buffer that visits the file, even when
       (kill-buffer session-buffer)
       (kill-buffer other-buffer))))
 
+(ert-deftest claude-code-ide-test-session-native-empty-batches-count-only-as-burst ()
+  "Empty native PTY batches mark a Session working only at Agent output
+rates.  A periodic idle repaint never does, and the text filter never
+counts `()' at all."
+  (let* ((buffer (generate-new-buffer "*claude-code[native-burst]*"))
+         (process (make-pipe-process :name "cci-native-burst" :buffer buffer :noquery t))
+         (claude-code-ide-session-working-delay 0)
+         (claude-code-ide-session-working-hook nil)
+         (claude-code-ide-session-idle-suppressed-predicate #'always)
+         (now 1000.0))
+    (cl-flet ((run (advice gap batches)
+                (with-current-buffer buffer
+                  (setq-local major-mode 'ghostel-mode
+                              claude-code-ide-session-tracking-started-p t
+                              claude-code-ide-session-working-p nil
+                              claude-code-ide-session-idle--burst-start 0.0
+                              claude-code-ide-session-idle--burst-seen 0))
+                (dotimes (_ batches)
+                  (setq now (+ now gap))
+                  (funcall advice #'ignore process "()"))
+                (buffer-local-value 'claude-code-ide-session-working-p buffer)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'float-time) (lambda (&optional _) now)))
+            ;; (GAP BATCHES WORKING): the observed working omp rate, the
+            ;; threshold boundary, the observed idle repaint, and a slow
+            ;; trickle that never fills one window.
+            (dolist (case '((0.035 30 t) (0.1 5 t) (0.1 4 nil)
+                            (1.0 30 nil) (0.3 30 nil)))
+              (pcase-let ((`(,gap ,batches ,working) case))
+                (should (eq (run #'claude-code-ide-session-idle--events-filter-advice
+                                 gap batches)
+                            working))
+                (should-not (run #'claude-code-ide-session-idle--filter-advice
+                                 gap batches)))))
+        (delete-process process)
+        (kill-buffer buffer)))))
+
 
 
 (ert-deftest claude-code-ide-test-session-idle-real-activity-p ()
-  "Test that content-free ghostel heartbeats are not real activity."
+  "Test that empty ghostel batches are not immediate activity."
   (should (require 'claude-code-ide-session-idle nil t))
   (should-not (claude-code-ide-session-idle--real-activity-p "()"))
   (should-not (claude-code-ide-session-idle--real-activity-p ""))

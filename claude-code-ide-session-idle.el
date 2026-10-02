@@ -538,14 +538,64 @@ fresh output from the session backend."
              :title "Claude Code"))))
 
 (defun claude-code-ide-session-idle--real-activity-p (output)
-  "Return non-nil when OUTPUT carries real terminal bytes.
-Ghostel's native PTY reaper redraws blinking cursors and progress
-spinners via periodic `()' no-op event batches with no new terminal
-content (observed live as `(ghostel--events-filter PROC \"()\")');
-treating those as activity flapped hidden idle sessions between idle
-and working every few seconds even though nothing happened."
+  "Return non-nil when OUTPUT carries terminal bytes or a callback event.
+A native PTY batch of only `()' means the native reader parsed new bytes
+without a callback event; see
+`claude-code-ide-session-idle--empty-batch-burst-p' for those."
   (and (stringp output)
        (not (string-match-p "\\`\\(?:()\\|[[:space:]]\\)*\\'" output))))
+
+(defconst claude-code-ide-session-idle--burst-window 1.0
+  "Seconds in which empty native batches must reach the burst count.")
+
+;; ponytail: fixed rate threshold; output slower than 5 batches per
+;; second never reads as working.  Measure again if an Agent's idle
+;; screen starts to repaint faster.
+(defconst claude-code-ide-session-idle--burst-count 5
+  "Empty native batches within the burst window that count as output.
+Observed live: an idle omp repaints its clock once per second, and a
+working omp sends about 28 batches per second.")
+
+(defvar-local claude-code-ide-session-idle--burst-start 0.0
+  "Start time of the current empty native batch window.")
+
+(defvar-local claude-code-ide-session-idle--burst-seen 0
+  "Empty native batches seen in the current window.")
+
+(defun claude-code-ide-session-idle--empty-batch-burst-p ()
+  "Count one empty native batch in the current buffer.
+Return non-nil once per window, when the count reaches
+`claude-code-ide-session-idle--burst-count'.  A periodic idle repaint
+never reaches it, and sustained output reports at most once a second."
+  (let ((now (float-time)))
+    (if (> (- now claude-code-ide-session-idle--burst-start)
+           claude-code-ide-session-idle--burst-window)
+        (setq claude-code-ide-session-idle--burst-start now
+              claude-code-ide-session-idle--burst-seen 1)
+      (setq claude-code-ide-session-idle--burst-seen
+            (1+ claude-code-ide-session-idle--burst-seen)))
+    (= claude-code-ide-session-idle--burst-seen
+       claude-code-ide-session-idle--burst-count)))
+
+(defun claude-code-ide-session-idle--observe-output (process output native)
+  "Record Session activity for OUTPUT from PROCESS.
+NATIVE non-nil means OUTPUT is a native PTY event batch, where an empty
+batch still means new terminal bytes.  A bookkeeping error is logged
+and never escapes."
+  (condition-case err
+      (let* ((real (claude-code-ide-session-idle--real-activity-p output))
+             (target-buffer (and (or real (and native (stringp output)))
+                                 (or (ignore-errors (process-buffer process))
+                                     (current-buffer)))))
+        (when (and target-buffer
+                   (buffer-live-p target-buffer)
+                   (with-current-buffer target-buffer (derived-mode-p 'ghostel-mode))
+                   (claude-code-ide-session-buffer-p target-buffer))
+          (with-current-buffer target-buffer
+            (when (or real (claude-code-ide-session-idle--empty-batch-burst-p))
+              (claude-code-ide-session-idle-record-activity)
+              (claude-code-ide-session-working-record-output)))))
+    (error (claude-code-ide-debug "Idle output bookkeeping failed: %S" err))))
 
 (defun claude-code-ide-session-idle--filter-advice (orig-fn &rest args)
   "Forward real session-buffer activity to the idle helper, then run ORIG-FN.
@@ -553,24 +603,17 @@ Recording activity before ORIG-FN runs lets any idle marking ORIG-FN
 triggers synchronously while processing this same output (e.g. a
 completion notification via `leo/ghostel--notify-claude-idle') stand
 as the final word, instead of being immediately clobbered by this
-generic \"output arrived\" bookkeeping.  Content-free invocations are
-ignored entirely; see `claude-code-ide-session-idle--real-activity-p'.
-A bookkeeping error is logged and never stops ORIG-FN, which writes the
-terminal output."
-  (condition-case err
-      (let* ((process (car args))
-             (output (nth 1 args))
-             (process-buffer (ignore-errors
-                               (process-buffer process)))
-             (target-buffer (or process-buffer (current-buffer))))
-        (when (and (claude-code-ide-session-idle--real-activity-p output)
-                   (buffer-live-p target-buffer)
-                   (with-current-buffer target-buffer (derived-mode-p 'ghostel-mode))
-                   (claude-code-ide-session-buffer-p target-buffer))
-          (with-current-buffer target-buffer
-            (claude-code-ide-session-idle-record-activity)
-            (claude-code-ide-session-working-record-output))))
-    (error (claude-code-ide-debug "Idle output bookkeeping failed: %S" err)))
+generic \"output arrived\" bookkeeping.  Whitespace-only output is
+ignored.  ORIG-FN always runs and writes the terminal output."
+  (claude-code-ide-session-idle--observe-output (car args) (nth 1 args) nil)
+  (apply orig-fn args))
+
+(defun claude-code-ide-session-idle--events-filter-advice (orig-fn &rest args)
+  "Forward native PTY batch activity to the idle helper, then run ORIG-FN.
+A batch with a callback event counts at once.  Empty `()' batches count
+only as a burst, so a periodic idle repaint does not mark the Session
+working.  ORIG-FN always runs and handles the batch."
+  (claude-code-ide-session-idle--observe-output (car args) (nth 1 args) t)
   (apply orig-fn args))
 
 (defun claude-code-ide-session-working--ghostel-focus-advice (orig-fn &rest args)
@@ -592,17 +635,19 @@ A suppression error is logged and never stops ORIG-FN."
     (advice-add 'ghostel--focus-event :around
                 #'claude-code-ide-session-working--ghostel-focus-advice)))
 
-(defun claude-code-ide-session-idle--install-output-observer (symbol)
-  "Install the output observer for SYMBOL when available."
-  (unless (advice-member-p #'claude-code-ide-session-idle--filter-advice symbol)
-    (advice-add symbol :around #'claude-code-ide-session-idle--filter-advice)))
+(defun claude-code-ide-session-idle--install-output-observer (symbol advice)
+  "Install ADVICE around SYMBOL when it is not installed yet."
+  (unless (advice-member-p advice symbol)
+    (advice-add symbol :around advice)))
 
 (defun claude-code-ide-session-idle--install-output-observers ()
   "Install both Ghostel output observers and the focus observer."
   (with-eval-after-load 'ghostel
-    (claude-code-ide-session-idle--install-output-observer 'ghostel--filter)
+    (claude-code-ide-session-idle--install-output-observer
+     'ghostel--filter #'claude-code-ide-session-idle--filter-advice)
     ;; Native PTY Sessions use the events filter instead of the text filter.
-    (claude-code-ide-session-idle--install-output-observer 'ghostel--events-filter)
+    (claude-code-ide-session-idle--install-output-observer
+     'ghostel--events-filter #'claude-code-ide-session-idle--events-filter-advice)
     (claude-code-ide-session-working--install-ghostel-focus-observer)))
 
 (defun claude-code-ide-session-idle--fire-timer (buffer &optional generation)
