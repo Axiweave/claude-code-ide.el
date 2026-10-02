@@ -616,6 +616,40 @@ working.  ORIG-FN always runs and handles the batch."
   (claude-code-ide-session-idle--observe-output (car args) (nth 1 args) t)
   (apply orig-fn args))
 
+(defvar-local claude-code-ide-session-idle--title-agent-state nil
+  "Agent state last read from the terminal title of a remote Session.")
+
+(defun claude-code-ide-session-idle--title-agent-state (title)
+  "Return the agent state that omp encodes in TITLE, or nil.
+omp writes `π SEP label', or `π SEP' without a label.  SEP `!' means
+`needs-input', `✓' `done', `✗' `failed', `>' `idle', and any other single
+glyph (spinner frame or static `:') `working'.  A disabled run state
+writes `π: label', which carries no state."
+  (when (and (stringp title)
+             (string-match "\\`π \\(.\\)\\(?: \\|\\'\\)" title))
+    (pcase (match-string 1 title)
+      ("!" 'needs-input)
+      ("✓" 'done)
+      ("✗" 'failed)
+      (">" 'idle)
+      (_ 'working))))
+
+(defun claude-code-ide-session-idle--title-advice (orig-fn &rest args)
+  "Run ORIG-FN, then read a remote omp Session's state from its title.
+Remote omp has no IDE MCP connection, so its title is the only state
+report.  A local Session keeps MCP as its source.  Only a state change
+reaches `claude-code-ide-session-idle-set-agent-state'.  A bookkeeping
+error is logged and never stops ORIG-FN."
+  (prog1 (apply orig-fn args)
+    (condition-case err
+        (when-let* (((file-remote-p default-directory))
+                    ((claude-code-ide-session-buffer-p (current-buffer)))
+                    (state (claude-code-ide-session-idle--title-agent-state (car args)))
+                    ((not (eq state claude-code-ide-session-idle--title-agent-state))))
+          (setq claude-code-ide-session-idle--title-agent-state state)
+          (claude-code-ide-session-idle-set-agent-state state))
+      (error (claude-code-ide-debug "Title state bookkeeping failed: %S" err)))))
+
 (defun claude-code-ide-session-working--ghostel-focus-advice (orig-fn &rest args)
   "Suppress working detection while Ghostel reports a focus change.
 A suppression error is logged and never stops ORIG-FN."
@@ -648,6 +682,8 @@ A suppression error is logged and never stops ORIG-FN."
     ;; Native PTY Sessions use the events filter instead of the text filter.
     (claude-code-ide-session-idle--install-output-observer
      'ghostel--events-filter #'claude-code-ide-session-idle--events-filter-advice)
+    (claude-code-ide-session-idle--install-output-observer
+     'ghostel--set-title #'claude-code-ide-session-idle--title-advice)
     (claude-code-ide-session-working--install-ghostel-focus-observer)))
 
 (defun claude-code-ide-session-idle--fire-timer (buffer &optional generation)
@@ -727,6 +763,8 @@ A suppression error is logged and never stops ORIG-FN."
   (when (fboundp 'ghostel--focus-event)
     (advice-remove 'ghostel--focus-event
                    #'claude-code-ide-session-working--ghostel-focus-advice))
+  (when (fboundp 'ghostel--set-title)
+    (advice-remove 'ghostel--set-title #'claude-code-ide-session-idle--title-advice))
   nil)
 
 (claude-code-ide-session-idle--install-output-observers)

@@ -524,10 +524,16 @@ Remote mode does not provide these features:
 - Remote Treemacs actions or project launch commands.
 - Text transfer to the remote Agent.
 - MCP or SSE setup for the remote Agent.
-- Structured Agent state from the remote process.
 
 Remote Sessions use terminal-output activity and output-idle detection.
 Output idle does not mean that the Agent completed successfully.
+
+A remote Oh My Pi Agent also reports its state in the terminal title.
+The character after =π= gives the state: =!= is =needs-input=, =✓= is =done=,
+=✗= is =failed=, =>= is =idle=, and any other character is =working=.
+The manager reads it as it reads the MCP state of a local Agent.
+This needs Oh My Pi with =tui.titleState= enabled, which is the default.
+A title that Oh My Pi does not rewrite, such as an extension title, gives no state.
 
 * Troubleshooting
 

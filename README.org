@@ -23,7 +23,7 @@ This project is a fork of [[https://github.com/manzaltu/claude-code-ide.el][manz
 
 - [[*CC Manager][CC Manager]] global and repo-local sidebars, quick slots, and persistent per-session layouts
 - CLI-aware start, continue, and resume workflows for Claude Code, Codex, OpenCode, Pi, and Oh My Pi; see [[*Basic Commands][Basic Commands]]
-- Session state indicators in the [[*CC Manager][CC Manager]]: Oh My Pi reports idle, working, needs-input, done, and failed over MCP; other agents use output-driven idle and working detection
+- Session state indicators in the [[*CC Manager][CC Manager]]: Oh My Pi reports idle, working, needs-input, done, and failed over MCP, or through its terminal title for a remote Session; other agents use output-driven idle and working detection
 - Ghostel-only terminal integration, with =vterm= and =eat= support removed; see [[*Terminal Backend Configuration][Terminal Backend Configuration]]
 - Expanded transient navigation and file-reference workflows; see [[*Basic Commands][Basic Commands]] and [[*Session Customization][Session Customization]]
 - [[*Remote Worktree Management][Remote Worktree Management]]: explicit remote Worktree list, open, and create through the manager, plus remove/move/merge/push/prune through remote Magit

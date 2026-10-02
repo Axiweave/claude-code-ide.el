@@ -17970,6 +17970,42 @@ counts `()' at all."
         (delete-process process)
         (kill-buffer buffer)))))
 
+(ert-deftest claude-code-ide-test-session-remote-omp-title-reports-agent-state ()
+  "A remote Session takes its agent state from omp's title separator, and
+only a state change reaches the state setter.  A local Session ignores
+the title, because MCP reports its state."
+  (let ((remote (generate-new-buffer "*claude-code[title-remote]*"))
+        (local (generate-new-buffer "*claude-code[title-local]*"))
+        (calls 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                   #'ignore))
+          (advice-add 'claude-code-ide-session-idle-set-agent-state :before
+                      (lambda (&rest _) (setq calls (1+ calls)))
+                      '((name . cci-test-count)))
+          (with-current-buffer remote
+            (setq-local major-mode 'ghostel-mode
+                        default-directory "/ssh:fixture:/srv/repo/")
+            ;; (TITLE STATE): every separator, a label-less title, then a
+            ;; disabled run state and a foreign title that keep the last state.
+            (dolist (case '(("π : x" working) ("π ✓ x" done) ("π ✗ x" failed)
+                            ("π ⠋ x" working) ("π ! x" needs-input) ("π > x" idle)
+                            ("π ✓" done) ("π: x" done) ("Unrelated" done)))
+              (ghostel--set-title (car case))
+              (should (eq claude-code-ide-session-agent-state (cadr case))))
+            (setq calls 0)
+            (ghostel--set-title "π ⠙ x")
+            (ghostel--set-title "π ⠹ x")
+            (should (= calls 1)))
+          (with-current-buffer local
+            (setq-local major-mode 'ghostel-mode
+                        default-directory "/tmp/")
+            (ghostel--set-title "π ! x")
+            (should-not claude-code-ide-session-agent-state)))
+      (advice-remove 'claude-code-ide-session-idle-set-agent-state 'cci-test-count)
+      (kill-buffer remote)
+      (kill-buffer local))))
+
 
 
 (ert-deftest claude-code-ide-test-session-idle-real-activity-p ()
