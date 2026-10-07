@@ -1473,29 +1473,55 @@ layout.  Callers pass the per-CLI margin from
     (forward-line (- (max 0 (- (window-body-height win) (or bottom-margin 4) 1))))
     (line-beginning-position)))
 
-(defun claude-code-ide--sync-visible-live-prompt-terminal-windows ()
-  "Keep visible Ghostel windows at the live prompt after layout changes."
+(defun claude-code-ide--live-prompt-terminal-window-p (win)
+  "Non-nil if WIN shows a live-prompt Ghostel session in Emacs state."
+  (let ((buffer (window-buffer win)))
+    (and (window-live-p win)
+         (claude-code-ide--session-buffer-p buffer)
+         (with-current-buffer buffer
+           (and (claude-code-ide--live-prompt-cli-p)
+                (derived-mode-p 'ghostel-mode)
+                (or (not (fboundp 'evil-emacs-state-p))
+                    (evil-emacs-state-p)))))))
+
+(defun claude-code-ide--note-live-prompt-terminal-scroll ()
+  "Record which live-prompt windows the user scrolled away from the prompt.
+Runs from `pre-command-hook', so it sees the viewport the previous command
+left.  A popup that restores stale window state does so inside a command,
+after this snapshot, so the sync still repairs it.  The window parameter
+holds the scrolled buffer, so a later buffer switch does not inherit it."
   (dolist (win (window-list nil 'no-minibuf))
-    (when-let* ((buffer (window-buffer win)))
-      (when (and (window-live-p win)
-                 (claude-code-ide--session-buffer-p buffer))
-        (with-current-buffer buffer
-          (when (and (claude-code-ide--live-prompt-cli-p)
-                     (derived-mode-p 'ghostel-mode)
-                     (or (not (fboundp 'evil-emacs-state-p))
-                         (evil-emacs-state-p)))
-            (let ((target-point
-                   (claude-code-ide--live-prompt-terminal-window-target-point))
-                  (bottom-margin (claude-code-ide--live-prompt-bottom-margin)))
-              (with-selected-window win
-                (set-window-point win target-point)
-                (goto-char target-point)
-                (unless (pos-visible-in-window-p target-point win)
-                  (set-window-start
-                   win
-                   (claude-code-ide--window-start-for-point-near-bottom
-                    win target-point bottom-margin)
-                   t))))))))))
+    (when (claude-code-ide--live-prompt-terminal-window-p win)
+      (let ((buffer (window-buffer win)))
+        (set-window-parameter
+         win 'claude-code-ide-scrolled-away
+         (unless (pos-visible-in-window-p
+                  (with-current-buffer buffer
+                    (claude-code-ide--live-prompt-terminal-window-target-point))
+                  win)
+           buffer))))))
+
+(defun claude-code-ide--sync-visible-live-prompt-terminal-windows ()
+  "Keep visible Ghostel windows at the live prompt after layout changes.
+Windows the user scrolled away from the prompt keep their viewport; see
+`claude-code-ide--note-live-prompt-terminal-scroll'."
+  (dolist (win (window-list nil 'no-minibuf))
+    (when (and (claude-code-ide--live-prompt-terminal-window-p win)
+               (not (eq (window-parameter win 'claude-code-ide-scrolled-away)
+                        (window-buffer win))))
+      (with-current-buffer (window-buffer win)
+        (let ((target-point
+               (claude-code-ide--live-prompt-terminal-window-target-point))
+              (bottom-margin (claude-code-ide--live-prompt-bottom-margin)))
+          (with-selected-window win
+            (set-window-point win target-point)
+            (goto-char target-point)
+            (unless (pos-visible-in-window-p target-point win)
+              (set-window-start
+               win
+               (claude-code-ide--window-start-for-point-near-bottom
+                win target-point bottom-margin)
+               t))))))))
 
 (defun claude-code-ide--run-live-prompt-terminal-window-sync ()
   "Run the deferred live-prompt terminal window sync pass."
@@ -1515,6 +1541,7 @@ pass corrects those late restores without waiting for terminal output."
 
 (defun claude-code-ide--install-live-prompt-terminal-window-sync ()
   "Install hooks that keep live-prompt terminal windows at the live prompt."
+  (add-hook 'pre-command-hook #'claude-code-ide--note-live-prompt-terminal-scroll)
   (unless (memq #'claude-code-ide--schedule-live-prompt-terminal-window-sync
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook

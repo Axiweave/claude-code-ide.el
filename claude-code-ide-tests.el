@@ -12709,6 +12709,66 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
       (when (buffer-live-p other-buffer)
         (kill-buffer other-buffer)))))
 
+(ert-deftest claude-code-ide-test-live-prompt-sync-keeps-user-scrolled-viewport ()
+  "Sync keeps a viewport the user scrolled away but repairs a stale restore.
+The pre-command snapshot decides.  The mark is per buffer, so a window that
+later shows another session buffer still snaps to that buffer's prompt."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-omp-ghostel-scrolled*"))
+        (other-buffer (generate-new-buffer " *claude-code-ide-other*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (insert (mapconcat (lambda (n) (format "line %d" n))
+                               (number-sequence 1 120)
+                               "\n"))
+            (goto-char (point-min))
+            (forward-line 118)
+            (setq-local claude-code-ide--session-cli-type 'omp
+                        major-mode 'ghostel-mode
+                        ghostel--term 'mock-term
+                        ghostel--cursor-char-pos (point)))
+          (let ((target-point (with-current-buffer buffer ghostel--cursor-char-pos))
+                (session-window (selected-window))
+                (other-window (split-window-right)))
+            (set-window-buffer other-window other-buffer)
+            (select-window other-window)
+            (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                       (lambda (candidate) (eq candidate buffer)))
+                      ((symbol-function 'evil-emacs-state-p)
+                       (lambda () t)))
+              ;; The user scrolled to the top, then a popup changed the layout.
+              (set-window-start session-window (point-min))
+              (set-window-point session-window (point-min))
+              (claude-code-ide--note-live-prompt-terminal-scroll)
+              (claude-code-ide--sync-visible-live-prompt-terminal-windows)
+              (should (= (window-start session-window) (point-min)))
+              (should (= (window-point session-window) (point-min)))
+              ;; At the prompt before the command, a late restore inside the
+              ;; command is stale and gets repaired.  Batch Emacs never
+              ;; redisplays, so stub visibility for the snapshot.
+              (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                         (lambda (&rest _) t)))
+                (claude-code-ide--note-live-prompt-terminal-scroll))
+              (should-not (window-parameter session-window
+                                            'claude-code-ide-scrolled-away))
+              (set-window-start session-window (point-min))
+              (set-window-point session-window (point-min))
+              (claude-code-ide--sync-visible-live-prompt-terminal-windows)
+              (should (= (window-point session-window) target-point))
+              (should (> (window-start session-window) (point-min)))
+              ;; A scrolled-away mark does not carry over to another buffer.
+              (set-window-parameter session-window
+                                    'claude-code-ide-scrolled-away other-buffer)
+              (set-window-start session-window (point-min))
+              (claude-code-ide--sync-visible-live-prompt-terminal-windows)
+              (should (= (window-point session-window) target-point)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p other-buffer)
+        (kill-buffer other-buffer)))))
+
 (ert-deftest claude-code-ide-test-schedule-live-prompt-terminal-window-sync-runs-now-and-later ()
   "Window sync scheduling should run immediately and queue a deferred pass."
   (let ((sync-calls 0)
