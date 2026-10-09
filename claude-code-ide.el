@@ -249,6 +249,15 @@ diff comparison."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-enable-ide-integration t
+  "Whether new local sessions connect the Agent to Emacs as an IDE.
+When non-nil (default), Claude sessions start the per-session WebSocket
+server and get `CLAUDE_CODE_SSE_PORT' and `ENABLE_IDE_INTEGRATION', and
+Oh My Pi sessions start the shared SSE server.  When nil, sessions run
+as plain terminals: no IDE diffs, selection context, or @-mentions."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 (defcustom claude-code-ide-use-ide-diff t
   "Whether to use IDE diff viewer for file differences.
 When non-nil (default), Claude Code will open an IDE diff viewer
@@ -1310,16 +1319,13 @@ Additional flags from `claude-code-ide-cli-extra-flags' are also included."
     (when continue
       (setq claude-cmd (concat claude-cmd " -c")))
     ;; Add append-system-prompt flag with Emacs context
-    (let ((emacs-prompt "IMPORTANT: Connected to Emacs via claude-code-ide.el integration. Emacs uses mixed coordinates: Lines: 1-based (line 1 = first line), Columns: 0-based (column 0 = first column). Example: First character in file is at line 1, column 0. Available: xref (LSP), tree-sitter, imenu, project.el, flycheck/flymake diagnostics. Context-aware with automatic project/file/selection tracking.")
-          (combined-prompt nil))
-      ;; Always include the Emacs-specific prompt
-      (setq combined-prompt emacs-prompt)
-      ;; Append user's custom prompt if set
-      (when claude-code-ide-system-prompt
-        (setq combined-prompt (concat combined-prompt "\n\n" claude-code-ide-system-prompt)))
-      ;; Add the combined prompt to the command
-      (setq claude-cmd (concat claude-cmd " --append-system-prompt "
-                               (shell-quote-argument combined-prompt))))
+    (let* ((emacs-prompt (when claude-code-ide-enable-ide-integration
+                           "IMPORTANT: Connected to Emacs via claude-code-ide.el integration. Emacs uses mixed coordinates: Lines: 1-based (line 1 = first line), Columns: 0-based (column 0 = first column). Example: First character in file is at line 1, column 0. Available: xref (LSP), tree-sitter, imenu, project.el, flycheck/flymake diagnostics. Context-aware with automatic project/file/selection tracking."))
+           (combined-prompt (string-join (delq nil (list emacs-prompt claude-code-ide-system-prompt))
+                                         "\n\n")))
+      (unless (string-empty-p combined-prompt)
+        (setq claude-cmd (concat claude-cmd " --append-system-prompt "
+                                 (shell-quote-argument combined-prompt)))))
     ;; Add any extra flags
     (when (and claude-code-ide-cli-extra-flags
                (not (string-empty-p claude-code-ide-cli-extra-flags)))
@@ -1614,14 +1620,16 @@ SESSION-ID is the unique identifier for this session.
 
 Returns a cons cell of (buffer . process) on success."
   (let ((cmd (claude-code-ide--build-claude-command continue resume session-id))
-        (env-vars (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
-                        (format "EMACS_BUFFER_NAME=%s" buffer-name)
-                        "ENABLE_IDE_INTEGRATION=true"
-                        "TERM_PROGRAM=emacs"
-                        "FORCE_CODE_TERMINAL=true"
-                        ;; "CLAUDE_CODE_NO_FLICKER=1"
-                        )))
-    (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%d" port)
+        (env-vars (append
+                   (when port
+                     (list (format "CLAUDE_CODE_SSE_PORT=%d" port)
+                           "ENABLE_IDE_INTEGRATION=true"))
+                   (list (format "EMACS_BUFFER_NAME=%s" buffer-name)
+                         "TERM_PROGRAM=emacs"
+                         "FORCE_CODE_TERMINAL=true"
+                         ;; "CLAUDE_CODE_NO_FLICKER=1"
+                         ))))
+    (claude-code-ide-debug "Environment: CLAUDE_CODE_SSE_PORT=%s" port)
     (claude-code-ide-debug "Session ID: %s" session-id)
     (claude-code-ide--create-terminal-with-command buffer-name working-dir cmd env-vars)))
 
@@ -1824,12 +1832,13 @@ running a freshly built CLI command."
          mcp-started-p mcp-tools-started-p)
     (condition-case err
         (progn
-          (pcase cli-type
-            ('claude
-             (setq port (claude-code-ide-mcp-start working-dir session-id)
-                   mcp-started-p t))
-            ('omp
-             (setq port (claude-code-ide-mcp-sse-ensure-server))))
+          (when claude-code-ide-enable-ide-integration
+            (pcase cli-type
+              ('claude
+               (setq port (claude-code-ide-mcp-start working-dir session-id)
+                     mcp-started-p t))
+              ('omp
+               (setq port (claude-code-ide-mcp-sse-ensure-server)))))
           (let* ((claude-code-ide-zmx--pending-name (car zmx-spec))
                  (claude-code-ide-zmx--pending-attach-only (cdr zmx-spec))
                  (buffer-and-process

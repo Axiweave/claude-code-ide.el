@@ -852,6 +852,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-focus-on-open~                 | Focus Claude window when opened             | ~t~                                    |
 | ~claude-code-ide-focus-claude-after-ediff~      | Focus Claude window after opening ediff     | ~t~                                    |
 | ~claude-code-ide-show-claude-window-in-ediff~   | Show Claude window during ediff             | ~t~                                    |
+| ~claude-code-ide-enable-ide-integration~        | Connect new local sessions to Emacs as an IDE (WebSocket/SSE server) | ~t~ |
 | ~claude-code-ide-use-ide-diff~                  | Use IDE diff viewer instead of terminal     | ~t~                                    |
 | ~claude-code-ide-switch-tab-on-ediff~           | Switch to Claude's tab when opening ediff   | ~t~                                    |
 | ~claude-code-ide-system-prompt~                 | Custom system prompt to append              | ~nil~                                  |
