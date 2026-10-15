@@ -280,6 +280,13 @@ Unrelated navigation or cancellation leaves explicit recovery available.
 When no Worktree survives, results report =Project view: unavailable=.
 Edited file buffers remain intact.
 
+When the Agent reports a new working directory (for example after an
+Oh My Pi =wtmove=), the Session takes the bare remote path from that
+report. The manager row keeps its repository group and shows the new
+path at once. It shows the new branch after one queued metadata probe.
+The remembered row saves the new directory, so a reattach uses it.
+The Project view and Magit view keep the old Worktree until you press =R=.
+
 Completion also refreshes safe existing survivor views when the origin
 Worktree remains. It publishes fresh backend rows before native refresh.
 Ordinary section rendering reads only the cached snapshot.

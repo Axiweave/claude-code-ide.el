@@ -5011,21 +5011,18 @@ Dired when it fails or returns a non-buffer."
 (defun claude-code-ide-manager--remote-layout-request-current-p
     (session-key attachment frame request)
   "Return non-nil when REQUEST still owns SESSION-KEY's layout on FRAME.
-Check the exact SESSION-KEY, its ATTACHMENT, the admitted host and
-requested directory, a live FRAME, and REQUEST's identity against
-FRAME's current layout epoch.  A remote worker calls this before
-adopting or displaying any remote result, including before starting
-a companion shell."
+Check the exact SESSION-KEY, its ATTACHMENT, the admitted host, a live
+FRAME, and REQUEST's identity against FRAME's current layout epoch.  A
+Session directory move does not invalidate REQUEST; only a layout
+reset replaces it.  A remote worker calls this before adopting or
+displaying any remote result, including before starting a companion
+shell."
   (and
    request
    (frame-live-p frame)
    (claude-code-ide-manager--remote-project-enabled-p session-key)
    (eq attachment (claude-code-ide-manager--session-buffer session-key))
    (claude-code-ide-remote-project-display-allowed-p session-key attachment)
-   (equal (plist-get request :directory)
-          (claude-code-ide-remote-project-rpc-directory
-           (claude-code-ide-manager--session-host session-key)
-           (claude-code-ide-manager--session-directory session-key)))
    (let ((intent (frame-parameter
                   frame 'claude-code-ide-manager-remote-project-display)))
      (and (equal session-key (plist-get intent :session-key))
@@ -5794,6 +5791,21 @@ Never retry a target snapshot during the same operation."
     (claude-code-ide-manager--enqueue-remote-metadata-snapshots
      (claude-code-ide-session-host session)
      (list (claude-code-ide-manager--remote-metadata-live-snapshot session)))))
+
+(defun claude-code-ide-manager--note-remote-move (session)
+  "Record remote SESSION's new directory and queue its Git metadata.
+Forget the directory in the host's running operation, so a return to a
+directory probed earlier in that operation is probed again.  Rebuild
+the global rows first, because a result applies only when its row has
+the probed directory.  Save before the probe, so a restart and a
+reattach use the new directory.  Never cancel another probe."
+  (when-let* ((operation (gethash (claude-code-ide-session-host session)
+                                  claude-code-ide-manager--remote-metadata-operations)))
+    (remhash (claude-code-ide-session-directory session)
+             (claude-code-ide-manager--remote-metadata-operation-known operation)))
+  (claude-code-ide-manager-refresh-items '(:type global) t)
+  (claude-code-ide-manager--save-state)
+  (claude-code-ide-manager--enqueue-remote-metadata session))
 
 (defun claude-code-ide-manager--cancel-remote-metadata (host)
   "Cancel HOST's in-flight remote metadata operation, if any.

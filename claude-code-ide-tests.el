@@ -23272,6 +23272,104 @@ Bind requests, command-size, and chosen-host for each check."
      (reply "host-a" :records (list (git-record "host-a" "/work" "/new/.git")))
      (should (equal (claude-code-ide-session-group-metadata session) cached)))))
 
+(ert-deftest claude-code-ide-test-remote-relocate-stores-bare-path ()
+  "A remote Session stores only the bare path of a valid directory report."
+  (claude-code-ide-tests--with-remote-metadata
+   (let* ((session (add-live "a" "host-a" "/work/proj" "agent"))
+          (buffer (claude-code-ide-session-buffer session))
+          (notes 0))
+     (cl-letf (((symbol-function 'claude-code-ide-manager--note-remote-move)
+                (lambda (_session) (setq notes (1+ notes)))))
+       (cl-flet ((report (directory)
+                   (with-current-buffer buffer
+                     (setq default-directory directory)
+                     (claude-code-ide--record-ghostel-directory))
+                   (list (claude-code-ide-session-directory session) notes)))
+         ;; The same directory, with or without a trailing slash, is no move.
+         (should (equal (report "/rpc:host-a:/work/proj/") '("/work/proj" 0)))
+         (should (equal (report "/rpc:host-a:/work/proj") '("/work/proj" 0)))
+         ;; Local, relative, and control-character reports are refused.
+         (dolist (bogus (list temporary-file-directory "relative/dir/"
+                              "/rpc:host-a:/work/bad\n/"))
+           (should (equal (report bogus) '("/work/proj" 0))))
+         (should (equal (report "/rpc:host-a:/work/topic/") '("/work/topic" 1)))
+         ;; Another TRAMP host name still names a path on the Session host.
+         (should (equal (report "/scp:other-name:/work/x/") '("/work/x" 2)))
+         (should (equal (report "/rpc:host-a:/") '("/" 3))))))))
+
+(ert-deftest claude-code-ide-test-remote-relocate-requeries-branch ()
+  "A remote move keeps the git group, queues one probe, and applies its branch."
+  (claude-code-ide-tests--with-remote-metadata
+   (let* ((session (add-live "a" "host-a" "/work/proj" "agent"
+                             (git-record "host-a" "/work/proj" "/work/proj/.git" "main")))
+          (buffer (claude-code-ide-session-buffer session))
+          (plain (add-live "n" "host-a" "/plain" "agent-n"
+                           (list :kind 'non-git :host "host-a" :directory "/plain"
+                                 :project-path "/plain"))))
+     (cl-flet ((group (id)
+                 (claude-code-ide-manager--group-key
+                  (claude-code-ide-manager--item-by-session-key '(:type global) id))))
+       (claude-code-ide-session-relocate buffer "/rpc:host-a:/work/topic/")
+       (should (equal (mapcar #'cadr requests) '(("/work/topic"))))
+       (should (equal (group "a") '(git "host-a" "/work/proj/.git")))
+       (should-not (plist-get (item-metadata "a") :branch))
+       (should (equal (list (claude-code-ide-session-id session)
+                            (claude-code-ide-session-order session)
+                            (claude-code-ide-session-zmx-name session))
+                      '("a" 1 "agent")))
+       (reply "host-a" :records
+              (list (git-record "host-a" "/work/topic" "/work/proj/.git" "topic")))
+       (should (equal (plist-get (item-metadata "a") :branch) "topic"))
+       ;; A failed probe keeps the new path and the group, with no branch.
+       (claude-code-ide-session-relocate buffer "/rpc:host-a:/work/fail/")
+       (cl-letf (((symbol-function 'message) #'ignore))
+         (reply "host-a" :error "SSH timed out" :status 255 :timeout t))
+       (should (equal (group "a") '(git "host-a" "/work/proj/.git")))
+       (should (equal (plist-get (item-metadata "a") :directory) "/work/fail"))
+       (should-not (plist-get (item-metadata "a") :branch))
+       ;; A result from another repository moves the row to that group.
+       (claude-code-ide-session-relocate buffer "/rpc:host-a:/other/repo/")
+       (reply "host-a" :records (list (git-record "host-a" "/other/repo")))
+       (should (equal (group "a") '(git "host-a" "/other/repo/.git")))
+       ;; A non-git row cannot keep its old group, so it waits unresolved.
+       (claude-code-ide-session-relocate (claude-code-ide-session-buffer plain)
+                                         "/rpc:host-a:/elsewhere/")
+       (should-not (item-metadata "n"))
+       (should (equal (group "n") '(unresolved "host-a" "/elsewhere")))))))
+
+(ert-deftest claude-code-ide-test-remote-relocate-last-move-wins ()
+  "Only a result for the current directory applies, and a return is probed again."
+  (claude-code-ide-tests--with-remote-metadata
+   (let* ((session (add-live "a" "host-a" "/w/a" "agent"
+                             (git-record "host-a" "/w/a" "/w/.git" "a")))
+          (buffer (claude-code-ide-session-buffer session)))
+     (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/b/")
+     (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/a/")
+     ;; The B result arrives while the row is at A.
+     (reply "host-a" :records (list (git-record "host-a" "/w/b" "/w/.git" "b")))
+     (should-not (plist-get (item-metadata "a") :branch))
+     (should (equal (cadr (car requests)) '("/w/a")))
+     ;; A return to B inside the same operation is probed again.
+     (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/b/")
+     (reply "host-a" :records (list (git-record "host-a" "/w/a" "/w/.git" "a")))
+     (should-not (plist-get (item-metadata "a") :branch))
+     (should (equal (cadr (car requests)) '("/w/b")))
+     (reply "host-a" :records (list (git-record "host-a" "/w/b" "/w/.git" "b")))
+     (should (equal (plist-get (item-metadata "a") :branch) "b")))))
+
+(ert-deftest claude-code-ide-test-remote-relocate-persists-directory ()
+  "A remote move is saved before its probe replies, so a reload keeps the path."
+  (claude-code-ide-tests--with-remote-metadata
+   (let ((session (add-live "a" "host-a" "/work/proj" "agent")))
+     (claude-code-ide-session-relocate (claude-code-ide-session-buffer session)
+                                       "/rpc:host-a:/work/topic/")
+     (remhash "a" claude-code-ide--sessions)
+     (claude-code-ide-manager--set-scope-items '(:type global) nil)
+     (claude-code-ide-manager--load-state)
+     (should (equal (claude-code-ide-manager-item-directory
+                     (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
+                    "/work/topic")))))
+
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-loads-remembered-targets ()
   "Explicit refresh can use saved targets before a sidebar opens."
   (claude-code-ide-tests--with-remote-metadata
@@ -23988,8 +24086,8 @@ result arrives never has that result applied to the row now at its key."
                (kill-buffer buffer)))
            (claude-code-ide-remote-project--reset-state)))))))
 
-(ert-deftest claude-code-ide-test-manager-layout-preset-remote-stale-directory ()
-  "A delayed view cannot return under a different Session directory."
+(ert-deftest claude-code-ide-test-manager-layout-preset-remote-move-keeps-view ()
+  "A Session directory move keeps the ready view until reset prepares the new one."
   (require 'claude-code-ide-remote-project)
   (dolist (preset '(magit-left dired-left))
     (claude-code-ide-tests--with-grouped-state
@@ -23998,20 +24096,21 @@ result arrives never has that result applied to the row now at its key."
        (let* ((claude-code-ide-remote-hosts '("host-a"))
               (claude-code-ide-remote-project-view-hosts '("host-a"))
               (claude-code-ide-manager-layout-preset preset)
-              (agent (generate-new-buffer "*claude-code[stale-directory]*"))
-              (local-agent (generate-new-buffer "*claude-code[stale-local]*"))
-              (process (make-pipe-process :name "stale-directory" :buffer agent :noquery t))
-              (view (generate-new-buffer "*stale-directory-view*"))
-              (local-view (generate-new-buffer "*stale-local-view*"))
+              (agent (generate-new-buffer "*claude-code[moved-directory]*"))
+              (local-agent (generate-new-buffer "*claude-code[moved-local]*"))
+              (process (make-pipe-process :name "moved-directory" :buffer agent :noquery t))
+              (view (generate-new-buffer "*moved-directory-view*"))
+              (local-view (generate-new-buffer "*moved-local-view*"))
               (directory "/rpc:host-a:/srv/repo/sub/")
               (file-name-handler-alist nil)
               (claude-code-ide-manager-status-buffer-function
                (lambda (path) (if (equal path directory) view local-view)))
-              attempt callbacks unpublished-view)
+              (spawns 0)
+              attempt)
          (unwind-protect
              (cl-letf
                  (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
-                   (lambda (request _) (setq attempt request)))
+                   (lambda (request _) (setq attempt request spawns (1+ spawns))))
                   ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
                   ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
                   ((symbol-function 'tramp-dissect-file-name) #'identity)
@@ -24029,33 +24128,13 @@ result arrives never has that result applied to the row now at its key."
                        buffer))))
                (claude-code-ide--put-session
                 (claude-code-ide-session-create
-                 :id "remote" :host "host-a" :zmx-name "agent" :directory "/srv/repo/sub/"
+                 :id "remote" :host "host-a" :zmx-name "agent" :directory "/srv/repo/sub"
                  :buffer agent :process process :cli-type 'omp))
                (claude-code-ide--put-session
                 (claude-code-ide-session-create
                  :id "local" :directory temporary-file-directory
                  :buffer local-agent :process local-agent :cli-type 'omp))
                (claude-code-ide-manager-reset-layout "remote")
-               (cl-letf (((symbol-function 'run-at-time)
-                          (lambda (_time _repeat fn &rest args)
-                            (push (cons fn args) callbacks))))
-                 (claude-code-ide-remote-project--worker attempt))
-               (setf (claude-code-ide-remote-project--attempt-worker attempt) nil
-                     (claude-code-ide-session-directory
-                      (claude-code-ide--get-session "remote")) "/srv/other/")
-               (dolist (callback (nreverse callbacks))
-                 (apply (car callback) (cdr callback)))
-               (should-not (get-buffer-window view))
-               (claude-code-ide-manager-switch-to-session "local")
-               (claude-code-ide-manager-switch-to-session "remote")
-               (should (get-buffer-window agent))
-               (should-not (get-buffer-window view))
-               ;; A previously ready view must not borrow a replacement request.
-               (setq unpublished-view view
-                     view (generate-new-buffer "*replacement-directory-view*"))
-               (setf (claude-code-ide-session-directory
-                      (claude-code-ide--get-session "remote")) "/srv/repo/sub/")
-               (claude-code-ide-manager-reset-layout "remote")
                (let (callbacks)
                  (cl-letf (((symbol-function 'run-at-time)
                             (lambda (_time _repeat fn &rest args)
@@ -24066,38 +24145,18 @@ result arrives never has that result applied to the row now at its key."
                    (apply (car callback) (cdr callback))))
                (should (get-buffer-window view))
                (setf (claude-code-ide-session-directory
-                      (claude-code-ide--get-session "remote")) "/srv/other/")
-               (claude-code-ide-manager-reset-layout "remote")
-               (claude-code-ide-manager-switch-to-session "local")
-               (claude-code-ide-manager-switch-to-session "remote")
-               (should (get-buffer-window agent))
-               (should-not (get-buffer-window view))
-               ;; A directory change also replaces a ready view without an explicit reset.
-               (let (callbacks)
-                 (cl-letf (((symbol-function 'run-at-time)
-                            (lambda (_time _repeat fn &rest args)
-                              (push (cons fn args) callbacks))))
-                   (claude-code-ide-remote-project--worker attempt))
-                 (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
-                 (dolist (callback (nreverse callbacks))
-                   (apply (car callback) (cdr callback))))
-               (should (get-buffer-window local-view))
-               (setf (claude-code-ide-session-directory
-                      (claude-code-ide--get-session "remote")) "/srv/repo/sub/")
-               (claude-code-ide-manager-switch-to-session "local")
-               (claude-code-ide-manager-switch-to-session "remote")
-               (should-not (get-buffer-window local-view))
-               (let (callbacks)
-                 (cl-letf (((symbol-function 'run-at-time)
-                            (lambda (_time _repeat fn &rest args)
-                              (push (cons fn args) callbacks))))
-                   (claude-code-ide-remote-project--worker attempt))
-                 (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
-                 (dolist (callback (nreverse callbacks))
-                   (apply (car callback) (cdr callback))))
-               (should (get-buffer-window view))
-               (should (eq (window-buffer (selected-window)) agent)))
-           (dolist (buffer (list agent local-agent view local-view unpublished-view))
+                      (claude-code-ide--get-session "remote")) "/srv/other")
+               (let ((before spawns))
+                 (claude-code-ide-manager-switch-to-session "local")
+                 (claude-code-ide-manager-switch-to-session "remote")
+                 (should (get-buffer-window agent))
+                 (should (get-buffer-window view))
+                 (should (= spawns before))
+                 (claude-code-ide-manager-reset-layout "remote")
+                 (should (= spawns (1+ before)))
+                 (should (equal (claude-code-ide-remote-project--attempt-directory attempt)
+                                "/rpc:host-a:/srv/other/"))))
+           (dolist (buffer (list agent local-agent view local-view))
              (when (buffer-live-p buffer)
                (with-current-buffer buffer (setq default-directory temporary-file-directory))
                (kill-buffer buffer)))
@@ -25463,10 +25522,12 @@ result arrives never has that result applied to the row now at its key."
             (should
              (claude-code-ide-manager--restore-layout "session-a"))
             (should (get-buffer-window view))
+            ;; A Session directory move keeps the view until an explicit reset.
             (cl-letf (((symbol-function 'claude-code-ide-manager--session-directory)
                        (lambda (_) "/another-project/")))
-              (should-not (claude-code-ide-remote-project-surviving-view
-                           "session-a" terminal))))
+              (should (eq (claude-code-ide-remote-project-surviving-view
+                           "session-a" terminal)
+                          view))))
         (mapc
          (lambda (buffer)
            (when (buffer-live-p buffer)

@@ -1422,8 +1422,8 @@ Return ATTEMPT, or abandon it when the thread cannot start."
 (defun claude-code-ide-remote-project-resume-layout-request
     (session-id attachment frame preset)
   "Rebind SESSION-ID's pending PRESET to ATTACHMENT's restored FRAME.
-Keep the admitted request's provider and creation permission.  Return
-a fresh snapshot only for the same current attempt and Session directory."
+Keep the admitted request's provider, directory, and creation
+permission.  Return a fresh snapshot only for the same current attempt."
   (when-let* ((intent (gethash session-id claude-code-ide-remote-project--intents))
               (attempt (claude-code-ide-remote-project--intent-attempt intent))
               (request (claude-code-ide-remote-project--attempt-layout-request attempt))
@@ -1434,11 +1434,7 @@ a fresh snapshot only for the same current attempt and Session directory."
               ((eq request (claude-code-ide-remote-project--intent-layout-request intent)))
               ((eq preset (plist-get request :preset)))
               ((claude-code-ide-remote-project--attempt-current-p attempt))
-              ((claude-code-ide-remote-project-display-allowed-p session-id attachment))
-              ((equal (plist-get request :directory)
-                      (claude-code-ide-remote-project-rpc-directory
-                       (claude-code-ide-remote-project--attempt-host attempt)
-                       (claude-code-ide-manager--session-directory session-id)))))
+              ((claude-code-ide-remote-project-display-allowed-p session-id attachment)))
     (let ((restored (plist-put
                      (copy-sequence request) :epoch
                      (or (frame-parameter frame 'claude-code-ide-manager-remote-project-epoch) 0))))
@@ -1636,12 +1632,8 @@ views.  Never reconnect or invoke a provider here."
          attachment)))
     (when-let* (((eq attachment
                      (claude-code-ide-remote-project--intent-attachment intent)))
-                (host (claude-code-ide-manager--session-host session-id))
-                (directory (claude-code-ide-manager--session-directory session-id))
+                ((claude-code-ide-manager--session-host session-id))
                 (request (claude-code-ide-remote-project--intent-layout-request intent))
-                ((equal
-                  (plist-get request :directory)
-                  (claude-code-ide-remote-project-rpc-directory host directory)))
                 ((or (eq (plist-get request :companion-kind) 'shell)
                      (let ((descriptor
                             (nth 3 (claude-code-ide-remote-project--intent-view-key intent))))

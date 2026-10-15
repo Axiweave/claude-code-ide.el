@@ -704,23 +704,56 @@ text that is metadata rather than a local filesystem instruction."
 
 (defun claude-code-ide-session-relocate (buffer directory)
   "Move the Session owning BUFFER to DIRECTORY and redraw the manager.
-DIRECTORY arrives from an Agent report, so accept it only when it names
-an existing local absolute directory without control characters.  The
-registry is keyed by Session ID, so the record moves in place.  Return
-the moved Session, or nil when nothing changed."
+DIRECTORY arrives from an Agent report.  A local Session accepts only
+an existing local absolute directory without control characters.  A
+remote Session accepts only a remote file name; see
+`claude-code-ide--relocate-remote'.  The registry is keyed by Session
+ID, so the record moves in place.  Return the moved Session, or nil
+when nothing changed."
   (when-let* (((stringp directory))
               ((not (string-match-p "[[:cntrl:]]" directory)))
-              ((file-name-absolute-p directory))
-              ((not (file-remote-p directory)))
-              ((file-directory-p directory))
-              (normalized (claude-code-ide--normalize-directory directory))
-              (session (claude-code-ide--session-for-buffer buffer))
-              ((not (equal normalized
-                           (claude-code-ide--normalize-directory
-                            (claude-code-ide-session-directory session))))))
-    (setf (claude-code-ide-session-directory session) normalized)
-    (claude-code-ide-manager-refresh-all)
-    session))
+              (session (claude-code-ide--session-for-buffer buffer)))
+    (if (claude-code-ide-session-host session)
+        (claude-code-ide--relocate-remote session directory)
+      (when-let* (((file-name-absolute-p directory))
+                  ((not (file-remote-p directory)))
+                  ((file-directory-p directory))
+                  (normalized (claude-code-ide--normalize-directory directory))
+                  ((not (equal normalized
+                               (claude-code-ide--normalize-directory
+                                (claude-code-ide-session-directory session))))))
+        (setf (claude-code-ide-session-directory session) normalized)
+        (claude-code-ide-manager-refresh-all)
+        session))))
+
+(defun claude-code-ide--relocate-remote (session directory)
+  "Move remote SESSION to the path part of remote file name DIRECTORY.
+The Agent terminal runs on the Session host, so the TRAMP host part is
+ignored.  Store a bare path without a trailing slash (ADR 0003), and
+never consult the local file system or open a connection.  A Git row
+keeps its group without a branch until the probe that
+`claude-code-ide-manager--note-remote-move' queues replies.  Return
+SESSION, or nil when nothing changed."
+  (cl-flet ((trim (path)
+              (if (and (> (length path) 1) (string-suffix-p "/" path))
+                  (substring path 0 -1)
+                path)))
+    (when-let* ((localname (file-remote-p directory 'localname))
+                (bare (trim localname))
+                ((claude-code-ide-zmx--valid-directory-p bare))
+                ((not (equal bare (trim (claude-code-ide-session-directory session))))))
+      (let ((metadata (claude-code-ide-session-group-metadata session)))
+        (setf (claude-code-ide-session-directory session) bare)
+        (claude-code-ide--set-session-group-metadata
+         session
+         (when (eq (plist-get metadata :kind) 'git)
+           (let ((moved (copy-sequence metadata)))
+             (setq moved (plist-put moved :directory bare)
+                   moved (plist-put moved :branch nil))
+             (plist-put moved :worktree-path nil)))))
+      (claude-code-ide-manager-refresh-all)
+      (claude-code-ide-manager--note-remote-move session)
+      session)))
 
 (defun claude-code-ide--session-for-buffer (&optional buffer)
   "Return the live session that owns BUFFER, or nil."
