@@ -285,6 +285,25 @@ writes this value, so a restart always starts from the value here."
   :set #'claude-code-ide-manager--set-and-refresh
   :group 'claude-code-ide-manager)
 
+(defcustom claude-code-ide-manager-hide-branch-prefix nil
+  "Whether grouped manager rows hide a common branch name prefix.
+When non-nil, a row shows the branch \"feat/login\" as \"login\".
+`claude-code-ide-manager-hidden-branch-prefixes' lists the prefixes."
+  :type 'boolean
+  :initialize #'custom-initialize-default
+  :set #'claude-code-ide-manager--set-and-refresh
+  :group 'claude-code-ide-manager)
+
+(defcustom claude-code-ide-manager-hidden-branch-prefixes
+  '("feat/" "feature/" "fix/" "bugfix/" "hotfix/" "chore/" "refactor/"
+    "docs/" "test/" "perf/" "build/" "ci/" "style/" "release/")
+  "Prefixes that `claude-code-ide-manager-hide-branch-prefix' hides.
+The first matching prefix wins."
+  :type '(repeat string)
+  :initialize #'custom-initialize-default
+  :set #'claude-code-ide-manager--set-and-refresh
+  :group 'claude-code-ide-manager)
+
 (defcustom claude-code-ide-manager-focused-view nil
   "Whether the manager sidebar shows only Sessions that need the user.
 
@@ -757,7 +776,13 @@ the manager sidebar is created.")
              bases)
          (dolist (item group)
            (let* ((metadata (claude-code-ide-manager-item-group-metadata item))
-                  (branch (or (plist-get metadata :branch)
+                  (branch (or (when-let* ((name (plist-get metadata :branch)))
+                                (let ((prefix (and claude-code-ide-manager-hide-branch-prefix
+                                                   (seq-find (lambda (p) (string-prefix-p p name))
+                                                             claude-code-ide-manager-hidden-branch-prefixes))))
+                                  (if (and prefix (> (length name) (length prefix)))
+                                      (substring name (length prefix))
+                                    name)))
                               (car (last (split-string
                                           (or (plist-get metadata :worktree-path)
                                               (claude-code-ide-manager-item-directory item) "")

@@ -1428,6 +1428,28 @@ mode re-inserts the remote project line's indentation without properties."
                       '("/tmp/repo/a" "/tmp/repo/packages/lib" "/tmp/other/c"))
                      '("/tmp/repo/a" "/tmp/repo/packages/lib"))))))
 
+(ert-deftest claude-code-ide-test-manager-grouped-labels-hide-branch-prefix ()
+  "Grouped rows hide a listed branch prefix only when enabled."
+  (let* ((branches '("feat/x" "fix/x" "release/" "feature/a/b" "main" "featx"))
+         (items (mapcar (lambda (branch)
+                          (make-claude-code-ide-manager-item
+                           :session-key branch :directory "/r"
+                           :group-metadata (list :kind 'git :common-dir "/r/.git"
+                                                 :project-path "/r" :worktree-path "/r"
+                                                 :branch branch)))
+                        branches))
+         (labels-for (lambda (hide)
+                       (let ((claude-code-ide-manager-hide-branch-prefix hide)
+                             (table nil))
+                         (setq table (claude-code-ide-manager--grouped-labels items))
+                         (mapcar (lambda (item) (gethash item table)) items)))))
+    (should (equal (funcall labels-for nil) branches))
+    (let ((hidden (funcall labels-for t)))
+      ;; Collisions after stripping stay distinct; a bare prefix keeps its name.
+      (should (equal (length (delete-dups (copy-sequence hidden))) (length items)))
+      (should (equal (nthcdr 2 hidden) '("release/" "a/b" "main" "featx")))
+      (should-not (member "x" hidden)))))
+
 (ert-deftest claude-code-ide-test-manager-repo-label-uses-basename-strategy ()
   (let ((claude-code-ide-manager-repo-label-strategy 'basename))
     (cl-letf (((symbol-function 'claude-code-ide-manager--session-branch-name)
