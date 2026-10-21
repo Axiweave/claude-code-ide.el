@@ -18040,7 +18040,8 @@ counts `()' at all."
 (ert-deftest claude-code-ide-test-session-remote-omp-title-reports-agent-state ()
   "A remote Session takes its agent state from omp's title separator, and
 only a state change reaches the state setter.  A local Session ignores
-the title, because MCP reports its state."
+the title while MCP reports its state, and reads it when IDE integration
+is off."
   (let ((remote (generate-new-buffer "*claude-code[title-remote]*"))
         (local (generate-new-buffer "*claude-code[title-local]*"))
         (calls 0))
@@ -18067,8 +18068,12 @@ the title, because MCP reports its state."
           (with-current-buffer local
             (setq-local major-mode 'ghostel-mode
                         default-directory "/tmp/")
-            (ghostel--set-title "π ! x")
-            (should-not claude-code-ide-session-agent-state)))
+            (let ((claude-code-ide-enable-ide-integration t))
+              (ghostel--set-title "π ! x")
+              (should-not claude-code-ide-session-agent-state))
+            (let ((claude-code-ide-enable-ide-integration nil))
+              (ghostel--set-title "π ! x")
+              (should (eq claude-code-ide-session-agent-state 'needs-input)))))
       (advice-remove 'claude-code-ide-session-idle-set-agent-state 'cci-test-count)
       (kill-buffer remote)
       (kill-buffer local))))

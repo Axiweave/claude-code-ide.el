@@ -30,6 +30,7 @@
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 
 (defvar claude-code-ide-session-setup-hook)
+(defvar claude-code-ide-enable-ide-integration)
 
 (defgroup claude-code-ide-session-idle nil
   "Idle monitoring for Claude Code IDE sessions."
@@ -617,7 +618,7 @@ working.  ORIG-FN always runs and handles the batch."
   (apply orig-fn args))
 
 (defvar-local claude-code-ide-session-idle--title-agent-state nil
-  "Agent state last read from the terminal title of a remote Session.")
+  "Agent state last read from the terminal title of a Session without MCP.")
 
 (defun claude-code-ide-session-idle--title-agent-state (title)
   "Return the agent state that omp encodes in TITLE, or nil.
@@ -635,14 +636,16 @@ writes `π: label', which carries no state."
       (_ 'working))))
 
 (defun claude-code-ide-session-idle--title-advice (orig-fn &rest args)
-  "Run ORIG-FN, then read a remote omp Session's state from its title.
-Remote omp has no IDE MCP connection, so its title is the only state
-report.  A local Session keeps MCP as its source.  Only a state change
-reaches `claude-code-ide-session-idle-set-agent-state'.  A bookkeeping
-error is logged and never stops ORIG-FN."
+  "Run ORIG-FN, then read an omp Session's state from its title.
+A remote omp, or any omp when `claude-code-ide-enable-ide-integration'
+is nil, has no IDE MCP connection, so its title is the only state
+report.  A local Session with IDE integration keeps MCP as its source.
+Only a state change reaches `claude-code-ide-session-idle-set-agent-state'.
+A bookkeeping error is logged and never stops ORIG-FN."
   (prog1 (apply orig-fn args)
     (condition-case err
-        (when-let* (((file-remote-p default-directory))
+        (when-let* (((or (file-remote-p default-directory)
+                         (not (bound-and-true-p claude-code-ide-enable-ide-integration))))
                     ((claude-code-ide-session-buffer-p (current-buffer)))
                     (state (claude-code-ide-session-idle--title-agent-state (car args)))
                     ((not (eq state claude-code-ide-session-idle--title-agent-state))))
