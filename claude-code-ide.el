@@ -2564,14 +2564,19 @@ creation signals, and return the number of sessions attached."
 (defun claude-code-ide--remote-discovery-callback (continuation)
   "Return a `claude-code-ide-zmx-discover-remote' callback wrapping CONTINUATION.
 On success, call CONTINUATION with the possibly empty candidate list
-from the discovery outcome.  On failure, report the error with
+from the discovery outcome, minus targets (:host . :name) already
+attached in this Emacs instance.  On failure, report the error with
 `claude-code-ide-log' instead of signaling: the callback runs
 asynchronously, outside any interactive command's call stack, so a
 raw signal here cannot reach the command that requested discovery."
   (lambda (outcome)
     (if-let* ((failure (plist-get outcome :error)))
         (claude-code-ide-log "%s" failure)
-      (funcall continuation (plist-get outcome :sessions)))))
+      (funcall continuation
+               (seq-remove (lambda (entry)
+                             (claude-code-ide--live-session-for-target
+                              (plist-get entry :host) (plist-get entry :name)))
+                           (plist-get outcome :sessions))))))
 
 (defun claude-code-ide--attach-discovered-entries (sessions)
   "Attach every entry in SESSIONS without prompting, or log if none."
@@ -2585,8 +2590,8 @@ raw signal here cannot reach the command that requested discovery."
 Sessions without a start directory or with an unrecognized command are
 skipped and named in the summary message; adopt those with
 `claude-code-ide-attach'.  With a prefix argument, or when HOST names a
-configured destination, adopt every existing session on that remote
-host instead."
+configured destination, adopt every session on that remote host that
+this Emacs instance has not already attached instead."
   (interactive (list (when current-prefix-arg (claude-code-ide--read-remote-host))))
   (if host
       (claude-code-ide-zmx-discover-remote
@@ -2652,8 +2657,9 @@ List zmx sessions (including ones launched outside Emacs), excluding
 ones already attached in this Emacs instance, infer the agent CLI from
 the session's command, and open an attached terminal buffer with full
 session integration.  With a prefix argument, or when HOST names a
-configured destination, list an existing session on that remote host
-instead; picking one attaches to it without creating anything."
+configured destination, list the sessions on that remote host that
+this Emacs instance has not already attached instead; picking one
+attaches to it without creating anything."
   (interactive (list (when current-prefix-arg (claude-code-ide--read-remote-host))))
   (if host
       (claude-code-ide-zmx-discover-remote

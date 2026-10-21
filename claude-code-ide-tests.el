@@ -21277,6 +21277,25 @@ Return a plist with :killed-zmx and :killed-buffer."
       (should (plist-get outcome :error))
       (should (= (length requests) 1)))))
 
+(ert-deftest claude-code-ide-test-remote-discovery-hides-attached-targets ()
+  "Remote attach candidates drop only the exact (host . name) already attached."
+  (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
+        received)
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "remote" :host "alpha" :zmx-name "taken"))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "local" :zmx-name "local-only"))
+    (funcall (claude-code-ide--remote-discovery-callback
+              (lambda (sessions) (setq received sessions)))
+             '(:sessions ((:host "alpha" :name "taken")
+                          (:host "alpha" :name "free")
+                          (:host "alpha" :name "local-only")
+                          (:host "beta" :name "taken"))))
+    (should (equal (mapcar (lambda (entry)
+                             (cons (plist-get entry :host) (plist-get entry :name)))
+                           received)
+                   '(("alpha" . "free") ("alpha" . "local-only") ("beta" . "taken"))))))
+
 (ert-deftest claude-code-ide-test-remote-local-agent-association-excludes-both-routes ()
   "Neither a shared name nor a buffer name associates remote MCP state."
   (let ((claude-code-ide--sessions (make-hash-table :test #'equal))
