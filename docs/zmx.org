@@ -112,7 +112,7 @@ These actions do not mean the same thing:
 | Action | Result |
 |--------+--------|
 | Close the terminal window | Hide the terminal. The client and Agent continue. |
-| Kill the terminal buffer | Detach the Emacs client. The Agent continues. |
+| Kill the terminal buffer | Detach the Emacs client. The Agent continues, and the manager keeps a =[disconnected]= row. Select it or press =c= to reattach. |
 | Manager =D= or =X= | Detach the client and remove its manager row. The Agent continues. |
 | =M-x claude-code-ide-stop= | Ask for confirmation, then kill the zmx Session and Agent for all clients. |
 | =zmx kill NAME= | Kill the zmx Session and Agent outside Emacs. |

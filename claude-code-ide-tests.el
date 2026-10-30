@@ -228,6 +228,10 @@ Like the real one, drop the stored value when it equals the default."
 (require 'claude-code-ide)
 (require 'claude-code-ide-remote-worktree)
 
+;; The one-time startup check of local rows lists the user's zmx
+;; sessions, so it runs only where a test binds this to nil.
+(setq claude-code-ide-manager--local-rows-checked t)
+
 ;;; Test Helper Functions
 
 (defmacro claude-code-ide-tests--with-mocked-cli (cli-path &rest body)
@@ -9767,7 +9771,7 @@ switch keeps the filter, and no process starts."
          (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
                     (lambda (&rest _) (ert-fail "Disconnection contacted a host"))))
            (puthash "stable" shell claude-code-ide-manager--companion-shells)
-           (claude-code-ide-manager--remember-remote-session session)
+           (claude-code-ide-manager--remember-session session)
            (claude-code-ide-manager-session-ended "stable")
            (claude-code-ide--put-session session)
            (should (eq shell
@@ -20797,7 +20801,7 @@ TRACKED supplies the inherited tracking list, with nil meaning unset."
                  (setq create-args (cons claude-code-ide-cli-path args))
                  nil)))
       (claude-code-ide-attach))
-    (should (equal create-args '("omp" "/tmp/proj/" nil nil "demo")))))
+    (should (equal (seq-take create-args 5) '("omp" "/tmp/proj/" nil nil "demo")))))
 
 (ert-deftest claude-code-ide-test-zmx-attach-reveals-via-manager-layout ()
   "Adoption suppresses initial display and reveals via the manager switch."
@@ -20884,7 +20888,7 @@ TRACKED supplies the inherited tracking list, with nil meaning unset."
                  (setq create-args (cons claude-code-ide-cli-path args))
                  nil)))
       (claude-code-ide-attach))
-    (should (equal create-args '("codex" "/tmp/proj/" nil nil "demo")))))
+    (should (equal (seq-take create-args 5) '("codex" "/tmp/proj/" nil nil "demo")))))
 
 (ert-deftest claude-code-ide-test-zmx-attach-no-sessions ()
   "Empty zmx list logs instead of erroring."
@@ -20912,7 +20916,7 @@ TRACKED supplies the inherited tracking list, with nil meaning unset."
               ((symbol-function 'claude-code-ide--create-session)
                (lambda (&rest args)
                  (push (list claude-code-ide-cli-path
-                             claude-code-ide--suppress-initial-display args)
+                             claude-code-ide--suppress-initial-display (seq-take args 4))
                        create-calls)
                  (claude-code-ide-session-create :id (nth 3 args) :directory (car args))))
               ((symbol-function 'claude-code-ide-manager-switch-to-session)
@@ -20932,7 +20936,7 @@ TRACKED supplies the inherited tracking list, with nil meaning unset."
                (lambda () '((:name "one" :start_dir "/tmp/one" :cmd "omp")
                             (:name "two" :start_dir "/tmp/two" :cmd "omp"))))
               ((symbol-function 'claude-code-ide--create-session)
-               (lambda (dir _ _ name)
+               (lambda (dir _ _ name &rest _)
                  (when (equal name "one") (error "boom"))
                  (push name created)
                  (claude-code-ide-session-create :id name :directory dir))))
@@ -20955,7 +20959,7 @@ BODY sees `window', `content-buffer' and `select-buffer'."
                     (lambda () '((:name "one" :start_dir "/tmp/one" :cmd "omp")
                                  (:name "two" :start_dir "/tmp/two" :cmd "omp"))))
                    ((symbol-function 'claude-code-ide--create-session)
-                    (lambda (dir _ _ name)
+                    (lambda (dir _ _ name &rest _)
                       (push name ,created-var)
                       (claude-code-ide-session-create :id name :directory dir))))
            (delete-other-windows)
@@ -21607,7 +21611,7 @@ the Agent's self-reported hostname."
              ((symbol-function 'claude-code-ide--register-session)
               (lambda (new-session)
                 (claude-code-ide--put-session new-session)
-                (claude-code-ide-manager--remember-remote-session new-session)
+                (claude-code-ide-manager--remember-session new-session)
                 new-session))
              ((symbol-function 'claude-code-ide-manager-refresh-all) #'ignore)
              ((symbol-function 'set-process-sentinel)
@@ -21737,7 +21741,7 @@ the Agent's self-reported hostname."
     (claude-code-ide-manager--set-scope-active-session-key scope "stable")
     (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
                (lambda (&rest _) (ert-fail "Passive refresh contacted a host"))))
-      (claude-code-ide-manager--remember-remote-session session)
+      (claude-code-ide-manager--remember-session session)
       (claude-code-ide-manager-refresh-items scope)
       (claude-code-ide-manager-session-ended "stable")
       (claude-code-ide-manager-refresh-items scope)
@@ -21766,7 +21770,7 @@ default, so the default must not track the last saved value."
          (session (claude-code-ide-session-create
                    :id "kept" :host "host" :zmx-name "agent"
                    :directory "/remote/project" :cli-type 'omp :order 1)))
-    (claude-code-ide-manager--remember-remote-session session)
+    (claude-code-ide-manager--remember-session session)
     (claude-code-ide-manager--save-state)
     (claude-code-ide-manager--save-state)
     (claude-code-ide-manager--reset-state)
@@ -21789,7 +21793,7 @@ default, so the default must not track the last saved value."
           (claude-code-ide--put-session session)
           (cl-letf (((symbol-function 'claude-code-ide--cleanup-session-resources)
                      (lambda (&rest _) (ert-fail "Stale owner released resources")))
-                    ((symbol-function 'claude-code-ide-manager--remember-remote-session)
+                    ((symbol-function 'claude-code-ide-manager--remember-session)
                      (lambda (&rest _) (ert-fail "Stale owner remembered a row"))))
             (claude-code-ide--cleanup-on-exit "stable" nil old-process)
             (claude-code-ide--cleanup-on-exit "stable" t old-process)
@@ -21998,7 +22002,7 @@ default, so the default must not track the last saved value."
      (should (string-match-p "host-a" (car prompts)))
      (should (string-match-p "same" (car prompts)))
      (should-error (claude-code-ide-stop "a") :type 'user-error)
-     (should-error (claude-code-ide--reattach-remote-session "a") :type 'user-error)
+     (should-error (claude-code-ide--reattach-session "a") :type 'user-error)
      (should (= (length requests) 1))
      (reply "killed session same\n")
      (should-error (claude-code-ide-stop "a") :type 'user-error)
@@ -22150,19 +22154,21 @@ default, so the default must not track the last saved value."
          (setf (claude-code-ide-manager-item-custom-name item) "Saved"
                (claude-code-ide-manager-item-order item) 7
                (claude-code-ide-manager-item-pinned item) t))
-       (should-error (claude-code-ide-manager--ensure-live-target "stable")
-                     :type 'user-error)
+       (let ((claude-code-ide-manager-auto-reattach nil))
+         (should-error (claude-code-ide-manager--ensure-live-target "stable")
+                       :type 'user-error))
        (let ((claude-code-ide-remote-hosts nil))
-         (should-error (claude-code-ide--reattach-remote-session "stable")
+         (should-error (claude-code-ide--reattach-session "stable")
                        :type 'user-error))
        (should-not requests)
-       (should-error (claude-code-ide--reattach-remote-session "stable")
+       (should-error (claude-code-ide--reattach-session "stable")
                      :type 'user-error)
        (should-not requests)
        (should-not (claude-code-ide--get-session "stable"))
        (should (claude-code-ide-manager--item-by-session-key "stable"))
        (setq available t)
-       (claude-code-ide--reattach-remote-session "stable")
+       ;; Selection reattaches the same Session ID by default.
+       (should (claude-code-ide-manager--ensure-live-target "stable"))
        (let ((session (claude-code-ide--get-session "stable")))
          (should (process-live-p (claude-code-ide-session-process session)))
          (should (equal (claude-code-ide-session-custom-name session) "Saved"))
@@ -22185,10 +22191,283 @@ default, so the default must not track the last saved value."
              ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
              ((symbol-function 'claude-code-ide--create-terminal-with-command)
               (lambda (&rest _) (ert-fail "A missing target started a terminal"))))
-     (should-error (claude-code-ide--reattach-remote-session "stable")
+     (should-error (claude-code-ide--reattach-session "stable")
                    :type 'user-error)
      (should-not (claude-code-ide--get-session "stable"))
      (should (claude-code-ide-manager--item-by-session-key "stable")))))
+
+(ert-deftest claude-code-ide-test-remote-selection-auto-reattach-switches ()
+  "Selecting a disconnected remote row reattaches it only when enabled."
+  (let ((switch (symbol-function 'claude-code-ide-manager-switch-to-session))
+        (claude-code-ide-terminal-initialization-delay 0)
+        (starts 0))
+    (claude-code-ide-tests--with-remote-targets
+     (claude-code-ide--materialize-remote-target
+      "stable" "host-a" "same" "/tmp/shared/" 1 1)
+     (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session) switch)
+               ((symbol-function 'claude-code-ide--reattach-cli-path)
+                (lambda (_item) "/missing/omp"))
+               ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
+               ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+               ((symbol-function 'claude-code-ide--register-session)
+                #'claude-code-ide--put-session)
+               ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                (lambda (name &rest _)
+                  (cl-incf starts)
+                  (let* ((buffer (generate-new-buffer name))
+                         (process (make-pipe-process
+                                   :name "cci-selected-client" :buffer buffer
+                                   :noquery t :sentinel #'ignore)))
+                    (with-current-buffer buffer
+                      (setq-local major-mode 'ghostel-mode))
+                    (push buffer buffers)
+                    (push process clients)
+                    (cons buffer process)))))
+       (let ((claude-code-ide-manager-auto-reattach nil))
+         (should (string-match-p
+                  "Press c to reattach"
+                  (cadr (should-error
+                         (claude-code-ide-manager-switch-to-session "stable")
+                         :type 'user-error))))
+         (should (zerop starts))
+         (should-not (claude-code-ide--get-session "stable")))
+       (save-window-excursion
+         (let ((window (claude-code-ide-manager-switch-to-session "stable"))
+               (session (claude-code-ide--get-session "stable")))
+           (should (= starts 1))
+           (should (process-live-p (claude-code-ide-session-process session)))
+           (should (eq (window-buffer window)
+                       (claude-code-ide-session-buffer session)))
+           (should (equal claude-code-ide-manager--current-session-key "stable"))))))))
+
+(defmacro claude-code-ide-tests--with-local-targets (&rest body)
+  "Run BODY with isolated local zmx rows on top of the remote fixture.
+BODY sees LISTED, the local zmx names (`fail' makes the list fail),
+ATTACHES, the (NAME . ATTACH-ONLY) of each terminal start, KILLS, the
+killed zmx names, LIST-CALLS, and DIR, an accessible directory.
+`remember-local' adds a disconnected row and `add-local' a live one."
+  (declare (indent 0))
+  `(claude-code-ide-tests--with-remote-targets
+    (let ((listed nil) (attaches nil) (kills nil) (list-calls 0)
+          (dir (file-name-as-directory temporary-file-directory))
+          (claude-code-ide-terminal-initialization-delay 0)
+          (claude-code-ide-enable-ide-integration nil))
+      (cl-labels
+          ((remember-local
+             (id name order)
+             (claude-code-ide-manager--remember-session
+              (claude-code-ide-session-create
+               :id id :zmx-name name :directory dir :cli-type 'omp
+               :order order :created-at 100.0)))
+           (add-local
+             (id name)
+             (let* ((buffer (generate-new-buffer "*claude-code[local-test]*"))
+                    (process (make-pipe-process
+                              :name "cci-local-client" :buffer buffer
+                              :noquery t :sentinel #'ignore)))
+               (push buffer buffers)
+               (push process clients)
+               (with-current-buffer buffer
+                 (add-hook 'kill-buffer-hook
+                           (lambda () (claude-code-ide--cleanup-on-exit id t process))
+                           nil t))
+               (claude-code-ide--put-session
+                (claude-code-ide-session-create
+                 :id id :zmx-name name :directory dir :buffer buffer
+                 :process process :cli-type 'omp :order 1))
+               (claude-code-ide-manager-refresh-items '(:type global) t))))
+        (cl-letf (((symbol-function 'claude-code-ide-zmx-session-names)
+                   (lambda ()
+                     (cl-incf list-calls)
+                     (if (eq listed 'fail) (error "zmx list failed") listed)))
+                  ((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+                  ((symbol-function 'claude-code-ide-zmx-kill)
+                   (lambda (name)
+                     (when (equal name "fail-name") (error "zmx kill failed"))
+                     (push name kills)))
+                  ((symbol-function 'claude-code-ide--reattach-cli-path)
+                   (lambda (_item) "/missing/omp"))
+                  ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                  ((symbol-function 'claude-code-ide--register-session)
+                   #'claude-code-ide--put-session)
+                  ((symbol-function 'claude-code-ide--create-terminal-session)
+                   (lambda (name &rest _)
+                     (push (cons claude-code-ide-zmx--pending-name
+                                 claude-code-ide-zmx--pending-attach-only)
+                           attaches)
+                     (let* ((buffer (generate-new-buffer name))
+                            (process (make-pipe-process
+                                      :name "cci-local-attach" :buffer buffer
+                                      :noquery t :sentinel #'ignore)))
+                       (with-current-buffer buffer
+                         (setq-local major-mode 'ghostel-mode))
+                       (push buffer buffers)
+                       (push process clients)
+                       (cons buffer process)))))
+          ,@body)))))
+
+(ert-deftest claude-code-ide-test-local-zmx-row-outlives-its-client ()
+  "A local row stays while zmx lists it or cannot answer, and goes once zmx reports it gone.
+A local Session without a zmx name never leaves a row."
+  (claude-code-ide-tests--with-local-targets
+   (dolist (case '(("listed" "listed" ("listed") t) ("unknown" "unknown" fail t)
+                   ("gone" "gone" nil nil) ("plain" nil ("plain") nil)))
+     (pcase-let ((`(,name ,zmx-name ,answer ,kept) case))
+       (setq listed answer)
+       (add-local name zmx-name)
+       (setf (claude-code-ide-manager-item-pinned
+              (claude-code-ide-manager--item-by-session-key '(:type global) name))
+             t)
+       (claude-code-ide--cleanup-on-exit name)
+       (should-not (claude-code-ide--get-session name))
+       (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) name)))
+         (should (eq (and item t) kept))
+         (when kept
+           (should-not (claude-code-ide-manager-item-live-p item))
+           (should (claude-code-ide-manager-item-pinned item))
+           (should (string-match-p
+                    "\\[disconnected\\]"
+                    (claude-code-ide-manager--item-visible-name item)))))))))
+
+(ert-deftest claude-code-ide-test-local-zmx-row-reattaches-after-restart ()
+  "A saved local row reloads disconnected and reattaches under its own identity."
+  (claude-code-ide-tests--with-local-targets
+   (let ((claude-code-ide-manager-persist-state t)
+         (claude-code-ide-manager--persisted-state
+          (copy-tree claude-code-ide-manager--empty-persisted-state))
+         (persist--test-store (make-hash-table :test 'eq))
+         (persist--test-defaults (make-hash-table :test 'eq)))
+     (remember-local "kept" "loc" 7)
+     (claude-code-ide-manager--save-state)
+     (claude-code-ide-manager--reset-state)
+     (claude-code-ide-manager--load-state)
+     (setq listed '("loc"))
+     (should (> (claude-code-ide--next-session-order dir) 7))
+     (let ((claude-code-ide-manager-auto-reattach nil))
+       (should (string-match-p
+                "Press c to reattach"
+                (cadr (should-error
+                       (claude-code-ide-manager--ensure-live-target "kept")
+                       :type 'user-error))))
+       (should-not attaches))
+     (let ((session (claude-code-ide--reattach-target "kept")))
+       (should (equal (claude-code-ide-session-id session) "kept"))
+       (should (= (claude-code-ide-session-order session) 7))
+       (should (= (claude-code-ide-session-created-at session) 100.0))
+       (should (equal attaches '(("loc" . t))))
+       (should (eq (claude-code-ide--reattach-target "kept") session))
+       (should (= (length attaches) 1))))))
+
+(ert-deftest claude-code-ide-test-local-zmx-reattach-of-gone-session-forgets-row ()
+  "Reattaching a row whose zmx session is gone removes the row and starts nothing.
+A row whose directory is gone keeps the row and starts nothing."
+  (claude-code-ide-tests--with-local-targets
+   (remember-local "gone" "gone-name" 2)
+   (should (string-match-p
+            "no longer exists"
+            (cadr (should-error (claude-code-ide--reattach-target "gone")
+                                :type 'user-error))))
+   (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
+   (claude-code-ide-manager--remember-session
+    (claude-code-ide-session-create
+     :id "moved" :zmx-name "moved" :directory "/nonexistent/cci-moved/" :order 3))
+   (setq listed '("moved"))
+   (should (string-match-p
+            "not accessible"
+            (cadr (should-error (claude-code-ide--reattach-target "moved")
+                                :type 'user-error))))
+   (should (claude-code-ide-manager--item-by-session-key '(:type global) "moved"))
+   (should-not attaches)))
+
+(ert-deftest claude-code-ide-test-local-zmx-attach-adopts-remembered-row ()
+  "Attach by name reuses the local row, never a remote row with that name."
+  (claude-code-ide-tests--with-local-targets
+   (claude-code-ide--materialize-remote-target
+    "remote" "host-a" "loc" "/tmp/shared/" 1 1)
+   (remember-local "kept" "loc" 4)
+   (setq listed '("loc"))
+   (let ((session (claude-code-ide--attach-zmx-entry (list :name "loc") dir "/missing/omp")))
+     (should (equal (claude-code-ide-session-id session) "kept"))
+     (should (eq (claude-code-ide--attach-zmx-entry (list :name "loc") dir "/missing/omp")
+                 session))
+     (should (= (length attaches) 1))
+     (should-not (claude-code-ide--get-session "remote"))
+     (should (= 1 (cl-count-if
+                   (lambda (item)
+                     (and (equal (claude-code-ide-manager-item-zmx-name item) "loc")
+                          (null (claude-code-ide-manager-item-host item))))
+                   (claude-code-ide-manager--all-items)))))))
+
+(ert-deftest claude-code-ide-test-local-zmx-startup-drops-gone-rows-once ()
+  "The first build drops and saves local rows zmx no longer lists, once.
+A missing zmx or a failed list keeps every row."
+  (claude-code-ide-tests--with-local-targets
+   (let ((claude-code-ide-manager--local-rows-checked nil)
+         (claude-code-ide-manager-persist-state t)
+         (claude-code-ide-manager--persisted-state
+          (copy-tree claude-code-ide-manager--empty-persisted-state))
+         (persist--test-store (make-hash-table :test 'eq))
+         (persist--test-defaults (make-hash-table :test 'eq))
+         (zmx-found nil)
+         (keys (lambda ()
+                 (sort (mapcar #'claude-code-ide-manager-item-session-key
+                               (claude-code-ide-manager--build-items '(:type global)))
+                       #'string<))))
+     (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) zmx-found)))
+       (claude-code-ide--materialize-remote-target
+        "remote" "host-a" "gone" "/tmp/shared/" 1 1)
+       (remember-local "keep" "keep" 1)
+       (remember-local "gone" "gone" 2)
+       (setq listed '("keep"))
+       (should (equal (funcall keys) '("gone" "keep" "remote")))
+       (should (= list-calls 0))
+       (setq claude-code-ide-manager--local-rows-checked nil
+             zmx-found "/usr/local/bin/zmx"
+             listed 'fail)
+       (should (equal (funcall keys) '("gone" "keep" "remote")))
+       (setq claude-code-ide-manager--local-rows-checked nil
+             listed '("keep"))
+       (should (equal (funcall keys) '("keep" "remote")))
+       (claude-code-ide-manager--reset-state)
+       (claude-code-ide-manager--load-state)
+       (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
+       (should (claude-code-ide-manager--item-by-session-key '(:type global) "keep"))
+       (setq listed nil)
+       (should (member "keep" (funcall keys)))
+       (should (= list-calls 2))))))
+
+(ert-deftest claude-code-ide-test-local-zmx-stop-and-detach-disconnected-rows ()
+  "Stop kills a disconnected row's zmx session only when confirmed; detach never does.
+Detach removes a live local row that a plain buffer kill would keep."
+  (claude-code-ide-tests--with-local-targets
+   (remember-local "stop" "stop-name" 1)
+   (setq confirmation nil)
+   (claude-code-ide-stop "stop")
+   (should-not kills)
+   (should (claude-code-ide-manager--item-by-session-key '(:type global) "stop"))
+   (setq confirmation t)
+   (with-temp-buffer
+     (claude-code-ide-stop "stop")
+     (should (buffer-live-p (current-buffer))))
+   (should (equal kills '("stop-name")))
+   (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "stop"))
+   (setq listed '("live-name"))
+   (add-local "live" "live-name")
+   (dolist (item (list (remember-local "detach" "detach-name" 2)
+                       (claude-code-ide-manager--item-by-session-key '(:type global) "live")))
+     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                (lambda () item))
+               ((symbol-function 'claude-code-ide-manager--scope-for-command)
+                (lambda () '(:type global))))
+       (claude-code-ide-manager-detach-at-point))
+     (should-not (claude-code-ide-manager--item-by-session-key
+                  '(:type global) (claude-code-ide-manager-item-session-key item))))
+   (should-not (claude-code-ide--get-session "live"))
+   (should (equal kills '("stop-name")))
+   (remember-local "fail" "fail-name" 3)
+   (should (string-match-p "zmx kill failed"
+                           (cadr (should-error (claude-code-ide-stop "fail")))))
+   (should (claude-code-ide-manager--item-by-session-key '(:type global) "fail"))))
 
 (ert-deftest claude-code-ide-test-remote-attach-exits-during-initialization ()
   "An attach client that exits during setup must not report success."
@@ -22250,7 +22529,7 @@ default, so the default must not track the last saved value."
   (claude-code-ide-tests--with-remote-targets
    (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
    (should (claude-code-ide-manager--item-by-session-key "gone"))
-   (claude-code-ide--verify-remembered-remote-target "gone")
+   (claude-code-ide--verify-remembered-target "gone")
    (should (= (length requests) 1))
    (should (equal (caar requests) "host-a"))
    (should (equal (cadar requests) '("list" "--short")))
@@ -22262,7 +22541,7 @@ default, so the default must not track the last saved value."
   "A target the host still lists keeps its disconnected row."
   (claude-code-ide-tests--with-remote-targets
    (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
-   (claude-code-ide--verify-remembered-remote-target "kept")
+   (claude-code-ide--verify-remembered-target "kept")
    (reply "other\nsame\n")
    (claude-code-ide-manager-refresh-items '(:type global))
    (let ((item (claude-code-ide-manager--item-by-session-key "kept")))
@@ -22276,7 +22555,7 @@ default, so the default must not track the last saved value."
      (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
      (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
                 (lambda (&rest _) (ert-fail "An unconfirmed check removed a row"))))
-       (claude-code-ide--verify-remembered-remote-target "kept")
+       (claude-code-ide--verify-remembered-target "kept")
        (reply "" (car outcome) (cadr outcome)))
      (claude-code-ide-manager-refresh-items '(:type global))
      (should (claude-code-ide-manager--item-by-session-key "kept")))))
@@ -22285,7 +22564,7 @@ default, so the default must not track the last saved value."
   "A live Session under the same id cancels the check before any request."
   (claude-code-ide-tests--with-remote-targets
    (add-target "live" "host-a")
-   (claude-code-ide--verify-remembered-remote-target "live")
+   (claude-code-ide--verify-remembered-target "live")
    (should-not requests)
    (should (claude-code-ide--get-session "live"))))
 
@@ -22293,7 +22572,7 @@ default, so the default must not track the last saved value."
   "A reattach that lands during the check keeps its live row."
   (claude-code-ide-tests--with-remote-targets
    (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
-   (claude-code-ide--verify-remembered-remote-target "gone")
+   (claude-code-ide--verify-remembered-target "gone")
    (add-target "gone" "host-a")
    (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
               (lambda (&rest _) (ert-fail "The check removed a reattached row"))))
@@ -22574,7 +22853,7 @@ with no shell expansion, substitution, or globbing."
                 (lambda (&rest _)
                   (cl-incf starts)
                   (ert-fail "An unsafe remembered directory reached attachment"))))
-       (should-error (claude-code-ide--reattach-remote-session "unsafe")
+       (should-error (claude-code-ide--reattach-session "unsafe")
                      :type 'user-error))
      (should (zerop starts)))))
 
@@ -23917,7 +24196,7 @@ result arrives never has that result applied to the row now at its key."
                   claude-code-ide--sessions)
          (claude-code-ide--cleanup-on-exit "stable")
          (setq fail-start 'enqueue)
-         (claude-code-ide--reattach-remote-session "stable")
+         (claude-code-ide--reattach-session "stable")
          (let ((replacement (claude-code-ide--get-session "stable")))
            (should (not (eq first replacement)))
            (should (process-live-p (claude-code-ide-session-process replacement)))

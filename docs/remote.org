@@ -362,7 +362,8 @@ The manager uses these remote lifecycle keys:
 | =? C= | Cancel the pending Project-view attempt. |
 | =? m= | Refresh cached Git metadata for one Configured host. |
 
-Selecting or refreshing a disconnected row never contacts its host.
+Refreshing a disconnected row never contacts its host.
+Selecting one reattaches it when =claude-code-ide-manager-auto-reattach= is non-nil, the default.
 Startup and layout restoration never reconnect automatically.
 A successful reattach keeps the Session ID, title, order, pin state, and saved layout.
 

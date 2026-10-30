@@ -55,7 +55,8 @@
 (declare-function claude-code-ide-attach "claude-code-ide" (&optional host))
 (declare-function claude-code-ide-attach-select "claude-code-ide" (&optional host))
 (declare-function claude-code-ide-stop "claude-code-ide" (&optional session-id))
-(declare-function claude-code-ide--reattach-remote-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide--reattach-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide--reattach-target "claude-code-ide" (session-id))
 (declare-function claude-code-ide--project-key "claude-code-ide" (directory &optional host))
 (declare-function claude-code-ide-session-idle-clear-state "claude-code-ide-session-idle" (&optional acknowledged))
 (declare-function claude-code-ide-session-idle-disable "claude-code-ide-session-idle" ())
@@ -335,6 +336,17 @@ rows of the same editor."
 
 (defcustom claude-code-ide-manager-sort-reverse nil
   "Whether to reverse sorting after pin and manual-order precedence."
+  :type 'boolean
+  :group 'claude-code-ide-manager)
+
+(defcustom claude-code-ide-manager-auto-reattach t
+  "Whether selecting a disconnected Session reattaches it.
+This covers local and remote zmx-backed rows.  A remote reattach first
+asks the host for the zmx session, so an unreachable host blocks the
+selection up to the thirty-second control deadline
+\(\\[keyboard-quit] cancels).  A row without a remembered Agent type
+prompts for one.  When nil, selection reports the disconnected target
+and \\`c' reattaches it explicitly."
   :type 'boolean
   :group 'claude-code-ide-manager)
 
@@ -2061,8 +2073,43 @@ Return non-nil when any key was cleared."
        :live-p t))))
 
 
+(defvar claude-code-ide-manager--local-rows-checked nil
+  "Non-nil after this Emacs instance checked remembered local rows.
+The first global build lists local zmx sessions once and drops rows
+whose session is gone; see `claude-code-ide-manager--build-items'.")
+
+(defun claude-code-ide-manager--drop-gone-local-rows (remembered)
+  "Return REMEMBERED without local rows whose zmx session is gone.
+List local zmx sessions once per Emacs instance, and save the state
+after a drop.  A missing zmx or a failed list keeps every row and
+reports nothing.  Remote rows are never checked here."
+  (if (or claude-code-ide-manager--local-rows-checked
+          (not (cl-find-if-not #'claude-code-ide-manager-item-host remembered)))
+      remembered
+    (setq claude-code-ide-manager--local-rows-checked t)
+    (let* ((names (and (executable-find claude-code-ide-zmx-program)
+                       (ignore-errors
+                         (cons 'listed (claude-code-ide-zmx-session-names)))))
+           (gone (and names
+                      (cl-remove-if
+                       (lambda (item)
+                         (or (claude-code-ide-manager-item-host item)
+                             (member (claude-code-ide-manager-item-zmx-name item)
+                                     (cdr names))))
+                       remembered))))
+      (when gone
+        (dolist (item gone)
+          (remhash (claude-code-ide-manager-item-session-key item)
+                   claude-code-ide-manager--layouts))
+        (claude-code-ide-manager--set-scope-items
+         '(:type global)
+         (cl-remove-if (lambda (item) (memq item gone))
+                       (claude-code-ide-manager--scope-items '(:type global))))
+        (claude-code-ide-manager--save-state))
+      (cl-remove-if (lambda (item) (memq item gone)) remembered))))
+
 (defun claude-code-ide-manager--build-items (scope)
-  "Merge live items with remembered remote targets in SCOPE."
+  "Merge live items with remembered zmx-backed targets in SCOPE."
   (let ((live (mapcar (lambda (session)
                         (claude-code-ide-manager--make-item scope session))
                       (claude-code-ide-manager--scope-sessions
@@ -2070,17 +2117,18 @@ Return non-nil when any key was cleared."
         remembered)
     (when (eq (plist-get scope :type) 'global)
       (dolist (item (claude-code-ide-manager--scope-items scope))
-        (when (and (claude-code-ide-manager-item-host item)
+        (when (and (claude-code-ide-manager-item-zmx-name item)
                    (not (cl-find (claude-code-ide-manager-item-session-key item) live
                                  :key #'claude-code-ide-manager-item-session-key
                                  :test #'equal)))
           (setf (claude-code-ide-manager-item-live-p item) nil)
-          (push item remembered))))
+          (push item remembered)))
+      (setq remembered (claude-code-ide-manager--drop-gone-local-rows remembered)))
     (append live (nreverse remembered))))
 
-(defun claude-code-ide-manager--remember-remote-session (session)
-  "Remember SESSION as disconnected without refresh or network requests."
-  (when (claude-code-ide-session-host session)
+(defun claude-code-ide-manager--remember-session (session)
+  "Remember zmx-backed SESSION as disconnected without refresh or network requests."
+  (when (claude-code-ide-session-zmx-name session)
     (let* ((scope '(:type global))
            (session-id (claude-code-ide-session-id session))
            (item (claude-code-ide-manager--make-item scope session)))
@@ -2661,7 +2709,7 @@ This mirrors mouse hover text for keyboard navigation in the manager."
         name
         (format "%s" (claude-code-ide-manager-item-order item))
         nil))
-     (when (and (claude-code-ide-manager-item-host item)
+     (when (and (claude-code-ide-manager-item-zmx-name item)
                 (not (claude-code-ide-manager-item-live-p item)))
        " [disconnected]"))))
 
@@ -3136,7 +3184,7 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
                       (claude-code-ide-manager--session-help-echo
                        session-key (claude-code-ide-manager-item-secondary-text item))))
                    (details (if zmx-name (format "%s (%s)" base zmx-name) base))
-                   (text (if (and host
+                   (text (if (and zmx-name
                                   (not (claude-code-ide-manager-item-live-p item)))
                              (format "%s. Session is disconnected. Press c to reattach." details)
                            details)))
@@ -3711,15 +3759,18 @@ BASELINE and ORDERED contain Session IDs. GROUPS maps each ID to its group."
       (claude-code-ide-manager--render scope))))
 
 (defun claude-code-ide-manager-session-ended (session-key &optional forget)
-  "Retain a disconnected remote SESSION-KEY, or remove an ended local row.
-With FORGET, remove the remote row after verified Stop or explicit detach.
-Released shells remain ordinary terminals."
+  "Retain a disconnected zmx-backed SESSION-KEY, or remove an ended plain row.
+With FORGET, remove the zmx-backed row after Stop, detach, or a confirmed
+absence of its zmx session.  Released shells remain ordinary terminals."
   (when (featurep 'claude-code-ide-remote-project)
     (claude-code-ide-remote-project-invalidate
      session-key nil
      (if forget 'detach 'session-ended)))
   (let ((retain (and (not forget)
-                     (claude-code-ide-manager--session-host session-key))))
+                     (if-let* ((session (claude-code-ide-manager--session-record session-key)))
+                         (claude-code-ide-session-zmx-name session)
+                       (when-let* ((item (claude-code-ide-manager--item-by-session-key session-key)))
+                         (claude-code-ide-manager-item-zmx-name item))))))
     (when-let* ((item (and retain
                            (claude-code-ide-manager--item-by-session-key session-key))))
       (setf (claude-code-ide-manager-item-live-p item) nil))
@@ -4070,12 +4121,13 @@ A project without worktrees (a plain directory) is the target itself."
                                    (if (> step 0) 0 (1- (length groups))))
                                  groups)))
                (key (claude-code-ide-manager-item-session-key target)))
-          (if-let* ((host (claude-code-ide-manager-item-host target))
-                    ((not (buffer-live-p (claude-code-ide-manager--session-buffer key)))))
-              (progn
+          (if (and (claude-code-ide-manager-item-zmx-name target)
+                   (not (buffer-live-p (claude-code-ide-manager--session-buffer key))))
+              (let ((host (claude-code-ide-manager-item-host target)))
                 (claude-code-ide-manager--sync-point-to-session-key scope key)
                 (claude-code-ide-manager--save-state)
-                (message "Session on %s is disconnected. Press c to reattach." host))
+                (message "Session%s is disconnected. Press c to reattach."
+                         (if host (format " on %s" host) "")))
             (claude-code-ide-manager-switch-to-session key t scope)))))))
 
 (defun claude-code-ide-manager-next-project-group ()
@@ -5173,12 +5225,20 @@ A replay uses FRAME's current request.  Adopt a shell only after display."
   (if (or (member session-key (claude-code-ide-manager--live-session-keys))
           (buffer-live-p (claude-code-ide-manager--session-buffer session-key)))
       t
-    (if-let* ((host (claude-code-ide-manager--session-host session-key)))
-        (if (member host claude-code-ide-remote-hosts)
-            (user-error "Remote target on %s is disconnected. Press c to reattach" host)
-          (user-error "Host %s is disconnected. Restore it in `claude-code-ide-remote-hosts' before reattach" host))
-      (claude-code-ide-manager-refresh)
-      nil)))
+    (let* ((item (claude-code-ide-manager--item-by-session-key session-key))
+           (host (and item (claude-code-ide-manager-item-host item))))
+      (cond
+       ((not (and item (claude-code-ide-manager-item-zmx-name item)))
+        (claude-code-ide-manager-refresh)
+        nil)
+       ((and host (not (member host claude-code-ide-remote-hosts)))
+        (user-error "Host %s is disconnected. Restore it in `claude-code-ide-remote-hosts' before reattach" host))
+       (claude-code-ide-manager-auto-reattach
+        (and (claude-code-ide--reattach-target session-key) t))
+       (host
+        (user-error "Remote target on %s is disconnected. Press c to reattach" host))
+       (t
+        (user-error "Session is disconnected. Press c to reattach"))))))
 
 (defun claude-code-ide-manager--reset-session-idle-state (session-key)
   "Clear idle state and acknowledge results for SESSION-KEY.
@@ -5421,13 +5481,13 @@ returns after the switch or a quit.  With the focused view off, run
      t)))
 
 (defun claude-code-ide-manager-reattach-at-point ()
-  "Explicitly reattach the selected remembered remote target."
+  "Explicitly reattach the selected remembered zmx target."
   (interactive)
   (let ((item (or (claude-code-ide-manager--item-at-point)
                   (user-error "No manager session at point"))))
-    (unless (claude-code-ide-manager-item-host item)
-      (user-error "Use the attach commands for local zmx sessions"))
-    (claude-code-ide--reattach-remote-session
+    (unless (claude-code-ide-manager-item-zmx-name item)
+      (user-error "Session is not zmx-backed"))
+    (claude-code-ide--reattach-session
      (claude-code-ide-manager-item-session-key item))))
 
 (defun claude-code-ide-manager-stop-at-point ()
@@ -5488,8 +5548,8 @@ returns after the switch or a quit.  With the focused view off, run
 
 (defun claude-code-ide-manager-detach-at-point ()
   "Detach the zmx-backed session at point and remove its manager row.
-Remove disconnected remote rows without contacting the host.
-Leave the remote zmx session and its agent process unchanged."
+Remove disconnected rows without contacting zmx or the host.
+Leave the zmx session and its agent process unchanged."
   (interactive)
   (let* ((item
           (or
@@ -5523,7 +5583,7 @@ Leave the remote zmx session and its agent process unchanged."
             (nth (1+ index) keys)
             (nth (1- index) keys))))
          cleanup-snapshot)
-    (unless (or session host)
+    (unless (or session (claude-code-ide-manager-item-zmx-name item))
       (user-error "Session no longer exists"))
     (when-let* ((pending
                  (and
@@ -5548,18 +5608,14 @@ Leave the remote zmx session and its agent process unchanged."
     (cond
      ((buffer-live-p buffer)
       (kill-buffer buffer))
-     (host
-      (when session
-        (claude-code-ide--cleanup-on-exit session-key)))
-     (t
-      (user-error "Session buffer no longer exists")))
+     (session
+      (claude-code-ide--cleanup-on-exit session-key)))
     (when (buffer-live-p buffer)
       (user-error "Detach did not close the Session buffer"))
     (when cleanup-snapshot
       (claude-code-ide-remote-project-cleanup
        cleanup-snapshot))
-    (when host
-      (claude-code-ide-manager-session-ended session-key t))
+    (claude-code-ide-manager-session-ended session-key t)
     (when
         (member
          survivor

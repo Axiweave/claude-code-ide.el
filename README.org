@@ -227,6 +227,7 @@ How it works:
 - When cc-manager is hidden, reattachment from Start keeps it hidden and preserves the editor windows. The terminal opens in the configured side window. When cc-manager is visible, reattachment uses its managed layout.
 - =M-x claude-code-ide-attach= lists all zmx sessions, including ones started outside Emacs, and adopts the selection into a full session with idle tracking and manager visibility.
 - Killing the terminal buffer detaches only. Closing its window only hides the terminal. =M-x claude-code-ide-stop= asks before it kills the zmx session. That stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
+- When the attach client ends, the manager keeps the row as =[disconnected]= with the same Session ID, name, order, and pin. Select the row or press =c= to reattach. =M-x claude-code-ide-attach= on that zmx session also reuses the row. A row whose zmx session is gone disappears, and the first manager build after an Emacs restart removes such rows.
 
 Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, or after an Emacs restart, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected. Exception: Oh My Pi rediscovers the Emacs SSE endpoint and reconnects on its own, so selection sync and session state resume after an Emacs restart.
 
@@ -262,7 +263,7 @@ Use =C-u M-x claude-code-ide-attach-all= for bulk attachment. Use =C-u M-x claud
 
 Remote rows appear only in the global manager. Flat labels retain =[HOST] PROJECT= after rename. Grouped headings retain the host and project. Matching paths and zmx names on different hosts remain separate targets.
 
-Selecting a connected row opens its terminal. Selecting a disconnected row does not contact its host. Press =c= to reattach explicitly with the same Session ID. Refresh, startup, and restored layouts never reconnect automatically.
+Selecting a connected row opens its terminal. Selecting a disconnected row reattaches it with the same Session ID when =claude-code-ide-manager-auto-reattach= is non-nil, the default. Otherwise press =c= to reattach explicitly. Refresh, startup, and restored layouts never reconnect automatically.
 
 A remote Attach process can end because the Agent exited or because the link dropped.
 When an Attach process ends, Emacs asks the host once with =zmx list --short=.
@@ -560,7 +561,7 @@ With =lane=, a repository without a =.lane/= store gets a bare one, created sile
 
 *** What The Sidebar Shows
 
-The sidebar shows live Sessions. The global manager also retains disconnected remote rows.
+The sidebar shows live Sessions. The global manager also retains disconnected zmx-backed rows, local and remote.
 
 - Flat global rows show the project basename
 - Grouped global rows show a branch or directory label below a host-qualified project heading
@@ -598,8 +599,8 @@ Rows use cached branch names, with directory names when no branch is available.
 Custom names appear after that label.
 
 =C-j= and =C-k= choose the first row of the next or previous project group and wrap at the end.
-Selecting a disconnected row does not connect or change the active Session.
-Press =c= to reattach explicitly.
+Selecting a disconnected row reattaches it when =claude-code-ide-manager-auto-reattach= is non-nil.
+Otherwise press =c= to reattach explicitly.
 
 Grouped moves and editor Apply reorder only positions already occupied by the affected group in the flat sequence.
 For example, moving =A2= above =A1= changes =A1 B1 A2 B2= to =A2 B1 A1 B2=.
@@ -707,7 +708,7 @@ When point is in the manager buffer:
 - =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
 - =W= opens the [[*Remote Worktree Management][Remote Worktree menu]] for a Configured host
 - =D= or =X= detaches the selected zmx-backed session and removes its row without stopping the agent, even when disconnected
-- =c= explicitly reattaches the selected disconnected remote target
+- =c= explicitly reattaches the selected disconnected zmx-backed row, local or remote
 - =K= confirms Stop for the exact selected target
 - =R= resets the selected session to the configured layout preset, replacing a missing or exited companion shell
 - =M-p= moves the selected row up within its current pinned or unpinned group
@@ -734,7 +735,7 @@ Row moves never cross a pin boundary.
 Press =E= in the sidebar or main transient to open the pin-order editor. You can also run =M-x claude-code-ide-manager-edit-pin-order=.
 
 The flat and repo-local editors list Sessions that were live when the editor opened.
-The grouped global editor also includes disconnected remote rows.
+The grouped global editor also includes disconnected zmx-backed rows.
 Each Session has one numbered row.
 
 - =M-p= moves the current row up and renumbers all rows
@@ -791,7 +792,7 @@ When persistence is enabled, the manager remembers:
 - flat or grouped global view
 - cached project identity and branch metadata
 
-After restart, remembered remote rows start disconnected. Their labels, pinning, ordering, selection, and saved layouts remain local metadata. Press =c= to reattach. A removed host stays visible in history, but Emacs requires current host configuration before remote access.
+After restart, remembered zmx-backed rows start disconnected. Their labels, pinning, ordering, selection, and saved layouts remain local metadata. Press =c= to reattach. The first manager build lists local zmx sessions once and removes local rows whose session is gone. A failed list keeps every row. A removed host stays visible in history, but Emacs requires current host configuration before remote access.
 
 With persistence disabled, disconnected rows remain available during the current Emacs session. A later Emacs session does not restore them. Each computer has independent history. Another Emacs can discover the same remote Agent without access to this history.
 

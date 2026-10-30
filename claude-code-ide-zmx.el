@@ -718,6 +718,12 @@ Older zmx builds that print bare names yield name-only plists."
                              (list :name name)))))
                 (split-string (claude-code-ide-zmx--call "list") "\n" t))))
 
+(defun claude-code-ide-zmx-session-names ()
+  "Return the names of active local zmx sessions.
+Signal an error when zmx is missing or its list fails."
+  (mapcar (lambda (entry) (plist-get entry :name))
+          (claude-code-ide-zmx-list-sessions)))
+
 (defun claude-code-ide-zmx-session-pid (name)
   "Return the agent pid of zmx session NAME as an integer, or nil.
 The pid is the direct child of the zmx server, which is the agent

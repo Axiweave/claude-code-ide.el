@@ -102,6 +102,8 @@ keep running.
 ### Disconnected session
 A Session whose connection to its zmx session has ended.
 This does not establish whether the Agent has stopped or still runs.
+The manager keeps its row, local or remote, until its zmx session is
+confirmed gone, a Stop succeeds, or the user detaches it.
 
 ### Adoption
 Creating a Session for a zmx session that was launched outside Emacs,
