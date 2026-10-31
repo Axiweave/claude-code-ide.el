@@ -2121,8 +2121,11 @@ mode re-inserts the remote project line's indentation without properties."
       (should-not direct-started)
       (should-not worktree-started))))
 
-(ert-deftest claude-code-ide-test-manager-mode-binds-d-and-x-to-detach ()
-  "Manager mode exposes zmx detach on `D' and `X'."
+(ert-deftest claude-code-ide-test-manager-mode-binds-disconnect-and-detach ()
+  "Manager mode exposes Disconnect on `d' and zmx detach on `D' and `X'."
+  (should
+   (eq (lookup-key claude-code-ide-manager-mode-map (kbd "d"))
+       #'claude-code-ide-manager-disconnect-at-point))
   (dolist (key '("D" "X"))
     (should
      (eq (lookup-key claude-code-ide-manager-mode-map (kbd key))
@@ -11256,6 +11259,7 @@ switch keeps the filter, and no process starts."
                      ("s" . claude-code-ide-manager-start-session-at-point)
                      ("S" . claude-code-ide-manager-start-session-at-point-skip-permissions)
                      ("o" . claude-code-ide-manager-open)
+                     ("d" . claude-code-ide-manager-disconnect-at-point)
                      ("X" . claude-code-ide-manager-detach-at-point)
                      ("A" . claude-code-ide-attach-select)
                      ("r" . claude-code-ide-manager-rename-at-point)
@@ -22469,6 +22473,253 @@ Detach removes a live local row that a plain buffer kill would keep."
                            (cadr (should-error (claude-code-ide-stop "fail")))))
    (should (claude-code-ide-manager--item-by-session-key '(:type global) "fail"))))
 
+(ert-deftest claude-code-ide-test-disconnect-keeps-local-row ()
+  "Disconnect closes a local client, keeps its row and zmx session, and keeps point.
+The window falls back to another buffer and no other Session becomes active."
+  (claude-code-ide-tests--with-local-targets
+   (let ((scope '(:type global))
+         (identity (lambda (item)
+                     (list (claude-code-ide-manager-item-order item)
+                           (claude-code-ide-manager-item-order-key item)
+                           (claude-code-ide-manager-item-directory item)
+                           (claude-code-ide-manager-item-host item)
+                           (claude-code-ide-manager-item-created-at item)
+                           (claude-code-ide-manager-item-group-metadata item))))
+         messages before)
+     (setq listed '("loc-name"))
+     (add-local "loc" "loc-name")
+     (let ((item (claude-code-ide-manager--item-by-session-key scope "loc"))
+           (buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "loc"))))
+       (setf (claude-code-ide-manager-item-custom-name item) "Mine"
+             (claude-code-ide-manager-item-pinned item) t)
+       (puthash "loc" '(:saved-layout t) claude-code-ide-manager--layouts)
+       (claude-code-ide-manager--set-scope-active-session-key scope "loc")
+       (setq before (funcall identity item))
+       (with-current-buffer buffer
+         (setq-local claude-code-ide-session-idle-enabled t)
+         (setq-local claude-code-ide-session-working-p t)
+         (setq-local claude-code-ide-session-agent-state 'working))
+       (should (claude-code-ide-manager--session-working-p "loc"))
+       (save-window-excursion
+         (set-window-buffer (selected-window) buffer)
+         (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                    (lambda () item))
+                   ((symbol-function 'claude-code-ide-manager--scope-for-command)
+                    (lambda () scope))
+                   ((symbol-function 'message)
+                    (lambda (format &rest args)
+                      (push (apply #'format-message format args) messages))))
+           (claude-code-ide-manager-disconnect-at-point))
+         (should-not (buffer-live-p buffer))
+         (should (buffer-live-p (window-buffer (selected-window)))))
+       (should-not (claude-code-ide--get-session "loc"))
+       (should-not (claude-code-ide-manager--session-buffer "loc"))
+       (should-not (claude-code-ide-manager--session-working-p "loc"))
+       (should-not (claude-code-ide-manager--session-idle-p "loc"))
+       (should-not (claude-code-ide-manager--session-agent-state "loc"))
+       (let ((kept (claude-code-ide-manager--item-by-session-key scope "loc")))
+         (should kept)
+         (should-not (claude-code-ide-manager-item-live-p kept))
+         (should (equal (claude-code-ide-manager-item-custom-name kept) "Mine"))
+         (should (claude-code-ide-manager-item-pinned kept))
+         (should (equal (claude-code-ide-manager-item-zmx-name kept) "loc-name"))
+         (should (eq (claude-code-ide-manager-item-cli-type kept) 'omp))
+         (should (equal (funcall identity kept) before)))
+       (should (gethash "loc" claude-code-ide-manager--layouts))
+       (should-not kills)
+       (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "loc"))
+       (should-not (claude-code-ide-manager--scope-active-session-key scope))
+       (should (member "Disconnected zmx session loc-name. Press c to reattach"
+                       messages))))))
+
+(ert-deftest claude-code-ide-test-disconnect-closes-terminal-windows-like-buffer-kill ()
+  "Disconnect closes a split window and a side window that show the terminal.
+The other window stays live.  A sole main window stays and shows another live buffer."
+  (claude-code-ide-tests--with-local-targets
+   (setq listed '("win-name" "solo-name"))
+   (add-local "win" "win-name")
+   (add-local "solo" "solo-name")
+   (cl-flet ((terminal (id)
+               (let ((buffer (claude-code-ide-session-buffer
+                              (claude-code-ide--get-session id))))
+                 (with-current-buffer buffer
+                   (setq major-mode 'ghostel-mode))
+                 buffer)))
+     (cl-letf (((symbol-function 'message) #'ignore))
+       (save-window-excursion
+         (delete-other-windows)
+         (let* ((kept (selected-window))
+                (other (window-buffer kept))
+                (buffer (terminal "win"))
+                (split (split-window kept))
+                (side (display-buffer-in-side-window buffer '((side . right)))))
+           (set-window-buffer split buffer)
+           (should (window-live-p side))
+           (claude-code-ide-disconnect "win")
+           (should-not (buffer-live-p buffer))
+           (should-not (window-live-p split))
+           (should-not (window-live-p side))
+           (should (window-live-p kept))
+           (should (eq (window-buffer kept) other))))
+       (save-window-excursion
+         (delete-other-windows)
+         (let ((buffer (terminal "solo")))
+           (set-window-buffer (selected-window) buffer)
+           (claude-code-ide-disconnect "solo")
+           (should-not (buffer-live-p buffer))
+           (should (buffer-live-p (window-buffer (selected-window))))))))))
+
+(ert-deftest claude-code-ide-test-disconnect-changes-only-target-liveness ()
+  "Across generated manager states, Disconnect changes only the target row's liveness.
+Each trial has 0 to 4 other rows with mixed zmx backing, names, pins, and positions.
+Positions are a random permutation, because every real Session gets its own order."
+  (let ((seed "disconnect-020") (scope '(:type global)))
+    (random seed)
+    (dotimes (trial 25)
+      (let* ((others (mod trial 5))
+             (target (random (1+ others)))
+             (pool (number-sequence 1 (1+ others)))
+             (rows (cl-loop for index from 0 to others
+                            for order = (nth (random (length pool)) pool)
+                            do (setq pool (delete order pool))
+                            collect (list (format "row-%d" index)
+                                          (and (or (= index target) (zerop (random 2)))
+                                               (format "row-%d-name" index))
+                                          (and (zerop (random 2)) (format "Name %d" index))
+                                          (zerop (random 2))
+                                          order))))
+        (ert-info ((format "seed %S trial %d target %d rows %S" seed trial target rows))
+          (claude-code-ide-tests--with-local-targets
+           (cl-flet ((snapshot ()
+                       (mapcar (lambda (item)
+                                 (list (claude-code-ide-manager-item-session-key item)
+                                       (claude-code-ide-manager-item-live-p item)
+                                       (claude-code-ide-manager-item-custom-name item)
+                                       (claude-code-ide-manager-item-pinned item)
+                                       (claude-code-ide-manager-item-order item)
+                                       (claude-code-ide-manager-item-order-key item)
+                                       (claude-code-ide-manager-item-directory item)
+                                       (claude-code-ide-manager-item-host item)
+                                       (claude-code-ide-manager-item-created-at item)
+                                       (claude-code-ide-manager-item-zmx-name item)
+                                       (claude-code-ide-manager-item-group-metadata item)))
+                               (claude-code-ide-manager--sorted-items
+                                (claude-code-ide-manager--scope-items scope) nil scope))))
+             (setq listed (delq nil (mapcar #'cadr rows)))
+             (pcase-dolist (`(,id ,name . ,_) rows)
+               (add-local id name))
+             (pcase-dolist (`(,id ,_ ,custom-name ,pinned ,order) rows)
+               (let ((session (claude-code-ide--get-session id))
+                     (item (claude-code-ide-manager--item-by-session-key scope id)))
+                 (setf (claude-code-ide-session-order session) order
+                       (claude-code-ide-session-created-at session) (+ 100.0 order)
+                       (claude-code-ide-manager-item-custom-name item) custom-name
+                       (claude-code-ide-manager-item-pinned item) pinned)))
+             (claude-code-ide-manager-refresh-items scope t)
+             (let* ((id (car (nth target rows)))
+                    (expected (mapcar (lambda (row)
+                                        (if (equal (car row) id)
+                                            (cons id (cons nil (cddr row)))
+                                          row))
+                                      (snapshot))))
+               (cl-letf (((symbol-function 'message) #'ignore))
+                 (claude-code-ide-disconnect id))
+               (should (equal (snapshot) expected))
+               (should-not kills)))))))))
+
+(ert-deftest claude-code-ide-test-disconnect-current-buffer ()
+  "`claude-code-ide-disconnect' without an ID acts on the Session of the current buffer."
+  (claude-code-ide-tests--with-local-targets
+   (setq listed '("cur-name"))
+   (add-local "cur" "cur-name")
+   (with-current-buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "cur"))
+     (cl-letf (((symbol-function 'message) #'ignore))
+       (claude-code-ide-disconnect)))
+   (should-not (claude-code-ide--get-session "cur"))
+   (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) "cur")))
+     (should item)
+     (should-not (claude-code-ide-manager-item-live-p item)))
+   (should-not kills)))
+
+(ert-deftest claude-code-ide-test-disconnect-keeps-remote-row-without-requests ()
+  "Disconnect keeps a remote row under its host and sends nothing to the host."
+  (claude-code-ide-tests--with-remote-targets
+   (let (messages)
+     (add-target "rem" "host-a")
+     (claude-code-ide-manager-refresh-items '(:type global) t)
+     (cl-letf (((symbol-function 'message)
+                (lambda (format &rest args)
+                  (push (apply #'format-message format args) messages))))
+       (claude-code-ide-disconnect "rem"))
+     (should-not (claude-code-ide--get-session "rem"))
+     (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) "rem")))
+       (should item)
+       (should-not (claude-code-ide-manager-item-live-p item))
+       (should (equal (claude-code-ide-manager-item-host item) "host-a")))
+     (should-not requests)
+     (should (member "Disconnected zmx session same on host-a. Press c to reattach"
+                     messages)))))
+
+(ert-deftest claude-code-ide-test-disconnect-row-reattaches-after-restart ()
+  "A row from Disconnect survives a state reload and reattaches under its own identity."
+  (claude-code-ide-tests--with-local-targets
+   (let ((claude-code-ide-manager-persist-state t)
+         (claude-code-ide-manager--persisted-state
+          (copy-tree claude-code-ide-manager--empty-persisted-state))
+         (persist--test-store (make-hash-table :test 'eq))
+         (persist--test-defaults (make-hash-table :test 'eq)))
+     (setq listed '("back-name"))
+     (add-local "back" "back-name")
+     (cl-letf (((symbol-function 'message) #'ignore))
+       (claude-code-ide-disconnect "back"))
+     (claude-code-ide-manager--save-state)
+     (claude-code-ide-manager--reset-state)
+     (claude-code-ide-manager--load-state)
+     (let ((session (claude-code-ide--reattach-target "back")))
+       (should (equal (claude-code-ide-session-id session) "back"))
+       (should (equal attaches '(("back-name" . t)))))
+     (should-not kills))))
+
+(ert-deftest claude-code-ide-test-disconnect-refusals-change-nothing ()
+  "Each refused Disconnect signals a user error and leaves Sessions, buffers, and rows alone."
+  (claude-code-ide-tests--with-local-targets
+   (cl-flet ((refused (regexp thunk)
+               (should (string-match-p
+                        regexp
+                        (cadr (should-error (funcall thunk) :type 'user-error))))))
+     (setq listed '("live-name"))
+     (add-local "plain" nil)
+     (let ((buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "plain"))))
+       (refused "not zmx-backed" (lambda () (claude-code-ide-disconnect "plain")))
+       (should (buffer-live-p buffer))
+       (should (claude-code-ide--get-session "plain")))
+     (remember-local "gone" "gone-name" 2)
+     (refused "already disconnected" (lambda () (claude-code-ide-disconnect "gone")))
+     (should (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
+     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point) #'ignore))
+       (refused "No manager session at point"
+                #'claude-code-ide-manager-disconnect-at-point))
+     (with-temp-buffer
+       (refused "No Session in the current buffer" #'claude-code-ide-disconnect))
+     (add-target "busy" "host-a")
+     (cl-letf (((symbol-function 'claude-code-ide--remote-target-pending-reason)
+                (lambda (_session-id) "an attach request")))
+       (refused "Cannot disconnect same on host-a\\. an attach request is already in progress"
+                (lambda () (claude-code-ide-disconnect "busy"))))
+     (should (buffer-live-p (claude-code-ide-session-buffer
+                             (claude-code-ide--get-session "busy"))))
+     (add-local "stuck" "live-name")
+     (let ((buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "stuck"))))
+       (with-current-buffer buffer
+         (add-hook 'kill-buffer-query-functions #'ignore nil t))
+       (refused "did not close the Session buffer"
+                (lambda () (claude-code-ide-disconnect "stuck")))
+       (should (buffer-live-p buffer))
+       (should (claude-code-ide--get-session "stuck"))
+       (with-current-buffer buffer
+         (kill-local-variable 'kill-buffer-query-functions)))
+     (should-not kills))))
+
 (ert-deftest claude-code-ide-test-remote-attach-exits-during-initialization ()
   "An attach client that exits during setup must not report success."
   (claude-code-ide-tests--with-remote-targets
@@ -27054,6 +27305,41 @@ result arrives never has that result applied to the row now at its key."
          (list terminal new-terminal view-buffer))
 
         (claude-code-ide-remote-project--reset-state)))))
+(ert-deftest claude-code-ide-test-disconnect-keeps-owned-project-view ()
+  "Disconnect never closes an owned Project view, even on a cleanup host."
+  (claude-code-ide-tests--with-remote-targets
+   (claude-code-ide-remote-project--reset-state)
+   (let* ((session (add-target "rem" "host-a"))
+          (terminal (claude-code-ide-session-buffer session))
+          (view-buffer (generate-new-buffer " *disconnect-view*"))
+          (key (claude-code-ide-tests--remote-view-key "host-a" 'git "/work"))
+          (intent (claude-code-ide-remote-project--intent-for "rem" "host-a" terminal))
+          (claude-code-ide-remote-project-cleanup-hosts '("host-a")))
+     (unwind-protect
+         (progn
+           (with-current-buffer view-buffer
+             (setq major-mode 'dired-mode
+                   default-directory "/work/")
+             (set-buffer-modified-p nil)
+             (add-hook 'kill-buffer-hook #'claude-code-ide-remote-project--view-killed nil t))
+           (setf (claude-code-ide-remote-project--intent-view-key intent) key
+                 (claude-code-ide-remote-project--intent-view-buffer intent) view-buffer)
+           (puthash key
+                    (claude-code-ide-remote-project--make-view
+                     :key key :buffer view-buffer :origin 'created-by-feature
+                     :creator 'dired :sessions '("rem"))
+                    claude-code-ide-remote-project--views)
+           (claude-code-ide-manager-refresh-items '(:type global) t)
+           (cl-letf (((symbol-function 'message) #'ignore))
+             (claude-code-ide-disconnect "rem"))
+           (should-not (claude-code-ide--get-session "rem"))
+           (should (buffer-live-p view-buffer)))
+       (when (buffer-live-p view-buffer)
+         (with-current-buffer view-buffer
+           (kill-local-variable 'kill-buffer-hook))
+         (kill-buffer view-buffer))
+       (claude-code-ide-remote-project--reset-state)))))
+
 (ert-deftest claude-code-ide-test-remote-project-cleanup-follows-explicit-detach ()
   "Explicit detach captures ownership first and cleans before forgetting."
   (let ((item

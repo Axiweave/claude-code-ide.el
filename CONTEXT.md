@@ -99,6 +99,12 @@ existing zmx session. The agent process does not restart.
 Closing an attach client while the zmx session and its agent process
 keep running.
 
+### Disconnect
+An explicit Detach that keeps the row as a Disconnected session, exactly
+like a terminal buffer kill. It refuses a Session without a zmx session,
+because closing that client ends the Agent. Unlike Detach from the
+manager (`D`/`X`), it neither removes the row nor cleans Project views.
+
 ### Disconnected session
 A Session whose connection to its zmx session has ended.
 This does not establish whether the Agent has stopped or still runs.

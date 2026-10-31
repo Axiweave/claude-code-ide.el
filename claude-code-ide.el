@@ -2423,6 +2423,44 @@ retains the row and is never retried."
              (claude-code-ide-log "%s" (plist-get outcome :error))))
          request-name))))))
 
+;;;###autoload
+(defun claude-code-ide-disconnect (&optional session-id)
+  "Close the terminal client of zmx-backed SESSION-ID and keep its row.
+Without SESSION-ID, use the Session that owns the current buffer.  The
+Agent and its zmx session keep running, and the manager keeps the row
+as disconnected, exactly as a terminal buffer kill does.  Refuse a
+Session that zmx does not back, because closing it ends its Agent.
+Unlike detach, keep the row and leave Project views alone."
+  (interactive)
+  (let* ((session
+          (if session-id
+              (claude-code-ide--get-session session-id)
+            (or (claude-code-ide--session-for-buffer)
+                (user-error "No Session in the current buffer"))))
+         (session-id (or session-id (claude-code-ide-session-id session))))
+    (unless session
+      (if (claude-code-ide-manager--item-by-session-key session-id)
+          (user-error "Session is already disconnected. Press c to reattach")
+        (user-error "No session with ID %s" session-id)))
+    (let ((buffer (claude-code-ide-session-buffer session))
+          (zmx-name (claude-code-ide-session-zmx-name session))
+          (host (claude-code-ide-session-host session)))
+      (unless zmx-name
+        (user-error "Session is not zmx-backed"))
+      (when-let* ((pending (and host (claude-code-ide--remote-target-pending-reason
+                                      session-id))))
+        (user-error "Cannot disconnect %s on %s. %s is already in progress"
+                    zmx-name host pending))
+      ;; The buffer's kill hook keeps the zmx-backed row (`--cleanup-on-exit').
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p buffer)
+        (user-error "Disconnect did not close the Session buffer"))
+      (when (claude-code-ide--get-session session-id)
+        (claude-code-ide--cleanup-on-exit session-id t))
+      (message "Disconnected zmx session %s%s. Press c to reattach"
+               zmx-name (if host (format " on %s" host) "")))))
+
 (defun claude-code-ide--reattach-cli-path (item)
   "Return the CLI path to reattach ITEM's zmx target with.
 Reuse ITEM's remembered CLI type when set; otherwise fall back to

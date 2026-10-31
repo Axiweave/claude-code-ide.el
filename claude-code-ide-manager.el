@@ -28,6 +28,7 @@
 
 (declare-function claude-code-ide--get-session-buffer "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--get-session "claude-code-ide" (session-id))
+(declare-function claude-code-ide-disconnect "claude-code-ide" (&optional session-id))
 (declare-function claude-code-ide--start-session "claude-code-ide" (&optional continue resume directory force-new))
 (declare-function claude-code-ide--start-remote-sibling-session
                   "claude-code-ide" (host directory))
@@ -1490,6 +1491,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
 (define-key claude-code-ide-manager-mode-map (kbd "a") #'claude-code-ide-attach)
 (define-key claude-code-ide-manager-mode-map (kbd "A") #'claude-code-ide-attach-select)
+(define-key claude-code-ide-manager-mode-map (kbd "d") #'claude-code-ide-manager-disconnect-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "X") #'claude-code-ide-manager-detach-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "D") #'claude-code-ide-manager-detach-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "P") #'claude-code-ide-manager-toggle-pin)
@@ -5545,6 +5547,18 @@ returns after the switch or a quit.  With the focused view off, run
             :live-p t)
            siblings))))
     siblings))
+
+(defun claude-code-ide-manager-disconnect-at-point ()
+  "Disconnect the zmx-backed Session at point and keep its row.
+The Agent keeps running, and \\`c' reattaches the row.  See
+`claude-code-ide-disconnect'."
+  (interactive)
+  (let* ((item (or (claude-code-ide-manager--item-at-point)
+                   (user-error "No manager session at point")))
+         (session-key (claude-code-ide-manager-item-session-key item))
+         (scope (claude-code-ide-manager--scope-for-command)))
+    (claude-code-ide-disconnect session-key)
+    (claude-code-ide-manager--sync-point-to-session-key scope session-key)))
 
 (defun claude-code-ide-manager-detach-at-point ()
   "Detach the zmx-backed session at point and remove its manager row.

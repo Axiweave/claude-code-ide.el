@@ -226,10 +226,10 @@ How it works:
 - On session start, matching zmx sessions for the project and agent are offered for reattach, with a "Create new session" option. Continue and resume offer only matching sessions with zero attached clients.
 - When cc-manager is hidden, reattachment from Start keeps it hidden and preserves the editor windows. The terminal opens in the configured side window. When cc-manager is visible, reattachment uses its managed layout.
 - =M-x claude-code-ide-attach= lists all zmx sessions, including ones started outside Emacs, and adopts the selection into a full session with idle tracking and manager visibility.
-- Killing the terminal buffer detaches only. Closing its window only hides the terminal. =M-x claude-code-ide-stop= asks before it kills the zmx session. That stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
+- Killing the terminal buffer detaches only. Closing its window only hides the terminal. In cc-manager, =d= (or =M-x claude-code-ide-disconnect= in the Session buffer) does the same as the buffer kill on purpose: it closes the client and keeps the row as =[disconnected]=. =M-x claude-code-ide-stop= asks before it kills the zmx session. That stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
 - When the attach client ends, the manager keeps the row as =[disconnected]= with the same Session ID, name, order, and pin. Select the row or press =c= to reattach. =M-x claude-code-ide-attach= on that zmx session also reuses the row. A row whose zmx session is gone disappears, and the first manager build after an Emacs restart removes such rows.
 
-Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, or after an Emacs restart, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected. Exception: Oh My Pi rediscovers the Emacs SSE endpoint and reconnects on its own, so selection sync and session state resume after an Emacs restart.
+Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, after an Emacs restart, or after a Disconnect or buffer kill, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected. Exception: Oh My Pi rediscovers the Emacs SSE endpoint and reconnects on its own, so selection sync and session state resume after an Emacs restart.
 
 The zmx integration follows the design of [[https://github.com/ArthurHeymans/emacs-term-sessions][emacs-term-sessions]] (GPL-3+), which provides general-purpose persistent terminals on top of zmx. This package implements only the small agent-session subset itself, so there is no dependency. Use emacs-term-sessions when you want persistent shells beyond coding agents.
 
@@ -707,6 +707,7 @@ When point is in the manager buffer:
 - =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
 - =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
 - =W= opens the [[*Remote Worktree Management][Remote Worktree menu]] for a Configured host
+- =d= disconnects the selected zmx-backed session like a terminal buffer kill: the agent keeps running, and the row stays as =[disconnected]= for =c=. It refuses a session that does not run in zmx
 - =D= or =X= detaches the selected zmx-backed session and removes its row without stopping the agent, even when disconnected
 - =c= explicitly reattaches the selected disconnected zmx-backed row, local or remote
 - =K= confirms Stop for the exact selected target

@@ -83,6 +83,7 @@
 (declare-function claude-code-ide-manager-toggle-pin "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-reset-layout-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-detach-at-point "claude-code-ide-manager" ())
+(declare-function claude-code-ide-manager-disconnect-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-copy-path-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-copy-zmx-name-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-cancel-project-view-at-point
@@ -731,6 +732,7 @@ This never contacts a host while the menu itself is displayed."
     ("A" "Attach zmx sessions (select)" claude-code-ide-attach-select)
     ("c" "Reattach remote session" claude-code-ide-manager-reattach-at-point)
     ("K" "Stop session (confirm)" claude-code-ide-manager-stop-at-point)
+    ("d" "Disconnect (keep row)" claude-code-ide-manager-disconnect-at-point)
     ("D" "Detach zmx session" claude-code-ide-manager-detach-at-point)
     ("X" "Detach zmx session" claude-code-ide-manager-detach-at-point)
     ("C" "Cancel pending Project view"

@@ -355,6 +355,7 @@ The manager uses these remote lifecycle keys:
 |-----+--------|
 | =RET= | Open a connected Session terminal. |
 | =c= | Reattach a disconnected row explicitly. |
+| =d= | Disconnect the client and keep the row for =c=. The Agent continues, and Project views stay. |
 | =s= | Start and attach a fresh Agent on the row's exact host and directory. |
 | =D= or =X= | Detach and remove the local row without stopping the Agent. |
 | =K= | Confirm and Stop the exact remote zmx target. |
