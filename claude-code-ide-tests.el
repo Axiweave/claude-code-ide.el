@@ -22497,9 +22497,14 @@ The window falls back to another buffer and no other Session becomes active."
        (setq before (funcall identity item))
        (with-current-buffer buffer
          (setq-local claude-code-ide-session-idle-enabled t)
-         (setq-local claude-code-ide-session-working-p t)
-         (setq-local claude-code-ide-session-agent-state 'working))
-       (should (claude-code-ide-manager--session-working-p "loc"))
+         (setq-local claude-code-ide-session-idle-p t)
+         (setq-local claude-code-ide-session-working-p t))
+       (should (string-prefix-p claude-code-ide-manager--bell-glyph
+                                (claude-code-ide-manager--marker-gutter item)))
+       (with-current-buffer buffer
+         (setq-local claude-code-ide-session-agent-state 'needs-input))
+       (should (string-prefix-p claude-code-ide-manager--needs-input-glyph
+                                (claude-code-ide-manager--marker-gutter item)))
        (save-window-excursion
          (set-window-buffer (selected-window) buffer)
          (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
@@ -22514,10 +22519,13 @@ The window falls back to another buffer and no other Session becomes active."
          (should (buffer-live-p (window-buffer (selected-window)))))
        (should-not (claude-code-ide--get-session "loc"))
        (should-not (claude-code-ide-manager--session-buffer "loc"))
-       (should-not (claude-code-ide-manager--session-working-p "loc"))
-       (should-not (claude-code-ide-manager--session-idle-p "loc"))
-       (should-not (claude-code-ide-manager--session-agent-state "loc"))
        (let ((kept (claude-code-ide-manager--item-by-session-key scope "loc")))
+         (should (equal (claude-code-ide-manager--marker-gutter kept)
+                        claude-code-ide-manager--pin-glyph))
+         (should-not (memq (claude-code-ide-manager--row-face scope "loc")
+                           '(claude-code-ide-manager-attention-session-face
+                             claude-code-ide-manager-working-session-face
+                             claude-code-ide-manager-idle-session-face)))
          (should kept)
          (should-not (claude-code-ide-manager-item-live-p kept))
          (should (equal (claude-code-ide-manager-item-custom-name kept) "Mine"))

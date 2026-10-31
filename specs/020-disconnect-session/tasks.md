@@ -156,6 +156,6 @@ flowchart LR
 ## Phase 8: Review Follow-up
 
 - [X] T018 Add `claude-code-ide-test-disconnect-closes-terminal-windows-like-buffer-kill`: split and side windows that show the terminal close, the other window stays, and a sole main window shows another live buffer. Correct FR-017, Q2, the window edge case, and research R5 to state this buffer-kill result
-- [X] T019 Assert in `claude-code-ide-test-disconnect-keeps-local-row` that working activity is set before Disconnect and that working, idle, and agent state read nil after it (US1/AC4, FR-016)
+- [X] T019 Assert in `claude-code-ide-test-disconnect-keeps-local-row` that the row renders activity before Disconnect: the idle bell with idle state set, then the needs-input marker with that agent state. After Disconnect, assert the rendered marker is only the pin and the row face is not an attention, working, or idle face (US1/AC4, FR-016)
 - [X] T020 Add `claude-code-ide-test-disconnect-changes-only-target-liveness`: 25 seeded trials with 0 to 4 other rows of mixed zmx backing, names, pins, and positions. Disconnect changes only the target row's liveness in displayed order (SC-002)
 - [X] T021 Run quickstart check 3 on v12dev with a throwaway zmx session: `d` kept the row under its host, `zmx list` still listed the session, and reattach kept the Session ID and name. Restore the remote repository list after adoption
