@@ -4042,8 +4042,10 @@ owned sidebar windows."
       (complete-with-action action projects string pred)))))
 
 (defun claude-code-ide-manager--select-global-project ()
-  "Prompt for a known project whose directory exists and return its root."
-  (let ((projects (seq-filter #'file-directory-p
+  "Prompt for a known project and return its root.
+Drop local roots whose directory is gone.  Keep remote roots without a
+probe: a probe connects to the host and blocks when the host is down."
+  (let ((projects (seq-filter (lambda (dir) (or (file-remote-p dir) (file-directory-p dir)))
                               (mapcar #'claude-code-ide-manager--normalize-target-directory
                                       (claude-code-ide-manager--known-project-roots)))))
     (unless projects
