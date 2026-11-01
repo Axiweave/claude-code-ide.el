@@ -64,12 +64,11 @@ These facts come from the current code and from a zmx 0.8.1 test on the scratch 
 - **Decision**: Move the argv build of `#handleForkTerminalCommand` (`command-controller.ts:1543-1613`, with `FORK_LAUNCH_OVERRIDES`, `forkScopeEnvCommand`, `hasForkApiKeyOverride`) into one exported helper. It returns `{ argv, env }` and takes an optional fork session file and an optional `model`. `/fork pane` and the spawn both call it. `/fork` passes no `model`. `/fork` keeps its `env` prefix form, and the spawn passes `env` to `ptree.exec`.
 - **Rationale**: One builder keeps the profile, model, thinking level, prompt-cache key, and the `--api-key` refusal the same for both (FR-020). The `model` argument covers the spec assumption "B uses A's model unless the request names a different one". It replaces only the `--model` value, so profile and thinking level still come from A.
 
-### D7. Start content goes through an `@file` argument
+### D7. Start content goes through a file named in the environment
 
-- **Decision**: omp writes the opening prompt, the handoff note, or the handoff summary to a mode-0600 file in the OS temp directory and passes `@<file>` to B. Fresh mode: `@prompt`. Fork: `--fork <session file>`. Fork with handoff: `--fork <session file> @note`. Handoff summary: `@summary`.
-- **Rationale**: Interactive omp sends `@file` content as the first user message and stays interactive (`cli/args.ts:398-409`, `main.ts:865-886`). `zmx list` then shows only the path, not the text. `--fork` and `@file` combine without a conflict.
-- **Ceiling**: omp does not delete the file. `ponytail:` remove it after B reads it if temp files pile up.
-- **Alternatives**: A positional message. It puts the full prompt in `cmd=`. Piped stdin turns omp into print mode (`main.ts:1960-1968`).
+- **Decision**: omp writes the opening prompt, the handoff note, or the handoff summary to a mode-0600 file in the OS temp directory. It names the file in B's `OMP_SPAWN_START_FILE`. `createSibling` sets or clears that variable for each child. Fork modes add `--fork <session file>` to argv. At startup B reads the file, deletes it and the variable, and sends the text as a plain first message (`takeSpawnStartText`, `main.ts`). A failed creation deletes the file.
+- **Rationale**: `zmx list` shows only argv, so the text stays out of `cmd=`. B's first message shows only the text. A cleared variable means a restart or a child of B never reads a stale path.
+- **Alternatives**: An `@file` argument (the first version). omp wraps its content in a `<file name="…">` block, which B then shows as its first message. A positional message puts the full prompt in `cmd=`. Piped stdin turns omp into print mode (`main.ts:1960-1968`).
 
 ### D8. Handoff summary without compaction
 

@@ -31,9 +31,9 @@ On exit, omp clears the window flag and restores the tool set from before `/spaw
 | Attribute | Source |
 |---|---|
 | name | `<prefix>omp-<sanitized basename of cwd>-<6 random [a-z0-9]>`. The prefix comes from A's `ZMX_SESSION`. Default: `cci-`. |
-| `cmd=` | the shared `/fork` builder argv, plus `--fork <file>` and `@<start file>` per mode |
+| `cmd=` | the shared `/fork` builder argv, plus `--fork <file>` in the fork modes |
 | `cwd=` | B's directory |
-| env | builder env, minus `ZMX_SESSION`, `ZMX_SESSION_PREFIX`, and `EMACS_BUFFER_NAME`, plus `OMP_SPAWN_PARENT=<A name>` |
+| env | builder env, minus `ZMX_SESSION`, `ZMX_SESSION_PREFIX`, and `EMACS_BUFFER_NAME`, plus `OMP_SPAWN_PARENT=<A name>` and `OMP_SPAWN_START_FILE=<start file>` (unset in fork mode) |
 | labels | see below |
 
 Lifecycle: created by `zmx attach` → running → ended by `/exit`, `/quit`, or `/despawn` (`zmx kill`). zmx ends the session when omp exits.
