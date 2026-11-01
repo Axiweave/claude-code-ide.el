@@ -78,8 +78,8 @@
 (declare-function claude-code-ide-manager-switch-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-avy-switch "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-switch-at-point-preserve-focus "claude-code-ide-manager" ())
-(declare-function claude-code-ide-manager-start-session-at-point "claude-code-ide-manager" (&optional dangerous arg))
-(declare-function claude-code-ide-manager-start-session-at-point-skip-permissions "claude-code-ide-manager" (&optional arg))
+(declare-function claude-code-ide-manager-start-session-at-point "claude-code-ide-manager" (&optional arg))
+(declare-function claude-code-ide-manager-fork-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-toggle-pin "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-reset-layout-at-point "claude-code-ide-manager" ())
 (declare-function claude-code-ide-manager-detach-at-point "claude-code-ide-manager" ())
@@ -727,7 +727,7 @@ This never contacts a host while the menu itself is displayed."
     ("C-k" "Previous project group" claude-code-ide-manager-previous-project-group)]
    ["Sessions"
     ("s" "Start session at point" claude-code-ide-manager-start-session-at-point)
-    ("S" "Start (skip permissions)" claude-code-ide-manager-start-session-at-point-skip-permissions)
+    ("S" "Fork session" claude-code-ide-manager-fork-at-point)
     ("a" "Attach to zmx session" claude-code-ide-attach)
     ("A" "Attach zmx sessions (select)" claude-code-ide-attach-select)
     ("c" "Reattach remote session" claude-code-ide-manager-reattach-at-point)

@@ -272,7 +272,7 @@ A missing target proves the Agent exited, so Emacs removes the row.
 A listed target, a failed check, or a slow check keeps the disconnected row.
 An explicit detach never contacts the host.
 
-Press =s= on a connected remote row to start a fresh Agent on that exact host and directory. The direct interactive SSH path creates a new zmx target without a Worktree operation. Remote =S= and prefixed =s= remain unavailable because remote launch ignores local CLI options.
+Press =s= on a connected remote row to start a fresh Agent on that exact host and directory. The direct interactive SSH path creates a new zmx target without a Worktree operation. Prefixed =s= remains unavailable because remote launch ignores local CLI options.
 
 A successful attachment requests project metadata asynchronously. A metadata failure does not undo attachment.
 Press =? m= in the manager to refresh cached Git metadata for one configured host.
@@ -704,8 +704,8 @@ When point is in the manager buffer:
 - =SPC= switches to the session at point
 - =P= toggles pin state for the selected row
 - =E= opens the complete pin-order editor for the selected manager scope
-- =s= starts a sibling session with the current CLI; =S= starts one with explicit permissions bypass
-- =C-u s= or =C-u S= prompts for a one-session CLI selection (uppercase also bypasses permissions)
+- =s= starts a sibling session with the current CLI; =C-u s= prompts for a one-session CLI selection
+- =S= forks the Oh My Pi session at point, like =/fork spawn= typed in it, without a change to its draft and without the busy-turn question. It works on local and remote rows. The new session arrives through the spawn announcement. An open dialog in that session blocks the fork with a warning there
 - =a= adopts a zmx session via =claude-code-ide-attach= (see [[*Persistent Sessions with zmx][Persistent Sessions with zmx]])
 - =W= opens the [[*Remote Worktree Management][Remote Worktree menu]] for a Configured host
 - =d= disconnects the selected zmx-backed session like a terminal buffer kill: the agent keeps running, and the row stays as =[disconnected]= for =c=. It refuses a session that does not run in zmx

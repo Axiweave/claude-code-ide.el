@@ -288,8 +288,9 @@ return the string to insert."
 (defun claude-code-ide-session-send-omp-packet (kind value)
   "Send an Oh My Pi `pi:KIND;VALUE' APC packet to the current session buffer.
 
-KIND is \"prompt\" (set the leading slash command) or \"keyword\"
-(insert a standalone magic keyword at the cursor)."
+KIND is \"prompt\" (set the leading slash command), \"keyword\"
+(insert a standalone magic keyword at the cursor), or \"action\"
+(run a named omp action such as \"fork-spawn\")."
   (claude-code-ide-session-send-string
    (concat "\e_pi:" kind ";" value "\e\\")))
 

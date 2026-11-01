@@ -2061,11 +2061,75 @@ mode re-inserts the remote project line's indentation without properties."
        #'claude-code-ide-manager-clear-all-idle-state)))
 
 (ert-deftest claude-code-ide-test-manager-mode-binds-s-to-new-sibling-session ()
-  "Manager mode exposes sibling session launch on `s' and `S'."
+  "Manager mode starts a sibling on `s' and forks the session on `S'."
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "s"))
               #'claude-code-ide-manager-start-session-at-point))
   (should (eq (lookup-key claude-code-ide-manager-mode-map (kbd "S"))
-              #'claude-code-ide-manager-start-session-at-point-skip-permissions)))
+              #'claude-code-ide-manager-fork-at-point)))
+
+(defun claude-code-ide-tests--fork-at-point (item buffer process-live)
+  "Run `claude-code-ide-manager-fork-at-point' on ITEM with BUFFER.
+PROCESS-LIVE is what the buffer's process liveness check returns.
+Return (SENT MESSAGE REFUSAL): the packets sent, each with the buffer
+it was sent in, the echoed message, and the `user-error' text."
+  (let (sent echoed refusal)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+               (lambda () item))
+              ((symbol-function 'claude-code-ide-manager--session-buffer)
+               (lambda (_) buffer))
+              ((symbol-function 'process-live-p)
+               (lambda (_) process-live))
+              ((symbol-function 'claude-code-ide-session-send-omp-packet)
+               (lambda (kind value)
+                 (push (list kind value (current-buffer)) sent)))
+              ((symbol-function 'message)
+               (lambda (format &rest args)
+                 (setq echoed (apply #'format-message format args)))))
+      (condition-case err
+          (claude-code-ide-manager-fork-at-point)
+        (user-error (setq refusal (cadr err)))))
+    (list (nreverse sent) echoed refusal)))
+
+(ert-deftest claude-code-ide-test-manager-fork-at-point-sends-action-packet ()
+  "`S' on a local or remote omp row sends one fork packet in its buffer."
+  (dolist (host '(nil "alpha"))
+    (let ((item (make-claude-code-ide-manager-item
+                 :session-key "a" :host host :display-name "repo · 1"))
+          (buffer (generate-new-buffer " *fork-at-point*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buffer
+              (setq-local claude-code-ide--session-cli-type 'omp))
+            (should (equal (claude-code-ide-tests--fork-at-point item buffer t)
+                           (list (list (list "action" "fork-spawn" buffer))
+                                 "Fork request sent to repo · 1"
+                                 nil))))
+        (kill-buffer buffer)))))
+
+(ert-deftest claude-code-ide-test-manager-fork-at-point-refuses-and-sends-nothing ()
+  "`S' refuses a missing row, a disconnected row, and a non-omp row."
+  (let ((item (make-claude-code-ide-manager-item
+               :session-key "a" :display-name "repo · 1"))
+        (omp (generate-new-buffer " *fork-omp*"))
+        (claude (generate-new-buffer " *fork-claude*"))
+        (dead (generate-new-buffer " *fork-dead*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer omp
+            (setq-local claude-code-ide--session-cli-type 'omp))
+          (with-current-buffer claude
+            (setq-local claude-code-ide--session-cli-type 'claude))
+          (kill-buffer dead)
+          (pcase-dolist (`(,row ,buffer ,live ,text)
+                         `((nil ,omp t "No manager session at point")
+                           (,item nil t "Session is disconnected. Press c to reconnect first")
+                           (,item ,dead t "Session is disconnected. Press c to reconnect first")
+                           (,item ,omp nil "Session is disconnected. Press c to reconnect first")
+                           (,item ,claude t "Only Oh My Pi sessions can fork")))
+            (should (equal (claude-code-ide-tests--fork-at-point row buffer live)
+                           (list nil nil text)))))
+      (kill-buffer omp)
+      (kill-buffer claude))))
 
 (ert-deftest claude-code-ide-test-manager-s-starts-remote-sibling-in-exact-worktree ()
   "Manager `s' starts a sibling Agent in the selected remote Worktree."
@@ -2098,8 +2162,8 @@ mode re-inserts the remote project line's indentation without properties."
       (should (equal launch-call '("alpha" "/srv/repo/topic" t)))
       (should (equal switch-call '("new-remote" nil (:type global)))))))
 
-(ert-deftest claude-code-ide-test-manager-S-keeps-remote-local-options-rejected ()
-  "Manager `S' does not pass local permission options to a remote launch."
+(ert-deftest claude-code-ide-test-manager-prefixed-s-rejects-remote-local-options ()
+  "Prefixed `s' does not pass local CLI options to a remote launch."
   (let ((item (make-claude-code-ide-manager-item
                :session-key "remote" :host "alpha"
                :directory "/srv/repo/topic" :zmx-name "agent-one"))
@@ -2116,7 +2180,7 @@ mode re-inserts the remote project line's indentation without properties."
          ((symbol-function 'claude-code-ide-manager--request-remote-open)
           (lambda (&rest _) (setq worktree-started t))))
       (should-error
-       (claude-code-ide-manager-start-session-at-point-skip-permissions)
+       (claude-code-ide-manager-start-session-at-point t)
        :type 'user-error)
       (should-not direct-started)
       (should-not worktree-started))))
@@ -2217,28 +2281,24 @@ mode re-inserts the remote project line's indentation without properties."
       (should (equal switch-call
                      '("new" nil (:type repo :git-root "/tmp/repo/")))))))
 
-(ert-deftest claude-code-ide-test-manager-start-session-at-point-skip-forces-bypass ()
-  "The old DANGEROUS argument still bypasses without selecting a CLI."
+(ert-deftest claude-code-ide-test-manager-start-session-at-point-uses-default-bypass ()
+  "A plain `s' launch follows `claude-code-ide-bypass-permissions-by-default'."
   (let ((item (make-claude-code-ide-manager-item
                :session-key "old" :directory "/tmp/project/"))
-        (claude-code-ide-bypass-permissions-by-default nil)
         (claude-code-ide-cli-extra-flags "")
-        captured-flags prompted)
+        captured-flags)
     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
                (lambda () item))
-              ((symbol-function 'completing-read)
-               (lambda (&rest _)
-                 (setq prompted t)
-                 "codex"))
               ((symbol-function 'claude-code-ide--dangerous-permissions-flag)
                (lambda () "--dangerous"))
               ((symbol-function 'claude-code-ide--start-session)
                (lambda (&rest _)
-                 (setq captured-flags claude-code-ide-cli-extra-flags)
+                 (push claude-code-ide-cli-extra-flags captured-flags)
                  nil)))
-      (claude-code-ide-manager-start-session-at-point t)
-      (should-not prompted)
-      (should (equal captured-flags "--dangerous")))))
+      (dolist (default '(t nil))
+        (let ((claude-code-ide-bypass-permissions-by-default default))
+          (claude-code-ide-manager-start-session-at-point)))
+      (should (equal (nreverse captured-flags) '("--dangerous" ""))))))
 
 (ert-deftest claude-code-ide-test-manager-prefix-selects-cli-for-one-launch ()
   "A prefix selects an agent and ignores the old session CLI for one sibling."
@@ -2270,43 +2330,8 @@ mode re-inserts the remote project line's indentation without properties."
         (should (equal claude-code-ide-cli-path "claude"))
         (should (eq claude-code-ide--session-cli-type 'claude))))))
 
-(ert-deftest claude-code-ide-test-manager-prefix-skip-selects-cli-and-bypasses ()
-  "A prefixed uppercase sibling launch selects an agent and bypasses permissions."
-  (let ((item (make-claude-code-ide-manager-item
-               :session-key "old" :directory "/tmp/project/"))
-        (claude-code-ide-bypass-permissions-by-default nil)
-        (claude-code-ide-cli-path "claude")
-        (claude-code-ide-cli-extra-flags "")
-        (claude-code-ide--session-cli-type 'claude)
-        completion-choices captured)
-    (with-temp-buffer
-      (setq-local claude-code-ide--session-cli-type 'claude)
-      (cl-letf (((symbol-function 'completing-read)
-                 (lambda (&rest args)
-                   (setq completion-choices (nth 1 args))
-                   "Codex (codex)"))
-                ((symbol-function 'claude-code-ide-manager--item-at-point)
-                 (lambda () item))
-                ((symbol-function 'claude-code-ide--start-session)
-                 (lambda (&rest _)
-                   (setq captured
-                         (list claude-code-ide-cli-path
-                               claude-code-ide--session-cli-type
-                               claude-code-ide-cli-extra-flags))
-                   nil)))
-        (let ((current-prefix-arg t))
-          (call-interactively
-           #'claude-code-ide-manager-start-session-at-point-skip-permissions))
-        (should (equal completion-choices
-                       (claude-code-ide--agent-completion-candidates)))
-        (should (equal captured
-                       '("codex" nil
-                         "--dangerously-bypass-approvals-and-sandbox")))
-        (should (equal claude-code-ide-cli-path "claude"))
-        (should (eq claude-code-ide--session-cli-type 'claude))))))
-
 (ert-deftest claude-code-ide-test-manager-unprefixed-sibling-preserves-session-cli ()
-  "Unprefixed lowercase and uppercase sibling launches preserve the old CLI."
+  "An unprefixed sibling launch preserves the old CLI."
   (let ((item (make-claude-code-ide-manager-item
                :session-key "old" :directory "/tmp/project/"))
         (claude-code-ide-cli-path "claude")
@@ -2322,8 +2347,7 @@ mode re-inserts the remote project line's indentation without properties."
                    (push claude-code-ide--session-cli-type captured)
                    nil)))
         (claude-code-ide-manager-start-session-at-point)
-        (claude-code-ide-manager-start-session-at-point-skip-permissions)
-        (should (equal captured '(codex codex)))))))
+        (should (equal captured '(codex)))))))
 
 ;;; Agent state (session_state_changed) tests
 
@@ -11263,7 +11287,7 @@ switch keeps the filter, and no process starts."
                      ("n" . claude-code-ide-manager-next-line)
                      ("p" . claude-code-ide-manager-previous-line)
                      ("s" . claude-code-ide-manager-start-session-at-point)
-                     ("S" . claude-code-ide-manager-start-session-at-point-skip-permissions)
+                     ("S" . claude-code-ide-manager-fork-at-point)
                      ("o" . claude-code-ide-manager-open)
                      ("d" . claude-code-ide-manager-disconnect-at-point)
                      ("X" . claude-code-ide-manager-detach-at-point)

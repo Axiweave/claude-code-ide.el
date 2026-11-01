@@ -1488,7 +1488,7 @@ scope when it is visible; otherwise return the first visible scope."
 (define-key claude-code-ide-manager-mode-map (kbd "w") #'claude-code-ide-manager-new-worktree)
 (define-key claude-code-ide-manager-mode-map (kbd "W") #'claude-code-ide-manager-remote-worktree-menu)
 (define-key claude-code-ide-manager-mode-map (kbd "s") #'claude-code-ide-manager-start-session-at-point)
-(define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-start-session-at-point-skip-permissions)
+(define-key claude-code-ide-manager-mode-map (kbd "S") #'claude-code-ide-manager-fork-at-point)
 (define-key claude-code-ide-manager-mode-map (kbd "a") #'claude-code-ide-attach)
 (define-key claude-code-ide-manager-mode-map (kbd "A") #'claude-code-ide-attach-select)
 (define-key claude-code-ide-manager-mode-map (kbd "d") #'claude-code-ide-manager-disconnect-at-point)
@@ -5643,12 +5643,11 @@ Leave the zmx session and its agent process unchanged."
          "Detached zmx session %s on %s" zmx-name host)
       (message "Detached zmx session %s" zmx-name))))
 
-(defun claude-code-ide-manager-start-session-at-point (&optional dangerous arg)
+(defun claude-code-ide-manager-start-session-at-point (&optional arg)
   "Start and switch to a sibling session for the row or repo scope at point.
 With prefix ARG, select the CLI for a local launch.
-When DANGEROUS is non-nil, force the selected local CLI's permissions bypass.
 A plain launch on a remote row starts a sibling Agent in that exact Worktree."
-  (interactive (list nil current-prefix-arg))
+  (interactive (list current-prefix-arg))
   (let* ((item (claude-code-ide-manager--item-at-point))
          (scope (claude-code-ide-manager--scope-for-command))
          (directory (or (and item
@@ -5660,7 +5659,7 @@ A plain launch on a remote row starts a sibling Agent in that exact Worktree."
                     (claude-code-ide-manager--session-host
                      (claude-code-ide-manager-item-session-key item)))))
     (if host
-        (if (or dangerous arg)
+        (if arg
             (user-error "Remote sibling launch does not use local CLI options")
           (let* ((claude-code-ide--suppress-initial-display t)
                  (session
@@ -5674,16 +5673,33 @@ A plain launch on a remote row starts a sibling Agent in that exact Worktree."
              (claude-code-ide-cli-path
               (claude-code-ide--transient-cli-path arg))
              (claude-code-ide-cli-extra-flags
-              (claude-code-ide--transient-launch-flags dangerous)))
+              (claude-code-ide--transient-launch-flags nil)))
         (when-let* ((session (claude-code-ide--start-session
                               nil nil directory t)))
           (claude-code-ide-manager-switch-to-session
            (claude-code-ide-session-id session) nil scope))))))
 
-(defun claude-code-ide-manager-start-session-at-point-skip-permissions (&optional arg)
-  "Start a sibling with the selected launch CLI's permissions bypass."
-  (interactive "P")
-  (claude-code-ide-manager-start-session-at-point t arg))
+(defun claude-code-ide-manager-fork-at-point ()
+  "Fork the Oh My Pi session at point, like `/fork spawn' typed in it.
+Send a `pi:action;fork-spawn' packet to the row's terminal.  The
+draft in that terminal stays unchanged.  The new session B arrives
+through the spawn announcement, the same as a typed `/fork spawn'.
+Local and remote rows use the same path."
+  (interactive)
+  (let* ((item (or (claude-code-ide-manager--item-at-point)
+                   (user-error "No manager session at point")))
+         (buffer (claude-code-ide-manager--session-buffer
+                  (claude-code-ide-manager-item-session-key item))))
+    ;; The helper returns a local Session's buffer even when its process is dead.
+    (unless (and (buffer-live-p buffer)
+                 (process-live-p (get-buffer-process buffer)))
+      (user-error "Session is disconnected. Press c to reconnect first"))
+    (with-current-buffer buffer
+      (unless (eq claude-code-ide--session-cli-type 'omp)
+        (user-error "Only Oh My Pi sessions can fork"))
+      (claude-code-ide-session-send-omp-packet "action" "fork-spawn"))
+    (message "Fork request sent to %s"
+             (claude-code-ide-manager-item-display-name item))))
 
 (defun claude-code-ide-manager-reset-layout-at-point ()
   "Reset the selected session to the default manager layout."
