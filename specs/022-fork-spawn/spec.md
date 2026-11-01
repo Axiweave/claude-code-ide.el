@@ -76,6 +76,7 @@ Session A runs on a remote host. The user runs `/fork spawn` there. omp creates 
 - **B fails to start.** omp shows the zmx error in A, sends no announcement, and leaves no zmx session behind.
 - **No Emacs attached to A.** omp still creates B and shows B's name in A. The user can attach B later with the existing attach commands.
 - **A `/spawn` window is open.** `/fork spawn` does not use the spawn window or the model, so it runs and creates its one B. The open `/spawn` request still creates its own B.
+- **A is in vibe mode.** omp refuses with "Exit vibe mode first." and creates nothing, the same as every other `/fork` form.
 - **Many forks.** Each `/fork spawn` creates one new B with its own name. omp does not limit how many forks one Session makes.
 
 ## Requirements *(mandatory)*

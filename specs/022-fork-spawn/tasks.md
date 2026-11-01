@@ -142,3 +142,7 @@ graph TD
 1. **MVP**: Phases 1–3. `/fork spawn` works locally with the tests green. Validate with quickstart.md scenarios 1–9.
 2. Verify US2 (`/despawn`) on the same build.
 3. Run the Phase 6 gates. When the user asks, commit omp and the spec files separately. Push only with user approval. Then verify US3 on v12dev.
+
+## Phase 7: Convergence
+
+- [X] T018 Review the vibe-mode refusal ("Exit vibe mode first.") at the start of `handleForkSpawnCommand` in `OMP/src/modes/interactive-mode.ts`. Either record it as a `/fork spawn` edge case in spec.md, or remove it, per FR-001 (unrequested)
