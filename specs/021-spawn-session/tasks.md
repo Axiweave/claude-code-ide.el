@@ -35,7 +35,7 @@ description: "Task list for spawn and remove Sibling Sessions"
   - `siblingName(parentName: string | undefined, dir: string, rand: string)`: the prefix is the text before the first `omp-` in `parentName`, or `cci-`. The basename is sanitized like `claude-code-ide-zmx--sanitize`.
   - `encodeLabels(record)` and `parseZmxList(stdout)`: values are unpadded base64url text (zmx accepts only `[A-Za-z0-9-_.]` in a value), labels are separated by spaces, and a list line is tab-separated `k=v` fields.
   - `createSibling({ name, dir, argv, env, labels })`: `ptree.exec(["zmx","attach","--labels",…])` with `ZMX_SESSION`, `ZMX_SESSION_PREFIX`, and `EMACS_BUFFER_NAME` set to `undefined` and `OMP_SPAWN_PARENT` set. On a non-zero exit it runs `zmx kill` without a check.
-  - `listChildren(parentName)`, `killSibling(name)`, and `publishState(state: "working" | "idle", work?: string)`. `publishState` runs one `zmx set $ZMX_SESSION cci-state=<state> cci-work=<encoded work>`. The work text is the first line of `work` that is not only a tag (such as the `<file …>` wrapper of an `@file` prompt), cut to 80 characters. It is empty for `idle`.
+  - `listChildren(parentName)`, `killSibling(name)`, and `publishState(state: "working" | "idle", work?: string)`. `publishState` runs one `zmx set $ZMX_SESSION cci-state=<state> cci-work=<encoded work>`. The work text is the first line of `work` that is not only a tag (such as an injected `<system-notice>` line), cut to 80 characters. It is empty for `idle`.
   - `writeSpawnAnnouncement(name)`: `writeTerminalSequence` plus `wrapTmuxPassthroughIfNeeded`, in the format of contracts/osc-spawn-announce.md.
 - [X] T006 [P] Add `spawn.confirm` (boolean, default `false`, tab `tasks`, with a label and a description) to `OMP/src/tools/settings.ts`. Check whether `OMP/src/config/registry` needs a schema or doc entry, and add it if it does.
 - [X] T007 [P] Add `claude-code-ide-zmx--package-name-p (name)` to `claude-code-ide-zmx.el`. It returns `claude-code-ide-zmx--valid-name-p` and `string-prefix-p claude-code-ide-zmx-session-prefix`.
@@ -97,8 +97,8 @@ description: "Task list for spawn and remove Sibling Sessions"
 - [X] T017 [US1] Implement the spawn handler in `OMP/src/modes/interactive-mode.ts` for `fresh` mode, with `cwd` and `new_worktree`:
   1. When `spawn.confirm` is true, call `showHookConfirm` with "No" as the default.
   2. For `new_worktree`, call `createSessionWorktree(cwd, settings, branch, { keepChanges: true })` and never call the source clean step. On an error, return a refusal that names the reason.
-  3. Write the prompt to a mode-0600 temp file, marked `// ponytail: temp file never deleted`.
-  4. Build `argv` with `buildForkChildLaunch({ session, settings, model })` plus `@file`.
+  3. Write the prompt to a mode-0600 temp file. B reads and deletes it at startup (research D7).
+  4. Build `argv` with `buildForkChildLaunch({ session, settings, model })`, and pass the file to `createSibling` as `startFile`, which sets `OMP_SPAWN_START_FILE`.
   5. Call `createSibling` with the `cci-parent` and `cci-wt-*` labels.
   6. If `createSibling` fails and step 2 made a worktree, call `removeSessionWorktree(wt, false)` so that the failed spawn leaves no worktree and no branch. Show both errors if the removal also fails. Send no announcement.
   7. On success, call `writeSpawnAnnouncement`, show B's name, and return `Spawned <name> in <dir> (fresh)`.
@@ -115,20 +115,12 @@ description: "Task list for spawn and remove Sibling Sessions"
 **Independent Test**: quickstart.md scenarios 4, 5, and 18, plus an unclear request that makes omp ask one question first.
 
 - [X] T019 [P] [US2] Add the public method `generateHandoffDocument(customInstructions?, options?)` to `OMP/src/session/agent-session.ts` next to `handoff()` (~12693). It returns `this.#inLogContext(() => this.#handoff.generateDocument(...))` and commits nothing.
-- [X] T020 [P] [US2] Add a pure function `spawnArgv(base, mode, { forkFile?, startFile? })` to `OMP/src/session/sibling-spawn.ts`:
-  - `fresh` and `handoff_summary`: `base + @start`
-  - `fork`: `base + --fork <file>`
-  - `fork_handoff`: `base + --fork <file> @start`
-
-  Add property tests in `OMP/src/session/sibling-spawn.test.ts` for any base argv:
-  - `--fork` appears only in the fork modes;
-  - `@` appears only when there is a start file;
-  - no positional prompt text is ever present.
+- [X] T020 [P] [US2] Build B's argv per mode: the fork modes add `--fork <file>`. The start text never goes in argv. It goes through `OMP_SPAWN_START_FILE` (research D7), which `createSibling` sets or clears for each child. Add a property test in `OMP/test/session/sibling-spawn.test.ts`: `takeSpawnStartText` returns the file's text unchanged, once, and leaves no file and no variable behind.
 - [X] T021 [US2] Extend the spawn handler in `OMP/src/modes/interactive-mode.ts`:
   - fork modes: call `sessionManager.flush()` and resolve the session file. Refuse when there is no file (FR-020).
   - `fork_handoff`: write the note file.
   - `handoff_summary`: call `generateHandoffDocument(text)` under a Loader, the same as `/handoff` in `command-controller.ts` ~2395-2460, and write the summary file.
-  - every mode: build the argv with `spawnArgv`. The confirmation shows the start content (FR-022).
+  - every mode: add `--fork <file>` in the fork modes and pass the start file to `createSibling`. The confirmation shows the start content (FR-022).
 - [X] T022 [US2] Keep `ask` in the active tool set while the window is open, when `ask.enabled` is true. In `OMP/src/prompts/spawn/spawn-kickoff.md`, use `{{#if askEnabled}}` to tell the model to ask one question through `ask` when the mode is unclear (FR-003). In the `{{else}}` branch, tell the model to pick the most likely mode and ask no question (the FR-003 exception).
 
 **Checkpoint**: All four modes work. A's history has no compaction entry after `handoff_summary`.

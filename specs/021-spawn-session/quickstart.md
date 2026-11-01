@@ -17,7 +17,7 @@
 | # | Do | Expect | Covers |
 |---|---|---|---|
 | 1 | In A: `/spawn write a README for the scripts directory` | Within 5 s, a new row `cci-omp-…`. Emacs shows B, and B starts work. A's conversation has one `Spawned …` tool result. | US1, FR-001, FR-004, FR-008, FR-012, SC-001 |
-| 2 | `zmx list` | B's line has `cci-parent=<A name>` and `cmd=` with `@/…` and no prompt text. | FR-006, D7 |
+| 2 | `zmx list` | B's line has `cci-parent=<A name>` and a `cmd=` with no prompt text and no `@` argument. B's first message is the plain prompt, and its start file is gone. | FR-006, D7 |
 | 3 | Set `claude-code-ide-switch-on-spawn` to nil, then spawn again | The row appears. The selected window and buffer do not change. | FR-013 |
 | 4 | `/spawn fork this into a new session` | B shows A's history and waits for input. | FR-007 |
 | 5 | `/spawn hand off the test fixes to a new session` | B starts from a summary. A has no compaction entry. | FR-007 |
