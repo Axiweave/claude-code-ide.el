@@ -228,6 +228,7 @@ How it works:
 - =M-x claude-code-ide-attach= lists all zmx sessions, including ones started outside Emacs, and adopts the selection into a full session with idle tracking and manager visibility.
 - Killing the terminal buffer detaches only. Closing its window only hides the terminal. In cc-manager, =d= (or =M-x claude-code-ide-disconnect= in the Session buffer) does the same as the buffer kill on purpose: it closes the client and keeps the row as =[disconnected]=. =M-x claude-code-ide-stop= asks before it kills the zmx session. That stops the agent for every attached client. From a terminal, use =zmx attach <name>= and =zmx kill <name>=.
 - When the attach client ends, the manager keeps the row as =[disconnected]= with the same Session ID, name, order, and pin. Select the row or press =c= to reattach. =M-x claude-code-ide-attach= on that zmx session also reuses the row. A row whose zmx session is gone disappears, and the first manager build after an Emacs restart removes such rows.
+- An Oh My Pi Session in zmx can start a Sibling Session with =/spawn REQUEST=. omp creates it in a new zmx session on the same host and announces its name to Emacs. Emacs then attaches it like =M-x claude-code-ide-attach=. When =claude-code-ide-switch-on-spawn= is non-nil (the default), Emacs also switches to it. =/despawn= in the parent ends one of its children. See [[file:docs/zmx.org][the zmx guide]].
 
 Known limitation: environment variables such as the Claude Code MCP port are frozen when the zmx session is created. If you reattach from a different Emacs instance, after an Emacs restart, or after a Disconnect or buffer kill, port-based integrations (MCP, SSE) break for that session. Plain terminal use of the agent is unaffected. Exception: Oh My Pi rediscovers the Emacs SSE endpoint and reconnects on its own, so selection sync and session state resume after an Emacs restart.
 
@@ -863,6 +864,7 @@ This allows you to refine Claude's suggestions before they're applied, ensuring 
 | ~claude-code-ide-mcp-server-tools~              | Alist of exposed Emacs functions            | ~nil~                                  |
 | ~claude-code-ide-diagnostics-backend~           | Diagnostics backend (auto/flycheck/flymake) | ~'auto~                                |
 | ~claude-code-ide-prevent-reflow-glitch~         | Prevent terminal reflow glitch (bug #1422)  | ~t~                                    |
+| ~claude-code-ide-switch-on-spawn~               | Switch to a Sibling Session after Emacs attaches it | ~t~ |
 
 With =claude-code-ide-use-with-editor= enabled, editor commands such as =C-g= in Claude Code and Codex open their prompt buffer in the current Emacs instance.
 The package routes files matching =claude-code-ide-prompt-buffer-patterns= to the current window.

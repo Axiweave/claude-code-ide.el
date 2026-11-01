@@ -332,6 +332,14 @@ the target window is already visible."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-switch-on-spawn t
+  "Whether to switch to a Sibling Session after Emacs attaches it.
+When an Oh My Pi Session announces a Sibling Session it spawned,
+Emacs attaches it.  When non-nil, Emacs then switches the current
+frame to it.  When nil, the selected window keeps its buffer."
+  :type 'boolean
+  :group 'claude-code-ide)
+
 ;;; Constants
 
 (defconst claude-code-ide--active-editor-notification-delay 0.1
@@ -2694,6 +2702,47 @@ this Emacs instance has not already attached instead."
              #'claude-code-ide--attach-discovered-entries))
     (claude-code-ide--attach-discovered-entries
      (claude-code-ide--zmx-adoptable-sessions))))
+
+(defun claude-code-ide--attach-spawned-entry (host name sessions)
+  "Attach the entry NAME from SESSIONS, a zmx listing of HOST.
+Then switch to it when `claude-code-ide-switch-on-spawn' is non-nil.
+Log a missing entry or an error instead of signaling."
+  (condition-case err
+      (if-let* ((entries (seq-filter (lambda (entry)
+                                       (equal (plist-get entry :name) name))
+                                     sessions)))
+          (progn
+            (claude-code-ide--attach-zmx-entries entries)
+            (when-let* ((claude-code-ide-switch-on-spawn)
+                        (session (claude-code-ide--live-session-for-target host name)))
+              (claude-code-ide-manager-switch-to-session
+               (claude-code-ide-session-id session))))
+        (claude-code-ide-log "Spawned session %s is not an unattached zmx session" name))
+    (error
+     (claude-code-ide-log "Failed to adopt spawned session %s: %s"
+                          name (error-message-string err)))))
+
+(defun claude-code-ide--adopt-spawned-session (host name)
+  "Attach the Sibling Session NAME that a Session on HOST announced.
+A nil HOST means the local zmx server.  A remote HOST must be in
+`claude-code-ide-remote-hosts'.  This runs from a timer, so log every
+failure instead of signaling."
+  (condition-case err
+      (cond
+       ((null host)
+        (claude-code-ide--attach-spawned-entry
+         nil name (claude-code-ide--zmx-adoptable-sessions)))
+       ((not (member host claude-code-ide-remote-hosts))
+        (message "Ignored spawned session %s: host %s is not in `claude-code-ide-remote-hosts'"
+                 name host))
+       (t
+        (claude-code-ide-zmx-discover-remote
+         host (claude-code-ide--remote-discovery-callback
+               (lambda (sessions)
+                 (claude-code-ide--attach-spawned-entry host name sessions))))))
+    (error
+     (claude-code-ide-log "Failed to adopt spawned session %s: %s"
+                          name (error-message-string err)))))
 
 (defun claude-code-ide--resolve-attach-directory (entry)
   "Return ENTRY's start directory, prompting when it is missing or invalid.

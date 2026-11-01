@@ -17794,6 +17794,50 @@ not pull another Session's prompt into itself."
       (should-not sent)
       (should-not claude-code-ide-session--editor-requests))))
 
+(ert-deftest claude-code-ide-test-session-spawn-announce-ignores-bad-callers ()
+  "Test that a spawn announcement from a wrong buffer or with a bad name schedules nothing."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (let (scheduled)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (&rest args) (push args scheduled))))
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _) nil)))
+          (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _)
+                     (claude-code-ide-session-create :id "a" :cli-type 'claude))))
+          (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _)
+                     (claude-code-ide-session-create :id "a" :cli-type 'omp))))
+          (dolist (name '("" "-cci-omp" "cci-omp/x" "other-omp-proj-abc123" nil 42))
+            (should-not (claude-code-ide-session-spawn-announce name)))))
+      (should-not scheduled)
+      (should-not sent))))
+
+(ert-deftest claude-code-ide-test-session-spawn-announce-schedules-adopt ()
+  "Test that a valid announcement only schedules the adopt step with the Session's host."
+  (should (require 'claude-code-ide-session nil t))
+  (claude-code-ide-tests--with-editor-handoff-session "omp" sent
+    (let (scheduled)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (&rest args) (push args scheduled)))
+                ((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _)
+                   (claude-code-ide-session-create :id "a" :cli-type 'omp :host "box")))
+                ((symbol-function 'claude-code-ide-zmx-list-sessions)
+                 (lambda () (ert-fail "The handler listed zmx inline")))
+                ((symbol-function 'claude-code-ide-zmx-discover-remote)
+                 (lambda (&rest _) (ert-fail "The handler listed zmx inline")))
+                ((symbol-function 'claude-code-ide--adopt-spawned-session)
+                 (lambda (&rest _) (ert-fail "The handler adopted inline"))))
+        (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
+      (should (equal scheduled
+                     '((0 nil claude-code-ide--adopt-spawned-session
+                          "box" "cci-omp-proj-abc123"))))
+      (should-not sent))))
+
 (ert-deftest claude-code-ide-test-session-editor-visit-failure-cancels-and-kills ()
   "Test that a display failure after the ack cancels once and leaves no buffer."
   (should (require 'claude-code-ide-session nil t))
@@ -20465,6 +20509,17 @@ The resync ignores pin state and stored order keys."
   (should-not (claude-code-ide-zmx--parse-list-line "pid=42\tcmd=omp"))
   (should-not (claude-code-ide-zmx--parse-list-line "   ")))
 
+(ert-deftest claude-code-ide-test-zmx-package-name-p ()
+  "Only a valid zmx name with the package prefix is a package name."
+  (let ((claude-code-ide-zmx-session-prefix "cci-"))
+    (should (claude-code-ide-zmx--package-name-p "cci-omp-proj-abc123"))
+    (dolist (name '("other-omp-proj-abc123" "omp-proj" "" "-cci-omp" "cci-omp/x"
+                    "cci-omp\nx" "../etc" "cci-../etc" nil))
+      (should-not (claude-code-ide-zmx--package-name-p name))))
+  (let ((claude-code-ide-zmx-session-prefix "work-"))
+    (should (claude-code-ide-zmx--package-name-p "work-omp-proj-abc123"))
+    (should-not (claude-code-ide-zmx--package-name-p "cci-omp-proj-abc123"))))
+
 (ert-deftest claude-code-ide-test-zmx-call-from-deleted-directory ()
   "A stale buffer directory does not prevent a context-free zmx call."
   (let* ((directory (make-temp-file "claude-code-ide-zmx-" t))
@@ -22339,6 +22394,21 @@ A local Session without a zmx name never leaves a row."
                     "\\[disconnected\\]"
                     (claude-code-ide-manager--item-visible-name item)))))))))
 
+(ert-deftest claude-code-ide-test-local-zmx-agent-exit-removes-row-and-buffer ()
+  "A client that exits after its zmx session ended removes the row and the buffer.
+This is the result of `/exit' in the Agent and of `/despawn' in its parent."
+  (claude-code-ide-tests--with-local-targets
+   (add-local "child" "cci-omp-child-abc123")
+   (let* ((session (claude-code-ide--get-session "child"))
+          (buffer (claude-code-ide-session-buffer session)))
+     (with-current-buffer buffer
+       (setq-local major-mode 'ghostel-mode))
+     (claude-code-ide--cleanup-on-exit "child" nil (claude-code-ide-session-process session))
+     (should (= list-calls 1))
+     (should-not (claude-code-ide--get-session "child"))
+     (should-not (buffer-live-p buffer))
+     (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "child")))))
+
 (ert-deftest claude-code-ide-test-local-zmx-row-reattaches-after-restart ()
   "A saved local row reloads disconnected and reattaches under its own identity."
   (claude-code-ide-tests--with-local-targets
@@ -22913,6 +22983,93 @@ Positions are a random permutation, because every real Session gets its own orde
        (should-not requests)
        (claude-code-ide-manager-refresh-items '(:type global))
        (should (claude-code-ide-manager--item-by-session-key session-id))))))
+
+(defmacro claude-code-ide-tests--with-spawn-adoption (&rest body)
+  "Run BODY with isolated targets and stubbed Session creation and switch.
+BODY sees CREATED, the (HOST NAME) of each created Session, and
+SWITCHED, the Session keys passed to the manager switch."
+  (declare (indent 0))
+  `(claude-code-ide-tests--with-remote-targets
+    (let (created switched)
+      (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+                ((symbol-function 'claude-code-ide--create-session)
+                 (lambda (directory _ _ name &optional host &rest _)
+                   (push (list host name) created)
+                   (let ((session (claude-code-ide-session-create
+                                   :id name :zmx-name name :host host
+                                   :directory directory :cli-type 'omp)))
+                     (claude-code-ide--put-session session)
+                     session)))
+                ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                 (lambda (key &rest _) (push key switched))))
+        ,@body))))
+
+(ert-deftest claude-code-ide-test-adopt-spawned-session-attaches-only-named-entry ()
+  "The adopt step attaches only the named entry and switches only when the option is on."
+  (dolist (switch '(t nil))
+    (claude-code-ide-tests--with-spawn-adoption
+     (let ((claude-code-ide-switch-on-spawn switch)
+           (window (selected-window))
+           (buffer (window-buffer (selected-window))))
+       (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                  (lambda ()
+                    '((:name "cci-omp-a-aaaaaa" :start_dir "/tmp/a" :cmd "omp")
+                      (:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+         (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
+       (should (equal created '((nil "cci-omp-b-bbbbbb"))))
+       (should (equal switched (and switch '("cci-omp-b-bbbbbb"))))
+       (should (eq (selected-window) window))
+       (should (eq (window-buffer window) buffer))))))
+
+(ert-deftest claude-code-ide-test-adopt-spawned-session-skips-unknown-or-attached ()
+  "The adopt step attaches nothing for an unknown command or an attached name."
+  (claude-code-ide-tests--with-spawn-adoption
+   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+              (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "htop")))))
+     (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
+   (should-not created)
+   (should-not switched)
+   (claude-code-ide--put-session
+    (claude-code-ide-session-create :id "b" :zmx-name "cci-omp-b-bbbbbb" :cli-type 'omp))
+   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+              (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+     (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
+   (should-not created)
+   (should-not switched)))
+
+(ert-deftest claude-code-ide-test-adopt-spawned-session-remote-attaches-from-one-list ()
+  "An approved host gets one list request, and its reply attaches only B with its host."
+  (claude-code-ide-tests--with-spawn-adoption
+   (claude-code-ide--adopt-spawned-session "host-a" "cci-omp-b-bbbbbb")
+   (should (equal (mapcar (lambda (request) (seq-take request 2)) requests)
+                  '(("host-a" ("list")))))
+   (reply (concat "name=cci-omp-a-aaaaaa\tpid=1\tstart_dir=/srv/a\tcmd=omp\n"
+                  "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp"
+                  "\tcci-parent=cci-omp-a-aaaaaa\tcci-state=idle\n"))
+   (should (equal created '(("host-a" "cci-omp-b-bbbbbb"))))
+   (should (equal switched '("cci-omp-b-bbbbbb")))
+   (should (= (length requests) 1))))
+
+(ert-deftest claude-code-ide-test-adopt-spawned-session-remote-refusals ()
+  "An unapproved host sends no request and shows one message.
+A failed list attaches nothing and logs one line."
+  (claude-code-ide-tests--with-spawn-adoption
+   (let (messages logs)
+     (cl-letf (((symbol-function 'message)
+                (lambda (format &rest args) (push (apply #'format format args) messages))))
+       (claude-code-ide--adopt-spawned-session "host-z" "cci-omp-b-bbbbbb"))
+     (should-not requests)
+     (should (= (length messages) 1))
+     (should (string-match-p "host-z" (car messages)))
+     (should (string-match-p "cci-omp-b-bbbbbb" (car messages)))
+     (cl-letf (((symbol-function 'claude-code-ide-log)
+                (lambda (format &rest args) (push (apply #'format format args) logs))))
+       (claude-code-ide--adopt-spawned-session "host-a" "cci-omp-b-bbbbbb")
+       (reply "" 255))
+     (should (= (length logs) 1))
+     (should-not created)
+     (should-not switched)
+     (should (= (hash-table-count claude-code-ide--sessions) 0)))))
 
 (ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
   "Failed or timed-out SSH cannot validate a target from partial output."

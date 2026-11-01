@@ -105,6 +105,37 @@ Stock zmx 0.8.1 replayed the Agent's enabled mode 5522 to a fresh Emacs in the r
 The package sends no synthetic Agent input to enable that mode.
 See [[file:remote.org][the remote guide]] for receiver requirements and unconfirmed-delivery handling.
 
+* Sibling Sessions
+
+An Oh My Pi Session that runs in zmx can start a Sibling Session.
+Type =/spawn REQUEST= in the Agent.
+The Agent picks how much context the new Session gets: none, a fork of its history, a fork with a handoff note, or a handoff summary.
+It can start the new Session in another directory or in a new Git worktree on the same host.
+Set the omp setting =spawn.confirm= to =true= to confirm each spawn.
+The host needs zmx 0.8.1 or later, because omp records the parent link in zmx labels.
+
+omp creates the new Session with =zmx attach= and gives it a name such as =cci-omp-PROJECT-abc123=.
+The name keeps the prefix of the parent's zmx name.
+omp then writes one announcement to its terminal:
+
+#+begin_src text
+ESC ] 52 ; e ; "claude-code-ide-session-spawn-announce" "NAME" ESC \
+#+end_src
+
+Ghostel passes the announcement to =claude-code-ide-session-spawn-announce=.
+Emacs accepts it only in a live Oh My Pi Session buffer, and only for a name that starts with =claude-code-ide-zmx-session-prefix=.
+Emacs then lists zmx on the parent's host and attaches the named Session through the normal attach path.
+A remote parent must be on a host in =claude-code-ide-remote-hosts=.
+Emacs writes one log line and attaches nothing when the name is not listed, is already attached, or runs an unknown command.
+
+When =claude-code-ide-switch-on-spawn= is non-nil (the default), Emacs switches to the new Session.
+Set it to nil to keep the selected window.
+
+Type =/despawn= in the parent to end one of its children.
+omp shows one confirmation that names the child, then kills its zmx session.
+Emacs then removes the row and closes the buffer, as after Stop.
+When the spawn created a Git worktree, =/despawn= applies the omp setting =worktree.onExit= to it.
+
 * Detach and Stop
 
 These actions do not mean the same thing:

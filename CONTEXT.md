@@ -115,6 +115,12 @@ confirmed gone, a Stop succeeds, or the user detaches it.
 Creating a Session for a zmx session that was launched outside Emacs,
 so it gains a buffer, idle tracking, and manager visibility.
 
+### Sibling Session
+A new top-level Oh My Pi Session that another Session, its parent,
+started with `/spawn`. It runs in its own zmx session on the parent's
+host. Emacs adopts it when the parent announces its name. The parent
+can end it with `/despawn`.
+
 ### Agent
 One of the supported CLIs: Claude Code, Codex, OpenCode, Pi, Oh My Pi.
 

@@ -112,6 +112,12 @@ default to empty lists, without local CLI or MCP settings."
        (not (string-suffix-p "*" name))
        (not (string-match-p "[/[:cntrl:]]" name))))
 
+(defun claude-code-ide-zmx--package-name-p (name)
+  "Return non-nil if NAME is a valid zmx name this package generated.
+Such a name starts with `claude-code-ide-zmx-session-prefix'."
+  (and (claude-code-ide-zmx--valid-name-p name)
+       (string-prefix-p claude-code-ide-zmx-session-prefix name)))
+
 (defun claude-code-ide-zmx--validate-name (name)
   "Reject NAME if zmx could interpret it as anything but one target."
   (unless (claude-code-ide-zmx--valid-name-p name)

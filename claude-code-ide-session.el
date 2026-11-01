@@ -65,6 +65,9 @@
 (declare-function claude-code-ide--touch-session-for-buffer
                   "claude-code-ide" (&optional buffer))
 (declare-function claude-code-ide--format-insertion "claude-code-ide" (body))
+(declare-function claude-code-ide-session-cli-type "claude-code-ide" (session))
+(declare-function claude-code-ide-zmx--package-name-p "claude-code-ide-zmx" (name))
+(declare-function claude-code-ide--adopt-spawned-session "claude-code-ide" (host name))
 
 (defgroup claude-code-ide-session nil
   "Session support for Claude Code IDE."
@@ -672,12 +675,24 @@ Both visits run later, outside Ghostel's native VT callback."
            (claude-code-ide-session--editor-answer request "cancel")
            (signal (car err) (cdr err))))))))
 
+(defun claude-code-ide-session-spawn-announce (name)
+  "Attach the Sibling Session NAME that this Oh My Pi Session announced.
+Ghostel calls this inside its VT parser, so only check the caller and
+NAME here and schedule `claude-code-ide--adopt-spawned-session' with
+the Session's host.  Return nil."
+  (when-let* ((session (claude-code-ide--session-for-buffer))
+              ((eq (claude-code-ide-session-cli-type session) 'omp))
+              ((claude-code-ide-zmx--package-name-p name)))
+    (run-at-time 0 nil #'claude-code-ide--adopt-spawned-session
+                 (claude-code-ide-session-host session) name))
+  nil)
+
 (with-eval-after-load 'ghostel
-  (when (and (boundp 'ghostel-eval-cmds)
-             (not (assoc "claude-code-ide-session-editor-request" ghostel-eval-cmds)))
-    (push '("claude-code-ide-session-editor-request"
-            claude-code-ide-session-editor-request)
-          ghostel-eval-cmds)))
+  (when (boundp 'ghostel-eval-cmds)
+    (dolist (command '("claude-code-ide-session-editor-request"
+                       "claude-code-ide-session-spawn-announce"))
+      (unless (assoc command ghostel-eval-cmds)
+        (push (list command (intern command)) ghostel-eval-cmds)))))
 
 ;; `<return>' reaches RET through `function-key-map', so RET alone covers both.
 (let ((map (cdar claude-code-ide-session--emulation-mode-map-alist)))
