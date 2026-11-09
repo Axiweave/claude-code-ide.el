@@ -136,6 +136,53 @@ omp shows one confirmation that names the child, then kills its zmx session.
 Emacs then removes the row and closes the buffer, as after Stop.
 When the spawn created a Git worktree, =/despawn= applies the omp setting =worktree.onExit= to it.
 
+* Sessions from Outside Programs
+
+An outside program, such as a Session Intake, can ask Emacs to attach a Session that it started in zmx.
+It runs =claude-code-ide-adopt-session= through =emacsclient=:
+
+#+begin_src sh
+emacsclient --eval '(claude-code-ide-adopt-session "v12dev" "cci-omp-api-x1y2z3")'
+emacsclient --eval '(claude-code-ide-adopt-session nil "cci-omp-api-x1y2z3")'
+#+end_src
+
+A nil host means the zmx server on the Emacs machine.
+A remote host must be in =claude-code-ide-remote-hosts=.
+The name must start with =claude-code-ide-zmx-session-prefix=.
+The command returns at once and prints one symbol:
+
+- =adopting=: Emacs attaches the Session from a timer, as for a Sibling Session.
+- =skipped=: the Session is already live in Emacs, Emacs is already attaching it, or this command attached it before in this Emacs.
+- =refused=: the host or the name is not accepted. Emacs shows one message that names the refused value and the Session.
+
+=claude-code-ide-switch-on-spawn= decides whether Emacs switches to the attached Session.
+
+** Pull from a Session Intake
+
+When the Intake cannot reach =emacsclient=, Emacs can pull the Sessions instead.
+Turn on =claude-code-ide-intake-mode= after you set these options:
+
+- =claude-code-ide-intake-url=: the Intake base URL, for example =http://127.0.0.1:7311=. When it is nil, pull is off and Emacs never contacts the Intake.
+- =claude-code-ide-intake-token-file=: the file with the bearer token. The default is =~/.config/cci-intake/token=. Emacs reads it at each connect.
+- =claude-code-ide-intake-client=: the name of this Emacs in the =emacs= entries of the Intake configuration. The default is =(system-name)=, which often differs from that name. The Intake refuses an unknown name, and Emacs shows a message that names this option.
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-intake-url "http://127.0.0.1:7311")
+(claude-code-ide-intake-mode 1)
+#+end_src
+
+Pull needs the =curl= program.
+The mode signals an error when =curl= is missing or the URL is nil.
+The mode opens the Intake event stream, then reads the running Launches once.
+It calls =claude-code-ide-adopt-session= for each running Launch that names a host for this Emacs.
+curl reads the token on stdin, so no process argument holds it.
+When the stream ends, the mode reconnects after 1, 2, 4, and up to 60 seconds, opens the stream again, and reads the list again.
+Push and pull together attach each Session once.
+A Session that this command attached once is not adopted again in this Emacs, even after you disconnect it or kill its buffer.
+A failed attach does not count, so the next event tries again.
+The Intake sends an event on each Agent state change, so without this rule the Session would come back.
+To attach it again, use =M-x claude-code-ide-attach=.
+
 * Detach and Stop
 
 These actions do not mean the same thing:

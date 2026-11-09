@@ -227,6 +227,7 @@ Like the real one, drop the stored value when it equals the default."
 (require 'claude-code-ide-mcp-handlers)
 (require 'claude-code-ide)
 (require 'claude-code-ide-remote-worktree)
+(require 'claude-code-ide-intake)
 
 ;; The one-time startup check of local rows lists the user's zmx
 ;; sessions, so it runs only where a test binds this to nil.
@@ -23280,6 +23281,209 @@ The next call for the same pair starts a new adopt."
    (should-not claude-code-ide--adopted-sessions)
    (dolist (host '(nil "host-a"))
      (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'adopting)))))
+
+(defmacro claude-code-ide-tests--with-intake (&rest body)
+  "Run BODY with `claude-code-ide-intake-mode' isolated and curl mocked.
+BODY sees CURL, which `executable-find' reports, SPAWNED, the (PROCESS
+. ARGS) of each `make-process' call, SENT, the stdin text of each
+process, TIMERS, the (SECONDS FUNCTION) of each `run-at-time' call,
+and ADOPTED, the (HOST NAME) of each adopt call.  The local functions
+`curl-for', `feed', `finish', and `fire' drive the processes and timers."
+  (declare (indent 0))
+  `(let* ((token-file (make-temp-file "cci-intake-token" nil nil "s3cret-token\n"))
+          (claude-code-ide-intake-url "http://intake.test:7311")
+          (claude-code-ide-intake-token-file token-file)
+          (claude-code-ide-intake-client "mac one")
+          (claude-code-ide-intake-mode nil)
+          (claude-code-ide-intake--processes nil)
+          (claude-code-ide-intake--timer nil)
+          (claude-code-ide-intake--retry-delay 1)
+          (claude-code-ide-intake--partial "")
+          (curl t) spawned sent timers adopted)
+     (unwind-protect
+         (cl-letf (((symbol-function 'executable-find)
+                    (lambda (program &rest _)
+                      (and curl (equal program "curl") "/usr/bin/curl")))
+                   ((symbol-function 'make-process)
+                    (lambda (&rest args)
+                      (let ((process (make-pipe-process :name "cci-intake-test"
+                                                        :noquery t :sentinel #'ignore)))
+                        (push (cons process args) spawned)
+                        process)))
+                   ((symbol-function 'process-send-string)
+                    (lambda (process text) (push (cons process text) sent)))
+                   ((symbol-function 'process-send-eof) #'ignore)
+                   ((symbol-function 'run-at-time)
+                    (lambda (seconds _repeat function &rest _)
+                      (push (list seconds function) timers)
+                      (timer-create)))
+                   ((symbol-function 'claude-code-ide-adopt-session)
+                    (lambda (host name) (push (list host name) adopted) 'adopting)))
+           (cl-labels ((curl-for (path)
+                         ;; The newest process whose stdin URL holds PATH.
+                         (car (seq-find (lambda (entry)
+                                          (string-match-p
+                                           (regexp-quote path)
+                                           (alist-get (car entry) sent)))
+                                        spawned)))
+                       (args-of (process) (alist-get process spawned))
+                       (feed (process text)
+                         (funcall (plist-get (args-of process) :filter) process text))
+                       (finish (process event)
+                         (delete-process process)
+                         (funcall (plist-get (args-of process) :sentinel) process event))
+                       (fire ()
+                         (funcall (cadr (car timers)))))
+             ,@body))
+       (claude-code-ide-intake-mode -1)
+       (dolist (entry spawned)
+         (when (process-live-p (car entry)) (delete-process (car entry))))
+       (delete-file token-file))))
+
+(defun claude-code-ide-tests--intake-event (state host-key name)
+  "Return one stream event for a Launch NAME in STATE.
+HOST-KEY is `absent', `null', or a host string for `emacs_host'."
+  (format "event: launch\ndata: {\"id\":\"l1\",\"state\":%S,%s\"name\":%S}\n\n"
+          state
+          (pcase host-key
+            ('absent "")
+            ('null "\"emacs_host\":null,")
+            (host (format "\"emacs_host\":%S," host)))
+          name))
+
+(ert-deftest claude-code-ide-test-intake-mode-refuses-without-url-or-curl ()
+  "A nil URL or a missing curl gives a `user-error' and starts no process."
+  (claude-code-ide-tests--with-intake
+   (let ((claude-code-ide-intake-url nil))
+     (should-error (claude-code-ide-intake-mode 1) :type 'user-error))
+   (setq curl nil)
+   (should-error (claude-code-ide-intake-mode 1) :type 'user-error)
+   (should-not claude-code-ide-intake-mode)
+   (should-not spawned)))
+
+(ert-deftest claude-code-ide-test-intake-token-only-on-stdin ()
+  "No curl argument holds the token, and stdin holds the header and the URL."
+  (claude-code-ide-tests--with-intake
+   (claude-code-ide-intake-mode 1)
+   (should (= (length spawned) 2))
+   (dolist (entry spawned)
+     (let ((args (cdr entry))
+           (text (alist-get (car entry) sent)))
+       (should (equal (plist-get args :command) '("curl" "-sN" "--fail" "--config" "-")))
+       (should-not (seq-some (lambda (arg) (string-match-p "s3cret" arg))
+                             (plist-get args :command)))
+       (should (string-match-p "^header = \"Authorization: Bearer s3cret-token\"$" text))
+       (should (string-match-p "^url = \"http://intake\\.test:7311/v1/" text))
+       (should (string-match-p "client=mac%20one" text))))))
+
+(ert-deftest claude-code-ide-test-intake-stream-chunking-property ()
+  "A stream cut at random points gives the same adopt calls as the whole stream."
+  (let* ((seed "cci-intake-024")
+         (states '("running" "queued" "ended" "failed"))
+         (hosts '(absent null "host-a" "host-b"))
+         expected events)
+    (random seed)
+    (message "intake chunking seed: %s" seed)
+    (dotimes (i 30)
+      (let ((state (nth (random 4) states))
+            (host (nth (random 4) hosts))
+            (name (format "cci-omp-p-%06d" i)))
+        (push (if (zerop (random 5))
+                  (format ": ping\n\nevent: other\ndata: {\"state\":\"running\",\"emacs_host\":null,\"name\":%S}\n\n" name)
+                (when (and (equal state "running") (not (eq host 'absent)))
+                  (push (list (and (stringp host) host) name) expected))
+                (claude-code-ide-tests--intake-event state host name))
+              events)))
+    (let ((stream (apply #'concat (nreverse events))))
+      (should expected)
+      (claude-code-ide-tests--with-intake
+       (claude-code-ide-intake-mode 1)
+       (let ((process (curl-for "/v1/events")))
+         (feed process stream)
+         (should (equal adopted expected))
+         (dotimes (_ 50)
+           (setq adopted nil)
+           (let ((start 0))
+             (while (< start (length stream))
+               (let ((end (min (length stream) (+ start 1 (random 40)))))
+                 (feed process (substring stream start end))
+                 (setq start end))))
+           (should (equal adopted expected))))))))
+
+(ert-deftest claude-code-ide-test-intake-adopts-only-running-with-host ()
+  "A running event with `emacs_host' adopts once; other events adopt nothing."
+  (claude-code-ide-tests--with-intake
+   (claude-code-ide-intake-mode 1)
+   (let ((process (curl-for "/v1/events")))
+     (feed process (claude-code-ide-tests--intake-event "running" 'absent "cci-omp-p-a"))
+     (feed process (claude-code-ide-tests--intake-event "ended" "host-a" "cci-omp-p-b"))
+     (should-not adopted)
+     (feed process (claude-code-ide-tests--intake-event "running" 'null "cci-omp-p-c"))
+     (should (equal adopted '((nil "cci-omp-p-c")))))))
+
+(ert-deftest claude-code-ide-test-intake-reconnect-backoff-and-catch-up ()
+  "Reconnect delays double up to 60, one event resets them to 1,
+and each reconnect reads the running Launches again."
+  (claude-code-ide-tests--with-intake
+   (claude-code-ide-intake-mode 1)
+   (dotimes (_ 8)
+     (finish (curl-for "/v1/events") "finished\n")
+     (fire))
+   (should (equal (reverse (mapcar #'car timers)) '(1 2 4 8 16 32 60 60)))
+   (should (= (cl-count-if (lambda (entry) (string-match-p "/v1/launches" (cdr entry))) sent)
+              9))
+   (feed (curl-for "/v1/events") ": ping\n\n")
+   (finish (curl-for "/v1/events") "connection broken by remote peer\n")
+   (should (equal (car (car timers)) 1))))
+
+(ert-deftest claude-code-ide-test-intake-catch-up-adopts-running ()
+  "The catch-up list adopts each running Launch with a host, and a failed list adopts nothing."
+  (claude-code-ide-tests--with-intake
+   (claude-code-ide-intake-mode 1)
+   (let ((body (concat "{\"launches\":["
+                       "{\"state\":\"running\",\"emacs_host\":\"host-a\",\"name\":\"cci-omp-p-a\"},"
+                       "{\"state\":\"running\",\"emacs_host\":null,\"name\":\"cci-omp-p-b\"},"
+                       "{\"state\":\"running\",\"name\":\"cci-omp-p-c\"}]}"))
+         (process (curl-for "/v1/launches")))
+     (feed process (substring body 0 30))
+     (feed process (substring body 30))
+     (finish process "finished\n")
+     (should (equal (reverse adopted) '(("host-a" "cci-omp-p-a") (nil "cci-omp-p-b")))))
+   (setq adopted nil)
+   (finish (curl-for "/v1/events") "finished\n")
+   (fire)
+   (let ((process (curl-for "/v1/launches")))
+     (feed process "{\"launches\":[{\"state\":\"running\",\"emacs_host\":null,\"name\":\"cci-omp-p-d\"}]}")
+     (finish process "exited abnormally with code 22\n"))
+   (should-not adopted)))
+
+(ert-deftest claude-code-ide-test-intake-http-error-shows-message ()
+  "An HTTP error (curl exit 22) names the client and token settings.
+A connection error, as when the Intake is down, shows nothing."
+  (claude-code-ide-tests--with-intake
+   (claude-code-ide-intake-mode 1)
+   (let (messages)
+     (cl-letf (((symbol-function 'message)
+                (lambda (format &rest args) (push (apply #'format format args) messages))))
+       (finish (curl-for "/v1/events") "exited abnormally with code 7\n")
+       (should-not messages)
+       (fire)
+       (finish (curl-for "/v1/events") "exited abnormally with code 22\n"))
+     (should (= (length messages) 1))
+     (should (string-match-p "/v1/events\\?client=mac%20one.*claude-code-ide-intake-client"
+                             (car messages))))))
+
+(ert-deftest claude-code-ide-test-intake-mode-off-leaves-nothing ()
+  "Turning the mode off leaves no live process and no timer."
+  (claude-code-ide-tests--with-intake
+   (claude-code-ide-intake-mode 1)
+   (finish (curl-for "/v1/events") "finished\n")
+   (should claude-code-ide-intake--timer)
+   (should (process-live-p (curl-for "/v1/launches")))
+   (claude-code-ide-intake-mode -1)
+   (should-not claude-code-ide-intake--timer)
+   (should-not claude-code-ide-intake--processes)
+   (should-not (seq-some (lambda (entry) (process-live-p (car entry))) spawned))))
 
 (ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
   "Failed or timed-out SSH cannot validate a target from partial output."

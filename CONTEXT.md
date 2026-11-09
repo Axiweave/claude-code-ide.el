@@ -121,6 +121,21 @@ started with `/spawn`. It runs in its own zmx session on the parent's
 host. Emacs adopts it when the parent announces its name. The parent
 can end it with `/despawn`.
 
+### Intake
+The one long-running service, outside Emacs, that receives Triggers and
+Launch requests, applies the gate, and starts Launches as Oh My Pi
+Sessions in zmx. Emacs adopts each running Launch through
+`claude-code-ide-adopt-session`, by push or by pull.
+
+### Launch
+One request to start a Session, and its result. It has an origin
+Trigger, a project, a host, a prompt, a zmx session name, and a state:
+queued, starting, running, ended, failed, or refused.
+
+### Trigger
+One event from a source, with a stable identity, an actor, a source
+link, and the gate result.
+
 ### Agent
 One of the supported CLIs: Claude Code, Codex, OpenCode, Pi, Oh My Pi.
 
