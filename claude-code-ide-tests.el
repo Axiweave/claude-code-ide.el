@@ -24155,7 +24155,8 @@ names the setting or the URL, and starts no check and no process."
                  "http://[::1]:7311"))
     (should (claude-code-ide-intake--loopback-p url)))
   (dolist (url '("http://100.64.1.2:7311" "http://example.com:7311"
-                 "http://localhost.example.com:7311" "http://1270.0.0.1:1"))
+                 "http://localhost.example.com:7311" "http://1270.0.0.1:1"
+                 "http://127.example.com:7311" "http://127.0.0.1.example.com:7311"))
     (should-not (claude-code-ide-intake--loopback-p url))))
 
 (ert-deftest claude-code-ide-test-intake-start-runs-command-in-home ()

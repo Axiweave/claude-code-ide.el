@@ -205,7 +205,7 @@ The commands:
 Rules:
 
 - Emacs never starts a second Intake. Before a start, it checks whether something accepts a connection at =claude-code-ide-intake-url=. Two Intakes on one configuration would start the same Launches twice.
-- Emacs starts the Intake only when the URL names this machine: =localhost=, =[::1]=, or a =127.x= address.
+- Emacs starts the Intake only when the URL names this machine: =localhost=, =[::1]=, or an IPv4 address =127.N.N.N=. A host name such as =127.example.com= does not count.
 - Emacs stops only an Intake that it started. For an Intake that you started in a terminal or as a service, stop it there.
 - When the Intake ends without a stop, Emacs shows one message and does not start it again.
 - When you quit Emacs, the Intake that Emacs started stops, without a question. To keep the Intake running while Emacs is closed, start it outside Emacs.

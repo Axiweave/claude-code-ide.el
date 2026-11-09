@@ -15,7 +15,7 @@
 
 ## D3 Only a loopback URL
 
-- **Decision**: Emacs starts the Intake only when the URL host is `localhost`, `::1` (written `[::1]`), or starts with `127.`. Otherwise the start command gives a `user-error` that names the URL.
+- **Decision**: Emacs starts the Intake only when the URL host is `localhost`, `::1` (written `[::1]`), or an IPv4 address `127.N.N.N`. A name such as `127.example.com` is not loopback. Otherwise the start command gives a `user-error` that names the URL.
 - **Rationale**: FR-004. `url-generic-parse-url` gives the host `"127.0.0.1"`, `"localhost"`, or `"[::1]"` (checked live). A private address such as `100.64.1.2` can be another machine, so it does not count.
 - **Alternatives considered**: Resolve the host and compare it with the local interfaces. This adds complexity for no current use.
 

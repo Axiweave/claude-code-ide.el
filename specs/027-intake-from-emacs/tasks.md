@@ -19,7 +19,7 @@ None. The file, the group, and the test harness already exist.
   - `defvar claude-code-ide-intake--managed`: the managed process or `nil`.
   - `defvar claude-code-ide-intake--stopping`.
   - `defconst` buffer name `*claude-code-ide-intake*`.
-  - `claude-code-ide-intake--loopback-p URL`: true for host `localhost`, `[::1]`, or a host that starts with `127.`, through `url-generic-parse-url`.
+  - `claude-code-ide-intake--loopback-p URL`: true for host `localhost`, `[::1]`, or an IPv4 address `127.N.N.N`, through `url-generic-parse-url`.
   - `claude-code-ide-intake--answers CALLBACK`: a `make-network-process :nowait t :noquery t` to the URL host and port. It calls CALLBACK once with t for a first event `"open\n"` and nil otherwise, and it deletes the connection. A connect error also gives nil.
 - [X] T002 In `claude-code-ide-tests.el`, add the macro `claude-code-ide-tests--with-intake-process`. It expands inside `claude-code-ide-tests--with-intake`, so it reuses that macro's token file, its `make-process` mock (SPAWNED holds each call with its ARGS, so `:command` too), its `run-at-time` mock (TIMERS), and its local functions `curl-for`, `finish`, and `fire`. Do not add a second `make-process` mock. Inside, it binds the URL to `http://127.0.0.1:7311`, the Intake command setting to `("fake-intake" "--run")`, and `--managed` and `--stopping` to nil. It adds these mocks:
   - `make-network-process`: records the host and port, and returns a pipe process. The local function `answer (open-p)` fires the sentinel of the newest connection with `"open\n"` or `"failed with code 61\n"`.
@@ -45,7 +45,7 @@ None. The file, the group, and the test harness already exist.
 
 - [X] T003 [US1] In `claude-code-ide-tests.el`, add tests for the start rows in `contracts/emacs-commands.md`:
   - A `nil` command, a `nil` URL, and a non-loopback URL each give a `user-error` that names the setting or the URL, and make no process.
-  - `claude-code-ide-intake--loopback-p` is true for `127.0.0.1`, `127.1.2.3`, `localhost`, and `[::1]`. It is false for `100.64.1.2`, `example.com`, and `localhost.example.com`.
+  - `claude-code-ide-intake--loopback-p` is true for `127.0.0.1`, `127.1.2.3`, `localhost`, and `[::1]`. It is false for `100.64.1.2`, `example.com`, `localhost.example.com`, `127.example.com`, and `127.0.0.1.example.com`.
   - With no answer, start makes one process. Its `:command` is the option value, `default-directory` is `~/`, `:noquery` is t, and the buffer is erased first.
 - [X] T004 [US1] In `claude-code-ide-tests.el`, add tests for the start wait and the end messages:
   - `open` on a later check gives `Intake answers at URL` once, and no more timers.

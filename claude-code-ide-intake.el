@@ -421,7 +421,7 @@ answer yes to start it or no to refuse it."
   "Return non-nil when the host of URL is this machine."
   (when-let* ((host (url-host (url-generic-parse-url url))))
     (or (member host '("localhost" "[::1]"))
-        (string-prefix-p "127." host))))
+        (string-match-p "\\`127\\.[0-9]+\\.[0-9]+\\.[0-9]+\\'" host))))
 
 (defun claude-code-ide-intake--answers (callback)
   "Call CALLBACK with t when the Intake URL accepts a connection, else nil.
