@@ -24068,6 +24068,350 @@ message that names the command, and adopts nothing."
                             (car messages)))
     (should-not adopted)))
 
+(defmacro claude-code-ide-tests--with-intake-process (&rest body)
+  "Run BODY with the Intake process, the connect check, and signals mocked.
+BODY sees the names of `claude-code-ide-tests--with-intake', and
+CONNECTIONS, the (PROCESS . ARGS) of each connect check, SIGNALS, the
+(PROCESS SIGNAL) of each signal, MESSAGES, the shown messages, and
+ON-WAIT, a function that each wait step of a stop calls.  The local
+functions `answer', `intake-process', and `exit-with' drive them."
+  (declare (indent 0))
+  `(claude-code-ide-tests--with-intake
+     (let ((claude-code-ide-intake-url "http://127.0.0.1:7311")
+           (claude-code-ide-intake-command '("fake-intake" "--run"))
+           (claude-code-ide-intake--managed nil)
+           (claude-code-ide-intake--stopping nil)
+           (claude-code-ide-intake--wait-timer nil)
+           connections signals messages on-wait)
+       (when (get-buffer claude-code-ide-intake--buffer)
+         (kill-buffer claude-code-ide-intake--buffer))
+       (unwind-protect
+           (cl-letf (((symbol-function 'make-network-process)
+                      (lambda (&rest args)
+                        (let ((process (make-pipe-process :name "cci-check-test"
+                                                          :noquery t :sentinel #'ignore)))
+                          (push (cons process args) connections)
+                          process)))
+                     ((symbol-function 'signal-process)
+                      (lambda (process signal &rest _)
+                        (push (list process signal) signals)
+                        (when (eq signal 'SIGKILL) (delete-process process))
+                        0))
+                     ((symbol-function 'accept-process-output)
+                      (lambda (&rest _) (when on-wait (funcall on-wait)) nil))
+                     ((symbol-function 'message)
+                      (lambda (format &rest args)
+                        (when format (push (apply #'format format args) messages)))))
+             (cl-labels ((answer (open-p &optional connection)
+                           ;; The oldest open connect check, by default.
+                           (let ((entry (or (assq connection connections)
+                                            (car (last (seq-filter
+                                                        (lambda (entry) (process-live-p (car entry)))
+                                                        connections))))))
+                             (funcall (plist-get (cdr entry) :sentinel) (car entry)
+                                      (if open-p "open\n" "failed with code 61\n"))))
+                         (intake-process ()
+                           (car (seq-find (lambda (entry)
+                                            (equal (car (plist-get (cdr entry) :command))
+                                                   "fake-intake"))
+                                          spawned)))
+                         (intake-count ()
+                           (seq-count (lambda (entry)
+                                        (equal (car (plist-get (cdr entry) :command))
+                                               "fake-intake"))
+                                      spawned))
+                         (exit-with (code output)
+                           (with-current-buffer (get-buffer-create claude-code-ide-intake--buffer)
+                             (insert output))
+                           (finish (intake-process)
+                                   (if (zerop code)
+                                       "finished\n"
+                                     (format "exited abnormally with code %d\n" code)))))
+               ,@body))
+         (dolist (entry connections)
+           (when (process-live-p (car entry)) (delete-process (car entry))))
+         (when (get-buffer claude-code-ide-intake--buffer)
+           (kill-buffer claude-code-ide-intake--buffer))))))
+
+(ert-deftest claude-code-ide-test-intake-start-refuses-without-setup ()
+  "A nil command, a nil URL, or a non-loopback URL gives a `user-error' that
+names the setting or the URL, and starts no check and no process."
+  (claude-code-ide-tests--with-intake-process
+    (pcase-dolist (`(,command ,url ,named)
+                   '((nil "http://127.0.0.1:7311" "claude-code-ide-intake-command")
+                     (("fake-intake") nil "claude-code-ide-intake-url")
+                     (("fake-intake") "http://100.64.1.2:7311" "100.64.1.2")))
+      (let ((claude-code-ide-intake-command command)
+            (claude-code-ide-intake-url url))
+        (should (string-match-p
+                 (regexp-quote named)
+                 (cadr (should-error (claude-code-ide-intake-start) :type 'user-error))))))
+    (should-not connections)
+    (should-not spawned)))
+
+(ert-deftest claude-code-ide-test-intake-loopback-hosts ()
+  "Only localhost, [::1], and 127.x hosts are this machine."
+  (dolist (url '("http://127.0.0.1:7311" "http://127.1.2.3:1" "http://localhost:7311/"
+                 "http://[::1]:7311"))
+    (should (claude-code-ide-intake--loopback-p url)))
+  (dolist (url '("http://100.64.1.2:7311" "http://example.com:7311"
+                 "http://localhost.example.com:7311" "http://1270.0.0.1:1"))
+    (should-not (claude-code-ide-intake--loopback-p url))))
+
+(ert-deftest claude-code-ide-test-intake-start-runs-command-in-home ()
+  "With no answer, start erases the buffer and runs the command in the home
+directory, as a `:noquery' pipe process that becomes the managed Intake."
+  (claude-code-ide-tests--with-intake-process
+    (with-current-buffer (get-buffer-create claude-code-ide-intake--buffer)
+      (insert "old output\n"))
+    (let ((make (symbol-function 'make-process))
+          directory)
+      (cl-letf (((symbol-function 'make-process)
+                 (lambda (&rest args)
+                   (setq directory default-directory)
+                   (apply make args))))
+        (claude-code-ide-intake-start)
+        (should (equal (plist-get (cdar connections) :host) "127.0.0.1"))
+        (should (equal (plist-get (cdar connections) :service) 7311))
+        (should-not spawned)
+        (answer nil))
+      (let ((args (cdar spawned)))
+        (should (equal (plist-get args :command) '("fake-intake" "--run")))
+        (should (eq (plist-get args :noquery) t))
+        (should (eq (plist-get args :connection-type) 'pipe))
+        (should (equal directory (expand-file-name "~/")))))
+    (should (eq claude-code-ide-intake--managed (intake-process)))
+    (should (equal (with-current-buffer claude-code-ide-intake--buffer (buffer-string)) ""))))
+
+(ert-deftest claude-code-ide-test-intake-start-wait-answers-or-gives-up ()
+  "An answer on a later check gives one message and no more steps.
+Twenty checks without an answer give one message, and the process stays."
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-start)
+    (answer nil)
+    (dotimes (_ 2) (fire) (answer nil))
+    (fire)
+    (let ((steps (length timers)))
+      (answer t)
+      (should (= (length timers) steps)))
+    (should (equal messages '("Intake answers at http://127.0.0.1:7311"))))
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-start)
+    (answer nil)
+    (dotimes (_ 20) (fire) (answer nil))
+    (should (= (length timers) 20))
+    (should (equal messages '("Intake started but does not answer yet; see *claude-code-ide-intake*")))
+    (should (process-live-p (intake-process)))
+    (should (eq claude-code-ide-intake--managed (intake-process)))))
+
+(ert-deftest claude-code-ide-test-intake-unasked-end-reports-once ()
+  "An end during the wait or after the answer gives one message with the
+code from the event and the last error line, and starts nothing again.
+After a stop and a start, or a restart, the next end still reports."
+  (pcase-dolist (`(,code ,answered)
+                 '((1 nil) (3 nil) (0 nil) (1 t)))
+    (claude-code-ide-tests--with-intake-process
+      (claude-code-ide-intake-start)
+      (answer nil)
+      (when answered (fire) (answer t) (setq messages nil))
+      (exit-with code "cci-intake: loading\nerror: hosts.default: reserved\n    at main.ts\n\nBun v1.4.4\n")
+      (should (equal messages
+                     (list (format "Intake ended (exit %d): error: hosts.default: reserved" code))))
+      (should-not claude-code-ide-intake--managed)
+      (let ((checks (length connections)))
+        (fire)
+        (should (= (length connections) checks)))
+      (should (= (intake-count) 1))))
+  (dolist (again '(stop-and-start restart))
+    (claude-code-ide-tests--with-intake-process
+      (claude-code-ide-intake-start)
+      (answer nil)
+      (setq on-wait (lambda () (finish (intake-process) "finished\n")))
+      (if (eq again 'restart)
+          (claude-code-ide-intake-restart)
+        (claude-code-ide-intake-stop)
+        (claude-code-ide-intake-start))
+      (setq on-wait nil)
+      (answer nil)
+      (should (= (intake-count) 2))
+      (setq messages nil)
+      (exit-with 2 "boom\n")
+      (should (equal messages '("Intake ended (exit 2): boom"))))))
+
+(ert-deftest claude-code-ide-test-intake-error-line-property ()
+  "LINE is the last `error:' line, or else the last non-blank line."
+  (let ((seed "cci-intake-027"))
+    (random seed)
+    (message "intake error-line seed: %s" seed)
+    (dotimes (_ 200)
+      (let (lines)
+        (dotimes (_ (random 8))
+          (push (pcase (random 4)
+                  (0 "")
+                  (1 "   ")
+                  (2 (format "plain %d" (random 100)))
+                  (_ (format "error: e%d" (random 100))))
+                lines))
+        (let* ((text (mapconcat #'identity lines "\n"))
+               (kept (delete "" (mapcar #'string-trim lines)))
+               (errors (seq-filter (lambda (line) (string-prefix-p "error:" line)) kept))
+               (expected (or (car (last errors)) (car (last kept)) "")))
+          (should (equal (claude-code-ide-intake--error-line text) expected)))))))
+
+(ert-deftest claude-code-ide-test-intake-stop-terminates-then-kills ()
+  "Stop sends SIGTERM, and SIGKILL only when the process outlives 50 wait
+steps.  It then clears the managed Intake and the stop flag, shows one
+message, and an old wait step does nothing."
+  (dolist (ends-on-term '(t nil))
+    (claude-code-ide-tests--with-intake-process
+      (claude-code-ide-intake-start)
+      (answer nil)
+      (let ((process (intake-process))
+            (old-step (cadr (car timers))))
+        (when ends-on-term
+          (setq on-wait (lambda () (finish process "finished\n"))))
+        (claude-code-ide-intake-stop)
+        (should (equal (mapcar #'cadr (reverse signals))
+                       (if ends-on-term '(SIGTERM) '(SIGTERM SIGKILL))))
+        (should-not (process-live-p process))
+        (should (equal messages '("Intake stopped")))
+        (should-not claude-code-ide-intake--managed)
+        (should-not claude-code-ide-intake--stopping)
+        (let ((checks (length connections))
+              (steps (length timers)))
+          (funcall old-step)
+          (should (= (length connections) checks))
+          (should (= (length timers) steps)))
+        (should (equal messages '("Intake stopped")))))))
+
+(ert-deftest claude-code-ide-test-intake-restart-ignores-old-wait ()
+  "Restart ends the managed Intake and starts a new one.  The old wait step
+and the old connect callback do nothing, and the new wait still works."
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-start)
+    (answer nil)
+    (let ((old (intake-process))
+          (old-step (cadr (car timers))))
+      (fire)
+      (let ((old-check (caar connections)))
+        (setq on-wait (lambda () (finish old "finished\n")))
+        (claude-code-ide-intake-restart)
+        (setq on-wait nil)
+        (answer nil (caar connections))
+        (should (= (intake-count) 2))
+        (should-not (eq (intake-process) old))
+        (should (eq claude-code-ide-intake--managed (intake-process)))
+        (setq messages nil)
+        (let ((steps (length timers)))
+          (answer t old-check)
+          (funcall old-step)
+          (should-not messages)
+          (should (= (length timers) steps)))
+        (fire)
+        (answer t)
+        (should (equal messages '("Intake answers at http://127.0.0.1:7311")))))))
+
+(ert-deftest claude-code-ide-test-intake-log-shows-buffer ()
+  "Log shows the output buffer, or one message when Emacs started nothing."
+  (claude-code-ide-tests--with-intake-process
+    (let (shown)
+      (cl-letf (((symbol-function 'display-buffer)
+                 (lambda (buffer &rest _) (setq shown buffer))))
+        (claude-code-ide-intake-log)
+        (should-not shown)
+        (should (equal messages '("Emacs has not started the Intake")))
+        (claude-code-ide-intake-start)
+        (answer nil)
+        (claude-code-ide-intake-log)
+        (should (eq shown (get-buffer claude-code-ide-intake--buffer)))))))
+
+(ert-deftest claude-code-ide-test-intake-no-second-intake ()
+  "Start makes no process while an Intake answers or the managed one runs.
+Two start steps before any answer make one process, in either order."
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-start)
+    (answer t)
+    (should (= (intake-count) 0))
+    (should (equal messages '("An Intake already answers at http://127.0.0.1:7311; Emacs starts no second one"))))
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-start)
+    (answer nil)
+    (setq messages nil)
+    (let ((checks (length connections)))
+      (claude-code-ide-intake-start)
+      (should (= (length connections) checks)))
+    (should (= (intake-count) 1))
+    (should (equal messages '("The Intake that Emacs started already runs"))))
+  (dolist (command-first '(t nil))
+    (claude-code-ide-tests--with-intake-process
+      (if command-first
+          (progn (claude-code-ide-intake-start) (claude-code-ide-intake--start t))
+        (claude-code-ide-intake--start t)
+        (claude-code-ide-intake-start))
+      (should (= (length connections) 2))
+      (answer nil)
+      (let ((first (intake-process)))
+        (answer nil)
+        (should (= (intake-count) 1))
+        (should (eq claude-code-ide-intake--managed first)))
+      (should (equal messages
+                     (unless command-first
+                       '("The Intake that Emacs started already runs")))))))
+
+(ert-deftest claude-code-ide-test-intake-stop-never-ends-other-intake ()
+  "Without a managed Intake, stop and restart send no signal.
+Stop names the case, and restart gives the start message."
+  (dolist (answers '(t nil))
+    (claude-code-ide-tests--with-intake-process
+      (claude-code-ide-intake-stop)
+      (answer answers)
+      (should-not signals)
+      (should (equal messages
+                     (list (if answers
+                               "Emacs did not start the running Intake; stop it where it was started"
+                             "No Intake runs"))))))
+  (claude-code-ide-tests--with-intake-process
+    (setq claude-code-ide-intake-url nil)
+    (claude-code-ide-intake-stop)
+    (should-not connections)
+    (should-not signals)
+    (should (equal messages '("No Intake runs"))))
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-restart)
+    (answer t)
+    (should-not signals)
+    (should (= (intake-count) 0))
+    (should (string-match-p "already answers" (car messages)))))
+
+(ert-deftest claude-code-ide-test-intake-mode-starts-intake ()
+  "Mode-on starts the Intake when the command is set, the URL is loopback,
+and nothing answers.  Otherwise it starts nothing and works as before.
+Mode-off leaves the managed Intake running."
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-mode 1)
+    (should (curl-for "/v1/events"))
+    (answer nil)
+    (should (= (intake-count) 1))
+    (claude-code-ide-intake-mode -1)
+    (should (process-live-p (intake-process)))
+    (should (eq claude-code-ide-intake--managed (intake-process))))
+  (claude-code-ide-tests--with-intake-process
+    (let ((claude-code-ide-intake-command nil))
+      (claude-code-ide-intake-mode 1)
+      (should (curl-for "/v1/events"))
+      (should-not connections)))
+  (claude-code-ide-tests--with-intake-process
+    (claude-code-ide-intake-mode 1)
+    (answer t)
+    (should (= (intake-count) 0))
+    (should-not messages))
+  (claude-code-ide-tests--with-intake-process
+    (let ((claude-code-ide-intake-url "http://intake.test:7311"))
+      (claude-code-ide-intake-mode 1)
+      (should (curl-for "/v1/events"))
+      (should-not connections)
+      (should (= (intake-count) 0)))))
+
 (ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
   "Failed or timed-out SSH cannot validate a target from partial output."
   (dolist (outcome '((:status 255 :stdout "same\n" :stderr "SSH failed")

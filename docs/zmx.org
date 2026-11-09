@@ -183,6 +183,45 @@ A failed attach does not count, so the next event tries again.
 The Intake sends an event on each Agent state change, so without this rule the Session would come back.
 To attach it again, use =M-x claude-code-ide-attach=.
 
+** Start the Intake from Emacs
+
+Emacs can start the Intake on this machine, so you need no terminal for it.
+Set =claude-code-ide-intake-command= to the program and arguments that start the Intake.
+The default is nil, and then Emacs never starts the Intake.
+Emacs runs the command in your home directory.
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-intake-command
+      '("/Users/me/.bun/bin/bun" "run" "/Users/me/agents/cci-intake/src/main.ts"))
+#+end_src
+
+The commands:
+
+- =M-x claude-code-ide-intake-start=: start the Intake. Emacs tells you when it answers, when it ended (with the exit code and its last =error:= line), or that it does not answer after 10 seconds.
+- =M-x claude-code-ide-intake-stop=: stop the Intake that this Emacs started. Emacs sends =SIGTERM=, and =SIGKILL= after about 5 seconds.
+- =M-x claude-code-ide-intake-restart=: stop it, then start it again, for example after you change the Intake configuration.
+- =M-x claude-code-ide-intake-log=: show the buffer =*claude-code-ide-intake*=, with all Intake output since the last start.
+
+Rules:
+
+- Emacs never starts a second Intake. Before a start, it checks whether something accepts a connection at =claude-code-ide-intake-url=. Two Intakes on one configuration would start the same Launches twice.
+- Emacs starts the Intake only when the URL names this machine: =localhost=, =[::1]=, or a =127.x= address.
+- Emacs stops only an Intake that it started. For an Intake that you started in a terminal or as a service, stop it there.
+- When the Intake ends without a stop, Emacs shows one message and does not start it again.
+- When you quit Emacs, the Intake that Emacs started stops, without a question. To keep the Intake running while Emacs is closed, start it outside Emacs.
+
+With the command set, =claude-code-ide-intake-mode= starts the Intake when it turns on and nothing answers.
+So these lines in your configuration give a working Intake after each Emacs start:
+
+#+begin_src emacs-lisp
+(setq claude-code-ide-intake-url "http://127.0.0.1:7311"
+      claude-code-ide-intake-command '("/Users/me/.bun/bin/bun" "run" "/Users/me/agents/cci-intake/src/main.ts"))
+(claude-code-ide-intake-mode 1)
+#+end_src
+
+Turning the mode off does not stop the Intake.
+=claude-code-ide-master= and =claude-code-ide-intake-confirm= never start the Intake.
+
 ** Master Session
 
 The Master Session is one Oh My Pi Session that you chat with to dispatch work.
