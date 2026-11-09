@@ -16,7 +16,7 @@ This Emacs package provides project-aware terminal sessions for Claude Code, Cod
 - `claude-code-ide-session.el` — shared terminal-session setup and interaction
 - `claude-code-ide-session-idle.el` — idle and working-state tracking
 - `claude-code-ide-zmx.el` — optional zmx backend for persistent, reattachable agent sessions
-- `claude-code-ide-intake.el` — optional `claude-code-ide-intake-mode`, which pulls Launches from a Session Intake with `curl` and attaches them through `claude-code-ide-adopt-session`
+- `claude-code-ide-intake.el` — optional Session Intake client over `curl`: `claude-code-ide-intake-mode` pulls Launches and attaches them through `claude-code-ide-adopt-session`, `claude-code-ide-master` opens the Master Session, and `claude-code-ide-intake-confirm` answers held Launches
 - `claude-code-ide-manager.el` — global and repository-local session sidebars and persisted layouts
 - `claude-code-ide-transient.el` — transient menus
 

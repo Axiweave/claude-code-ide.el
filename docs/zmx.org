@@ -183,6 +183,45 @@ A failed attach does not count, so the next event tries again.
 The Intake sends an event on each Agent state change, so without this rule the Session would come back.
 To attach it again, use =M-x claude-code-ide-attach=.
 
+** Master Session
+
+The Master Session is one Oh My Pi Session that you chat with to dispatch work.
+It belongs to no project.
+It asks the Intake for Launches, and each Launch becomes a Worker Session in its own project.
+The Intake sends it a short Notice when a Worker Session ends a turn, ends, fails, or is refused.
+
+This package does not ship the master directory, its =AGENTS.md=, its opening prompt, or its omp command.
+You keep them in your own files and in the =[master]= table of the Intake configuration.
+The Intake README shows that table and an example =AGENTS.md=.
+
+Setup in Emacs:
+
+1. Set =claude-code-ide-intake-url= and =claude-code-ide-intake-client=, as for pull.
+2. Run =M-x claude-code-ide-master=.
+
+The command needs the URL, the =curl= program, and a readable =claude-code-ide-intake-token-file=, and gives an error without them.
+It asks the Intake for the one Master Session.
+When the Master Session runs and is attached, the command shows it.
+Otherwise the command checks the Launch every second, for up to 45 seconds.
+When the Launch runs, Emacs attaches it and shows it once.
+The command also attaches again a Master Session that you disconnected in this Emacs, so it works after an Emacs restart.
+When the Intake cannot be reached, answers with an error, or the Launch fails, the command shows one message and attaches nothing.
+
+Emacs reads two zmx labels that the Intake sets:
+
+- =cci-role=master= marks the Master Session.
+  The Session manager shows it under one =Master= heading, before all Project groups.
+  A disconnected Master Session row keeps the mark after an Emacs restart.
+  A name or a directory never marks a Session.
+- =cci-origin=master= marks a Worker Session.
+  Emacs attaches it but never moves the focus to it, whatever =claude-code-ide-switch-on-spawn= says.
+  So your chat with the Master Session is not interrupted.
+
+When the =[master]= table sets =confirm = true=, the Intake holds each Worker Session Launch until you answer.
+With =claude-code-ide-intake-mode= on, Emacs shows one message for each held Launch.
+Run =M-x claude-code-ide-intake-confirm=, choose the Launch, read its full prompt, and answer yes to start it or no to refuse it.
+The question uses only the minibuffer, so the selected window does not change.
+
 * Detach and Stop
 
 These actions do not mean the same thing:

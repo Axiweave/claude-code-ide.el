@@ -22490,6 +22490,66 @@ This is the result of `/exit' in the Agent and of `/despawn' in its parent."
        (should (eq (claude-code-ide--reattach-target "kept") session))
        (should (= (length attaches) 1))))))
 
+(ert-deftest claude-code-ide-test-reattach-keeps-master-mark ()
+  "A saved master row, local or remote, reattaches as a master Session.
+The manager then shows the row under `Master'.  A saved plain row
+reattaches as a plain Session in no Master section."
+  (dolist (host '(nil "host-a"))
+    (dolist (master '(t nil))
+      (ert-info ((format "host %s master %s" host master))
+        (claude-code-ide-tests--with-local-targets
+          (let ((claude-code-ide-manager-persist-state t)
+                (claude-code-ide-manager--persisted-state
+                 (copy-tree claude-code-ide-manager--empty-persisted-state))
+                (persist--test-store (make-hash-table :test 'eq))
+                (persist--test-defaults (make-hash-table :test 'eq))
+                (scope '(:type global))
+                (name "cci-omp-master-aaaaaa")
+                heading row-headings)
+            (claude-code-ide-manager--remember-session
+             (claude-code-ide-session-create
+              :id "m" :host host :zmx-name name :directory dir :cli-type 'omp
+              :order 1 :created-at 100.0 :master master))
+            (claude-code-ide-manager--save-state)
+            (claude-code-ide-manager--reset-state)
+            (claude-code-ide-manager--load-state)
+            (setq listed (list name))
+            (cl-letf (((symbol-function 'claude-code-ide--create-session)
+                       (lambda (directory _ _ zmx-name &optional host id &rest _)
+                         (let ((session (claude-code-ide-session-create
+                                         :id id :zmx-name zmx-name :host host
+                                         :directory directory :cli-type 'omp
+                                         :order 1 :created-at 100.0
+                                         :process (car (push (make-pipe-process
+                                                              :name "cci-master-client"
+                                                              :noquery t :sentinel #'ignore)
+                                                             clients)))))
+                           (claude-code-ide--put-session session)
+                           session)))
+                      ((symbol-function 'claude-code-ide-manager--local-group-metadata)
+                       #'ignore))
+              (let ((session (claude-code-ide--reattach-target "m")))
+                (should (equal (claude-code-ide-session-id session) "m"))
+                (should (eq (claude-code-ide-session-master session) master)))
+              (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
+              (claude-code-ide-manager-refresh-items scope t)
+              (claude-code-ide-manager--render scope))
+            (let ((item (claude-code-ide-manager--item-by-session-key scope "m")))
+              (should (claude-code-ide-manager-item-live-p item))
+              (should (eq (claude-code-ide-manager-item-master item) master)))
+            (with-current-buffer (car (push (claude-code-ide-manager--get-buffer scope)
+                                            buffers))
+              (goto-char (point-min))
+              (while (not (eobp))
+                (when (get-text-property (point) 'claude-code-ide-manager-group-heading)
+                  (setq heading (string-trim (thing-at-point 'line t))))
+                (when (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                             "m")
+                  (push heading row-headings))
+                (forward-line 1)))
+            (should (= (length row-headings) 1))
+            (should (eq (equal (car row-headings) "Master") master))))))))
+
 (ert-deftest claude-code-ide-test-local-zmx-reattach-of-gone-session-forgets-row ()
   "Reattaching a row whose zmx session is gone removes the row and starts nothing.
 A row whose directory is gone keeps the row and starts nothing."
@@ -23484,6 +23544,529 @@ A connection error, as when the Intake is down, shows nothing."
    (should-not claude-code-ide-intake--timer)
    (should-not claude-code-ide-intake--processes)
    (should-not (seq-some (lambda (entry) (process-live-p (car entry))) spawned))))
+
+(ert-deftest claude-code-ide-test-zmx-label-round-trip-property ()
+  "A label value decodes back to the generated UTF-8 text.
+A missing label and a bad base64url value both give nil."
+  (let ((seed "cci-zmx-label-025")
+        (pool ["a" "Z" "9" " " "=" "-" "_" "/" "+" "\t" "é" "日本" "🙂" "\"" "\\"]))
+    (random seed)
+    (message "zmx label seed: %s" seed)
+    (dotimes (_ 200)
+      (let* ((text (apply #'concat (cl-loop repeat (random 30)
+                                            collect (aref pool (random (length pool))))))
+             (value (base64url-encode-string (encode-coding-string text 'utf-8)
+                                             (zerop (random 2))))
+             (entry (claude-code-ide-zmx--parse-list-line
+                     (concat "name=cci-omp-p-aaaaaa\tcci-role=" value "\tcmd=omp"))))
+        (should (equal (claude-code-ide--zmx-label entry "cci-role") text))
+        (should-not (claude-code-ide--zmx-label entry "cci-origin")))))
+  (dolist (bad '("a" "@@@@" "bWFz*dGVy" "日本"))
+    (should-not (claude-code-ide--zmx-label (list :name "cci-x" :cci-role bad) "cci-role"))))
+
+(ert-deftest claude-code-ide-test-intake-curl-config-carries-exact-body ()
+  "For generated JSON bodies, the request that curl sends holds the exact body.
+Neither the token nor the body is in the curl arguments.  The callback
+gets (STATUS TEXT) for a 2xx and a 4xx answer, and nil when curl
+cannot connect."
+  (skip-unless (executable-find "curl"))
+  (let* ((seed "cci-intake-curl-025")
+         (pool ["a" "Z" "0" " " "\"" "\\" "\n" "\t" "\r" "=" "#" "%" "{" "é" "日本" "🙂" "'"])
+         (token-file (make-temp-file "cci-intake-token" nil nil "s3cret-token\n"))
+         (claude-code-ide-intake-token-file token-file)
+         (claude-code-ide-intake--processes nil)
+         (status 201)
+         (answer "{\"ok\":\"日\"}")
+         (real-make-process (symbol-function 'make-process))
+         request commands
+         (server
+          (make-network-process
+           :name "cci-intake-test-server" :server t :host "127.0.0.1" :service t
+           :family 'ipv4 :coding 'binary :noquery t
+           :filter
+           (lambda (connection chunk)
+             (let ((text (concat (process-get connection 'text) chunk))
+                   (case-fold-search t))
+               (process-put connection 'text text)
+               (when-let* ((end (string-search "\r\n\r\n" text))
+                           ((<= (+ end 4 (if (string-match "^content-length: *\\([0-9]+\\)"
+                                                           (substring text 0 end))
+                                             (string-to-number (match-string 1 text))
+                                           0))
+                                (length text))))
+                 (setq request text)
+                 (let ((bytes (encode-coding-string answer 'utf-8)))
+                   (process-send-string
+                    connection
+                    (format "HTTP/1.1 %d X\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s"
+                            status (length bytes) bytes)))
+                 (process-send-eof connection))))))
+         (claude-code-ide-intake-url
+          (format "http://127.0.0.1:%d/" (process-contact server :service))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest args)
+                     (push (plist-get args :command) commands)
+                     (apply real-make-process args))))
+          (cl-labels ((call (body)
+                        (let (done result)
+                          (setq request nil)
+                          (claude-code-ide-intake--curl
+                           "/v1/master?client=a%20b"
+                           (lambda (reply) (setq result reply done t))
+                           nil "POST" body)
+                          (with-timeout (10 (ert-fail "curl did not end"))
+                            (while (not done) (accept-process-output nil 0.05)))
+                          result)))
+            (random seed)
+            (message "intake curl seed: %s" seed)
+            (dotimes (_ 20)
+              (let* ((prompt (apply #'concat
+                                    (cl-loop repeat (random 40)
+                                             collect (aref pool (random (length pool))))))
+                     (gap (aref ["\n" "\r\n" "\t" " " ""] (random 5)))
+                     (body (concat "{" gap "\"prompt\":" gap
+                                   (decode-coding-string (json-serialize prompt) 'utf-8)
+                                   gap "}")))
+                (should (equal (call body) (list 201 answer)))
+                (should (string-prefix-p "POST /v1/master?client=a%20b HTTP/1.1\r\n" request))
+                (should (string-match-p "^Authorization: Bearer s3cret-token\r$" request))
+                (should (string-match-p "^Content-Type: application/json\r$" request))
+                (should (equal (substring request (+ 4 (string-search "\r\n\r\n" request)))
+                               (encode-coding-string body 'utf-8)))
+                (dolist (command commands)
+                  (should (equal command '("curl" "-s" "--config" "-")))
+                  (should-not (seq-some (lambda (arg)
+                                          (or (string-match-p "s3cret" arg)
+                                              (string-search body arg)))
+                                        command)))))
+            (setq status 404 answer "{\"error\":\"no [master] in config\"}")
+            (should (equal (call nil) (list 404 answer)))
+            (should (string-prefix-p "POST /v1/master" request))
+            (delete-process server)
+            (should-not (call "{}"))))
+      (when (process-live-p server) (delete-process server))
+      (delete-file token-file))))
+
+(defun claude-code-ide-tests--label (text)
+  "Return TEXT as a zmx label value."
+  (base64url-encode-string (encode-coding-string text 'utf-8) t))
+
+(ert-deftest claude-code-ide-test-master-mark-comes-only-from-label ()
+  "An entry with `cci-role=master' gives a master Session, local and remote.
+An entry without it gives none, even with the same name and directory."
+  (dolist (host '(nil "host-a"))
+    (dolist (role (list (claude-code-ide-tests--label "master")
+                        (claude-code-ide-tests--label "worker")
+                        nil))
+      (ert-info ((format "host %s, role %s" host role))
+        (claude-code-ide-tests--with-spawn-adoption
+         (let* ((name "cci-omp-master-aaaaaa")
+                (line (concat "name=" name "\tpid=2\tstart_dir=/srv/master\tcmd=omp"
+                              (if role (concat "\tcci-role=" role) "")))
+                (entry (claude-code-ide-zmx--parse-list-line line)))
+           (if host
+               (progn
+                 (claude-code-ide--adopt-spawned-session host name)
+                 (reply (concat line "\n")))
+             (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                        (lambda () (list entry))))
+               (claude-code-ide--adopt-spawned-session nil name)))
+           (should (equal created (list (list host name))))
+           (should (eq (claude-code-ide-session-master
+                        (claude-code-ide--live-session-for-target host name))
+                       (equal role (claude-code-ide-tests--label "master"))))))))))
+
+(ert-deftest claude-code-ide-test-manager-master-section ()
+  "Master rows sit under one `Master' heading before every Project group.
+They are in no group, and a saved and restored item keeps the mark."
+  (claude-code-ide-tests--with-priority-sessions
+   '(("m" idle nil nil nil "/tmp/group-a/")
+     ("a" idle nil nil nil "/tmp/group-a/")
+     ("b" idle nil nil nil "/tmp/group-b/"))
+   (setf (claude-code-ide-session-master (cdr (assoc "m" sessions))) t)
+   (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
+   (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
+     (claude-code-ide-manager-refresh-items scope))
+   (let ((remote (make-claude-code-ide-manager-item
+                  :session-key "remote-master" :host "alpha" :zmx-name "cci-omp-master-bbbbbb"
+                  :directory "/srv/master" :cli-type 'omp :order 1
+                  :display-name "alpha:master" :live-p nil :master t)))
+     (claude-code-ide-manager--set-scope-items
+      scope (append (claude-code-ide-manager--scope-items scope) (list remote)))
+     (claude-code-ide-manager--render scope)
+     (let (lines)
+       (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+         (goto-char (point-min))
+         (while (not (eobp))
+           (push (or (get-text-property (point) 'claude-code-ide-manager-session-key)
+                     (and (get-text-property (point) 'claude-code-ide-manager-group-heading)
+                          (cons 'heading (string-trim (thing-at-point 'line t)))))
+                 lines)
+           (forward-line 1)))
+       (setq lines (delq nil (nreverse lines)))
+       (should (equal (car lines) '(heading . "Master")))
+       (should (= (cl-count '(heading . "Master") lines :test #'equal) 1))
+       ;; Both master rows come right after the heading, before any other heading.
+       (should (equal (sort (list (nth 1 lines) (nth 2 lines)) #'string<)
+                      (sort (list (session-key "m") "remote-master") #'string<)))
+       (should (eq (car-safe (nth 3 lines)) 'heading))
+       (should (member (session-key "a") lines))
+       (should (member (session-key "b") lines)))
+     (dolist (item (list remote (claude-code-ide-manager--item-by-session-key
+                                 scope (session-key "m"))))
+       (should (claude-code-ide-manager-item-master item))
+       (should (claude-code-ide-manager-item-master
+                (claude-code-ide-manager--deserialize-item
+                 (read (prin1-to-string
+                        (claude-code-ide-manager--serialize-item item))))))))
+   (should-not (claude-code-ide-manager-item-master
+                (claude-code-ide-manager--item-by-session-key scope (session-key "a"))))))
+
+(ert-deftest claude-code-ide-test-spawn-switch-rule-property ()
+  "The switch at attach follows the rule table for every combination.
+Rule 1: a Worker of the master never switches.  Rule 2: the pending
+master pair switches once and clears.  Rule 3: the option decides."
+  (let ((name "cci-omp-w-wwwwww"))
+    (dolist (host '(nil "host-a"))
+      (dolist (origin '(none "master" "api"))
+        (dolist (pending '(none same other))
+          (dolist (option '(t nil))
+            (ert-info ((format "host %s origin %s pending %s option %s"
+                               host origin pending option))
+              (claude-code-ide-tests--with-spawn-adoption
+               (let* ((claude-code-ide-switch-on-spawn option)
+                      (pair (pcase pending
+                              ('none nil)
+                              ('same (cons host name))
+                              ('other (cons host "cci-omp-m-mmmmmm"))))
+                      (claude-code-ide--master-open-pending pair)
+                      (window (selected-window))
+                      (buffer (window-buffer (selected-window)))
+                      (line (concat "name=" name "\tpid=2\tstart_dir=/srv/w\tcmd=omp"
+                                    (if (stringp origin)
+                                        (concat "\tcci-origin="
+                                                (claude-code-ide-tests--label origin))
+                                      "")))
+                      ;; The table of contracts/emacs-master.md "Switch rule".
+                      (expected (cond ((equal origin "master") nil)
+                                      ((eq pending 'same) t)
+                                      (t option))))
+                 (if host
+                     (progn
+                       (claude-code-ide--adopt-spawned-session host name)
+                       (reply (concat line "\n")))
+                   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                              (lambda () (list (claude-code-ide-zmx--parse-list-line line)))))
+                     (claude-code-ide--adopt-spawned-session nil name)))
+                 (should (equal created (list (list host name))))
+                 (should (equal switched (and expected (list name))))
+                 (should (equal claude-code-ide--master-open-pending
+                                (and (not (and (eq pending 'same)
+                                               (not (equal origin "master"))))
+                                     pair)))
+                 (should (eq (selected-window) window))
+                 (should (eq (window-buffer window) buffer)))))))))))
+
+(defmacro claude-code-ide-tests--with-master (&rest body)
+  "Run BODY with the Intake and the spawn adoption mocked for the master.
+BODY sees the names of `claude-code-ide-tests--with-spawn-adoption' and
+`claude-code-ide-tests--with-intake', MESSAGES, the shown messages,
+and the local function `answer', which ends a curl PROCESS with an
+HTTP STATUS and a TEXT."
+  (declare (indent 0))
+  `(claude-code-ide-tests--with-spawn-adoption
+    (claude-code-ide-tests--with-intake
+     (let ((claude-code-ide--master-open-pending nil)
+           (claude-code-ide--pending-adoptions nil)
+           (claude-code-ide--adopted-sessions nil)
+           (claude-code-ide-switch-on-spawn nil)
+           messages)
+       (cl-letf (((symbol-function 'message)
+                  (lambda (format &rest args)
+                    (push (apply #'format format args) messages))))
+         (cl-labels ((answer (process status text)
+                       (feed process (format "%s\n%d" text status))
+                       (finish process "finished\n")))
+           ,@body))))))
+
+(defun claude-code-ide-tests--master-launch (state host-key &optional name reason)
+  "Return the JSON text of a master Launch in STATE.
+HOST-KEY is `absent', `null', or a host string for `emacs_host'."
+  (json-serialize
+   `((id . "l1") (kind . "master") (state . ,state) (host . "local")
+     (name . ,(or name "cci-omp-master-aaaaaa")) (reason . ,(or reason :null))
+     ,@(pcase host-key
+         ('absent nil)
+         ('null '((emacs_host . :null)))
+         (host `((emacs_host . ,host)))))))
+
+(defun claude-code-ide-tests--master-entry (host)
+  "Return the zmx entry of the master on HOST."
+  (claude-code-ide-zmx--parse-list-line
+   (concat "name=cci-omp-master-aaaaaa\tpid=2\tstart_dir=/srv/master\tcmd=omp"
+           (and host (concat "\thost=" host))
+           "\tcci-role=" (claude-code-ide-tests--label "master"))))
+
+(ert-deftest claude-code-ide-test-master-refuses-without-url-or-curl ()
+  "Both commands give a `user-error' without the URL or curl, and start nothing."
+  (dolist (command '(claude-code-ide-master claude-code-ide-intake-confirm))
+    (claude-code-ide-tests--with-master
+      (let ((claude-code-ide-intake-url nil))
+        (should-error (funcall command) :type 'user-error))
+      (setq curl nil)
+      (should-error (funcall command) :type 'user-error)
+      (should-not spawned))))
+
+(ert-deftest claude-code-ide-test-master-refuses-without-token-file ()
+  "Both commands give a `user-error' that names the token file option when
+the file is missing or unreadable, and start no process."
+  (dolist (command '(claude-code-ide-master claude-code-ide-intake-confirm))
+    (dolist (state '(missing unreadable))
+      (unless (and (eq state 'unreadable) (zerop (user-uid)))
+        (ert-info ((format "%s with a %s token file" command state))
+          (claude-code-ide-tests--with-master
+            (let ((claude-code-ide-intake-token-file
+                   (if (eq state 'missing) (concat token-file "-missing") token-file)))
+              (when (eq state 'unreadable)
+                (set-file-modes token-file 0))
+              (should (string-match-p
+                       "claude-code-ide-intake-token-file"
+                       (cadr (should-error (funcall command) :type 'user-error))))
+              (should-not spawned))))))))
+
+(ert-deftest claude-code-ide-test-master-errors-start-nothing ()
+  "A connection failure, a 5xx, a 404, or a 400 gives one message.
+It names the URL, the status, or the Intake's error text, and starts no
+poll, no adopt, and no switch."
+  (dolist (case '((nil nil "intake\\.test:7311")
+                  (503 "" "503")
+                  (404 "{\"error\":\"no [master] in config\"}" "no \\[master\\] in config")
+                  (400 "{\"error\":\"unknown client: mac one\"}" "unknown client: mac one")))
+    (claude-code-ide-tests--with-master
+      (claude-code-ide-master)
+      (let ((process (curl-for "/v1/master")))
+        (if (car case)
+            (answer process (car case) (nth 1 case))
+          (finish process "exited abnormally with code 7\n")))
+      (should (= (length messages) 1))
+      (should (string-match-p (nth 2 case) (car messages)))
+      (should-not timers)
+      (should-not adopted)
+      (should-not switched)
+      (should-not claude-code-ide--master-open-pending))))
+
+(ert-deftest claude-code-ide-test-master-running-live-is-shown ()
+  "A running master that is live is shown, with no adopt call."
+  (claude-code-ide-tests--with-master
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "m" :zmx-name "cci-omp-master-aaaaaa"
+                                     :directory "/srv/master/" :cli-type 'omp))
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'null))
+    (should (equal switched '("m")))
+    (should-not adopted)
+    (should-not timers)
+    (should-not claude-code-ide--master-open-pending)))
+
+(ert-deftest claude-code-ide-test-master-running-not-live-is-adopted-and-shown ()
+  "After an Emacs restart, a running master is adopted once and shown once.
+The pair comes from `emacs_host', never from the Launch's `host'."
+  (dolist (host '(nil "host-a"))
+    (claude-code-ide-tests--with-master
+      (claude-code-ide-master)
+      (answer (curl-for "/v1/master") 200
+              (claude-code-ide-tests--master-launch "running" (or host 'null)))
+      (should (equal adopted (list (list host "cci-omp-master-aaaaaa"))))
+      (should (equal claude-code-ide--master-open-pending
+                     (cons host "cci-omp-master-aaaaaa")))
+      (claude-code-ide--attach-spawned-entry
+       host "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry host)))
+      (should (equal switched '("cci-omp-master-aaaaaa")))
+      (should-not claude-code-ide--master-open-pending)
+      (should (claude-code-ide-session-master
+               (claude-code-ide--live-session-for-target host "cci-omp-master-aaaaaa"))))))
+
+(ert-deftest claude-code-ide-test-master-starting-polls-until-running ()
+  "A starting master is polled each second, adopted at `running', and shown once.
+Both URLs carry the encoded client name."
+  (claude-code-ide-tests--with-master
+    (let ((claude-code-ide-intake-client "a b&c"))
+      (claude-code-ide-master)
+      (should (string-match-p "/v1/master\\?client=a%20b%26c\"" (cdr (car sent))))
+      (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "queued" 'absent))
+      (dolist (state '("starting" "starting" "running"))
+        (should (equal (car (car timers)) 1))
+        (should-not adopted)
+        (should-not claude-code-ide--master-open-pending)
+        (fire)
+        (should (string-match-p "/v1/launches/l1\\?client=a%20b%26c\"" (cdr (car sent))))
+        (should (string-match-p "^request = \"GET\"$" (cdr (car sent))))
+        (answer (curl-for "/v1/launches/l1") 200
+                (claude-code-ide-tests--master-launch state 'null)))
+      (should (= (length timers) 3))
+      (should (equal adopted '((nil "cci-omp-master-aaaaaa"))))
+      (should (equal claude-code-ide--master-open-pending '(nil . "cci-omp-master-aaaaaa")))
+      (claude-code-ide--attach-spawned-entry
+       nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
+      (claude-code-ide--attach-spawned-entry
+       nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
+      (should (equal switched '("cci-omp-master-aaaaaa"))))))
+
+(ert-deftest claude-code-ide-test-master-push-in-flight-is-shown-once ()
+  "When the push adopt is in flight at `running', the poll adopts nothing.
+The attach then shows the master once, with the switch option off."
+  (claude-code-ide-tests--with-master
+    (push '("host-a" . "cci-omp-master-aaaaaa") claude-code-ide--pending-adoptions)
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" "host-a"))
+    (should-not adopted)
+    (claude-code-ide--attach-spawned-entry
+     "host-a" "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry "host-a")))
+    (should (equal switched '("cci-omp-master-aaaaaa")))))
+
+(ert-deftest claude-code-ide-test-master-disconnected-attaches-again ()
+  "A master that this Emacs adopted and then lost attaches again and is shown."
+  (claude-code-ide-tests--with-master
+    (push '(nil . "cci-omp-master-aaaaaa") claude-code-ide--adopted-sessions)
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'null))
+    (should (equal adopted '((nil "cci-omp-master-aaaaaa"))))
+    (should-not (member '(nil . "cci-omp-master-aaaaaa") claude-code-ide--adopted-sessions))
+    (claude-code-ide--attach-spawned-entry
+     nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
+    (should (equal switched '("cci-omp-master-aaaaaa")))))
+
+(ert-deftest claude-code-ide-test-master-no-emacs-host-shows-message ()
+  "A running master with no `emacs_host' gives one message and no adopt."
+  (claude-code-ide-tests--with-master
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'absent))
+    (should (= (length messages) 1))
+    (should (string-match-p "local" (car messages)))
+    (should-not adopted)
+    (should-not claude-code-ide--master-open-pending)))
+
+(ert-deftest claude-code-ide-test-master-failed-or-late-clears-pending ()
+  "A failed master gives one message with the reason.  After 45 polls the
+poll stops with one message.  Both clear the pending pair."
+  (claude-code-ide-tests--with-master
+    (setq claude-code-ide--master-open-pending '(nil . "cci-omp-old-oooooo"))
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "starting" 'null))
+    (fire)
+    (answer (curl-for "/v1/launches/l1") 200
+            (claude-code-ide-tests--master-launch "failed" 'null nil "omp exited 1"))
+    (should (= (length messages) 1))
+    (should (string-match-p "failed: omp exited 1" (car messages)))
+    (should-not claude-code-ide--master-open-pending)
+    (should-not adopted))
+  (claude-code-ide-tests--with-master
+    (setq claude-code-ide--master-open-pending '(nil . "cci-omp-old-oooooo"))
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "starting" 'null))
+    (dotimes (_ 45)
+      (fire)
+      (answer (curl-for "/v1/launches/l1") 200
+              (claude-code-ide-tests--master-launch "starting" 'null)))
+    (should (= (length timers) 45))
+    (should (= (length messages) 1))
+    (should (string-match-p "45 seconds" (car messages)))
+    (should-not claude-code-ide--master-open-pending)
+    (should-not adopted)))
+
+(ert-deftest claude-code-ide-test-master-pending-clears-when-adopt-fails ()
+  "An adopt of the pending master pair that ends with no live Session clears
+the pair, for a missing entry and for a failed attach, local and remote.
+A later attach of that name then follows `claude-code-ide-switch-on-spawn'.
+A pending pair for another name stays."
+  (let* ((name "cci-omp-master-aaaaaa")
+         (line (concat "name=" name "\tpid=2\tstart_dir=/srv/master\tcmd=omp"
+                       "\tcci-role=" (claude-code-ide-tests--label "master"))))
+    (dolist (host '(nil "host-a"))
+      (dolist (failure '(missing error))
+        (dolist (pending '(same other))
+          (dolist (option '(t nil))
+            (ert-info ((format "host %s failure %s pending %s option %s"
+                               host failure pending option))
+              (claude-code-ide-tests--with-adopt-command
+                (let* ((claude-code-ide-switch-on-spawn option)
+                       (pair (cons host (if (eq pending 'same) name "cci-omp-m-mmmmmm")))
+                       (claude-code-ide--master-open-pending pair)
+                       (kept (and (eq pending 'other) pair)))
+                  (cl-flet ((adopt (lines)
+                              (should (eq (claude-code-ide-adopt-session host name) 'adopting))
+                              (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                                         (lambda ()
+                                           (mapcar #'claude-code-ide-zmx--parse-list-line lines))))
+                                (run-scheduled)
+                                (when host
+                                  (reply (mapconcat (lambda (text) (concat text "\n")) lines ""))))))
+                    (if (eq failure 'missing)
+                        (adopt nil)
+                      (cl-letf (((symbol-function 'claude-code-ide--create-session)
+                                 (lambda (&rest _) (error "Attach failed"))))
+                        (adopt (list line))))
+                    (should-not (claude-code-ide--live-session-for-target host name))
+                    (should (equal claude-code-ide--master-open-pending kept))
+                    (adopt (list line))
+                    (should (equal created (list (list host name))))
+                    (should (equal switched (and option (list name))))
+                    (should (equal claude-code-ide--master-open-pending kept))))))))))))
+
+(ert-deftest claude-code-ide-test-intake-confirm-asks-and-answers ()
+  "The confirm command lists held Launches, asks in the minibuffer, and posts
+`confirm' for yes and `decline' for no.  The selected window stays."
+  (let ((held (concat "{\"launches\":["
+                      "{\"id\":\"h1\",\"project\":\"proj\",\"host\":\"host-a\","
+                      "\"state\":\"held\",\"prompt\":\"Fix the bug\\nin 日本 \\\"x\\\"\"},"
+                      "{\"id\":\"h2\",\"project\":\"other\",\"host\":\"local\","
+                      "\"state\":\"held\",\"prompt\":\"p2\"}]}")))
+    (dolist (yes '(t nil))
+      (claude-code-ide-tests--with-master
+        (let ((window (selected-window))
+              (buffer (window-buffer (selected-window)))
+              choices questions)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _)
+                       (setq choices (mapcar #'car collection))
+                       (car choices)))
+                    ((symbol-function 'yes-or-no-p)
+                     (lambda (prompt) (push prompt questions) yes)))
+            (claude-code-ide-intake-confirm)
+            (should (string-match-p "/v1/launches\\?state=held\"" (cdr (car sent))))
+            (answer (curl-for "state=held") 200 held))
+          (should (equal choices '("h1 proj@host-a" "h2 other@local")))
+          (should (= (length questions) 1))
+          (dolist (part '("proj" "host-a" "Fix the bug\nin 日本 \"x\""))
+            (should (string-search part (car questions))))
+          (let ((text (cdr (car sent))))
+            (should (string-search (if yes "/v1/launches/h1/confirm\"" "/v1/launches/h1/decline\"")
+                                   text))
+            (should (string-match-p "^request = \"POST\"$" text)))
+          (answer (curl-for "/v1/launches/h1/") 200
+                  (format "{\"id\":\"h1\",\"state\":%S}" (if yes "queued" "refused")))
+          (should (string-match-p (if yes "queued" "refused") (car messages)))
+          (should (eq (selected-window) window))
+          (should (eq (window-buffer window) buffer)))))))
+
+(ert-deftest claude-code-ide-test-intake-confirm-empty-list-and-held-event ()
+  "An empty held list shows one message.  A `held' event shows one
+message that names the command, and adopts nothing."
+  (claude-code-ide-tests--with-master
+    (claude-code-ide-intake-confirm)
+    (answer (curl-for "state=held") 200 "{\"launches\":[]}")
+    (should (= (length messages) 1))
+    (should (string-match-p "No Launch" (car messages))))
+  (claude-code-ide-tests--with-master
+    (claude-code-ide-intake-mode 1)
+    (feed (curl-for "/v1/events")
+          (concat "event: launch\ndata: {\"id\":\"h1\",\"state\":\"held\",\"project\":\"proj\","
+                  "\"host\":\"host-a\",\"emacs_host\":\"host-a\",\"name\":null}\n\n"))
+    (should (= (length messages) 1))
+    (should (string-match-p "h1.*proj@host-a.*M-x claude-code-ide-intake-confirm"
+                            (car messages)))
+    (should-not adopted)))
 
 (ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
   "Failed or timed-out SSH cannot validate a target from partial output."

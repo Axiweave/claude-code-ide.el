@@ -130,7 +130,25 @@ Sessions in zmx. Emacs adopts each running Launch through
 ### Launch
 One request to start a Session, and its result. It has an origin
 Trigger, a project, a host, a prompt, a zmx session name, and a state:
-queued, starting, running, ended, failed, or refused.
+held, queued, starting, running, ended, failed, or refused. A Launch is
+held only when the user must confirm it first.
+
+### Master Session
+The one Oh My Pi Session that the user chats with to dispatch work. It
+is an Intake Launch of the master kind, belongs to no project, and runs
+in its own zmx session. Only its zmx label `cci-role=master` marks it in
+Emacs, never its name or directory. The manager shows it under its own
+`Master` heading, apart from all Project groups.
+
+### Worker Session
+A Session that the Intake started from a Master Session request. It is
+an ordinary Launch in one project. Its zmx label `cci-origin=master`
+tells Emacs never to move the focus when it attaches it.
+
+### Notice
+One short message from the Intake to the Master Session about a change
+of a Worker Session: a finished turn, an end, a failure, or a refusal.
+It holds only Intake facts and no Worker Session text.
 
 ### Trigger
 One event from a source, with a stable identity, an actor, a source

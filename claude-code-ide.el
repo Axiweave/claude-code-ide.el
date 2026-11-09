@@ -337,7 +337,10 @@ the target window is already visible."
 When an Oh My Pi Session announces a Sibling Session it spawned, or
 `claude-code-ide-adopt-session' names a Session, Emacs attaches it.
 When non-nil, Emacs then switches the current frame to it.  When
-nil, the selected window keeps its buffer."
+nil, the selected window keeps its buffer.  The Master Session rules
+in `claude-code-ide--spawn-switch-p' come first: a Worker Session never
+gets the focus, and the master that `claude-code-ide-master' opens
+always does."
   :type 'boolean
   :group 'claude-code-ide)
 
@@ -353,7 +356,7 @@ nil, the selected window keeps its buffer."
 
 (cl-defstruct (claude-code-ide-session
                (:constructor claude-code-ide-session-create))
-  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name pid host group-metadata)
+  id directory process buffer cli-type cli-session-id order created-at last-accessed-at custom-name title zmx-name pid host group-metadata master)
 
 (defvar claude-code-ide--sessions (make-hash-table :test #'equal)
   "Live sessions keyed by generated session ID.")
@@ -2489,7 +2492,8 @@ manual Agent identification, matching individual attach's fallback."
 Revalidate the exact zmx name and directory metadata, and for a remote
 row the configured host.  Reject while a Stop or another attach already
 owns a remote target.  Reuse the shared terminal path under the same
-SESSION-ID so its identity, names, order, and pin state survive.
+SESSION-ID so its identity, names, order, pin state, and Master mark
+survive.
 A local row whose zmx session is gone is forgotten and reported.
 Return the live session, or nil when attachment returns nil.  Any other
 failure retains the disconnected row and reports the target."
@@ -2500,32 +2504,40 @@ failure retains the disconnected row and reports the target."
                        (user-error "Session %s is not zmx-backed" session-id)))
          (directory (claude-code-ide-manager-item-directory item))
          (pending (and host (claude-code-ide--remote-target-pending-reason session-id))))
-    (cond
-     (pending
-      (user-error "Cannot reattach %s on %s. %s is already in progress"
-                  zmx-name host pending))
-     ((claude-code-ide--get-session session-id))
-     (host
-      (claude-code-ide-zmx--validate-host host)
-      (claude-code-ide-zmx--validate-name zmx-name)
-      (unless (claude-code-ide-zmx--valid-directory-p directory)
-        (user-error "Session %s has invalid remembered directory metadata" session-id))
-      (claude-code-ide-log "Reattaching %s on %s..." zmx-name host)
-      (claude-code-ide--attach-zmx-entry
-       (list :host host :name zmx-name)
-       directory (claude-code-ide--reattach-cli-path item) session-id))
-     (t
-      (claude-code-ide-zmx--validate-name zmx-name)
-      (unless (and (stringp directory) (file-accessible-directory-p directory))
-        (user-error "Session directory is not accessible: %s" directory))
-      (claude-code-ide-zmx--ensure)
-      (unless (member zmx-name (claude-code-ide-zmx-session-names))
-        (claude-code-ide-manager-session-ended session-id t)
-        (user-error "zmx session %s no longer exists. Removed its row" zmx-name))
-      (claude-code-ide-log "Reattaching %s..." zmx-name)
-      (claude-code-ide--attach-zmx-entry
-       (list :name zmx-name)
-       directory (claude-code-ide--reattach-cli-path item) session-id)))))
+    (let ((session
+           (cond
+            (pending
+             (user-error "Cannot reattach %s on %s. %s is already in progress"
+                         zmx-name host pending))
+            ((claude-code-ide--get-session session-id))
+            (host
+             (claude-code-ide-zmx--validate-host host)
+             (claude-code-ide-zmx--validate-name zmx-name)
+             (unless (claude-code-ide-zmx--valid-directory-p directory)
+               (user-error "Session %s has invalid remembered directory metadata" session-id))
+             (claude-code-ide-log "Reattaching %s on %s..." zmx-name host)
+             (claude-code-ide--attach-zmx-entry
+              (list :host host :name zmx-name)
+              directory (claude-code-ide--reattach-cli-path item) session-id))
+            (t
+             (claude-code-ide-zmx--validate-name zmx-name)
+             (unless (and (stringp directory) (file-accessible-directory-p directory))
+               (user-error "Session directory is not accessible: %s" directory))
+             (claude-code-ide-zmx--ensure)
+             (unless (member zmx-name (claude-code-ide-zmx-session-names))
+               (claude-code-ide-manager-session-ended session-id t)
+               (user-error "zmx session %s no longer exists. Removed its row" zmx-name))
+             (claude-code-ide-log "Reattaching %s..." zmx-name)
+             (claude-code-ide--attach-zmx-entry
+              (list :name zmx-name)
+              directory (claude-code-ide--reattach-cli-path item) session-id)))))
+      ;; The reattach entry has no labels, so the row keeps the Master mark.
+      (when (and session
+                 (claude-code-ide-manager-item-master item)
+                 (not (claude-code-ide-session-master session)))
+        (setf (claude-code-ide-session-master session) t)
+        (claude-code-ide-manager-refresh-all))
+      session)))
 
 (defun claude-code-ide--reattach-session (session-id)
   "Reattach the remembered zmx target for SESSION-ID and switch to it.
@@ -2619,7 +2631,24 @@ guards a feature-owned attachment before terminal creation."
                (member host claude-code-ide-remote-hosts)
                (claude-code-ide-zmx--valid-directory-p directory))
       (claude-code-ide-manager--record-remote-repository host directory))
+    ;; Only the `cci-role' label marks the Master Session, never a name
+    ;; or a directory.
+    (when (and session
+               (not (claude-code-ide-session-master session))
+               (equal (claude-code-ide--zmx-label entry "cci-role") "master"))
+      (setf (claude-code-ide-session-master session) t)
+      (claude-code-ide-manager-refresh-all))
     session))
+
+(defun claude-code-ide--zmx-label (entry key)
+  "Return the value of the label KEY, such as \"cci-role\", in zmx ENTRY.
+ENTRY is a plist from `claude-code-ide-zmx--parse-list-line'.  A label
+value is base64url UTF-8 text.  Return nil when the label is missing
+or its value is not valid base64url."
+  (when-let* ((value (plist-get entry (intern (concat ":" key)))))
+    (condition-case nil
+        (decode-coding-string (base64-decode-string value t) 'utf-8)
+      (error nil))))
 
 (defun claude-code-ide--attach-zmx-entries (entries)
   "Adopt every zmx entry in ENTRIES without prompting.
@@ -2709,9 +2738,34 @@ this Emacs instance has not already attached instead."
     (claude-code-ide--attach-discovered-entries
      (claude-code-ide--zmx-adoptable-sessions))))
 
+;;; Master Session rules
+
+(defvar claude-code-ide--master-open-pending nil
+  "The (EMACS-HOST . NAME) that `claude-code-ide-master' waits for.
+NAME is the zmx name of the Master Session.
+EMACS-HOST is nil for this machine.  `claude-code-ide--spawn-switch-p'
+clears it when it allows the switch to that Session.  An adopt of
+that Session that ends with no live Session also clears it.")
+
+(defun claude-code-ide--spawn-switch-p (entry host name)
+  "Return non-nil when Emacs switches to the Session NAME on HOST.
+Emacs asks this when it attaches the Session.
+ENTRY is the zmx entry of the Session.  The first rule that matches wins:
+1. A Worker Session of the Master Session (label `cci-origin' is
+   `master') never gets the focus.
+2. The Master Session that `claude-code-ide-master' waits for gets the
+   focus once.  This clears `claude-code-ide--master-open-pending'.
+3. Otherwise, follow `claude-code-ide-switch-on-spawn'."
+  (cond
+   ((equal (claude-code-ide--zmx-label entry "cci-origin") "master") nil)
+   ((equal (cons host name) claude-code-ide--master-open-pending)
+    (setq claude-code-ide--master-open-pending nil)
+    t)
+   (t claude-code-ide-switch-on-spawn)))
+
 (defun claude-code-ide--attach-spawned-entry (host name sessions)
   "Attach the entry NAME from SESSIONS, a zmx listing of HOST.
-Then switch to it when `claude-code-ide-switch-on-spawn' is non-nil.
+Then switch to it when `claude-code-ide--spawn-switch-p' allows it.
 Log a missing entry or an error instead of signaling."
   (condition-case err
       (if-let* ((entries (seq-filter (lambda (entry)
@@ -2719,7 +2773,7 @@ Log a missing entry or an error instead of signaling."
                                      sessions)))
           (progn
             (claude-code-ide--attach-zmx-entries entries)
-            (when-let* ((claude-code-ide-switch-on-spawn)
+            (when-let* (((claude-code-ide--spawn-switch-p (car entries) host name))
                         (session (claude-code-ide--live-session-for-target host name)))
               (claude-code-ide-manager-switch-to-session
                (claude-code-ide-session-id session))))
@@ -2815,8 +2869,13 @@ otherwise."
                    (lambda ()
                      (setq claude-code-ide--pending-adoptions
                            (delete pair claude-code-ide--pending-adoptions))
-                     (when (claude-code-ide--live-session-for-target host name)
-                       (push pair claude-code-ide--adopted-sessions))))
+                     (cond
+                      ((claude-code-ide--live-session-for-target host name)
+                       (push pair claude-code-ide--adopted-sessions))
+                      ;; No Session comes, so `claude-code-ide-master'
+                      ;; stops its wait for it.
+                      ((equal pair claude-code-ide--master-open-pending)
+                       (setq claude-code-ide--master-open-pending nil)))))
       'adopting))))
 
 (defun claude-code-ide--resolve-attach-directory (entry)

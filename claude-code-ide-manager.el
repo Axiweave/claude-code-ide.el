@@ -492,7 +492,8 @@ render two cells wide, which breaks gutter alignment.")
   host
   zmx-name
   cli-type
-  group-metadata)
+  group-metadata
+  master)
 
 (defvar claude-code-ide-manager--items nil
   "Current manager items.")
@@ -650,20 +651,23 @@ the manager sidebar is created.")
               :branch (and branch (substring-no-properties branch)))))))
 
 (defun claude-code-ide-manager--group-key (item)
-  "Return the repository identity for ITEM without querying Git or SSH."
+  "Return the repository identity for ITEM without querying Git or SSH.
+A Master Session row has the key (master), which is no Project group."
   (let* ((host (claude-code-ide-manager-item-host item))
          (directory (claude-code-ide-manager-item-directory item))
          (metadata (claude-code-ide-manager-item-group-metadata item)))
-    (pcase (plist-get metadata :kind)
-      ('git (list 'git host (plist-get metadata :common-dir)))
-      ('non-git (list 'non-git host (plist-get metadata :project-path)))
-      (_ (if (and (stringp directory) (not (string-empty-p directory)))
-             (list 'unresolved host
-                   (if host directory
-                     (condition-case nil (directory-file-name (file-truename directory))
-                       (file-error directory))))
-           (list 'unresolved-session host
-                 (claude-code-ide-manager-item-session-key item)))))))
+    (if (claude-code-ide-manager-item-master item)
+        '(master)
+      (pcase (plist-get metadata :kind)
+        ('git (list 'git host (plist-get metadata :common-dir)))
+        ('non-git (list 'non-git host (plist-get metadata :project-path)))
+        (_ (if (and (stringp directory) (not (string-empty-p directory)))
+               (list 'unresolved host
+                     (if host directory
+                       (condition-case nil (directory-file-name (file-truename directory))
+                         (file-error directory))))
+             (list 'unresolved-session host
+                   (claude-code-ide-manager-item-session-key item))))))))
 
 (defun claude-code-ide-manager--local-group-metadata (directory)
   "Read local repository metadata for DIRECTORY, or return nil on error."
@@ -746,12 +750,13 @@ the manager sidebar is created.")
       (claude-code-ide-manager-item-directory item) ""))
 
 (defun claude-code-ide-manager--group-headings (items)
-  "Return group identity to (HEADING . PATH) mappings for ITEMS."
+  "Return group identity to (HEADING . PATH) mappings for ITEMS.
+Master Session rows are in no Project group, so they have no entry."
   (let ((groups (make-hash-table :test 'equal))
         (names (make-hash-table :test 'equal)))
     (dolist (item items)
       (let ((key (claude-code-ide-manager--group-key item)))
-        (unless (gethash key groups)
+        (unless (or (claude-code-ide-manager-item-master item) (gethash key groups))
           (let* ((path (claude-code-ide-manager--group-path item))
                  (base (or (car (last (split-string path "/" t))) "/"))
                  (name (if (memq (car key) '(unresolved unresolved-session))
@@ -1609,7 +1614,8 @@ under the ESC prefix, so iterate that sub-keymap."
         :group-metadata (claude-code-ide-manager--valid-group-metadata
                          (claude-code-ide-manager-item-group-metadata item)
                          (claude-code-ide-manager-item-host item)
-                         (claude-code-ide-manager-item-directory item))))
+                         (claude-code-ide-manager-item-directory item))
+        :master (claude-code-ide-manager-item-master item)))
 
 (defun claude-code-ide-manager--deserialize-item (data)
   "Convert persisted DATA into an item, rejecting invalid remote metadata."
@@ -1647,7 +1653,8 @@ under the ESC prefix, so iterate that sub-keymap."
        :order-key (plist-get data :order-key)
        :live-p (and (null host) (plist-get data :live-p))
        :group-metadata (claude-code-ide-manager--valid-group-metadata
-                        (plist-get data :group-metadata) host directory)))))
+                        (plist-get data :group-metadata) host directory)
+       :master (and (plist-get data :master) t)))))
 
 (defun claude-code-ide-manager--persistable-layout (layout)
   "Return LAYOUT without memory-only companion identity."
@@ -2072,6 +2079,7 @@ Return non-nil when any key was cleared."
                            (claude-code-ide-manager-item-order-key existing))
                       most-positive-fixnum)
        :group-metadata group-metadata
+       :master (claude-code-ide-session-master session)
        :live-p t))))
 
 
@@ -2209,6 +2217,10 @@ IGNORE-PIN-ORDER bypasses pins and manual keys, not group boundaries."
     (sort (copy-sequence items)
           (lambda (left right)
             (cond
+             ;; Master Session rows come before every Project group.
+             ((and grouped (not (eq (claude-code-ide-manager-item-master left)
+                                    (claude-code-ide-manager-item-master right))))
+              (claude-code-ide-manager-item-master left))
              ((and grouped (not (equal (gethash left keys) (gethash right keys))))
               (claude-code-ide-manager--group-less-p
                (gethash left keys) (gethash right keys) headings positions))
@@ -2793,10 +2805,12 @@ of its own."
                (heading (gethash key names)))
           (puthash (claude-code-ide-manager-item-session-key item) key groups)
           (unless (equal key previous-group)
-            (push (list key
-                        (if host (format "[%s]\n  %s" host (car heading)) (car heading))
-                        (claude-code-ide-manager--echo-path (cdr heading) host)
-                        host)
+            (push (if (equal key '(master))
+                      (list key "Master" nil nil)
+                    (list key
+                          (if host (format "[%s]\n  %s" host (car heading)) (car heading))
+                          (claude-code-ide-manager--echo-path (cdr heading) host)
+                          host))
                   headings)
             (setq previous-group key))))
       (setq claude-code-ide-manager--pin-order-grouping
@@ -3319,14 +3333,19 @@ returns to it.  No Session status changes."
             (let* ((key (claude-code-ide-manager--group-key item))
                    (host (claude-code-ide-manager-item-host item))
                    (heading (gethash key headings)))
-              (unless (equal key previous-group)
+              (cond
+               ((equal key previous-group))
+               ((equal key '(master))
+                (claude-code-ide-manager--insert-group-heading "Master" nil key)
+                (setq previous-group key))
+               (t
                 (when (and host (not (equal host previous-host)))
                   (claude-code-ide-manager--insert-group-heading
                    (format "[%s]" host) host (list 'host host)))
                 (claude-code-ide-manager--insert-group-heading
                  (concat (if host "  " "") (car heading))
                  (claude-code-ide-manager--echo-path (cdr heading) host) key)
-                (setq previous-group key previous-host host))))
+                (setq previous-group key previous-host host)))))
           (claude-code-ide-manager--insert-item
            scope item (gethash (claude-code-ide-manager-item-session-key item) slots)
            (and labels (gethash item labels))))
