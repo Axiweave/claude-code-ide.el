@@ -23122,6 +23122,165 @@ A failed list attaches nothing and logs one line."
      (should-not switched)
      (should (= (hash-table-count claude-code-ide--sessions) 0)))))
 
+(defmacro claude-code-ide-tests--with-adopt-command (&rest body)
+  "Run BODY in `claude-code-ide-tests--with-spawn-adoption' with captured timers.
+BODY also sees SCHEDULED, the captured `run-at-time' calls, MESSAGES,
+the shown messages, and `run-scheduled', which runs and clears SCHEDULED."
+  (declare (indent 0))
+  `(claude-code-ide-tests--with-spawn-adoption
+    (let ((claude-code-ide--pending-adoptions nil)
+          (claude-code-ide--adopted-sessions nil)
+          (claude-code-ide--refused-sessions nil)
+          scheduled messages)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_time _repeat function &rest args)
+                   (push (cons function args) scheduled)
+                   nil))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (cl-labels ((run-scheduled ()
+                      (let ((calls (reverse scheduled)))
+                        (setq scheduled nil)
+                        (dolist (call calls) (apply (car call) (cdr call))))))
+          ,@body)))))
+
+(ert-deftest claude-code-ide-test-adopt-session-refuses-bad-host-or-name ()
+  "A bad host or name returns `refused', shows one message, and schedules nothing."
+  (dolist (case '(("host-z" "cci-omp-b-bbbbbb" "host-z")
+                  ("-oProxyCommand=x" "cci-omp-b-bbbbbb" "-oProxyCommand=x")
+                  ("host a" "cci-omp-b-bbbbbb" "host a")
+                  (nil "omp-b-bbbbbb" "omp-b-bbbbbb")
+                  (nil "cci-omp/../b" "cci-omp/../b")
+                  ("host-a" "other-b" "other-b")))
+    (claude-code-ide-tests--with-adopt-command
+     (let ((claude-code-ide-remote-hosts '("host-a" "-oProxyCommand=x" "host a")))
+       (pcase-let ((`(,host ,name ,value) case))
+         (should (eq (claude-code-ide-adopt-session host name) 'refused))
+         (should (= (length messages) 1))
+         (should (string-match-p (regexp-quote value) (car messages)))
+         (should (string-match-p (regexp-quote name) (car messages)))
+         (should-not scheduled)
+         (should-not claude-code-ide--pending-adoptions))))))
+
+(ert-deftest claude-code-ide-test-adopt-session-refusal-message-once-per-pair ()
+  "A refused pair shows its message once and stays refused.
+A different pair shows its own message.  After the host enters
+`claude-code-ide-remote-hosts', the next call adopts the pair."
+  (claude-code-ide-tests--with-adopt-command
+    (let ((claude-code-ide-remote-hosts '("host-a")))
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'refused))
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'refused))
+      (should (= (length messages) 1))
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-c-cccccc") 'refused))
+      (should (= (length messages) 2))
+      (should (string-match-p "cci-omp-c-cccccc" (car messages)))
+      (should-not scheduled)
+      (should-not claude-code-ide--adopted-sessions)
+      (push "host-z" claude-code-ide-remote-hosts)
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'adopting))
+      (should (= (length scheduled) 1)))))
+
+(ert-deftest claude-code-ide-test-adopt-session-local-attaches-once ()
+  "A local call returns `adopting', attaches once, then skips the live Session.
+The switch follows `claude-code-ide-switch-on-spawn'."
+  (dolist (switch '(t nil))
+    (claude-code-ide-tests--with-adopt-command
+     (let ((claude-code-ide-switch-on-spawn switch))
+       (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                  (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+         (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
+         (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'skipped))
+         (run-scheduled)
+         (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'skipped))
+         (should-not scheduled))
+       (should (equal created '((nil "cci-omp-b-bbbbbb"))))
+       (should (equal switched (and switch '("cci-omp-b-bbbbbb"))))
+       (should-not claude-code-ide--pending-adoptions)))))
+
+(ert-deftest claude-code-ide-test-adopt-session-remote-in-flight-skips ()
+  "A second call during the remote list is skipped and sends no second list."
+  (claude-code-ide-tests--with-adopt-command
+   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
+   (run-scheduled)
+   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'skipped))
+   (run-scheduled)
+   (should (= (length requests) 1))
+   (reply "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp\n")
+   (should (equal created '(("host-a" "cci-omp-b-bbbbbb"))))
+   (should-not claude-code-ide--pending-adoptions)
+   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'skipped))
+   (should-not scheduled)))
+
+(ert-deftest claude-code-ide-test-adopt-session-pending-clears-on-every-end ()
+  "The pending pair is gone after a refused host, a failed list, and an error."
+  (claude-code-ide-tests--with-adopt-command
+   (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb")
+   (let ((claude-code-ide-remote-hosts '("host-b")))
+     (run-scheduled))
+   (should-not requests)
+   (should-not claude-code-ide--pending-adoptions)
+   (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb")
+   (run-scheduled)
+   (should claude-code-ide--pending-adoptions)
+   (reply "" 255)
+   (should-not claude-code-ide--pending-adoptions)
+   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+              (lambda () (error "No zmx"))))
+     (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb")
+     (run-scheduled))
+   (should-not claude-code-ide--pending-adoptions)
+   (should-not created)))
+
+(ert-deftest claude-code-ide-test-adopt-session-skips-after-disconnect ()
+  "A Session attached once is skipped after it leaves this Emacs.
+The pair is neither live nor pending, so only the adopted set skips it."
+  (claude-code-ide-tests--with-adopt-command
+   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+              (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+     (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
+     (run-scheduled))
+   (should (equal created '((nil "cci-omp-b-bbbbbb"))))
+   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
+   (run-scheduled)
+   (reply "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp\n")
+   (should (= (length created) 2))
+   (clrhash claude-code-ide--sessions)
+   (should-not claude-code-ide--pending-adoptions)
+   (dolist (host '(nil "host-a"))
+     (should-not (claude-code-ide--live-session-for-target host "cci-omp-b-bbbbbb"))
+     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped)))
+   (should-not scheduled)))
+
+(ert-deftest claude-code-ide-test-adopt-session-skips-hand-attached-after-disconnect ()
+  "A Session attached by hand is skipped after it leaves this Emacs.
+An adopt that skips the live Session records the pair."
+  (dolist (host '(nil "host-a"))
+    (claude-code-ide-tests--with-adopt-command
+     (puthash "hand" (claude-code-ide-session-create
+                      :id "hand" :host host :zmx-name "cci-omp-b-bbbbbb")
+              claude-code-ide--sessions)
+     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped))
+     (clrhash claude-code-ide--sessions)
+     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped))
+     (should-not scheduled)
+     (should-not created))))
+
+(ert-deftest claude-code-ide-test-adopt-session-retries-failed-adopt ()
+  "An adopt that leaves the Session not live is not recorded.
+The next call for the same pair starts a new adopt."
+  (claude-code-ide-tests--with-adopt-command
+   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+              (lambda () nil)))
+     (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
+     (run-scheduled))
+   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
+   (run-scheduled)
+   (reply "" 255)
+   (should-not created)
+   (should-not claude-code-ide--adopted-sessions)
+   (dolist (host '(nil "host-a"))
+     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'adopting)))))
+
 (ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
   "Failed or timed-out SSH cannot validate a target from partial output."
   (dolist (outcome '((:status 255 :stdout "same\n" :stderr "SSH failed")

@@ -333,10 +333,11 @@ the target window is already visible."
   :group 'claude-code-ide)
 
 (defcustom claude-code-ide-switch-on-spawn t
-  "Whether to switch to a Sibling Session after Emacs attaches it.
-When an Oh My Pi Session announces a Sibling Session it spawned,
-Emacs attaches it.  When non-nil, Emacs then switches the current
-frame to it.  When nil, the selected window keeps its buffer."
+  "Whether to switch to a Session after Emacs attaches it on request.
+When an Oh My Pi Session announces a Sibling Session it spawned, or
+`claude-code-ide-adopt-session' names a Session, Emacs attaches it.
+When non-nil, Emacs then switches the current frame to it.  When
+nil, the selected window keeps its buffer."
   :type 'boolean
   :group 'claude-code-ide)
 
@@ -2727,27 +2728,96 @@ Log a missing entry or an error instead of signaling."
      (claude-code-ide-log "Failed to adopt spawned session %s: %s"
                           name (error-message-string err)))))
 
-(defun claude-code-ide--adopt-spawned-session (host name)
+(defun claude-code-ide--adopt-spawned-session (host name &optional on-done)
   "Attach the Sibling Session NAME that a Session on HOST announced.
 A nil HOST means the local zmx server.  A remote HOST must be in
 `claude-code-ide-remote-hosts'.  This runs from a timer, so log every
-failure instead of signaling."
-  (condition-case err
-      (cond
-       ((null host)
-        (claude-code-ide--attach-spawned-entry
-         nil name (claude-code-ide--zmx-adoptable-sessions)))
-       ((not (member host claude-code-ide-remote-hosts))
-        (message "Ignored spawned session %s: host %s is not in `claude-code-ide-remote-hosts'"
-                 name host))
-       (t
-        (claude-code-ide-zmx-discover-remote
-         host (claude-code-ide--remote-discovery-callback
-               (lambda (sessions)
-                 (claude-code-ide--attach-spawned-entry host name sessions))))))
-    (error
-     (claude-code-ide-log "Failed to adopt spawned session %s: %s"
-                          name (error-message-string err)))))
+failure instead of signaling.  Call ON-DONE, when non-nil, with no
+argument exactly once after the adopt ends, with or without success."
+  (let ((done (or on-done #'ignore)))
+    (condition-case err
+        (cond
+         ((null host)
+          (claude-code-ide--attach-spawned-entry
+           nil name (claude-code-ide--zmx-adoptable-sessions))
+          (funcall done))
+         ((not (member host claude-code-ide-remote-hosts))
+          (message "Ignored spawned session %s: host %s is not in `claude-code-ide-remote-hosts'"
+                   name host)
+          (funcall done))
+         (t
+          (let ((callback (claude-code-ide--remote-discovery-callback
+                           (lambda (sessions)
+                             (claude-code-ide--attach-spawned-entry host name sessions)))))
+            (claude-code-ide-zmx-discover-remote
+             host (lambda (outcome)
+                    (unwind-protect (funcall callback outcome)
+                      (funcall done)))))))
+      (error
+       (claude-code-ide-log "Failed to adopt spawned session %s: %s"
+                            name (error-message-string err))
+       (funcall done)))))
+
+(defvar claude-code-ide--pending-adoptions nil
+  "The (HOST . NAME) pairs that `claude-code-ide-adopt-session' is attaching.")
+
+(defvar claude-code-ide--adopted-sessions nil
+  "The (HOST . NAME) pairs that `claude-code-ide-adopt-session' attached.
+A pair enters when its adopt makes the Session live, or when an adopt
+skips the Session because it is already live.  A failed
+adopt is tried again by the next outside event.  The pairs stay for
+the life of this Emacs, so a Session that the user disconnects is not
+attached again by the next outside event.")
+
+(defvar claude-code-ide--refused-sessions nil
+  "The (HOST . NAME) pairs that `claude-code-ide-adopt-session' refused.
+The refusal message shows once for each pair.  A pair here is not
+adopted, so the next event adopts it after the user fixes the config.")
+
+;;;###autoload
+(defun claude-code-ide-adopt-session (host name)
+  "Attach the zmx Session NAME on HOST, or on this machine when HOST is nil.
+HOST must be in `claude-code-ide-remote-hosts'.  NAME must be a zmx
+name that this package generates.  Outside programs call this through
+`emacsclient --eval', so a bad HOST or NAME shows one message for
+each (HOST . NAME) pair and signals nothing.  The attach runs from a
+timer and follows
+`claude-code-ide-switch-on-spawn'.  A Session attached once by this
+command, or live when this command runs, is not adopted again in this
+Emacs, even after the user disconnects it.  A failed adopt does not
+count.  The user can still
+attach the Session with `claude-code-ide-attach'.
+Return `refused' for a bad HOST or NAME, `skipped' when the Session
+is live, already being attached, or adopted before, and `adopting'
+otherwise."
+  (let ((pair (cons host name)))
+    (cond
+     ((or (and host (not (and (claude-code-ide-zmx--valid-host-p host)
+                              (member host claude-code-ide-remote-hosts))))
+          (not (claude-code-ide-zmx--package-name-p name)))
+      (unless (member pair claude-code-ide--refused-sessions)
+        (push pair claude-code-ide--refused-sessions)
+        (if (claude-code-ide-zmx--package-name-p name)
+            (message "Refused session %s: host %s is not in `claude-code-ide-remote-hosts'"
+                     name host)
+          (message "Refused session %s: the name does not start with %s"
+                   name claude-code-ide-zmx-session-prefix)))
+      'refused)
+     ((or (member pair claude-code-ide--adopted-sessions)
+          (member pair claude-code-ide--pending-adoptions))
+      'skipped)
+     ((claude-code-ide--live-session-for-target host name)
+      (push pair claude-code-ide--adopted-sessions)
+      'skipped)
+     (t
+      (push pair claude-code-ide--pending-adoptions)
+      (run-at-time 0 nil #'claude-code-ide--adopt-spawned-session host name
+                   (lambda ()
+                     (setq claude-code-ide--pending-adoptions
+                           (delete pair claude-code-ide--pending-adoptions))
+                     (when (claude-code-ide--live-session-for-target host name)
+                       (push pair claude-code-ide--adopted-sessions))))
+      'adopting))))
 
 (defun claude-code-ide--resolve-attach-directory (entry)
   "Return ENTRY's start directory, prompting when it is missing or invalid.

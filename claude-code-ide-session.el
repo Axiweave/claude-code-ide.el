@@ -67,7 +67,8 @@
 (declare-function claude-code-ide--format-insertion "claude-code-ide" (body))
 (declare-function claude-code-ide-session-cli-type "claude-code-ide" (session))
 (declare-function claude-code-ide-zmx--package-name-p "claude-code-ide-zmx" (name))
-(declare-function claude-code-ide--adopt-spawned-session "claude-code-ide" (host name))
+(declare-function claude-code-ide--adopt-spawned-session "claude-code-ide"
+                  (host name &optional on-done))
 
 (defgroup claude-code-ide-session nil
   "Session support for Claude Code IDE."
