@@ -30,6 +30,14 @@ process_file() {
                 (require 'claude-code-ide-mcp-server nil t)
                 (find-file \"$file\")
                 (emacs-lisp-mode)
+                (save-excursion
+                  (goto-char (point-min))
+                  (condition-case nil
+                      (while t
+                        (let ((form (read (current-buffer))))
+                          (when (eq (car-safe form) 'defmacro)
+                            (eval form t))))
+                    (end-of-file nil)))
                 (setq-local indent-tabs-mode nil)
                 (setq-local lisp-indent-function 'lisp-indent-function)
                 (delete-trailing-whitespace)

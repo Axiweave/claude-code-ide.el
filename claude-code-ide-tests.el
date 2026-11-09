@@ -357,49 +357,49 @@ Ensures a clean state before each test that involves process management."
 (ert-deftest claude-code-ide-test-manager-remote-repositories-mru-persists ()
   "Remote repository history is per-host, deduplicated, bounded, and persisted."
   (claude-code-ide-tests--with-grouped-state
-   (let ((claude-code-ide-remote-hosts '("alpha" "beta")))
-     (dotimes (index 21)
-       (claude-code-ide-manager--record-remote-repository
-        "alpha" (format "/srv/repo-%02d" index)))
-     (claude-code-ide-manager--record-remote-repository "beta" "/srv/repo-20")
-     (claude-code-ide-manager--record-remote-repository "alpha" "/srv/repo-10")
-     (should (equal (car (cdr (assoc "alpha"
+    (let ((claude-code-ide-remote-hosts '("alpha" "beta")))
+      (dotimes (index 21)
+        (claude-code-ide-manager--record-remote-repository
+         "alpha" (format "/srv/repo-%02d" index)))
+      (claude-code-ide-manager--record-remote-repository "beta" "/srv/repo-20")
+      (claude-code-ide-manager--record-remote-repository "alpha" "/srv/repo-10")
+      (should (equal (car (cdr (assoc "alpha"
+                                      claude-code-ide-manager--remote-repositories)))
+                     "/srv/repo-10"))
+      (should (= (length (cdr (assoc "alpha"
                                      claude-code-ide-manager--remote-repositories)))
-                    "/srv/repo-10"))
-     (should (= (length (cdr (assoc "alpha"
-                                    claude-code-ide-manager--remote-repositories)))
-                20))
-     (should (equal (cdr (assoc "beta"
-                                claude-code-ide-manager--remote-repositories))
-                    '("/srv/repo-20")))
-     (let ((saved (claude-code-ide-manager--serialize-state)))
-       (setq claude-code-ide-manager--remote-repositories nil)
-       (claude-code-ide-manager--restore-state saved)
-       (should (equal (plist-get saved :remote-repositories)
-                      claude-code-ide-manager--remote-repositories))))))
+                 20))
+      (should (equal (cdr (assoc "beta"
+                                 claude-code-ide-manager--remote-repositories))
+                     '("/srv/repo-20")))
+      (let ((saved (claude-code-ide-manager--serialize-state)))
+        (setq claude-code-ide-manager--remote-repositories nil)
+        (claude-code-ide-manager--restore-state saved)
+        (should (equal (plist-get saved :remote-repositories)
+                       claude-code-ide-manager--remote-repositories))))))
 
 (ert-deftest claude-code-ide-test-manager-remote-repositories-restore-normalizes ()
   "Restore accepts missing history and normalizes untrusted local metadata."
   (claude-code-ide-tests--with-grouped-state
-   (cl-letf (((symbol-function 'make-process)
-              (lambda (&rest _) (ert-fail "History restore started a process"))))
-     (dolist (history '(42 (("alpha" "/srv/one") . broken)))
-       (claude-code-ide-manager--restore-state
-        (list :version 4 :scopes nil :layouts nil
-              :remote-repositories history))
-       (should-not claude-code-ide-manager--remote-repositories))
-     (claude-code-ide-manager--restore-state
-      '(:version 4 :scopes nil :layouts nil
-                 :remote-repositories
-                 (("alpha" "/srv/one" "/srv/one" "relative" 12)
-                  ("-unsafe" "/srv/two")
-                  ("removed" "/srv/three")))))
-   (should (equal claude-code-ide-manager--remote-repositories
-                  '(("alpha" "/srv/one")
-                    ("removed" "/srv/three"))))
-   (claude-code-ide-manager--restore-state
-    '(:version 4 :scopes nil :layouts nil))
-   (should-not claude-code-ide-manager--remote-repositories)))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _) (ert-fail "History restore started a process"))))
+      (dolist (history '(42 (("alpha" "/srv/one") . broken)))
+        (claude-code-ide-manager--restore-state
+         (list :version 4 :scopes nil :layouts nil
+               :remote-repositories history))
+        (should-not claude-code-ide-manager--remote-repositories))
+      (claude-code-ide-manager--restore-state
+       '(:version 4 :scopes nil :layouts nil
+                  :remote-repositories
+                  (("alpha" "/srv/one" "/srv/one" "relative" 12)
+                   ("-unsafe" "/srv/two")
+                   ("removed" "/srv/three")))))
+    (should (equal claude-code-ide-manager--remote-repositories
+                   '(("alpha" "/srv/one")
+                     ("removed" "/srv/three"))))
+    (claude-code-ide-manager--restore-state
+     '(:version 4 :scopes nil :layouts nil))
+    (should-not claude-code-ide-manager--remote-repositories)))
 
 (ert-deftest claude-code-ide-test-manager-remote-repository-trailing-slash-dedups ()
   "One repository is one candidate, whatever its trailing slashes.
@@ -407,44 +407,44 @@ An Agent's own start directory and a picker choice reach the same
 history, so both spellings must converge before the picker offers
 them."
   (claude-code-ide-tests--with-grouped-state
-   (let ((claude-code-ide-remote-hosts '("alpha")))
-     (claude-code-ide-manager--record-remote-repository "alpha" "/srv/repo/")
-     (should
-      (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
-             '("/srv/repo")))
-     ;; Every trailing slash goes, and one candidate survives.
-     (dolist (spelling '("/srv/repo" "/srv/repo///"))
-       (claude-code-ide-manager--record-remote-repository "alpha" spelling)
-       (should
-        (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
-               '("/srv/repo"))))
-     ;; An all-slash path collapses to the host root, which stays usable.
-     (dolist (case '(("/srv/repo///" "/srv/repo")
-                     ("/" "/")
-                     ("//" "/")))
-       (should (equal (claude-code-ide-manager--repository-path (car case))
-                      (cadr case))))
-     (claude-code-ide-manager--record-remote-repository "alpha" "/")
-     (should
-      (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
-             '("/" "/srv/repo")))
-     ;; Empty metadata stays invalid rather than becoming the root.
-     (should (equal (claude-code-ide-manager--repository-path "") ""))
-     (should-error (claude-code-ide-manager--record-remote-repository "alpha" "")
-                   :type 'user-error)
-     ;; History written before this rule converges on load.
-     (claude-code-ide-manager--restore-state
-      (list :version 4 :scopes nil :layouts nil
-            :remote-repositories '(("alpha" "/srv/repo/" "/srv/repo///"))))
-     (let (candidates)
-       (cl-letf (((symbol-function 'completing-read)
-                  (lambda (_prompt collection &rest _)
-                    (setq candidates collection)
-                    "/srv/repo")))
-         (should
-          (equal (claude-code-ide-manager--read-remote-repository "alpha")
-                 "/srv/repo")))
-       (should (equal candidates '("/srv/repo")))))))
+    (let ((claude-code-ide-remote-hosts '("alpha")))
+      (claude-code-ide-manager--record-remote-repository "alpha" "/srv/repo/")
+      (should
+       (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
+              '("/srv/repo")))
+      ;; Every trailing slash goes, and one candidate survives.
+      (dolist (spelling '("/srv/repo" "/srv/repo///"))
+        (claude-code-ide-manager--record-remote-repository "alpha" spelling)
+        (should
+         (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
+                '("/srv/repo"))))
+      ;; An all-slash path collapses to the host root, which stays usable.
+      (dolist (case '(("/srv/repo///" "/srv/repo")
+                      ("/" "/")
+                      ("//" "/")))
+        (should (equal (claude-code-ide-manager--repository-path (car case))
+                       (cadr case))))
+      (claude-code-ide-manager--record-remote-repository "alpha" "/")
+      (should
+       (equal (cdr (assoc "alpha" claude-code-ide-manager--remote-repositories))
+              '("/" "/srv/repo")))
+      ;; Empty metadata stays invalid rather than becoming the root.
+      (should (equal (claude-code-ide-manager--repository-path "") ""))
+      (should-error (claude-code-ide-manager--record-remote-repository "alpha" "")
+                    :type 'user-error)
+      ;; History written before this rule converges on load.
+      (claude-code-ide-manager--restore-state
+       (list :version 4 :scopes nil :layouts nil
+             :remote-repositories '(("alpha" "/srv/repo/" "/srv/repo///"))))
+      (let (candidates)
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (setq candidates collection)
+                     "/srv/repo")))
+          (should
+           (equal (claude-code-ide-manager--read-remote-repository "alpha")
+                  "/srv/repo")))
+        (should (equal candidates '("/srv/repo")))))))
 
 (ert-deftest claude-code-ide-test-manager-remote-repository-picker ()
   "The picker offers host history and accepts a remembered repository."
@@ -511,155 +511,155 @@ them."
 (ert-deftest claude-code-ide-test-manager-remote-repository-convergence-boundaries ()
   "Restored history stays bounded, host-scoped, and persistence-controlled."
   (claude-code-ide-tests--with-grouped-state
-   (let ((history
-          (list
-           (cons "alpha"
-                 (cl-loop for index below 25
-                          collect (format "/srv/repo-%02d" index))))))
-     (claude-code-ide-manager--restore-state
-      (list :version 4 :scopes nil :layouts nil
-            :remote-repositories history))
-     (should (= (length
-                 (cdr (assoc "alpha"
-                             claude-code-ide-manager--remote-repositories)))
-                20))
-     (should (equal (car (last
-                          (cdr (assoc
-                                "alpha"
-                                claude-code-ide-manager--remote-repositories))))
-                    "/srv/repo-19")))
-   (let ((claude-code-ide-remote-hosts '("alpha"))
-         (claude-code-ide-manager--remote-repositories
-          '(("alpha" "/srv/alpha") ("removed" "/srv/removed")))
-         collections)
-     (cl-letf (((symbol-function 'completing-read)
-                (lambda (_prompt candidates &rest _)
-                  (push candidates collections)
-                  (if (= (length collections) 1) "alpha" "/srv/alpha")))
-               ((symbol-function
-                 'claude-code-ide-manager--request-remote-open)
-                (lambda (&rest _) "operation")))
-       (should (equal (claude-code-ide-manager-open-remote) "operation"))
-       (should
-        (equal (nreverse collections)
-               '(("alpha") ("/srv/alpha"))))))
-   (let ((claude-code-ide-manager-persist-state nil)
-         (claude-code-ide-manager--remote-repositories nil)
-         (claude-code-ide-manager--persisted-state
-          '(:version 4 :scopes nil :layouts nil
-                     :remote-repositories (("alpha" "/srv/saved")))))
-     (cl-letf (((symbol-function 'persist-load)
-                (lambda (&rest _) (ert-fail "Disabled persistence loaded"))))
-       (claude-code-ide-manager--initialize))
-     (should-not claude-code-ide-manager--remote-repositories)
-     (setq claude-code-ide-manager--remote-repositories
-           '(("alpha" "/srv/current")))
-     (claude-code-ide-manager--save-state)
-     (should
-      (equal (plist-get claude-code-ide-manager--persisted-state
-                        :remote-repositories)
-             '(("alpha" "/srv/saved")))))))
+    (let ((history
+           (list
+            (cons "alpha"
+                  (cl-loop for index below 25
+                           collect (format "/srv/repo-%02d" index))))))
+      (claude-code-ide-manager--restore-state
+       (list :version 4 :scopes nil :layouts nil
+             :remote-repositories history))
+      (should (= (length
+                  (cdr (assoc "alpha"
+                              claude-code-ide-manager--remote-repositories)))
+                 20))
+      (should (equal (car (last
+                           (cdr (assoc
+                                 "alpha"
+                                 claude-code-ide-manager--remote-repositories))))
+                     "/srv/repo-19")))
+    (let ((claude-code-ide-remote-hosts '("alpha"))
+          (claude-code-ide-manager--remote-repositories
+           '(("alpha" "/srv/alpha") ("removed" "/srv/removed")))
+          collections)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt candidates &rest _)
+                   (push candidates collections)
+                   (if (= (length collections) 1) "alpha" "/srv/alpha")))
+                ((symbol-function
+                  'claude-code-ide-manager--request-remote-open)
+                 (lambda (&rest _) "operation")))
+        (should (equal (claude-code-ide-manager-open-remote) "operation"))
+        (should
+         (equal (nreverse collections)
+                '(("alpha") ("/srv/alpha"))))))
+    (let ((claude-code-ide-manager-persist-state nil)
+          (claude-code-ide-manager--remote-repositories nil)
+          (claude-code-ide-manager--persisted-state
+           '(:version 4 :scopes nil :layouts nil
+                      :remote-repositories (("alpha" "/srv/saved")))))
+      (cl-letf (((symbol-function 'persist-load)
+                 (lambda (&rest _) (ert-fail "Disabled persistence loaded"))))
+        (claude-code-ide-manager--initialize))
+      (should-not claude-code-ide-manager--remote-repositories)
+      (setq claude-code-ide-manager--remote-repositories
+            '(("alpha" "/srv/current")))
+      (claude-code-ide-manager--save-state)
+      (should
+       (equal (plist-get claude-code-ide-manager--persisted-state
+                         :remote-repositories)
+              '(("alpha" "/srv/saved")))))))
 
 
 (ert-deftest claude-code-ide-test-manager-grouped-state-migration ()
   "Old state keeps its Sessions and layouts without network requests."
   (dolist (version '(1 2 3))
     (claude-code-ide-tests--with-grouped-state
-     (let* ((row '(:session-key "one" :directory "/tmp/repo/"
-                                :pinned t :order-key 7 :display-name "repo"))
-            (state (list :items (list row)
-                         :selected-session-key "one" :active-session-key "one"))
-            (data (append (list :version version :layouts '(("one" . saved-layout)))
-                          (if (= version 1)
-                              (list :items (list row))
-                            (list :scopes (list (cons "global" state)))))))
-       (puthash 'claude-code-ide-manager--persisted-state data persist--test-store)
-       (cl-letf (((symbol-function 'make-process)
-                  (lambda (&rest _) (ert-fail "Restoration started a process"))))
-         (claude-code-ide-manager--load-state))
-       (let ((item (car (claude-code-ide-manager--scope-items '(:type global)))))
-         (should (equal (claude-code-ide-manager-item-session-key item) "one"))
-         (should (claude-code-ide-manager-item-pinned item))
-         (should (= (claude-code-ide-manager-item-order-key item) 7))
-         (should (eq (gethash "one" claude-code-ide-manager--layouts) 'saved-layout))
-         (should (eq (plist-get (claude-code-ide-manager--scope-state-entry
-                                 '(:type global)) :view) 'flat))
-         (when (> version 1)
-           (should (equal (claude-code-ide-manager--scope-selected-session-key
-                           '(:type global)) "one"))
-           (should (equal (claude-code-ide-manager--scope-active-session-key
-                           '(:type global)) "one"))))))))
+      (let* ((row '(:session-key "one" :directory "/tmp/repo/"
+                                 :pinned t :order-key 7 :display-name "repo"))
+             (state (list :items (list row)
+                          :selected-session-key "one" :active-session-key "one"))
+             (data (append (list :version version :layouts '(("one" . saved-layout)))
+                           (if (= version 1)
+                               (list :items (list row))
+                             (list :scopes (list (cons "global" state)))))))
+        (puthash 'claude-code-ide-manager--persisted-state data persist--test-store)
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _) (ert-fail "Restoration started a process"))))
+          (claude-code-ide-manager--load-state))
+        (let ((item (car (claude-code-ide-manager--scope-items '(:type global)))))
+          (should (equal (claude-code-ide-manager-item-session-key item) "one"))
+          (should (claude-code-ide-manager-item-pinned item))
+          (should (= (claude-code-ide-manager-item-order-key item) 7))
+          (should (eq (gethash "one" claude-code-ide-manager--layouts) 'saved-layout))
+          (should (eq (plist-get (claude-code-ide-manager--scope-state-entry
+                                  '(:type global)) :view) 'flat))
+          (when (> version 1)
+            (should (equal (claude-code-ide-manager--scope-selected-session-key
+                            '(:type global)) "one"))
+            (should (equal (claude-code-ide-manager--scope-active-session-key
+                            '(:type global)) "one"))))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-state-cache-roundtrip ()
   "A remembered repository and its grouped view survive persistence."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((metadata '(:kind git :host "alpha" :directory "/work/topic"
-                            :common-dir "/work/main/.git" :project-path "/work/main"
-                            :worktree-path "/work/topic" :branch "topic"))
-          (row (list :session-key "remote" :directory "/work/topic"
-                     :host "alpha" :zmx-name "cci-topic" :cli-type 'omp
-                     :order 1 :group-metadata metadata))
-          (data (list :version 4
-                      :scopes (list (cons "global" (list :view 'grouped :items (list row)))))))
-     (puthash 'claude-code-ide-manager--persisted-state data persist--test-store)
-     (claude-code-ide-manager--load-state)
-     (should (equal (plist-get (claude-code-ide-manager--scope-state-entry
-                                '(:type global)) :view) 'grouped))
-     (claude-code-ide-manager--save-state)
-     (let* ((saved (gethash 'claude-code-ide-manager--persisted-state persist--test-store))
-            (scope (cdr (assoc "global" (plist-get saved :scopes))))
-            (saved-row (car (plist-get scope :items))))
-       (should (eq (plist-get scope :view) 'grouped))
-       (should (equal (plist-get saved-row :group-metadata) metadata)))
-     (setf (plist-get row :group-metadata) (plist-put (copy-sequence metadata) :host "other"))
-     (claude-code-ide-manager--restore-state data)
-     (let ((saved-row (car (plist-get
-                            (cdr (assoc "global" (plist-get
-                                                  (claude-code-ide-manager--serialize-state)
-                                                  :scopes)))
-                            :items))))
-       (should (equal (plist-get saved-row :session-key) "remote"))
-       (should-not (plist-get saved-row :group-metadata))))))
+    (let* ((metadata '(:kind git :host "alpha" :directory "/work/topic"
+                             :common-dir "/work/main/.git" :project-path "/work/main"
+                             :worktree-path "/work/topic" :branch "topic"))
+           (row (list :session-key "remote" :directory "/work/topic"
+                      :host "alpha" :zmx-name "cci-topic" :cli-type 'omp
+                      :order 1 :group-metadata metadata))
+           (data (list :version 4
+                       :scopes (list (cons "global" (list :view 'grouped :items (list row)))))))
+      (puthash 'claude-code-ide-manager--persisted-state data persist--test-store)
+      (claude-code-ide-manager--load-state)
+      (should (equal (plist-get (claude-code-ide-manager--scope-state-entry
+                                 '(:type global)) :view) 'grouped))
+      (claude-code-ide-manager--save-state)
+      (let* ((saved (gethash 'claude-code-ide-manager--persisted-state persist--test-store))
+             (scope (cdr (assoc "global" (plist-get saved :scopes))))
+             (saved-row (car (plist-get scope :items))))
+        (should (eq (plist-get scope :view) 'grouped))
+        (should (equal (plist-get saved-row :group-metadata) metadata)))
+      (setf (plist-get row :group-metadata) (plist-put (copy-sequence metadata) :host "other"))
+      (claude-code-ide-manager--restore-state data)
+      (let ((saved-row (car (plist-get
+                             (cdr (assoc "global" (plist-get
+                                                   (claude-code-ide-manager--serialize-state)
+                                                   :scopes)))
+                             :items))))
+        (should (equal (plist-get saved-row :session-key) "remote"))
+        (should-not (plist-get saved-row :group-metadata))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-state-without-persistence ()
   "Disabled persistence leaves the in-memory view and disk state alone."
   (claude-code-ide-tests--with-grouped-state
-   (let ((claude-code-ide-manager-persist-state nil))
-     (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
-     (puthash 'claude-code-ide-manager--persisted-state 'sentinel persist--test-store)
-     (claude-code-ide-manager--save-state)
-     (claude-code-ide-manager--load-state)
-     (should (eq (plist-get (claude-code-ide-manager--scope-state-entry
-                             '(:type global)) :view) 'grouped))
-     (should (eq (gethash 'claude-code-ide-manager--persisted-state persist--test-store)
-                 'sentinel)))))
+    (let ((claude-code-ide-manager-persist-state nil))
+      (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
+      (puthash 'claude-code-ide-manager--persisted-state 'sentinel persist--test-store)
+      (claude-code-ide-manager--save-state)
+      (claude-code-ide-manager--load-state)
+      (should (eq (plist-get (claude-code-ide-manager--scope-state-entry
+                              '(:type global)) :view) 'grouped))
+      (should (eq (gethash 'claude-code-ide-manager--persisted-state persist--test-store)
+                  'sentinel)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-state-reattach-cache ()
   "Materialization and replacement registration retain the matching cache."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((metadata '(:kind git :host "alpha" :directory "/work/topic"
-                            :common-dir "/work/main/.git" :project-path "/work/main"
-                            :worktree-path "/work/topic" :branch "topic"))
-          (old (make-claude-code-ide-manager-item
-                :session-key "remote" :host "alpha" :directory "/work/topic"
-                :zmx-name "cci-topic" :cli-type 'omp :order 1
-                :group-metadata metadata)))
-     (claude-code-ide-manager--set-scope-items '(:type global) (list old))
-     (claude-code-ide--materialize-remote-target
-      "remote" "alpha" "cci-topic" "/work/topic" 1 10)
-     (should (equal (claude-code-ide-manager-item-group-metadata
-                     (car (claude-code-ide-manager--scope-items '(:type global))))
-                    metadata))
-     (let* ((replacement (claude-code-ide-session-create
-                          :id "remote" :host "alpha" :directory "/work/topic"
-                          :zmx-name "cci-topic" :cli-type 'omp :order 1))
-            (item (claude-code-ide-manager--make-item '(:type global) replacement)))
-       (should (equal (claude-code-ide-manager-item-group-metadata item) metadata))
-       (should (equal (claude-code-ide-session-group-metadata replacement) metadata))
-       (setf (claude-code-ide-session-host replacement) "beta")
-       (should-not
-        (claude-code-ide-manager-item-group-metadata
-         (claude-code-ide-manager--make-item '(:type global) replacement)))))))
+    (let* ((metadata '(:kind git :host "alpha" :directory "/work/topic"
+                             :common-dir "/work/main/.git" :project-path "/work/main"
+                             :worktree-path "/work/topic" :branch "topic"))
+           (old (make-claude-code-ide-manager-item
+                 :session-key "remote" :host "alpha" :directory "/work/topic"
+                 :zmx-name "cci-topic" :cli-type 'omp :order 1
+                 :group-metadata metadata)))
+      (claude-code-ide-manager--set-scope-items '(:type global) (list old))
+      (claude-code-ide--materialize-remote-target
+       "remote" "alpha" "cci-topic" "/work/topic" 1 10)
+      (should (equal (claude-code-ide-manager-item-group-metadata
+                      (car (claude-code-ide-manager--scope-items '(:type global))))
+                     metadata))
+      (let* ((replacement (claude-code-ide-session-create
+                           :id "remote" :host "alpha" :directory "/work/topic"
+                           :zmx-name "cci-topic" :cli-type 'omp :order 1))
+             (item (claude-code-ide-manager--make-item '(:type global) replacement)))
+        (should (equal (claude-code-ide-manager-item-group-metadata item) metadata))
+        (should (equal (claude-code-ide-session-group-metadata replacement) metadata))
+        (setf (claude-code-ide-session-host replacement) "beta")
+        (should-not
+         (claude-code-ide-manager-item-group-metadata
+          (claude-code-ide-manager--make-item '(:type global) replacement)))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-state-malformed-cache ()
   "Bad cache fields never remove an otherwise valid remembered Session."
@@ -772,108 +772,108 @@ them."
 (ert-deftest claude-code-ide-test-manager-grouped-local-refresh-preserves-cache ()
   "A failed refresh keeps the old Git group instead of inventing non-Git."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((metadata '(:kind git :host nil :directory "/missing/work"
-                            :common-dir "/repo/.git" :project-path "/repo"
-                            :worktree-path "/missing/work" :branch "saved"))
-          (session (claude-code-ide-session-create
-                    :id "one" :directory "/missing/work" :order 1 :group-metadata metadata)))
-     (cl-letf (((symbol-function 'claude-code-ide-manager--live-sessions)
-                (lambda () (list session))))
-       (let ((items (claude-code-ide-manager-refresh-items '(:type global))))
-         (should (equal (claude-code-ide-manager--group-key (car items))
-                        '(git nil "/repo/.git")))
-         (should (equal (plist-get (claude-code-ide-manager-item-group-metadata
-                                    (car items)) :branch) "saved")))))))
+    (let* ((metadata '(:kind git :host nil :directory "/missing/work"
+                             :common-dir "/repo/.git" :project-path "/repo"
+                             :worktree-path "/missing/work" :branch "saved"))
+           (session (claude-code-ide-session-create
+                     :id "one" :directory "/missing/work" :order 1 :group-metadata metadata)))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--live-sessions)
+                 (lambda () (list session))))
+        (let ((items (claude-code-ide-manager-refresh-items '(:type global))))
+          (should (equal (claude-code-ide-manager--group-key (car items))
+                         '(git nil "/repo/.git")))
+          (should (equal (plist-get (claude-code-ide-manager-item-group-metadata
+                                     (car items)) :branch) "saved")))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-render-toggle-and-slots ()
   "The real render preserves identities and maps every numbered row correctly."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((scope '(:type global))
-          (claude-code-ide-manager-sort-by 'name)
-          (claude-code-ide-manager-sort-reverse nil)
-          (items
-           (cl-loop for n from 1 to 12
-                    for directory = (if (<= n 6) "/team/a/repo" "/team/b/repo")
-                    collect (make-claude-code-ide-manager-item
-                             :session-key (format "s%d" n) :directory directory
-                             :order n :display-name (format "flat-%02d" (- 13 n))
-                             :live-p t
-                             :secondary-text directory
-                             :group-metadata
-                             (list :kind 'git :host nil :directory directory
-                                   :common-dir (concat directory "/.git")
-                                   :project-path directory :worktree-path directory
-                                   :branch (if (= n 1) "main" (format "branch%d" n)))))))
-     (claude-code-ide-manager--set-scope-items scope items)
-     (claude-code-ide-manager--set-scope-selected-session-key scope "s3")
-     (claude-code-ide-manager--set-scope-active-session-key scope "s2")
-     (puthash "s2" 'saved-layout claude-code-ide-manager--layouts)
-     (claude-code-ide-manager-toggle-grouped-view)
-     (cl-letf (((symbol-function 'make-process)
-                (lambda (&rest _) (ert-fail "Cached rendering started a process")))
-               ((symbol-function 'process-file)
-                (lambda (&rest _) (ert-fail "Cached rendering queried Git"))))
-       (claude-code-ide-manager--render scope))
-     (let ((keys (claude-code-ide-manager--visible-session-keys scope))
-           (slots (claude-code-ide-manager--slot-map items nil scope))
-           (row-count 0) headings)
-       (should (= (length keys) 12))
-       (cl-loop for key in keys for slot from 1
-                do (should (equal (gethash key slots) (and (<= slot 10) slot))))
-       (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-         (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key) "s3"))
-         (should (string-match-p "/team/a/repo" (get-text-property (point) 'help-echo)))
-         (should (string-match-p "branch3" (get-text-property (point) 'help-echo)))
-         (save-excursion
-           (goto-char (point-min))
-           (while (< (point) (point-max))
-             (if (get-text-property (point) 'claude-code-ide-manager-session-key)
-                 (cl-incf row-count)
-               (push (cons (buffer-substring-no-properties (line-beginning-position)
-                                                           (line-end-position))
-                           (get-text-property (point) 'help-echo))
-                     headings)
-               (should-not (get-text-property (point) 'claude-code-ide-manager-session-name-start)))
-             (forward-line 1))))
-       (should (= row-count 12))
-       (should (= (length headings) 2))
-       (should-not (equal (caar headings) (caadr headings)))
-       (should (member "/team/a/repo" (mapcar #'cdr headings))))
-     (claude-code-ide-manager-toggle-grouped-view)
-     (should (eq (claude-code-ide-manager--view scope) 'flat))
-     (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "s3"))
-     (should (equal (claude-code-ide-manager--scope-active-session-key scope) "s2"))
-     (should (eq (gethash "s2" claude-code-ide-manager--layouts) 'saved-layout))
-     (should (equal (claude-code-ide-manager-item-display-name (car items)) "flat-12")))))
+    (let* ((scope '(:type global))
+           (claude-code-ide-manager-sort-by 'name)
+           (claude-code-ide-manager-sort-reverse nil)
+           (items
+            (cl-loop for n from 1 to 12
+                     for directory = (if (<= n 6) "/team/a/repo" "/team/b/repo")
+                     collect (make-claude-code-ide-manager-item
+                              :session-key (format "s%d" n) :directory directory
+                              :order n :display-name (format "flat-%02d" (- 13 n))
+                              :live-p t
+                              :secondary-text directory
+                              :group-metadata
+                              (list :kind 'git :host nil :directory directory
+                                    :common-dir (concat directory "/.git")
+                                    :project-path directory :worktree-path directory
+                                    :branch (if (= n 1) "main" (format "branch%d" n)))))))
+      (claude-code-ide-manager--set-scope-items scope items)
+      (claude-code-ide-manager--set-scope-selected-session-key scope "s3")
+      (claude-code-ide-manager--set-scope-active-session-key scope "s2")
+      (puthash "s2" 'saved-layout claude-code-ide-manager--layouts)
+      (claude-code-ide-manager-toggle-grouped-view)
+      (cl-letf (((symbol-function 'make-process)
+                 (lambda (&rest _) (ert-fail "Cached rendering started a process")))
+                ((symbol-function 'process-file)
+                 (lambda (&rest _) (ert-fail "Cached rendering queried Git"))))
+        (claude-code-ide-manager--render scope))
+      (let ((keys (claude-code-ide-manager--visible-session-keys scope))
+            (slots (claude-code-ide-manager--slot-map items nil scope))
+            (row-count 0) headings)
+        (should (= (length keys) 12))
+        (cl-loop for key in keys for slot from 1
+                 do (should (equal (gethash key slots) (and (<= slot 10) slot))))
+        (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+          (should (equal (get-text-property (point) 'claude-code-ide-manager-session-key) "s3"))
+          (should (string-match-p "/team/a/repo" (get-text-property (point) 'help-echo)))
+          (should (string-match-p "branch3" (get-text-property (point) 'help-echo)))
+          (save-excursion
+            (goto-char (point-min))
+            (while (< (point) (point-max))
+              (if (get-text-property (point) 'claude-code-ide-manager-session-key)
+                  (cl-incf row-count)
+                (push (cons (buffer-substring-no-properties (line-beginning-position)
+                                                            (line-end-position))
+                            (get-text-property (point) 'help-echo))
+                      headings)
+                (should-not (get-text-property (point) 'claude-code-ide-manager-session-name-start)))
+              (forward-line 1))))
+        (should (= row-count 12))
+        (should (= (length headings) 2))
+        (should-not (equal (caar headings) (caadr headings)))
+        (should (member "/team/a/repo" (mapcar #'cdr headings))))
+      (claude-code-ide-manager-toggle-grouped-view)
+      (should (eq (claude-code-ide-manager--view scope) 'flat))
+      (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "s3"))
+      (should (equal (claude-code-ide-manager--scope-active-session-key scope) "s2"))
+      (should (eq (gethash "s2" claude-code-ide-manager--layouts) 'saved-layout))
+      (should (equal (claude-code-ide-manager-item-display-name (car items)) "flat-12")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-hosts-and-custom-collisions ()
   "Hosts stay separate and custom names cannot hide branches or identities."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((scope '(:type global))
-          (claude-code-ide-manager-sort-by 'name)
-          (claude-code-ide-manager-sort-reverse t)
-          (items
-           (cl-loop for (id host) in '(("local" nil) ("first" "alpha")
-                                       ("second" "alpha") ("last" "beta"))
-                    collect (make-claude-code-ide-manager-item
-                             :session-key id :host host :directory "/repo"
-                             :order 1 :custom-name "review" :display-name "flat"
-                             :group-metadata
-                             (list :kind 'git :host host :directory "/repo"
-                                   :common-dir "/repo/.git" :project-path "/repo"
-                                   :worktree-path "/repo" :branch "main")))))
-     (puthash "global" (list :view 'grouped :items items)
-              claude-code-ide-manager--scope-state)
-     (let ((sorted (claude-code-ide-manager--sorted-items items nil scope))
-           (labels (claude-code-ide-manager--grouped-labels items)))
-       (should (equal (mapcar #'claude-code-ide-manager-item-host sorted)
-                      '(nil "alpha" "alpha" "beta")))
-       (should-not (equal (gethash (nth 1 items) labels)
-                          (gethash (nth 2 items) labels)))
-       (dolist (item items)
-         (should (string-prefix-p "main · review" (gethash item labels)))
-         (should (equal (claude-code-ide-manager-item-display-name item) "flat"))))
-     (should (eq (claude-code-ide-manager--view '(:type repo :git-root "/repo")) 'flat)))))
+    (let* ((scope '(:type global))
+           (claude-code-ide-manager-sort-by 'name)
+           (claude-code-ide-manager-sort-reverse t)
+           (items
+            (cl-loop for (id host) in '(("local" nil) ("first" "alpha")
+                                        ("second" "alpha") ("last" "beta"))
+                     collect (make-claude-code-ide-manager-item
+                              :session-key id :host host :directory "/repo"
+                              :order 1 :custom-name "review" :display-name "flat"
+                              :group-metadata
+                              (list :kind 'git :host host :directory "/repo"
+                                    :common-dir "/repo/.git" :project-path "/repo"
+                                    :worktree-path "/repo" :branch "main")))))
+      (puthash "global" (list :view 'grouped :items items)
+               claude-code-ide-manager--scope-state)
+      (let ((sorted (claude-code-ide-manager--sorted-items items nil scope))
+            (labels (claude-code-ide-manager--grouped-labels items)))
+        (should (equal (mapcar #'claude-code-ide-manager-item-host sorted)
+                       '(nil "alpha" "alpha" "beta")))
+        (should-not (equal (gethash (nth 1 items) labels)
+                           (gethash (nth 2 items) labels)))
+        (dolist (item items)
+          (should (string-prefix-p "main · review" (gethash item labels)))
+          (should (equal (claude-code-ide-manager-item-display-name item) "flat"))))
+      (should (eq (claude-code-ide-manager--view '(:type repo :git-root "/repo")) 'flat)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-local-git-diagnostic-boundary ()
   "Filesystem-boundary diagnostics mean non-Git, but ownership failures do not."
@@ -911,74 +911,74 @@ them."
   "Run BODY in a real grouped editor with remembered remote Session fixtures."
   (declare (indent 0) (debug t))
   `(claude-code-ide-tests--with-grouped-state
+     (let* ((scope '(:type global))
+            (claude-code-ide-manager--command-scope scope)
+            (claude-code-ide-manager-sort-by 'name)
+            (claude-code-ide-manager-sort-reverse nil)
+            (items (claude-code-ide-tests--grouped-order-items)))
+       (claude-code-ide-manager--set-scope-state-entry
+        scope (list :view 'grouped :items items))
+       (save-window-excursion
+         (with-temp-buffer
+           (let ((content (current-buffer)) editor)
+             (switch-to-buffer content)
+             (unwind-protect
+                 (cl-labels ((row (id)
+                               (goto-char (point-min))
+                               (while (and (< (point) (point-max))
+                                           (not (equal
+                                                 (get-text-property
+                                                  (point) 'claude-code-ide-manager-session-key)
+                                                 id)))
+                                 (goto-char (next-single-property-change
+                                             (point) 'claude-code-ide-manager-session-key
+                                             nil (point-max))))
+                               (should (< (point) (point-max)))
+                               (beginning-of-line)))
+                   (claude-code-ide-manager-edit-pin-order)
+                   (setq editor (current-buffer))
+                   ,@body)
+               (when (buffer-live-p editor)
+                 (with-current-buffer editor (set-buffer-modified-p nil))
+                 (kill-buffer editor)))))))))
+
+(ert-deftest claude-code-ide-test-manager-grouped-move-preserves-flat-positions ()
+  "Adjacent moves preserve other groups, pin buckets, and occupied flat positions."
+  (claude-code-ide-tests--with-grouped-state
     (let* ((scope '(:type global))
-           (claude-code-ide-manager--command-scope scope)
            (claude-code-ide-manager-sort-by 'name)
            (claude-code-ide-manager-sort-reverse nil)
            (items (claude-code-ide-tests--grouped-order-items)))
       (claude-code-ide-manager--set-scope-state-entry
        scope (list :view 'grouped :items items))
-      (save-window-excursion
-        (with-temp-buffer
-          (let ((content (current-buffer)) editor)
-            (switch-to-buffer content)
-            (unwind-protect
-                (cl-labels ((row (id)
-                              (goto-char (point-min))
-                              (while (and (< (point) (point-max))
-                                          (not (equal
-                                                (get-text-property
-                                                 (point) 'claude-code-ide-manager-session-key)
-                                                id)))
-                                (goto-char (next-single-property-change
-                                            (point) 'claude-code-ide-manager-session-key
-                                            nil (point-max))))
-                              (should (< (point) (point-max)))
-                              (beginning-of-line)))
-                  (claude-code-ide-manager-edit-pin-order)
-                  (setq editor (current-buffer))
-                  ,@body)
-              (when (buffer-live-p editor)
-                (with-current-buffer editor (set-buffer-modified-p nil))
-                (kill-buffer editor)))))))))
-
-(ert-deftest claude-code-ide-test-manager-grouped-move-preserves-flat-positions ()
-  "Adjacent moves preserve other groups, pin buckets, and occupied flat positions."
-  (claude-code-ide-tests--with-grouped-state
-   (let* ((scope '(:type global))
-          (claude-code-ide-manager-sort-by 'name)
-          (claude-code-ide-manager-sort-reverse nil)
-          (items (claude-code-ide-tests--grouped-order-items)))
-     (claude-code-ide-manager--set-scope-state-entry
-      scope (list :view 'grouped :items items))
-     (cl-labels ((keys (view)
-                   (mapcar #'claude-code-ide-manager-item-session-key
-                           (claude-code-ide-manager--sorted-items items nil scope view))))
-       (should (equal (keys 'flat) '("a1" "b1" "a2" "b2" "a3" "b3")))
-       (should (equal (keys 'grouped) '("a2" "a3" "a1" "b2" "b3" "b1")))
-       (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-         (claude-code-ide-manager--render scope)
-         (claude-code-ide-manager--move-point-to-session-key "a3")
-         (claude-code-ide-manager-move-down)
-         (should (equal (keys 'grouped) '("a2" "a1" "a3" "b2" "b3" "b1")))
-         (should (equal (keys 'flat) '("a2" "b2" "a1" "b3" "a3" "b1")))
-         (dolist (id '("a1" "a2"))
-           (setf (claude-code-ide-manager-item-pinned
-                  (claude-code-ide-manager--item-by-session-key scope id)) t))
-         (claude-code-ide-manager--render scope)
-         (claude-code-ide-manager--move-point-to-session-key "a1")
-         (claude-code-ide-manager-move-up)
-         (should (equal (keys 'flat) '("a1" "a2" "b2" "b3" "a3" "b1")))
-         (should (equal (mapcar #'claude-code-ide-manager-item-pinned items)
-                        '(t nil t nil nil nil)))
-         ;; Group, pin-bucket, and first-row boundaries must not materialize new order.
-         (dolist (case '(("a3" . claude-code-ide-manager-move-down)
-                         ("a2" . claude-code-ide-manager-move-down)
-                         ("a1" . claude-code-ide-manager-move-up)))
-           (let ((before (mapcar #'claude-code-ide-manager-item-order-key items)))
-             (claude-code-ide-manager--move-point-to-session-key (car case))
-             (funcall (cdr case))
-             (should (equal before (mapcar #'claude-code-ide-manager-item-order-key items))))))))))
+      (cl-labels ((keys (view)
+                    (mapcar #'claude-code-ide-manager-item-session-key
+                            (claude-code-ide-manager--sorted-items items nil scope view))))
+        (should (equal (keys 'flat) '("a1" "b1" "a2" "b2" "a3" "b3")))
+        (should (equal (keys 'grouped) '("a2" "a3" "a1" "b2" "b3" "b1")))
+        (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+          (claude-code-ide-manager--render scope)
+          (claude-code-ide-manager--move-point-to-session-key "a3")
+          (claude-code-ide-manager-move-down)
+          (should (equal (keys 'grouped) '("a2" "a1" "a3" "b2" "b3" "b1")))
+          (should (equal (keys 'flat) '("a2" "b2" "a1" "b3" "a3" "b1")))
+          (dolist (id '("a1" "a2"))
+            (setf (claude-code-ide-manager-item-pinned
+                   (claude-code-ide-manager--item-by-session-key scope id)) t))
+          (claude-code-ide-manager--render scope)
+          (claude-code-ide-manager--move-point-to-session-key "a1")
+          (claude-code-ide-manager-move-up)
+          (should (equal (keys 'flat) '("a1" "a2" "b2" "b3" "a3" "b1")))
+          (should (equal (mapcar #'claude-code-ide-manager-item-pinned items)
+                         '(t nil t nil nil nil)))
+          ;; Group, pin-bucket, and first-row boundaries must not materialize new order.
+          (dolist (case '(("a3" . claude-code-ide-manager-move-down)
+                          ("a2" . claude-code-ide-manager-move-down)
+                          ("a1" . claude-code-ide-manager-move-up)))
+            (let ((before (mapcar #'claude-code-ide-manager-item-order-key items)))
+              (claude-code-ide-manager--move-point-to-session-key (car case))
+              (funcall (cdr case))
+              (should (equal before (mapcar #'claude-code-ide-manager-item-order-key items))))))))))
 
 (defun claude-code-ide-tests--group-order-items ()
   "Return two local groups and one remote group for group-order tests."
@@ -998,204 +998,204 @@ them."
 (ert-deftest claude-code-ide-test-manager-grouped-group-order-moves-and-persists ()
   "Group moves reorder groups, keep row order keys, and survive a state restore."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((scope '(:type global))
-          (claude-code-ide-manager--command-scope scope)
-          (claude-code-ide-manager-sort-by 'name)
-          (claude-code-ide-manager-sort-reverse nil)
-          (items (claude-code-ide-tests--group-order-items)))
-     (cl-loop for item in items for order from 11
-              do (setf (claude-code-ide-manager-item-order-key item) order))
-     (claude-code-ide-manager--set-scope-state-entry
-      scope (list :view 'grouped :items items))
-     (cl-labels ((sequence ()
-                   (let ((headings (claude-code-ide-manager--group-headings
-                                    (claude-code-ide-manager--scope-items scope))))
-                     (mapcar (lambda (pair) (car (gethash (car pair) headings)))
-                             (claude-code-ide-manager--displayed-groups scope))))
-                 (keys ()
-                   (mapcar #'claude-code-ide-manager-item-session-key
-                           (claude-code-ide-manager--sorted-items
-                            (claude-code-ide-manager--scope-items scope) nil scope 'grouped)))
-                 (order-keys ()
-                   (mapcar #'claude-code-ide-manager-item-order-key
-                           (claude-code-ide-manager--scope-items scope))))
-       (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-         (claude-code-ide-manager--render scope)
-         ;; A remote group no longer sinks below every local group.
-         (should (equal (sequence) '("alpha" "repo" "zeta")))
-         (should (equal (keys) '("a1" "a2" "r1" "z1")))
-         (let ((before (order-keys)))
-           ;; A lone grouped row moves its whole group.
-           (claude-code-ide-manager--move-point-to-session-key "r1")
-           (claude-code-ide-manager-move-down)
-           (should (equal (sequence) '("alpha" "zeta" "repo")))
-           (claude-code-ide-manager-move-group-up)
-           (claude-code-ide-manager-move-group-up)
-           (should (equal (sequence) '("repo" "alpha" "zeta")))
-           (should (equal (order-keys) before)))
-         ;; A row inside a multi-session group still moves alone.
-         (claude-code-ide-manager--move-point-to-session-key "a1")
-         (claude-code-ide-manager-move-down)
-         (should (equal (sequence) '("repo" "alpha" "zeta")))
-         (should (equal (keys) '("r1" "a2" "a1" "z1")))
-         (let ((before (order-keys)))
-           (claude-code-ide-manager--move-point-to-session-key "a1")
-           (claude-code-ide-manager-move-group-down)
-           (should (equal (sequence) '("repo" "zeta" "alpha")))
-           (should (equal (keys) '("r1" "z1" "a2" "a1")))
-           (should (equal (order-keys) before))))
-       (let* ((data (claude-code-ide-manager--serialize-state))
-              (global (assoc "global" (plist-get data :scopes)))
-              (stored (plist-get (cdr global) :group-order)))
-         (should (= (length stored) 3))
-         (setcdr global (plist-put (copy-sequence (cdr global)) :group-order
-                                   (append '(bad (git 1 2) "x") stored)))
-         (claude-code-ide-manager--restore-state data)
-         (should (equal (claude-code-ide-manager--group-order scope) stored))
-         (should (equal (sequence) '("repo" "zeta" "alpha"))))))))
+    (let* ((scope '(:type global))
+           (claude-code-ide-manager--command-scope scope)
+           (claude-code-ide-manager-sort-by 'name)
+           (claude-code-ide-manager-sort-reverse nil)
+           (items (claude-code-ide-tests--group-order-items)))
+      (cl-loop for item in items for order from 11
+               do (setf (claude-code-ide-manager-item-order-key item) order))
+      (claude-code-ide-manager--set-scope-state-entry
+       scope (list :view 'grouped :items items))
+      (cl-labels ((sequence ()
+                    (let ((headings (claude-code-ide-manager--group-headings
+                                     (claude-code-ide-manager--scope-items scope))))
+                      (mapcar (lambda (pair) (car (gethash (car pair) headings)))
+                              (claude-code-ide-manager--displayed-groups scope))))
+                  (keys ()
+                    (mapcar #'claude-code-ide-manager-item-session-key
+                            (claude-code-ide-manager--sorted-items
+                             (claude-code-ide-manager--scope-items scope) nil scope 'grouped)))
+                  (order-keys ()
+                    (mapcar #'claude-code-ide-manager-item-order-key
+                            (claude-code-ide-manager--scope-items scope))))
+        (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+          (claude-code-ide-manager--render scope)
+          ;; A remote group no longer sinks below every local group.
+          (should (equal (sequence) '("alpha" "repo" "zeta")))
+          (should (equal (keys) '("a1" "a2" "r1" "z1")))
+          (let ((before (order-keys)))
+            ;; A lone grouped row moves its whole group.
+            (claude-code-ide-manager--move-point-to-session-key "r1")
+            (claude-code-ide-manager-move-down)
+            (should (equal (sequence) '("alpha" "zeta" "repo")))
+            (claude-code-ide-manager-move-group-up)
+            (claude-code-ide-manager-move-group-up)
+            (should (equal (sequence) '("repo" "alpha" "zeta")))
+            (should (equal (order-keys) before)))
+          ;; A row inside a multi-session group still moves alone.
+          (claude-code-ide-manager--move-point-to-session-key "a1")
+          (claude-code-ide-manager-move-down)
+          (should (equal (sequence) '("repo" "alpha" "zeta")))
+          (should (equal (keys) '("r1" "a2" "a1" "z1")))
+          (let ((before (order-keys)))
+            (claude-code-ide-manager--move-point-to-session-key "a1")
+            (claude-code-ide-manager-move-group-down)
+            (should (equal (sequence) '("repo" "zeta" "alpha")))
+            (should (equal (keys) '("r1" "z1" "a2" "a1")))
+            (should (equal (order-keys) before))))
+        (let* ((data (claude-code-ide-manager--serialize-state))
+               (global (assoc "global" (plist-get data :scopes)))
+               (stored (plist-get (cdr global) :group-order)))
+          (should (= (length stored) 3))
+          (setcdr global (plist-put (copy-sequence (cdr global)) :group-order
+                                    (append '(bad (git 1 2) "x") stored)))
+          (claude-code-ide-manager--restore-state data)
+          (should (equal (claude-code-ide-manager--group-order scope) stored))
+          (should (equal (sequence) '("repo" "zeta" "alpha"))))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-moves-group ()
   "The order editor moves a whole group block and stores the new group order."
   (claude-code-ide-tests--with-grouped-order-editor
-   (row "b2")
-   (claude-code-ide-manager-pin-order-move-group-up)
-   (claude-code-ide-manager-pin-order-apply)
-   (should-not (buffer-live-p editor))
-   (should (equal (mapcar #'claude-code-ide-manager-item-session-key
-                          (claude-code-ide-manager--sorted-items
-                           (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
-                  '("b2" "b3" "b1" "a2" "a3" "a1")))
-   (should (equal (mapcar #'claude-code-ide-manager-item-session-key
-                          (claude-code-ide-manager--sorted-items
-                           (claude-code-ide-manager--scope-items scope) nil scope 'flat))
-                  '("a2" "b2" "a3" "b3" "a1" "b1")))
-   (should (equal (car (claude-code-ide-manager--group-order scope))
-                  '(git "beta" "/work/repo-b/.git")))))
+    (row "b2")
+    (claude-code-ide-manager-pin-order-move-group-up)
+    (claude-code-ide-manager-pin-order-apply)
+    (should-not (buffer-live-p editor))
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items
+                            (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+                   '("b2" "b3" "b1" "a2" "a3" "a1")))
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items
+                            (claude-code-ide-manager--scope-items scope) nil scope 'flat))
+                   '("a2" "b2" "a3" "b3" "a1" "b1")))
+    (should (equal (car (claude-code-ide-manager--group-order scope))
+                   '(git "beta" "/work/repo-b/.git")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-cut-pastes-group ()
   "Linewise cut and paste saves physical group order despite stale numbers.
 The cut runs with `kill-ring-deindent-mode' on when Emacs has it.  That
 mode re-inserts the remote project line's indentation without properties."
   (claude-code-ide-tests--with-grouped-order-editor
-   (let ((kill-ring nil)
-         (select-enable-clipboard nil)
-         (interprogram-cut-function nil)
-         (interprogram-paste-function nil)
-         (deindent (and (require 'indent-aux nil t)
-                        (not kill-ring-deindent-mode))))
-     (when deindent (kill-ring-deindent-mode 1))
-     (unwind-protect
-         (progn
-           (row "b2")
-           (forward-line -2)
-           (kill-region (point) (point-max))
-           (goto-char (point-min))
-           (yank)
-           ;; The pasted heading keeps its color.
-           (should (get-text-property (point-min) 'font-lock-face)))
-       (when deindent (kill-ring-deindent-mode -1))))
-   ;; Mix a normal group command with a manual move.
-   (goto-char (point-min))
-   (claude-code-ide-manager-pin-order-move-group-down)
-   (claude-code-ide-manager-pin-order-move-group-up)
-   (claude-code-ide-manager-pin-order-apply)
-   (should-not (buffer-live-p editor))
-   (should (equal (mapcar #'claude-code-ide-manager-item-session-key
-                          (claude-code-ide-manager--sorted-items
-                           (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
-                  '("b2" "b3" "b1" "a2" "a3" "a1")))))
+    (let ((kill-ring nil)
+          (select-enable-clipboard nil)
+          (interprogram-cut-function nil)
+          (interprogram-paste-function nil)
+          (deindent (and (require 'indent-aux nil t)
+                         (not kill-ring-deindent-mode))))
+      (when deindent (kill-ring-deindent-mode 1))
+      (unwind-protect
+          (progn
+            (row "b2")
+            (forward-line -2)
+            (kill-region (point) (point-max))
+            (goto-char (point-min))
+            (yank)
+            ;; The pasted heading keeps its color.
+            (should (get-text-property (point-min) 'font-lock-face)))
+        (when deindent (kill-ring-deindent-mode -1))))
+    ;; Mix a normal group command with a manual move.
+    (goto-char (point-min))
+    (claude-code-ide-manager-pin-order-move-group-down)
+    (claude-code-ide-manager-pin-order-move-group-up)
+    (claude-code-ide-manager-pin-order-apply)
+    (should-not (buffer-live-p editor))
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items
+                            (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+                   '("b2" "b3" "b1" "a2" "a3" "a1")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-applies-mixed-hosts ()
   "Unedited and reordered mixed-host editors apply and clear scope pins."
   (dolist (local '(nil t))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (with-temp-buffer
-         (let* ((scope '(:type global))
-                (claude-code-ide-manager--command-scope scope)
-                (claude-code-ide-manager-sort-by 'name)
-                (claude-code-ide-manager-sort-reverse nil)
-                (items (claude-code-ide-tests--grouped-order-items))
-                (content (current-buffer))
-                (process (and local (make-pipe-process :name "cci-grouped-local" :noquery t)))
-                editor)
-           (unwind-protect
-               (progn
-                 (when local
-                   (dolist (item items)
-                     (when (equal (claude-code-ide-manager-item-host item) "alpha")
-                       (setf (claude-code-ide-manager-item-host item) nil
-                             (plist-get (claude-code-ide-manager-item-group-metadata item) :host) nil)
-                       (claude-code-ide--put-session
-                        (claude-code-ide-session-create
-                         :id (claude-code-ide-manager-item-session-key item)
-                         :directory (claude-code-ide-manager-item-directory item)
-                         :order (claude-code-ide-manager-item-order item)
-                         :process process :buffer content
-                         :group-metadata (claude-code-ide-manager-item-group-metadata item))))))
-                 (claude-code-ide-manager--set-scope-state-entry
-                  scope (list :view 'grouped :items items))
-                 (switch-to-buffer content)
-                 (dolist (moved '(nil t))
-                   (claude-code-ide-manager-edit-pin-order)
-                   (setq editor (current-buffer))
-                   (when moved
-                     (claude-code-ide-manager-pin-order-move-down))
-                   (dolist (item (claude-code-ide-manager--scope-items scope))
-                     (setf (claude-code-ide-manager-item-pinned item) t))
-                   (claude-code-ide-manager-pin-order-apply)
-                   (should-not (buffer-live-p editor))
-                   (should-not (cl-some #'claude-code-ide-manager-item-pinned
-                                        (claude-code-ide-manager--scope-items scope)))
-                   (should (equal
-                            (mapcar #'claude-code-ide-manager-item-session-key
-                                    (claude-code-ide-manager--sorted-items
-                                     (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
-                            (if moved '("a3" "a2" "a1" "b2" "b3" "b1")
-                              '("a2" "a3" "a1" "b2" "b3" "b1"))))))
-             (when (buffer-live-p editor)
-               (with-current-buffer editor (set-buffer-modified-p nil))
-               (kill-buffer editor))
-             (when (process-live-p process) (delete-process process)))))))))
+      (save-window-excursion
+        (with-temp-buffer
+          (let* ((scope '(:type global))
+                 (claude-code-ide-manager--command-scope scope)
+                 (claude-code-ide-manager-sort-by 'name)
+                 (claude-code-ide-manager-sort-reverse nil)
+                 (items (claude-code-ide-tests--grouped-order-items))
+                 (content (current-buffer))
+                 (process (and local (make-pipe-process :name "cci-grouped-local" :noquery t)))
+                 editor)
+            (unwind-protect
+                (progn
+                  (when local
+                    (dolist (item items)
+                      (when (equal (claude-code-ide-manager-item-host item) "alpha")
+                        (setf (claude-code-ide-manager-item-host item) nil
+                              (plist-get (claude-code-ide-manager-item-group-metadata item) :host) nil)
+                        (claude-code-ide--put-session
+                         (claude-code-ide-session-create
+                          :id (claude-code-ide-manager-item-session-key item)
+                          :directory (claude-code-ide-manager-item-directory item)
+                          :order (claude-code-ide-manager-item-order item)
+                          :process process :buffer content
+                          :group-metadata (claude-code-ide-manager-item-group-metadata item))))))
+                  (claude-code-ide-manager--set-scope-state-entry
+                   scope (list :view 'grouped :items items))
+                  (switch-to-buffer content)
+                  (dolist (moved '(nil t))
+                    (claude-code-ide-manager-edit-pin-order)
+                    (setq editor (current-buffer))
+                    (when moved
+                      (claude-code-ide-manager-pin-order-move-down))
+                    (dolist (item (claude-code-ide-manager--scope-items scope))
+                      (setf (claude-code-ide-manager-item-pinned item) t))
+                    (claude-code-ide-manager-pin-order-apply)
+                    (should-not (buffer-live-p editor))
+                    (should-not (cl-some #'claude-code-ide-manager-item-pinned
+                                         (claude-code-ide-manager--scope-items scope)))
+                    (should (equal
+                             (mapcar #'claude-code-ide-manager-item-session-key
+                                     (claude-code-ide-manager--sorted-items
+                                      (claude-code-ide-manager--scope-items scope) nil scope 'grouped))
+                             (if moved '("a3" "a2" "a1" "b2" "b3" "b1")
+                               '("a2" "a3" "a1" "b2" "b3" "b1"))))))
+              (when (buffer-live-p editor)
+                (with-current-buffer editor (set-buffer-modified-p nil))
+                (kill-buffer editor))
+              (when (process-live-p process) (delete-process process)))))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-applies-occupied-order ()
   "Grouped edits retain identities, opening labels, and post-open fallback behavior."
   (claude-code-ide-tests--with-grouped-order-editor
-   (let ((kill-ring nil)
-         (select-enable-clipboard nil)
-         (interprogram-cut-function nil)
-         (interprogram-paste-function nil))
-     (row "a1")
-     (kill-region (line-beginning-position) (line-beginning-position 2))
-     (row "a2")
-     (yank))
-   (row "a2")
-   (insert "\n")
-   (row "a1")
-   (claude-code-ide-manager-pin-order-move-down)
-   (insert "\n")
-   (setf (plist-get (claude-code-ide-manager-item-group-metadata (car items)) :branch)
-         "changed-branch")
-   (let ((new (copy-claude-code-ide-manager-item (car items))))
-     (setf (claude-code-ide-manager-item-session-key new) "new"
-           (claude-code-ide-manager-item-zmx-name new) "cci-new"
-           (claude-code-ide-manager-item-pinned new) t
-           (claude-code-ide-manager-item-pinned (car items)) t)
-     (claude-code-ide-manager--set-scope-items scope (append items (list new))))
-   (let ((text (buffer-string)))
-     (claude-code-ide-manager-toggle-grouped-view)
-     (should (eq (current-buffer) editor))
-     (should (equal text (buffer-string))))
-   (claude-code-ide-manager-pin-order-apply)
-   (should-not (buffer-live-p editor))
-   (should (eq (window-buffer (selected-window)) content))
-   (should (eq (claude-code-ide-manager--view scope) 'flat))
-   (should (equal (mapcar #'claude-code-ide-manager-item-session-key
-                          (claude-code-ide-manager--sorted-items
-                           (claude-code-ide-manager--scope-items scope) nil scope 'flat))
-                  '("a2" "b2" "a1" "b3" "a3" "b1" "new")))
-   (should-not (cl-some #'claude-code-ide-manager-item-pinned
-                        (claude-code-ide-manager--scope-items scope)))))
+    (let ((kill-ring nil)
+          (select-enable-clipboard nil)
+          (interprogram-cut-function nil)
+          (interprogram-paste-function nil))
+      (row "a1")
+      (kill-region (line-beginning-position) (line-beginning-position 2))
+      (row "a2")
+      (yank))
+    (row "a2")
+    (insert "\n")
+    (row "a1")
+    (claude-code-ide-manager-pin-order-move-down)
+    (insert "\n")
+    (setf (plist-get (claude-code-ide-manager-item-group-metadata (car items)) :branch)
+          "changed-branch")
+    (let ((new (copy-claude-code-ide-manager-item (car items))))
+      (setf (claude-code-ide-manager-item-session-key new) "new"
+            (claude-code-ide-manager-item-zmx-name new) "cci-new"
+            (claude-code-ide-manager-item-pinned new) t
+            (claude-code-ide-manager-item-pinned (car items)) t)
+      (claude-code-ide-manager--set-scope-items scope (append items (list new))))
+    (let ((text (buffer-string)))
+      (claude-code-ide-manager-toggle-grouped-view)
+      (should (eq (current-buffer) editor))
+      (should (equal text (buffer-string))))
+    (claude-code-ide-manager-pin-order-apply)
+    (should-not (buffer-live-p editor))
+    (should (eq (window-buffer (selected-window)) content))
+    (should (eq (claude-code-ide-manager--view scope) 'flat))
+    (should (equal (mapcar #'claude-code-ide-manager-item-session-key
+                           (claude-code-ide-manager--sorted-items
+                            (claude-code-ide-manager--scope-items scope) nil scope 'flat))
+                   '("a2" "b2" "a1" "b3" "a3" "b1" "new")))
+    (should-not (cl-some #'claude-code-ide-manager-item-pinned
+                         (claude-code-ide-manager--scope-items scope)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-rejects-invalid-snapshots ()
   "Invalid headings, rows, and current membership reject all order and pin changes."
@@ -1203,152 +1203,152 @@ mode re-inserts the remote project line's indentation without properties."
                                   foreign-key changed-label missing-row duplicate-row
                                   cross-group changed-membership vanished-row))
     (claude-code-ide-tests--with-grouped-order-editor
-     (cl-loop for item in items for order from 11
-              do (setf (claude-code-ide-manager-item-order-key item) order))
-     (setf (claude-code-ide-manager-item-pinned (car items)) t)
-     (let ((before (mapcar (lambda (item)
-                             (cons (claude-code-ide-manager-item-pinned item)
-                                   (claude-code-ide-manager-item-order-key item)))
-                           items)))
-       (pcase variant
-         ('heading-text
-          (let ((inhibit-read-only t))
-            (goto-char (point-min))
-            (subst-char-in-region (point) (1+ (point)) ?\[ ?\{)))
-         ('heading-order
-          (let ((inhibit-read-only t))
-            (goto-char (point-min))
-            (transpose-regions (point) (line-beginning-position 2)
-                               (line-beginning-position 2) (line-beginning-position 3))))
-         ('heading-identity
-          (let ((inhibit-read-only t))
-            (goto-char (point-min))
-            (put-text-property (point) (line-end-position)
-                               'claude-code-ide-manager-group-heading '(host "other"))))
-         ('missing-heading
-          (let ((inhibit-read-only t))
-            (goto-char (point-min))
-            (delete-region (point) (line-beginning-position 2))))
-         ('duplicate-heading
-          (goto-char (point-min))
-          (insert (buffer-substring (point) (line-beginning-position 2))))
-         ('foreign-key
-          (row "a2")
-          (re-search-forward "^ *[0-9]+\\. ")
-          (put-text-property (point) (line-end-position)
-                             'claude-code-ide-manager-session-key "foreign"))
-         ('changed-label
-          (row "a2")
-          (re-search-forward "^ *[0-9]+\\. ")
-          (subst-char-in-region (point) (1+ (point)) ?a ?q))
-         ('missing-row
-          (row "a2")
-          (delete-region (point) (line-beginning-position 2)))
-         ('duplicate-row
-          (row "a2")
-          (let ((text (buffer-substring (point) (line-beginning-position 2))))
-            (row "a3")
-            (delete-region (point) (line-beginning-position 2))
-            (insert text)))
-         ('cross-group
-          (row "a2")
-          (let ((text (buffer-substring (point) (line-beginning-position 2))))
-            (delete-region (point) (line-beginning-position 2))
-            (row "b2")
-            (insert text)))
-         ('changed-membership
-          (setf (plist-get (claude-code-ide-manager-item-group-metadata (car items)) :common-dir)
-                "/work/other/.git"))
-         ('vanished-row
-          (claude-code-ide-manager--set-scope-items scope (cdr items))))
-       (should-error (claude-code-ide-manager-pin-order-apply) :type 'user-error)
-       (should (buffer-live-p editor))
-       (should (equal before
-                      (mapcar (lambda (item)
-                                (cons (claude-code-ide-manager-item-pinned item)
-                                      (claude-code-ide-manager-item-order-key item)))
-                              items)))))))
+      (cl-loop for item in items for order from 11
+               do (setf (claude-code-ide-manager-item-order-key item) order))
+      (setf (claude-code-ide-manager-item-pinned (car items)) t)
+      (let ((before (mapcar (lambda (item)
+                              (cons (claude-code-ide-manager-item-pinned item)
+                                    (claude-code-ide-manager-item-order-key item)))
+                            items)))
+        (pcase variant
+          ('heading-text
+           (let ((inhibit-read-only t))
+             (goto-char (point-min))
+             (subst-char-in-region (point) (1+ (point)) ?\[ ?\{)))
+          ('heading-order
+           (let ((inhibit-read-only t))
+             (goto-char (point-min))
+             (transpose-regions (point) (line-beginning-position 2)
+                                (line-beginning-position 2) (line-beginning-position 3))))
+          ('heading-identity
+           (let ((inhibit-read-only t))
+             (goto-char (point-min))
+             (put-text-property (point) (line-end-position)
+                                'claude-code-ide-manager-group-heading '(host "other"))))
+          ('missing-heading
+           (let ((inhibit-read-only t))
+             (goto-char (point-min))
+             (delete-region (point) (line-beginning-position 2))))
+          ('duplicate-heading
+           (goto-char (point-min))
+           (insert (buffer-substring (point) (line-beginning-position 2))))
+          ('foreign-key
+           (row "a2")
+           (re-search-forward "^ *[0-9]+\\. ")
+           (put-text-property (point) (line-end-position)
+                              'claude-code-ide-manager-session-key "foreign"))
+          ('changed-label
+           (row "a2")
+           (re-search-forward "^ *[0-9]+\\. ")
+           (subst-char-in-region (point) (1+ (point)) ?a ?q))
+          ('missing-row
+           (row "a2")
+           (delete-region (point) (line-beginning-position 2)))
+          ('duplicate-row
+           (row "a2")
+           (let ((text (buffer-substring (point) (line-beginning-position 2))))
+             (row "a3")
+             (delete-region (point) (line-beginning-position 2))
+             (insert text)))
+          ('cross-group
+           (row "a2")
+           (let ((text (buffer-substring (point) (line-beginning-position 2))))
+             (delete-region (point) (line-beginning-position 2))
+             (row "b2")
+             (insert text)))
+          ('changed-membership
+           (setf (plist-get (claude-code-ide-manager-item-group-metadata (car items)) :common-dir)
+                 "/work/other/.git"))
+          ('vanished-row
+           (claude-code-ide-manager--set-scope-items scope (cdr items))))
+        (should-error (claude-code-ide-manager-pin-order-apply) :type 'user-error)
+        (should (buffer-live-p editor))
+        (should (equal before
+                       (mapcar (lambda (item)
+                                 (cons (claude-code-ide-manager-item-pinned item)
+                                       (claude-code-ide-manager-item-order-key item)))
+                               items)))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-editor-resync-and-cancel ()
   "Explicit sort resync retains the captured view, and cancel preserves pins and order."
   (claude-code-ide-tests--with-grouped-order-editor
-   (let ((text (buffer-string)))
-     (goto-char (point-min))
-     (claude-code-ide-manager-pin-order-move-down)
-     (row "a1")
-     (claude-code-ide-manager-pin-order-move-down)
-     (should (equal text (buffer-string))))
-   (setf (claude-code-ide-manager-item-pinned (car items)) t
-         (claude-code-ide-manager-item-order-key (car items)) 9)
-   (let ((before (mapcar (lambda (item)
-                           (cons (claude-code-ide-manager-item-pinned item)
-                                 (claude-code-ide-manager-item-order-key item)))
-                         items)))
-     (row "a2")
-     (claude-code-ide-manager-pin-order-move-down)
-     (claude-code-ide-manager-toggle-grouped-view)
-     (setq claude-code-ide-manager-sort-reverse t)
-     (claude-code-ide-manager--pin-order-resync)
-     (should (equal (claude-code-ide-manager--validate-pin-order-editor)
-                    '("a1" "a3" "a2" "b1" "b3" "b2")))
-     (goto-char (point-min))
-     (delete-char 1)
-     (claude-code-ide-manager-pin-order-cancel)
-     (should-not (buffer-live-p editor))
-     (should (eq (window-buffer (selected-window)) content))
-     (should (equal before
-                    (mapcar (lambda (item)
-                              (cons (claude-code-ide-manager-item-pinned item)
-                                    (claude-code-ide-manager-item-order-key item)))
-                            items))))))
+    (let ((text (buffer-string)))
+      (goto-char (point-min))
+      (claude-code-ide-manager-pin-order-move-down)
+      (row "a1")
+      (claude-code-ide-manager-pin-order-move-down)
+      (should (equal text (buffer-string))))
+    (setf (claude-code-ide-manager-item-pinned (car items)) t
+          (claude-code-ide-manager-item-order-key (car items)) 9)
+    (let ((before (mapcar (lambda (item)
+                            (cons (claude-code-ide-manager-item-pinned item)
+                                  (claude-code-ide-manager-item-order-key item)))
+                          items)))
+      (row "a2")
+      (claude-code-ide-manager-pin-order-move-down)
+      (claude-code-ide-manager-toggle-grouped-view)
+      (setq claude-code-ide-manager-sort-reverse t)
+      (claude-code-ide-manager--pin-order-resync)
+      (should (equal (claude-code-ide-manager--validate-pin-order-editor)
+                     '("a1" "a3" "a2" "b1" "b3" "b2")))
+      (goto-char (point-min))
+      (delete-char 1)
+      (claude-code-ide-manager-pin-order-cancel)
+      (should-not (buffer-live-p editor))
+      (should (eq (window-buffer (selected-window)) content))
+      (should (equal before
+                     (mapcar (lambda (item)
+                               (cons (claude-code-ide-manager-item-pinned item)
+                                     (claude-code-ide-manager-item-order-key item)))
+                             items))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-navigation-boundaries ()
   "Empty, single, and missing-origin groups have defined navigation behavior."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((scope '(:type global))
-          (items (cl-loop for host in '("alpha" "beta" "gamma")
-                          collect (make-claude-code-ide-manager-item
-                                   :session-key host :host host :directory "/repo"
-                                   :zmx-name "cci-repo" :cli-type 'omp :order 1
-                                   :display-name (concat host ":repo")))))
-     (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-       (should-error (claude-code-ide-manager-next-project-group) :type 'user-error)
-       (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
-       (should-error (claude-code-ide-manager-next-project-group) :type 'user-error)
-       (claude-code-ide-manager--set-scope-items scope (list (car items)))
-       (claude-code-ide-manager--render scope)
-       (let ((state (claude-code-ide-manager--serialize-state))
-             (position (point)))
-         (claude-code-ide-manager-next-project-group)
-         (claude-code-ide-manager-previous-project-group)
-         (should (= position (point)))
-         (should (equal state (claude-code-ide-manager--serialize-state))))
-       (claude-code-ide-manager--set-scope-items scope items)
-       (claude-code-ide-manager--render scope)
-       (goto-char (point-min))
-       (claude-code-ide-manager--set-scope-selected-session-key scope "missing")
-       (claude-code-ide-manager--set-scope-active-session-key scope "beta")
-       (claude-code-ide-manager-next-project-group)
-       (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "gamma"))
-       (goto-char (point-min))
-       (claude-code-ide-manager--set-scope-selected-session-key scope nil)
-       (claude-code-ide-manager--set-scope-active-session-key scope nil)
-       (claude-code-ide-manager-next-project-group)
-       (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "alpha"))
-       (goto-char (point-min))
-       (claude-code-ide-manager--set-scope-selected-session-key scope nil)
-       (claude-code-ide-manager-previous-project-group)
-       (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "gamma"))
-       (claude-code-ide-manager-next-project-group)
-       (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "alpha")))
-     (let ((buffer (claude-code-ide-manager--get-buffer
-                    '(:type repo :git-root "/tmp/group-a/"))))
-       (unwind-protect
-           (with-current-buffer buffer
-             (should-error (claude-code-ide-manager-next-project-group) :type 'user-error))
-         (kill-buffer buffer)))
-     (with-temp-buffer
-       (should-error (claude-code-ide-manager-next-project-group) :type 'user-error)))))
+    (let* ((scope '(:type global))
+           (items (cl-loop for host in '("alpha" "beta" "gamma")
+                           collect (make-claude-code-ide-manager-item
+                                    :session-key host :host host :directory "/repo"
+                                    :zmx-name "cci-repo" :cli-type 'omp :order 1
+                                    :display-name (concat host ":repo")))))
+      (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+        (should-error (claude-code-ide-manager-next-project-group) :type 'user-error)
+        (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
+        (should-error (claude-code-ide-manager-next-project-group) :type 'user-error)
+        (claude-code-ide-manager--set-scope-items scope (list (car items)))
+        (claude-code-ide-manager--render scope)
+        (let ((state (claude-code-ide-manager--serialize-state))
+              (position (point)))
+          (claude-code-ide-manager-next-project-group)
+          (claude-code-ide-manager-previous-project-group)
+          (should (= position (point)))
+          (should (equal state (claude-code-ide-manager--serialize-state))))
+        (claude-code-ide-manager--set-scope-items scope items)
+        (claude-code-ide-manager--render scope)
+        (goto-char (point-min))
+        (claude-code-ide-manager--set-scope-selected-session-key scope "missing")
+        (claude-code-ide-manager--set-scope-active-session-key scope "beta")
+        (claude-code-ide-manager-next-project-group)
+        (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "gamma"))
+        (goto-char (point-min))
+        (claude-code-ide-manager--set-scope-selected-session-key scope nil)
+        (claude-code-ide-manager--set-scope-active-session-key scope nil)
+        (claude-code-ide-manager-next-project-group)
+        (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "alpha"))
+        (goto-char (point-min))
+        (claude-code-ide-manager--set-scope-selected-session-key scope nil)
+        (claude-code-ide-manager-previous-project-group)
+        (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "gamma"))
+        (claude-code-ide-manager-next-project-group)
+        (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "alpha")))
+      (let ((buffer (claude-code-ide-manager--get-buffer
+                     '(:type repo :git-root "/tmp/group-a/"))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should-error (claude-code-ide-manager-next-project-group) :type 'user-error))
+          (kill-buffer buffer)))
+      (with-temp-buffer
+        (should-error (claude-code-ide-manager-next-project-group) :type 'user-error)))))
 
 (defun claude-code-ide-tests--transient-suffix-plist (prefix key)
   "Return the property list for PREFIX suffix KEY across Transient versions."
@@ -2385,113 +2385,113 @@ DIRECTORY, when non-nil, is reported as the agent working directory."
 (ert-deftest claude-code-ide-mcp-sse-test-dispatch-session-state ()
   "Test `session_state_changed' stores state on the zmx-resolved session buffer."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-                                                   (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                   (claude-code-ide-tests--dispatch-agent-state "sid" "needs-input")
-                                                   (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
-                                                   (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "sid"))
-                                                   (should (eq (plist-get (gethash "sid" claude-code-ide-mcp-sse--sessions) :buffer) buffer))
-                                                   (claude-code-ide-tests--dispatch-agent-state "sid" "bogus")
-                                                   (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
-                                                   (claude-code-ide-tests--dispatch-agent-state "sid" "done" "nope")
-                                                   (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
-                                                   (claude-code-ide-mcp-sse--forget-session "sid")
-                                                   (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
-                                                   (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))
-                                                   (should-not (gethash "sid" claude-code-ide-mcp-sse--sessions))))
+    (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (claude-code-ide-tests--dispatch-agent-state "sid" "needs-input")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
+    (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "sid"))
+    (should (eq (plist-get (gethash "sid" claude-code-ide-mcp-sse--sessions) :buffer) buffer))
+    (claude-code-ide-tests--dispatch-agent-state "sid" "bogus")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
+    (claude-code-ide-tests--dispatch-agent-state "sid" "done" "nope")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'needs-input))
+    (claude-code-ide-mcp-sse--forget-session "sid")
+    (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
+    (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))
+    (should-not (gethash "sid" claude-code-ide-mcp-sse--sessions))))
 
 (ert-deftest claude-code-ide-mcp-sse-test-dispatch-session-directory ()
   "Test a reported directory moves the Session and redraws the manager once."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-                                                   (let* ((worktree (file-name-as-directory (make-temp-file "cci-worktree" t)))
-                                                          (expected (file-name-as-directory (expand-file-name worktree)))
-                                                          (refreshes 0)
-                                                          (record (gethash "agent-id" claude-code-ide--sessions)))
-                                                     (unwind-protect
-                                                         (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
-                                                                    (lambda () (setq refreshes (1+ refreshes)))))
-                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
-                                                           (should (equal (claude-code-ide-session-directory record) expected))
-                                                           (should (= refreshes 1))
-                                                           ;; The same directory on a later state report redraws nothing.
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "done" nil worktree)
-                                                           (should (= refreshes 1))
-                                                           ;; A relative, missing, remote, or control-character path is refused.
-                                                           (dolist (bogus (list "relative/worktree"
-                                                                                (expand-file-name "gone" worktree)
-                                                                                "/ssh:elsewhere:/tmp"
-                                                                                "/tmp/with\nnewline"))
-                                                             (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil bogus)
-                                                             (should (equal (claude-code-ide-session-directory record) expected))
-                                                             (should (= refreshes 1)))
-                                                           ;; A state report without a directory keeps the moved record.
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
-                                                           (should (equal (claude-code-ide-session-directory record) expected))
-                                                           (should (= refreshes 1)))
-                                                       (delete-directory worktree t)))))
+    (let* ((worktree (file-name-as-directory (make-temp-file "cci-worktree" t)))
+           (expected (file-name-as-directory (expand-file-name worktree)))
+           (refreshes 0)
+           (record (gethash "agent-id" claude-code-ide--sessions)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
+                     (lambda () (setq refreshes (1+ refreshes)))))
+            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+            (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
+            (should (equal (claude-code-ide-session-directory record) expected))
+            (should (= refreshes 1))
+            ;; The same directory on a later state report redraws nothing.
+            (claude-code-ide-tests--dispatch-agent-state "sid" "done" nil worktree)
+            (should (= refreshes 1))
+            ;; A relative, missing, remote, or control-character path is refused.
+            (dolist (bogus (list "relative/worktree"
+                                 (expand-file-name "gone" worktree)
+                                 "/ssh:elsewhere:/tmp"
+                                 "/tmp/with\nnewline"))
+              (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil bogus)
+              (should (equal (claude-code-ide-session-directory record) expected))
+              (should (= refreshes 1)))
+            ;; A state report without a directory keeps the moved record.
+            (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
+            (should (equal (claude-code-ide-session-directory record) expected))
+            (should (= refreshes 1)))
+        (delete-directory worktree t)))))
 
 (ert-deftest claude-code-ide-test-ghostel-directory-hook-moves-session ()
   "Test a Ghostel OSC 7 move relocates the Session, and the MCP report then no-ops."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-                                                   (let* ((worktree (file-name-as-directory (make-temp-file "cci-osc7" t)))
-                                                          (expected (file-name-as-directory (expand-file-name worktree)))
-                                                          (refreshes 0)
-                                                          (record (gethash "agent-id" claude-code-ide--sessions)))
-                                                     (unwind-protect
-                                                         (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
-                                                                    (lambda () (setq refreshes (1+ refreshes)))))
-                                                           (with-current-buffer buffer
-                                                             (setq default-directory worktree)
-                                                             (claude-code-ide--record-ghostel-directory))
-                                                           (should (equal (claude-code-ide-session-directory record) expected))
-                                                           (should (= refreshes 1))
-                                                           ;; The IDE report of the same move costs one no-op, not a redraw.
-                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
-                                                           (should (= refreshes 1)))
-                                                       (delete-directory worktree t)))))
+    (let* ((worktree (file-name-as-directory (make-temp-file "cci-osc7" t)))
+           (expected (file-name-as-directory (expand-file-name worktree)))
+           (refreshes 0)
+           (record (gethash "agent-id" claude-code-ide--sessions)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-manager-refresh-all)
+                     (lambda () (setq refreshes (1+ refreshes)))))
+            (with-current-buffer buffer
+              (setq default-directory worktree)
+              (claude-code-ide--record-ghostel-directory))
+            (should (equal (claude-code-ide-session-directory record) expected))
+            (should (= refreshes 1))
+            ;; The IDE report of the same move costs one no-op, not a redraw.
+            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+            (claude-code-ide-tests--dispatch-agent-state "sid" "working" nil worktree)
+            (should (= refreshes 1)))
+        (delete-directory worktree t)))))
 
 (ert-deftest claude-code-ide-mcp-sse-test-acknowledged-terminal-replay-stays-idle ()
   "Test SSE replay cannot restore an acknowledged terminal marker."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-                                                   (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                   (dolist (state '("done" "failed"))
-                                                     (claude-code-ide-tests--dispatch-agent-state "sid" "working")
-                                                     (claude-code-ide-tests--dispatch-agent-state "sid" state)
-                                                     (with-current-buffer buffer
-                                                       (claude-code-ide-session-idle-set-agent-state 'idle t))
-                                                     (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
-                                                     (claude-code-ide-tests--dispatch-agent-state "sid" state)
-                                                     (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
-                                                                 'idle)))
-                                                   ;; Reconnect: the new owner replays the acknowledged state.
-                                                   (claude-code-ide-mcp-sse--forget-session "sid")
-                                                   (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
-                                                   (puthash "new" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                   (claude-code-ide-tests--dispatch-agent-state "new" "failed")
-                                                   (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
-                                                               'idle))
-                                                   (claude-code-ide-tests--dispatch-agent-state "new" "working")
-                                                   (claude-code-ide-tests--dispatch-agent-state "new" "done")
-                                                   (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
-                                                               'done))))
+    (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (dolist (state '("done" "failed"))
+      (claude-code-ide-tests--dispatch-agent-state "sid" "working")
+      (claude-code-ide-tests--dispatch-agent-state "sid" state)
+      (with-current-buffer buffer
+        (claude-code-ide-session-idle-set-agent-state 'idle t))
+      (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
+      (claude-code-ide-tests--dispatch-agent-state "sid" state)
+      (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
+                  'idle)))
+    ;; Reconnect: the new owner replays the acknowledged state.
+    (claude-code-ide-mcp-sse--forget-session "sid")
+    (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
+    (puthash "new" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (claude-code-ide-tests--dispatch-agent-state "new" "failed")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
+                'idle))
+    (claude-code-ide-tests--dispatch-agent-state "new" "working")
+    (claude-code-ide-tests--dispatch-agent-state "new" "done")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
+                'done))))
 
 (ert-deftest claude-code-ide-mcp-sse-test-stale-session-keeps-replacement-state ()
   "Test a stale SSE session's disconnect leaves a newer session's state alone."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-                                                   (puthash "old" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                   (puthash "new" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                   (claude-code-ide-tests--dispatch-agent-state "old" "working")
-                                                   (claude-code-ide-tests--dispatch-agent-state "new" "done")
-                                                   (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'done))
-                                                   (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "new"))
-                                                   (claude-code-ide-mcp-sse--forget-session "old")
-                                                   (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'done))
-                                                   (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "new"))
-                                                   (should-not (gethash "old" claude-code-ide-mcp-sse--sessions))
-                                                   (claude-code-ide-mcp-sse--forget-session "new")
-                                                   (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
-                                                   (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))))
+    (puthash "old" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (puthash "new" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+    (claude-code-ide-tests--dispatch-agent-state "old" "working")
+    (claude-code-ide-tests--dispatch-agent-state "new" "done")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'done))
+    (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "new"))
+    (claude-code-ide-mcp-sse--forget-session "old")
+    (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'done))
+    (should (equal (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer) "new"))
+    (should-not (gethash "old" claude-code-ide-mcp-sse--sessions))
+    (claude-code-ide-mcp-sse--forget-session "new")
+    (should-not (buffer-local-value 'claude-code-ide-session-agent-state buffer))
+    (should-not (buffer-local-value 'claude-code-ide-mcp-sse--agent-state-owner buffer))))
 
 (ert-deftest claude-code-ide-session-idle-test-set-agent-state-acknowledges-visible-result ()
   "Test a visible buffer turns `done' and `failed' into `idle', but keeps `needs-input'."
@@ -2554,69 +2554,69 @@ DIRECTORY, when non-nil, is reported as the agent working directory."
   "Manager `!' blanks a hidden bell and blocks a stale done replay.
 A later genuine turn (working, then a real done) becomes visible again."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-                                                   (let ((process (make-pipe-process :name "cc-bell-ack" :buffer nil)))
-                                                     (unwind-protect
-                                                         (progn
-                                                           (setf (claude-code-ide-session-process (claude-code-ide--get-session "agent-id"))
-                                                                 process)
-                                                           (with-current-buffer buffer
-                                                             (setq-local claude-code-ide-session-idle-enabled t
-                                                                         claude-code-ide-session-idle-p t))
-                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                           ;; Hidden session, no agent report yet: the output-idle bell shows.
-                                                           (should (claude-code-ide-session-needs-attention-p buffer))
-                                                           ;; User presses `!'.
-                                                           (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
-                                                           (with-current-buffer buffer
-                                                             (should-not claude-code-ide-session-idle-p))
-                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
-                                                           ;; A done report already in flight must not resurrect a stale check.
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "done")
-                                                           (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle))
-                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
-                                                           ;; Repeated clears and idle reports keep it blank.
-                                                           (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
-                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
-                                                           ;; Reconnect: a new SSE owner replaying the same terminal state stays blank too.
-                                                           (claude-code-ide-mcp-sse--forget-session "sid")
-                                                           (puthash "sid2" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid2" "done")
-                                                           (should-not (claude-code-ide-session-needs-attention-p buffer))
-                                                           ;; A genuine new turn, then a real done, becomes visible again.
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid2" "working")
-                                                           (claude-code-ide-tests--dispatch-agent-state "sid2" "done")
-                                                           (should (claude-code-ide-session-needs-attention-p buffer)))
-                                                       (ignore-errors (delete-process process))))))
+    (let ((process (make-pipe-process :name "cc-bell-ack" :buffer nil)))
+      (unwind-protect
+          (progn
+            (setf (claude-code-ide-session-process (claude-code-ide--get-session "agent-id"))
+                  process)
+            (with-current-buffer buffer
+              (setq-local claude-code-ide-session-idle-enabled t
+                          claude-code-ide-session-idle-p t))
+            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+            ;; Hidden session, no agent report yet: the output-idle bell shows.
+            (should (claude-code-ide-session-needs-attention-p buffer))
+            ;; User presses `!'.
+            (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+            (with-current-buffer buffer
+              (should-not claude-code-ide-session-idle-p))
+            (should-not (claude-code-ide-session-needs-attention-p buffer))
+            ;; A done report already in flight must not resurrect a stale check.
+            (claude-code-ide-tests--dispatch-agent-state "sid" "done")
+            (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle))
+            (should-not (claude-code-ide-session-needs-attention-p buffer))
+            ;; Repeated clears and idle reports keep it blank.
+            (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+            (claude-code-ide-tests--dispatch-agent-state "sid" "idle")
+            (should-not (claude-code-ide-session-needs-attention-p buffer))
+            ;; Reconnect: a new SSE owner replaying the same terminal state stays blank too.
+            (claude-code-ide-mcp-sse--forget-session "sid")
+            (puthash "sid2" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+            (claude-code-ide-tests--dispatch-agent-state "sid2" "done")
+            (should-not (claude-code-ide-session-needs-attention-p buffer))
+            ;; A genuine new turn, then a real done, becomes visible again.
+            (claude-code-ide-tests--dispatch-agent-state "sid2" "working")
+            (claude-code-ide-tests--dispatch-agent-state "sid2" "done")
+            (should (claude-code-ide-session-needs-attention-p buffer)))
+        (ignore-errors (delete-process process))))))
 
 (ert-deftest claude-code-ide-test-manager-clear-acknowledges-done-and-failed-with-idle-disabled ()
   "Manager `!' folds and remembers done/failed even with idle tracking off.
 A `working' or `needs-input' state is left alone by the same clear."
   (claude-code-ide-tests--with-agent-state-fixture buffer
-                                                   (let ((process (make-pipe-process :name "cc-ack-idle-disabled" :buffer nil)))
-                                                     (unwind-protect
-                                                         (progn
-                                                           (setf (claude-code-ide-session-process (claude-code-ide--get-session "agent-id"))
-                                                                 process)
-                                                           (with-current-buffer buffer
-                                                             (setq-local claude-code-ide-session-idle-enabled nil))
-                                                           (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
-                                                           (dolist (state '("done" "failed"))
-                                                             (claude-code-ide-tests--dispatch-agent-state "sid" "working")
-                                                             (claude-code-ide-tests--dispatch-agent-state "sid" state)
-                                                             (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
-                                                             (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle))
-                                                             (should-not (claude-code-ide-session-needs-attention-p buffer))
-                                                             ;; The exact acknowledged state stays remembered on replay.
-                                                             (claude-code-ide-tests--dispatch-agent-state "sid" state)
-                                                             (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle)))
-                                                           ;; A clear during `working' or `needs-input' never touches either state.
-                                                           (dolist (state '("working" "needs-input"))
-                                                             (claude-code-ide-tests--dispatch-agent-state "sid" state)
-                                                             (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
-                                                             (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
-                                                                         (intern state)))))
-                                                       (ignore-errors (delete-process process))))))
+    (let ((process (make-pipe-process :name "cc-ack-idle-disabled" :buffer nil)))
+      (unwind-protect
+          (progn
+            (setf (claude-code-ide-session-process (claude-code-ide--get-session "agent-id"))
+                  process)
+            (with-current-buffer buffer
+              (setq-local claude-code-ide-session-idle-enabled nil))
+            (puthash "sid" (list :process nil :root nil) claude-code-ide-mcp-sse--sessions)
+            (dolist (state '("done" "failed"))
+              (claude-code-ide-tests--dispatch-agent-state "sid" "working")
+              (claude-code-ide-tests--dispatch-agent-state "sid" state)
+              (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+              (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle))
+              (should-not (claude-code-ide-session-needs-attention-p buffer))
+              ;; The exact acknowledged state stays remembered on replay.
+              (claude-code-ide-tests--dispatch-agent-state "sid" state)
+              (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer) 'idle)))
+            ;; A clear during `working' or `needs-input' never touches either state.
+            (dolist (state '("working" "needs-input"))
+              (claude-code-ide-tests--dispatch-agent-state "sid" state)
+              (should (= (claude-code-ide-manager-clear-all-idle-state) 1))
+              (should (eq (buffer-local-value 'claude-code-ide-session-agent-state buffer)
+                          (intern state)))))
+        (ignore-errors (delete-process process))))))
 
 (ert-deftest claude-code-ide-test-session-idle-ordinary-output-never-acknowledges-result ()
   "Plain terminal output never folds a reported result, only bells on its own."
@@ -6639,135 +6639,135 @@ directory passed to the open entry."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-      (let ((claude-code-ide-worktree-backend 'lane)
-            (claude-code-ide-lane-init-protocol t)
-            prompts)
-        (cl-letf (((symbol-function 'read-string)
-                   (lambda (prompt &rest _) (push prompt prompts) "feat/x")))
-          (with-current-buffer (claude-code-ide-manager--get-buffer
-                                (list :type 'repo :git-root main))
-            (should (equal (claude-code-ide-manager-new-worktree)
-                           (file-name-as-directory
-                            (expand-file-name ".lane/trees/feat/x" main)))))
-          (should asked)
-          (should lane-init)
-          (should (equal lane-calls (list (list main "feat/x"))))
-          (should (equal prompts '("New worktree (branch) name: ")))
-          (should (equal opened (file-name-as-directory
-                                 (expand-file-name ".lane/trees/feat/x" main))))
-          (setq asked nil lane-init nil)
-          (with-current-buffer (claude-code-ide-manager--get-buffer
-                                (list :type 'repo :git-root main))
-            (claude-code-ide-manager-new-worktree))
-          (should-not asked)
-          (should-not lane-init)))))))
+       (let ((claude-code-ide-worktree-backend 'lane)
+             (claude-code-ide-lane-init-protocol t)
+             prompts)
+         (cl-letf (((symbol-function 'read-string)
+                    (lambda (prompt &rest _) (push prompt prompts) "feat/x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (should (equal (claude-code-ide-manager-new-worktree)
+                            (file-name-as-directory
+                             (expand-file-name ".lane/trees/feat/x" main)))))
+           (should asked)
+           (should lane-init)
+           (should (equal lane-calls (list (list main "feat/x"))))
+           (should (equal prompts '("New worktree (branch) name: ")))
+           (should (equal opened (file-name-as-directory
+                                  (expand-file-name ".lane/trees/feat/x" main))))
+           (setq asked nil lane-init nil)
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree))
+           (should-not asked)
+           (should-not lane-init)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-lane-init-declined-creates-nothing ()
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-      (setq answer nil)
-      (let ((claude-code-ide-worktree-backend 'lane)
-            (claude-code-ide-lane-init-protocol t))
-        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
-          (with-current-buffer (claude-code-ide-manager--get-buffer
-                                (list :type 'repo :git-root main))
-            (should (string-match-p
-                     "Lane not initialized; nothing created"
-                     (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                         :type 'user-error)))))
-          (should asked)
-          (should-not lane-init)
-          (should-not lane-calls)
-          (should-not opened)))))))
+       (setq answer nil)
+       (let ((claude-code-ide-worktree-backend 'lane)
+             (claude-code-ide-lane-init-protocol t))
+         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (should (string-match-p
+                      "Lane not initialized; nothing created"
+                      (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                          :type 'user-error)))))
+           (should asked)
+           (should-not lane-init)
+           (should-not lane-calls)
+           (should-not opened)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-lane-bare-store-by-default ()
   "By default a bare .lane/ is made: no question, no `lane init', no AGENTS.md."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-      (let ((claude-code-ide-worktree-backend 'lane))
-        (should-not claude-code-ide-lane-init-protocol)
-        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
-          (with-current-buffer (claude-code-ide-manager--get-buffer
-                                (list :type 'repo :git-root main))
-            (claude-code-ide-manager-new-worktree))
-          (should-not asked)
-          (should-not lane-init)
-          (should (file-directory-p (expand-file-name ".lane" main)))
-          (should-not (file-exists-p (expand-file-name "AGENTS.md" main)))
-          (should (equal lane-calls (list (list main "feat/x"))))
-          (should opened)))))))
+       (let ((claude-code-ide-worktree-backend 'lane))
+         (should-not claude-code-ide-lane-init-protocol)
+         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat/x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree))
+           (should-not asked)
+           (should-not lane-init)
+           (should (file-directory-p (expand-file-name ".lane" main)))
+           (should-not (file-exists-p (expand-file-name "AGENTS.md" main)))
+           (should (equal lane-calls (list (list main "feat/x"))))
+           (should opened)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-wt-creates-and-prefix-shows-status ()
   "A wt override creates through `wt switch --create'; a prefix opens Magit only."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-      (let ((claude-code-ide-worktree-backend 'lane)
-            status)
-        (let ((default-directory main))
-          (claude-code-ide-tests--git "config" "claude-code-ide.worktree-backend" "wt"))
-        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat-y"))
-                  ((symbol-function 'magit-status) (lambda (directory) (setq status directory))))
-          (with-current-buffer (claude-code-ide-manager--get-buffer
-                                (list :type 'repo :git-root main))
-            (claude-code-ide-manager-new-worktree))
-          (should (equal wt-calls (list (list main "feat-y" nil t))))
-          (should-not lane-calls)
-          (should-not asked)
-          (should (equal opened (file-name-as-directory
-                                 (expand-file-name "../wt-feat-y" main))))
-          (setq opened nil)
-          (with-current-buffer (claude-code-ide-manager--get-buffer
-                                (list :type 'repo :git-root main))
-            (claude-code-ide-manager-new-worktree t))
-          (should-not opened)
-          (should (equal status (file-name-as-directory
-                                 (expand-file-name "../wt-feat-y" main))))))))))
+       (let ((claude-code-ide-worktree-backend 'lane)
+             status)
+         (let ((default-directory main))
+           (claude-code-ide-tests--git "config" "claude-code-ide.worktree-backend" "wt"))
+         (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "feat-y"))
+                   ((symbol-function 'magit-status) (lambda (directory) (setq status directory))))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree))
+           (should (equal wt-calls (list (list main "feat-y" nil t))))
+           (should-not lane-calls)
+           (should-not asked)
+           (should (equal opened (file-name-as-directory
+                                  (expand-file-name "../wt-feat-y" main))))
+           (setq opened nil)
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (claude-code-ide-manager-new-worktree t))
+           (should-not opened)
+           (should (equal status (file-name-as-directory
+                                  (expand-file-name "../wt-feat-y" main))))))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-refuses-bad-and-taken-names ()
   "Empty, absolute, dotted, existing-branch, listed-lane, and listed-wt names create nothing."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-      (make-directory (expand-file-name ".lane" main))
-      (dolist (case '((lane "" "not a usable")
-                      (lane "/tmp/abs" "not a usable")
-                      (lane "a/../b" "not a usable")
-                      (lane "feature" "already exists as a branch")
-                      (lane "listed" "already exists as a lane")
-                      (wt "wt-listed" "already exists as a wt worktree")))
-        (let ((claude-code-ide-worktree-backend (car case)))
-          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (cadr case)))
-                    ((symbol-function 'claude-code-ide-manager--worktree-backend)
-                     (lambda (_root) claude-code-ide-worktree-backend)))
-            (with-current-buffer (claude-code-ide-manager--get-buffer
-                                  (list :type 'repo :git-root main))
-              (should (string-match-p
-                       (caddr case)
-                       (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                           :type 'user-error))))))))
-      (should-not lane-calls)
-      (should-not wt-calls)
-      (should-not opened)))))
+       (make-directory (expand-file-name ".lane" main))
+       (dolist (case '((lane "" "not a usable")
+                       (lane "/tmp/abs" "not a usable")
+                       (lane "a/../b" "not a usable")
+                       (lane "feature" "already exists as a branch")
+                       (lane "listed" "already exists as a lane")
+                       (wt "wt-listed" "already exists as a wt worktree")))
+         (let ((claude-code-ide-worktree-backend (car case)))
+           (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (cadr case)))
+                     ((symbol-function 'claude-code-ide-manager--worktree-backend)
+                      (lambda (_root) claude-code-ide-worktree-backend)))
+             (with-current-buffer (claude-code-ide-manager--get-buffer
+                                   (list :type 'repo :git-root main))
+               (should (string-match-p
+                        (caddr case)
+                        (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                            :type 'user-error))))))))
+       (should-not lane-calls)
+       (should-not wt-calls)
+       (should-not opened)))))
 
 (ert-deftest claude-code-ide-test-new-worktree-refuses-remote-root-before-backend ()
   "A remote root stops before backend resolution and the name prompt."
   (claude-code-ide-tests--reset-manager-state)
   (claude-code-ide-tests--with-worktree-backends
-   (let (prompted)
-     (cl-letf (((symbol-function 'read-string)
-                (lambda (&rest _) (setq prompted t) "x"))
-               ((symbol-function 'claude-code-ide-manager--worktree-backend)
-                (lambda (_root) (error "backend resolved on a remote root"))))
-       (with-current-buffer (claude-code-ide-manager--get-buffer
-                             (list :type 'repo :git-root "/ssh:host:/srv/repo/"))
-         (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                            :type 'user-error))
-                        "Remote worktrees are not supported"))))
-     (should-not prompted)
-     (should-not lane-calls))))
+    (let (prompted)
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) (setq prompted t) "x"))
+                ((symbol-function 'claude-code-ide-manager--worktree-backend)
+                 (lambda (_root) (error "backend resolved on a remote root"))))
+        (with-current-buffer (claude-code-ide-manager--get-buffer
+                              (list :type 'repo :git-root "/ssh:host:/srv/repo/"))
+          (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                             :type 'user-error))
+                         "Remote worktrees are not supported"))))
+      (should-not prompted)
+      (should-not lane-calls))))
 
 (ert-deftest claude-code-ide-test-manager-open-global-skips-missing-project ()
   "A gone local project is not offered.  A remote project is offered with no probe."
@@ -6799,61 +6799,61 @@ directory passed to the open entry."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-      (let ((claude-code-ide-worktree-backend 'lane)
-            prompted)
-        (cl-letf (((symbol-function 'magit-lane-core-available-p) #'ignore)
-                  ((symbol-function 'read-string) (lambda (&rest _) (setq prompted t) "x")))
-          (with-current-buffer (claude-code-ide-manager--get-buffer
-                                (list :type 'repo :git-root main))
-            (should (string-match-p
-                     "No lane executable found"
-                     (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                         :type 'user-error)))))
-          (should-not prompted)))))))
+       (let ((claude-code-ide-worktree-backend 'lane)
+             prompted)
+         (cl-letf (((symbol-function 'magit-lane-core-available-p) #'ignore)
+                   ((symbol-function 'read-string) (lambda (&rest _) (setq prompted t) "x")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer
+                                 (list :type 'repo :git-root main))
+             (should (string-match-p
+                      "No lane executable found"
+                      (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                          :type 'user-error)))))
+           (should-not prompted)))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-global-view-asks-project-first ()
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main _topic)
      (claude-code-ide-tests--with-worktree-backends
-      (make-directory (expand-file-name ".lane" main))
-      (let (order)
-        (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list main)))
-                  ((symbol-function 'completing-read)
-                   (lambda (prompt &rest _) (push prompt order) main))
-                  ((symbol-function 'read-string)
-                   (lambda (prompt &rest _) (push prompt order) "feat/z")))
-          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-            (claude-code-ide-manager-new-worktree))
-          (should (equal (reverse order) '("Open project: " "New worktree (branch) name: ")))
-          (should (equal lane-calls (list (list main "feat/z"))))))))))
+       (make-directory (expand-file-name ".lane" main))
+       (let (order)
+         (cl-letf (((symbol-function 'project-known-project-roots) (lambda () (list main)))
+                   ((symbol-function 'completing-read)
+                    (lambda (prompt &rest _) (push prompt order) main))
+                   ((symbol-function 'read-string)
+                    (lambda (prompt &rest _) (push prompt order) "feat/z")))
+           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+             (claude-code-ide-manager-new-worktree))
+           (should (equal (reverse order) '("Open project: " "New worktree (branch) name: ")))
+           (should (equal lane-calls (list (list main "feat/z"))))))))))
 
 (ert-deftest claude-code-ide-test-new-worktree-global-view-uses-row-project-at-point ()
   "A local row under point supplies the project; a remote row refuses."
   (claude-code-ide-tests--with-temp-worktree-repo
    (lambda (main topic)
      (claude-code-ide-tests--with-worktree-backends
-      (make-directory (expand-file-name ".lane" main))
-      (let ((item (make-claude-code-ide-manager-item
-                   :session-key "s" :directory topic
-                   :group-metadata (list :project-path (directory-file-name main))))
-            (remote (make-claude-code-ide-manager-item
-                     :session-key "r" :host "box" :directory "/srv/repo/"))
-            asked)
-        (cl-letf (((symbol-function 'completing-read)
-                   (lambda (&rest _) (setq asked t) main))
-                  ((symbol-function 'read-string) (lambda (&rest _) "feat/row"))
-                  ((symbol-function 'claude-code-ide-manager--item-at-point)
-                   (lambda () item)))
-          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-            (claude-code-ide-manager-new-worktree))
-          (should-not asked)
-          (should (equal lane-calls (list (list main "feat/row")))))
-        (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
-                   (lambda () remote)))
-          (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
-            (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
-                                               :type 'user-error))
-                           "Remote worktrees are not supported")))))))))
+       (make-directory (expand-file-name ".lane" main))
+       (let ((item (make-claude-code-ide-manager-item
+                    :session-key "s" :directory topic
+                    :group-metadata (list :project-path (directory-file-name main))))
+             (remote (make-claude-code-ide-manager-item
+                      :session-key "r" :host "box" :directory "/srv/repo/"))
+             asked)
+         (cl-letf (((symbol-function 'completing-read)
+                    (lambda (&rest _) (setq asked t) main))
+                   ((symbol-function 'read-string) (lambda (&rest _) "feat/row"))
+                   ((symbol-function 'claude-code-ide-manager--item-at-point)
+                    (lambda () item)))
+           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+             (claude-code-ide-manager-new-worktree))
+           (should-not asked)
+           (should (equal lane-calls (list (list main "feat/row")))))
+         (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                    (lambda () remote)))
+           (with-current-buffer (claude-code-ide-manager--get-buffer '(:type global))
+             (should (equal (cadr (should-error (claude-code-ide-manager-new-worktree)
+                                                :type 'user-error))
+                            "Remote worktrees are not supported")))))))))
 
 (ert-deftest claude-code-ide-test-manager-open-start-action-starts-selected-target ()
   "Test manager open start action launches the selected target."
@@ -7498,241 +7498,241 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
 (ert-deftest claude-code-ide-test-manager-grouped-navigation-selection-and-focus ()
   "Group jumps use row identity and preserve the terminal for disconnected rows."
   (claude-code-ide-tests--with-priority-sessions
-   '(("a" idle nil nil nil "/tmp/group-a/")
-     ("a-topic" idle nil nil nil "/tmp/group-a-topic/")
-     ("b" done nil nil nil "/tmp/group-b/"))
-   (dolist (name '("a" "a-topic"))
-     (let* ((session (cdr (assoc name sessions)))
-            (directory (claude-code-ide-session-directory session)))
-       (claude-code-ide--set-session-group-metadata
-        session (list :kind 'git :host nil :directory directory
-                      :common-dir "/tmp/group-a/.git" :project-path "/tmp/group-a"
-                      :worktree-path directory :branch name))))
-   (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
-   (claude-code-ide-manager-focus-global)
-   (claude-code-ide-manager--set-scope-items
-    scope (append (claude-code-ide-manager--scope-items scope)
-                  (list (make-claude-code-ide-manager-item
-                         :session-key "remote" :host "alpha" :zmx-name "cci-remote"
-                         :directory "/work/remote" :cli-type 'omp :order 1
-                         :display-name "alpha:remote" :live-p nil))))
-   (let ((claude-code-ide-manager-persist-state t))
-     (claude-code-ide-manager-switch-to-session (session-key "b") t scope)
-     ;; Point wins over the selected and active Session in another group.
-     (claude-code-ide-manager--move-point-to-session-key (session-key "a-topic"))
-     (claude-code-ide-manager-next-project-group)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "b")))
-     (should (derived-mode-p 'claude-code-ide-manager-mode))
-     (with-current-buffer (session-buffer "b")
-       (setq-local claude-code-ide-session-agent-state 'done))
-     (let ((terminal-window (get-buffer-window (session-buffer "b"))))
-       (goto-char (point-min))
-       (should-not (get-text-property (point) 'claude-code-ide-manager-session-key))
-       (let ((echoed nil)
-             (original (symbol-function 'message)))
-         (cl-letf (((symbol-function 'make-process)
-                    (lambda (&rest _) (ert-fail "Disconnected navigation started a process")))
-                   ((symbol-function 'process-file)
-                    (lambda (&rest _) (ert-fail "Disconnected navigation queried metadata")))
-                   ((symbol-function 'message)
-                    (lambda (&rest args)
-                      (when (car args) (push (apply #'format args) echoed))
-                      (apply original args))))
-           (claude-code-ide-manager-next-project-group))
-         (should (member "Session on alpha is disconnected. Press c to reattach."
-                         echoed)))
-       (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "remote"))
-       (should (equal (claude-code-ide-manager--scope-active-session-key scope) (session-key "b")))
-       (should (eq (window-buffer terminal-window) (session-buffer "b")))
-       (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
-                                       (session-buffer "b"))
-                   'done))
-       (should (derived-mode-p 'claude-code-ide-manager-mode)))
-     (claude-code-ide-manager--move-point-to-session-key "remote")
-     (should (equal (get-text-property (point) 'help-echo)
-                    (concat "[alpha] /work/remote (cci-remote). "
-                            "Session is disconnected. Press c to reattach.")))
-     (claude-code-ide-manager--set-scope-selected-session-key scope (session-key "a"))
-     (claude-code-ide-manager--load-state)
-     (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "remote"))
-     ;; A heading uses the persisted selection, not the displayed terminal.
-     (goto-char (point-min))
-     (claude-code-ide-manager-next-project-group)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "a")))
-     (claude-code-ide-manager-previous-project-group)
-     (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "remote"))
-     (should (equal claude-code-ide-manager--current-session-key (session-key "a")))
-     (claude-code-ide-manager-next-project-group)
-     (claude-code-ide-manager-next-line)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "a-topic")))
-     (claude-code-ide-manager-next-line)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "b")))
-     (claude-code-ide-manager-previous-line)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "a-topic"))))))
+      '(("a" idle nil nil nil "/tmp/group-a/")
+        ("a-topic" idle nil nil nil "/tmp/group-a-topic/")
+        ("b" done nil nil nil "/tmp/group-b/"))
+    (dolist (name '("a" "a-topic"))
+      (let* ((session (cdr (assoc name sessions)))
+             (directory (claude-code-ide-session-directory session)))
+        (claude-code-ide--set-session-group-metadata
+         session (list :kind 'git :host nil :directory directory
+                       :common-dir "/tmp/group-a/.git" :project-path "/tmp/group-a"
+                       :worktree-path directory :branch name))))
+    (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
+    (claude-code-ide-manager-focus-global)
+    (claude-code-ide-manager--set-scope-items
+     scope (append (claude-code-ide-manager--scope-items scope)
+                   (list (make-claude-code-ide-manager-item
+                          :session-key "remote" :host "alpha" :zmx-name "cci-remote"
+                          :directory "/work/remote" :cli-type 'omp :order 1
+                          :display-name "alpha:remote" :live-p nil))))
+    (let ((claude-code-ide-manager-persist-state t))
+      (claude-code-ide-manager-switch-to-session (session-key "b") t scope)
+      ;; Point wins over the selected and active Session in another group.
+      (claude-code-ide-manager--move-point-to-session-key (session-key "a-topic"))
+      (claude-code-ide-manager-next-project-group)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "b")))
+      (should (derived-mode-p 'claude-code-ide-manager-mode))
+      (with-current-buffer (session-buffer "b")
+        (setq-local claude-code-ide-session-agent-state 'done))
+      (let ((terminal-window (get-buffer-window (session-buffer "b"))))
+        (goto-char (point-min))
+        (should-not (get-text-property (point) 'claude-code-ide-manager-session-key))
+        (let ((echoed nil)
+              (original (symbol-function 'message)))
+          (cl-letf (((symbol-function 'make-process)
+                     (lambda (&rest _) (ert-fail "Disconnected navigation started a process")))
+                    ((symbol-function 'process-file)
+                     (lambda (&rest _) (ert-fail "Disconnected navigation queried metadata")))
+                    ((symbol-function 'message)
+                     (lambda (&rest args)
+                       (when (car args) (push (apply #'format args) echoed))
+                       (apply original args))))
+            (claude-code-ide-manager-next-project-group))
+          (should (member "Session on alpha is disconnected. Press c to reattach."
+                          echoed)))
+        (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "remote"))
+        (should (equal (claude-code-ide-manager--scope-active-session-key scope) (session-key "b")))
+        (should (eq (window-buffer terminal-window) (session-buffer "b")))
+        (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                        (session-buffer "b"))
+                    'done))
+        (should (derived-mode-p 'claude-code-ide-manager-mode)))
+      (claude-code-ide-manager--move-point-to-session-key "remote")
+      (should (equal (get-text-property (point) 'help-echo)
+                     (concat "[alpha] /work/remote (cci-remote). "
+                             "Session is disconnected. Press c to reattach.")))
+      (claude-code-ide-manager--set-scope-selected-session-key scope (session-key "a"))
+      (claude-code-ide-manager--load-state)
+      (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "remote"))
+      ;; A heading uses the persisted selection, not the displayed terminal.
+      (goto-char (point-min))
+      (claude-code-ide-manager-next-project-group)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "a")))
+      (claude-code-ide-manager-previous-project-group)
+      (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "remote"))
+      (should (equal claude-code-ide-manager--current-session-key (session-key "a")))
+      (claude-code-ide-manager-next-project-group)
+      (claude-code-ide-manager-next-line)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "a-topic")))
+      (claude-code-ide-manager-next-line)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "b")))
+      (claude-code-ide-manager-previous-line)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "a-topic"))))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-interrupts-and-resumes ()
   "New requests interrupt either pass without losing its remaining visits."
   (dolist (command '(claude-code-ide-manager-next-priority-session
                      claude-code-ide-manager-next-uncleared-session))
     (claude-code-ide-tests--with-priority-sessions
-     '(("01" working) ("02" working) ("03" working))
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (jump "02" command)
-     (with-current-buffer (session-buffer "01")
-       (claude-code-ide-session-idle-set-agent-state 'needs-input))
-     (jump "01" command)
-     (jump "03" command)
-     (with-current-buffer (session-buffer "01")
-       (claude-code-ide-session-idle-set-agent-state 'needs-input))
-     (jump "02" command)
-     (jump "01" command))))
+        '(("01" working) ("02" working) ("03" working))
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (jump "02" command)
+      (with-current-buffer (session-buffer "01")
+        (claude-code-ide-session-idle-set-agent-state 'needs-input))
+      (jump "01" command)
+      (jump "03" command)
+      (with-current-buffer (session-buffer "01")
+        (claude-code-ide-session-idle-set-agent-state 'needs-input))
+      (jump "02" command)
+      (jump "01" command))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-interrupts-output-idle ()
   "A new bell interrupts either pass and preserves the return target."
   (dolist (command '(claude-code-ide-manager-next-priority-session
                      claude-code-ide-manager-next-uncleared-session))
     (claude-code-ide-tests--with-priority-sessions
-     '(("01" nil t nil t) ("02" working) ("03" working))
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (jump "02" command)
-     ;; Timer callbacks run with an unrelated buffer current.
-     (with-current-buffer status-buffer
-       (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
-       (claude-code-ide-session-idle--fire-timer (session-buffer "01")))
-     (jump "01" command)
-     (jump "03" command)
-     (jump "02" command)
-     ;; A later bell renews the visit again.
-     (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
-     (jump "01" command))))
+        '(("01" nil t nil t) ("02" working) ("03" working))
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (jump "02" command)
+      ;; Timer callbacks run with an unrelated buffer current.
+      (with-current-buffer status-buffer
+        (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+        (claude-code-ide-session-idle--fire-timer (session-buffer "01")))
+      (jump "01" command)
+      (jump "03" command)
+      (jump "02" command)
+      ;; A later bell renews the visit again.
+      (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+      (jump "01" command))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-ignores-masked-output-idle ()
   "Output flags cannot renew visits when a reported state masks the bell."
   (dolist (state '(working idle))
     (claude-code-ide-tests--with-priority-sessions
-     `(("01" ,state t nil t) ("02" working) ("03" working))
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (jump "02")
-     (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
-     (jump "03"))))
+        `(("01" ,state t nil t) ("02" working) ("03" working))
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (jump "02")
+      (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+      (jump "03"))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-cancels-cleared-output-idle ()
   "Clearing a pending bell removes its interruption before output resumes."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" nil t nil t) ("02" working) ("03" working))
-   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-   (jump "02")
-   (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
-   (with-current-buffer (session-buffer "01")
-     (claude-code-ide-session-idle-clear-state)
-     (claude-code-ide-session-working--set-state t))
-   (jump "03")))
+      '(("01" nil t nil t) ("02" working) ("03" working))
+    (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+    (jump "02")
+    (claude-code-ide-session-idle--fire-timer (session-buffer "01"))
+    (with-current-buffer (session-buffer "01")
+      (claude-code-ide-session-idle-clear-state)
+      (claude-code-ide-session-working--set-state t))
+    (jump "03")))
 
 (ert-deftest claude-code-ide-test-manager-uncleared-next-interrupts-completion ()
   "Completion interrupts once, and acknowledgment prevents replay."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" working) ("02" working) ("03" working))
-   (let ((command #'claude-code-ide-manager-next-uncleared-session))
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (jump "02" command)
-     (with-current-buffer (session-buffer "01")
-       (claude-code-ide-session-idle-set-agent-state 'done))
-     (jump "01" command)
-     (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
-                                     (session-buffer "01"))
-                 'idle))
-     (jump "03" command)
-     (with-current-buffer (session-buffer "01")
-       (claude-code-ide-session-idle-set-agent-state 'done))
-     (jump "02" command))))
+      '(("01" working) ("02" working) ("03" working))
+    (let ((command #'claude-code-ide-manager-next-uncleared-session))
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (jump "02" command)
+      (with-current-buffer (session-buffer "01")
+        (claude-code-ide-session-idle-set-agent-state 'done))
+      (jump "01" command)
+      (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                      (session-buffer "01"))
+                  'idle))
+      (jump "03" command)
+      (with-current-buffer (session-buffer "01")
+        (claude-code-ide-session-idle-set-agent-state 'done))
+      (jump "02" command))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-detects-new-attention ()
   "Transitions between commands renew requests and cancel stale requests."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" needs-input) ("02" working) ("03" working))
-   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-   (jump "02")
-   (with-current-buffer (session-buffer "01")
-     (claude-code-ide-session-idle-set-agent-state 'working)
-     (claude-code-ide-session-idle-set-agent-state 'needs-input))
-   (jump "01")
-   (jump "03")
-   (with-current-buffer (session-buffer "01")
-     (claude-code-ide-session-idle-set-agent-state 'working)
-     (claude-code-ide-session-idle-set-agent-state 'needs-input)
-     (claude-code-ide-session-idle-set-agent-state 'working))
-   (jump "02")))
+      '(("01" needs-input) ("02" working) ("03" working))
+    (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+    (jump "02")
+    (with-current-buffer (session-buffer "01")
+      (claude-code-ide-session-idle-set-agent-state 'working)
+      (claude-code-ide-session-idle-set-agent-state 'needs-input))
+    (jump "01")
+    (jump "03")
+    (with-current-buffer (session-buffer "01")
+      (claude-code-ide-session-idle-set-agent-state 'working)
+      (claude-code-ide-session-idle-set-agent-state 'needs-input)
+      (claude-code-ide-session-idle-set-agent-state 'working))
+    (jump "02")))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-keeps-first-return-target ()
   "Multiple attention visits retain the first interrupted session."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" working) ("02" working) ("03" working)
-     ("04" working) ("05" working))
-   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-   (jump "02")
-   (jump "03")
-   (with-current-buffer (session-buffer "01")
-     (claude-code-ide-session-idle-set-agent-state 'done))
-   (with-current-buffer (session-buffer "02")
-     (claude-code-ide-session-idle-set-agent-state 'needs-input))
-   (dolist (name '("02" "01" "04" "05" "03"))
-     (jump name))))
+      '(("01" working) ("02" working) ("03" working)
+        ("04" working) ("05" working))
+    (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+    (jump "02")
+    (jump "03")
+    (with-current-buffer (session-buffer "01")
+      (claude-code-ide-session-idle-set-agent-state 'done))
+    (with-current-buffer (session-buffer "02")
+      (claude-code-ide-session-idle-set-agent-state 'needs-input))
+    (dolist (name '("02" "01" "04" "05" "03"))
+      (jump name))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-retries-interruption-and-return ()
   "Failed switches preserve both the attention visit and the return target."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" working) ("02" working) ("03" working))
-   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-   (jump "02")
-   (with-current-buffer (session-buffer "01")
-     (claude-code-ide-session-idle-set-agent-state 'needs-input))
-   (let ((switch (symbol-function 'claude-code-ide-manager-switch-to-session))
-         (fail-key (session-key "01")))
-     (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
-                (lambda (key &rest args)
-                  (if (equal key fail-key)
-                      (progn (setq fail-key nil) (error "Switch failed"))
-                    (apply switch key args)))))
-       (should-error (claude-code-ide-manager-next-priority-session))
-       (should (equal claude-code-ide-manager--current-session-key (session-key "02")))
-       (should (eq (window-buffer (selected-window)) (session-buffer "02")))
-       (jump "01")
-       (jump "03")
-       (setq fail-key (session-key "02"))
-       (should-error (claude-code-ide-manager-next-priority-session))
-       (should (equal claude-code-ide-manager--current-session-key (session-key "03")))
-       (should (eq (window-buffer (selected-window)) (session-buffer "03")))
-       (jump "02")))))
+      '(("01" working) ("02" working) ("03" working))
+    (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+    (jump "02")
+    (with-current-buffer (session-buffer "01")
+      (claude-code-ide-session-idle-set-agent-state 'needs-input))
+    (let ((switch (symbol-function 'claude-code-ide-manager-switch-to-session))
+          (fail-key (session-key "01")))
+      (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session)
+                 (lambda (key &rest args)
+                   (if (equal key fail-key)
+                       (progn (setq fail-key nil) (error "Switch failed"))
+                     (apply switch key args)))))
+        (should-error (claude-code-ide-manager-next-priority-session))
+        (should (equal claude-code-ide-manager--current-session-key (session-key "02")))
+        (should (eq (window-buffer (selected-window)) (session-buffer "02")))
+        (jump "01")
+        (jump "03")
+        (setq fail-key (session-key "02"))
+        (should-error (claude-code-ide-manager-next-priority-session))
+        (should (equal claude-code-ide-manager--current-session-key (session-key "03")))
+        (should (eq (window-buffer (selected-window)) (session-buffer "03")))
+        (jump "02")))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-completes-pass ()
   "A priority pass visits every session despite persistent requests and acknowledgements."
   (claude-code-ide-tests--with-priority-sessions
-   '(("00-current" idle)
-     ("01-working" working)
-     ("02-idle" idle)
-     ("03-done" done)
-     ("04-input-a" needs-input)
-     ("05-failed" failed)
-     ("06-input-b" needs-input)
-     ("07-output-idle" nil t t)
-     ("08-output-working" nil t nil t))
-   (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-   (select-window (claude-code-ide-manager--sidebar-window scope))
-   (claude-code-ide-manager--sync-point-to-session-key scope (session-key "04-input-a"))
-   (jump "04-input-a")
-   (select-window (get-buffer-window status-buffer))
-   (dolist (name '("06-input-b" "05-failed" "03-done" "07-output-idle"
-                   "01-working" "08-output-working" "02-idle"))
-     (jump name))
-   (dolist (name '("04-input-a" "06-input-b"))
-     (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
-                                     (session-buffer name))
-                 'needs-input)))
-   (dolist (name '("05-failed" "03-done"))
-     (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
-                                     (session-buffer name))
-                 'idle)))
-   (jump "04-input-a")))
+      '(("00-current" idle)
+        ("01-working" working)
+        ("02-idle" idle)
+        ("03-done" done)
+        ("04-input-a" needs-input)
+        ("05-failed" failed)
+        ("06-input-b" needs-input)
+        ("07-output-idle" nil t t)
+        ("08-output-working" nil t nil t))
+    (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+    (select-window (claude-code-ide-manager--sidebar-window scope))
+    (claude-code-ide-manager--sync-point-to-session-key scope (session-key "04-input-a"))
+    (jump "04-input-a")
+    (select-window (get-buffer-window status-buffer))
+    (dolist (name '("06-input-b" "05-failed" "03-done" "07-output-idle"
+                    "01-working" "08-output-working" "02-idle"))
+      (jump name))
+    (dolist (name '("04-input-a" "06-input-b"))
+      (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                      (session-buffer name))
+                  'needs-input)))
+    (dolist (name '("05-failed" "03-done"))
+      (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                      (session-buffer name))
+                  'idle)))
+    (jump "04-input-a")))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-honors-state-authority ()
   "Reported state overrides output flags, while equal ranks preserve sidebar order."
@@ -7742,45 +7742,45 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                    (("00-disabled" nil nil t t) ("01-target" working))
                    (("00-unknown" unsupported t t t) ("01-target" working))))
     (claude-code-ide-tests--with-priority-sessions specs
-                                                   (jump "01-target")))
+      (jump "01-target")))
   (claude-code-ide-tests--with-priority-sessions
-   '(("00-working" working) ("01-input" needs-input))
-   (claude-code-ide-manager-refresh-items scope)
-   (setf (claude-code-ide-manager-item-pinned
-          (claude-code-ide-manager--item-by-session-key
-           scope (session-key "00-working"))) t)
-   (jump "01-input")
-   (jump "00-working"))
+      '(("00-working" working) ("01-input" needs-input))
+    (claude-code-ide-manager-refresh-items scope)
+    (setf (claude-code-ide-manager-item-pinned
+           (claude-code-ide-manager--item-by-session-key
+            scope (session-key "00-working"))) t)
+    (jump "01-input")
+    (jump "00-working"))
   (claude-code-ide-tests--with-priority-sessions
-   '(("00-input" needs-input) ("01-input" needs-input))
-   (claude-code-ide-manager-refresh-items scope)
-   (setf (claude-code-ide-manager-item-order-key
-          (claude-code-ide-manager--item-by-session-key
-           scope (session-key "01-input"))) 0)
-   (jump "01-input")
-   (jump "00-input")))
+      '(("00-input" needs-input) ("01-input" needs-input))
+    (claude-code-ide-manager-refresh-items scope)
+    (setf (claude-code-ide-manager-item-order-key
+           (claude-code-ide-manager--item-by-session-key
+            scope (session-key "01-input"))) 0)
+    (jump "01-input")
+    (jump "00-input")))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-reranks-unvisited ()
   "State changes and new sessions affect only pending visits to live buffers."
   (claude-code-ide-tests--with-priority-sessions
-   '(("00-current" idle) ("01-input" needs-input) ("02-working" working)
-     ("03-promoted" working) ("04-ended" working)
-     ("05-bufferless" needs-input))
-   (kill-buffer (session-buffer "05-bufferless"))
-   (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-   (jump "01-input")
-   (with-current-buffer (session-buffer "03-promoted")
-     (setq-local claude-code-ide-session-agent-state 'needs-input))
-   (with-current-buffer (session-buffer "01-input")
-     (setq-local claude-code-ide-session-agent-state 'failed))
-   (delete-process
-    (claude-code-ide-session-process (cdr (assoc "04-ended" sessions))))
-   (jump "03-promoted")
-   (add-session "06-new" 'needs-input)
-   (jump "06-new")
-   (jump "02-working")
-   (should-not (get-buffer "*claude-code[05-bufferless]*"))
-   (jump "03-promoted")))
+      '(("00-current" idle) ("01-input" needs-input) ("02-working" working)
+        ("03-promoted" working) ("04-ended" working)
+        ("05-bufferless" needs-input))
+    (kill-buffer (session-buffer "05-bufferless"))
+    (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+    (jump "01-input")
+    (with-current-buffer (session-buffer "03-promoted")
+      (setq-local claude-code-ide-session-agent-state 'needs-input))
+    (with-current-buffer (session-buffer "01-input")
+      (setq-local claude-code-ide-session-agent-state 'failed))
+    (delete-process
+     (claude-code-ide-session-process (cdr (assoc "04-ended" sessions))))
+    (jump "03-promoted")
+    (add-session "06-new" 'needs-input)
+    (jump "06-new")
+    (jump "02-working")
+    (should-not (get-buffer "*claude-code[05-bufferless]*"))
+    (jump "03-promoted")))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-isolates-scopes ()
   "Repository membership and visit sets stay separate from the global pass."
@@ -7790,128 +7790,128 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
                  (when (string-prefix-p "/tmp/priority-repo/" default-directory)
                    "/tmp/priority-repo/"))))
       (claude-code-ide-tests--with-priority-sessions
-       '(("origin" idle nil nil nil "/tmp/priority-repo/origin/")
-         ("inside" working nil nil nil "/tmp/priority-repo/inside/")
-         ("outside" needs-input))
-       (claude-code-ide-manager-switch-to-session (session-key "origin") nil repo)
-       (select-window (claude-code-ide-manager--sidebar-window repo))
-       (jump "inside"))
+          '(("origin" idle nil nil nil "/tmp/priority-repo/origin/")
+            ("inside" working nil nil nil "/tmp/priority-repo/inside/")
+            ("outside" needs-input))
+        (claude-code-ide-manager-switch-to-session (session-key "origin") nil repo)
+        (select-window (claude-code-ide-manager--sidebar-window repo))
+        (jump "inside"))
       (claude-code-ide-tests--with-priority-sessions
-       '(("P" idle nil nil nil "/tmp/priority-repo/P/")
-         ("W" needs-input nil nil nil "/tmp/priority-repo/W/")
-         ("X" working nil nil nil "/tmp/priority-repo/X/")
-         ("O" idle))
-       (claude-code-ide-manager-switch-to-session (session-key "O") nil scope)
-       (jump "W")
-       (claude-code-ide-manager-switch-to-session (session-key "P") nil repo)
-       (claude-code-ide-manager-toggle-sidebar-for-scope repo 1)
-       (jump "W")
-       (claude-code-ide-manager--hide-sidebar repo)
-       (claude-code-ide-manager--hide-sidebar scope)
-       (select-window (get-buffer-window status-buffer))
-       (should (equal (claude-code-ide-manager--scope-for-command) scope))
-       (jump "X")
-       (should (equal (claude-code-ide-manager--scope-active-session-key scope)
-                      (session-key "X")))))))
+          '(("P" idle nil nil nil "/tmp/priority-repo/P/")
+            ("W" needs-input nil nil nil "/tmp/priority-repo/W/")
+            ("X" working nil nil nil "/tmp/priority-repo/X/")
+            ("O" idle))
+        (claude-code-ide-manager-switch-to-session (session-key "O") nil scope)
+        (jump "W")
+        (claude-code-ide-manager-switch-to-session (session-key "P") nil repo)
+        (claude-code-ide-manager-toggle-sidebar-for-scope repo 1)
+        (jump "W")
+        (claude-code-ide-manager--hide-sidebar repo)
+        (claude-code-ide-manager--hide-sidebar scope)
+        (select-window (get-buffer-window status-buffer))
+        (should (equal (claude-code-ide-manager--scope-for-command) scope))
+        (jump "X")
+        (should (equal (claude-code-ide-manager--scope-active-session-key scope)
+                       (session-key "X")))))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-keeps-focus-without-target ()
   "Empty and current-only scopes leave focus, point, and active state unchanged."
   (dolist (specs '(nil (("only" idle))))
     (claude-code-ide-tests--with-priority-sessions specs
-                                                   (when specs
-                                                     (claude-code-ide-manager-switch-to-session (session-key "only") nil scope))
-                                                   (insert "Keep this point")
-                                                   (let ((window (selected-window))
-                                                         (position (point))
-                                                         (active (claude-code-ide-manager--scope-active-session-key scope))
-                                                         (current claude-code-ide-manager--current-session-key)
-                                                         (windows (window-list)))
-                                                     (should-error
-                                                      (call-interactively #'claude-code-ide-manager-next-priority-session)
-                                                      :type 'user-error)
-                                                     (should (eq (selected-window) window))
-                                                     (should (= (point) position))
-                                                     (should (equal (window-list) windows))
-                                                     (should (equal (claude-code-ide-manager--scope-active-session-key scope) active))
-                                                     (should (equal claude-code-ide-manager--current-session-key current))))))
+      (when specs
+        (claude-code-ide-manager-switch-to-session (session-key "only") nil scope))
+      (insert "Keep this point")
+      (let ((window (selected-window))
+            (position (point))
+            (active (claude-code-ide-manager--scope-active-session-key scope))
+            (current claude-code-ide-manager--current-session-key)
+            (windows (window-list)))
+        (should-error
+         (call-interactively #'claude-code-ide-manager-next-priority-session)
+         :type 'user-error)
+        (should (eq (selected-window) window))
+        (should (= (point) position))
+        (should (equal (window-list) windows))
+        (should (equal (claude-code-ide-manager--scope-active-session-key scope) active))
+        (should (equal claude-code-ide-manager--current-session-key current))))))
 
 (ert-deftest claude-code-ide-test-manager-priority-next-does-not-consume-failed-switch ()
   "A failed layout switch leaves its highest-priority visit available."
   (claude-code-ide-tests--with-priority-sessions
-   '(("00-current" idle) ("01-input" needs-input) ("02-working" working))
-   (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-   (let ((build (symbol-function 'claude-code-ide-manager--build-default-layout))
-         failed)
-     (cl-letf (((symbol-function 'claude-code-ide-manager--build-default-layout)
-                (lambda (&rest arguments)
-                  (if failed
-                      (apply build arguments)
-                    (setq failed t)
-                    (error "Layout is unavailable")))))
-       (should-error
-        (call-interactively #'claude-code-ide-manager-next-priority-session))
-       (jump "01-input")
-       (jump "02-working")))))
+      '(("00-current" idle) ("01-input" needs-input) ("02-working" working))
+    (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+    (let ((build (symbol-function 'claude-code-ide-manager--build-default-layout))
+          failed)
+      (cl-letf (((symbol-function 'claude-code-ide-manager--build-default-layout)
+                 (lambda (&rest arguments)
+                   (if failed
+                       (apply build arguments)
+                     (setq failed t)
+                     (error "Layout is unavailable")))))
+        (should-error
+         (call-interactively #'claude-code-ide-manager-next-priority-session))
+        (jump "01-input")
+        (jump "02-working")))))
 
 (ert-deftest claude-code-ide-test-manager-uncleared-next-skips-cleared-results ()
   "Uncleared passes skip acknowledged results and preserve unresolved requests."
   (claude-code-ide-tests--with-priority-sessions
-   '(("00-current" idle) ("01-stale" idle t t t) ("02-working" working)
-     ("03-done" done) ("04-input-a" needs-input) ("05-failed" failed)
-     ("06-input-b" needs-input) ("07-output-idle" nil t t)
-     ("08-output-working" nil t nil t) ("09-disabled" nil nil t t)
-     ("10-unmarked" nil) ("11-unknown" unsupported t t t))
-   (let ((command #'claude-code-ide-manager-next-uncleared-session))
-     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-     (select-window (claude-code-ide-manager--sidebar-window scope))
-     (jump "04-input-a" command)
-     (claude-code-ide-manager--hide-sidebar scope)
-     (select-window (get-buffer-window status-buffer))
-     (dolist (name '("06-input-b" "05-failed" "03-done" "07-output-idle"
-                     "02-working" "08-output-working"
-                     "04-input-a" "06-input-b" "02-working"))
-       (jump name command))
-     (dolist (name '("05-failed" "03-done"))
-       (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
-                                       (session-buffer name))
-                   'idle))))))
+      '(("00-current" idle) ("01-stale" idle t t t) ("02-working" working)
+        ("03-done" done) ("04-input-a" needs-input) ("05-failed" failed)
+        ("06-input-b" needs-input) ("07-output-idle" nil t t)
+        ("08-output-working" nil t nil t) ("09-disabled" nil nil t t)
+        ("10-unmarked" nil) ("11-unknown" unsupported t t t))
+    (let ((command #'claude-code-ide-manager-next-uncleared-session))
+      (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+      (select-window (claude-code-ide-manager--sidebar-window scope))
+      (jump "04-input-a" command)
+      (claude-code-ide-manager--hide-sidebar scope)
+      (select-window (get-buffer-window status-buffer))
+      (dolist (name '("06-input-b" "05-failed" "03-done" "07-output-idle"
+                      "02-working" "08-output-working"
+                      "04-input-a" "06-input-b" "02-working"))
+        (jump name command))
+      (dolist (name '("05-failed" "03-done"))
+        (should (eq (buffer-local-value 'claude-code-ide-session-agent-state
+                                        (session-buffer name))
+                    'idle))))))
 
 (ert-deftest claude-code-ide-test-manager-uncleared-next-keeps-focus-without-target ()
   "Cleared sessions do not become targets when no other request remains."
   (dolist (current '(nil needs-input))
     (claude-code-ide-tests--with-priority-sessions
-     '(("00-cleared" idle t t t) ("01-unmarked" nil))
-     (when current
-       (add-session "02-current" current)
-       (claude-code-ide-manager-switch-to-session (session-key "02-current") nil scope))
-     (insert "Keep this point")
-     (let ((window (selected-window))
-           (position (point))
-           (active claude-code-ide-manager--current-session-key))
-       (should-error
-        (call-interactively #'claude-code-ide-manager-next-uncleared-session)
-        :type 'user-error)
-       (should (eq (selected-window) window))
-       (should (= (point) position))
-       (should (equal claude-code-ide-manager--current-session-key active))))))
+        '(("00-cleared" idle t t t) ("01-unmarked" nil))
+      (when current
+        (add-session "02-current" current)
+        (claude-code-ide-manager-switch-to-session (session-key "02-current") nil scope))
+      (insert "Keep this point")
+      (let ((window (selected-window))
+            (position (point))
+            (active claude-code-ide-manager--current-session-key))
+        (should-error
+         (call-interactively #'claude-code-ide-manager-next-uncleared-session)
+         :type 'user-error)
+        (should (eq (selected-window) window))
+        (should (= (point) position))
+        (should (equal claude-code-ide-manager--current-session-key active))))))
 
 (ert-deftest claude-code-ide-test-manager-uncleared-next-keeps-separate-pass ()
   "The two commands keep separate visits, and manager reset clears both passes."
   (claude-code-ide-tests--with-priority-sessions
-   '(("00-current" idle) ("01-input-a" needs-input)
-     ("02-input-b" needs-input) ("03-working" working))
-   (let ((command #'claude-code-ide-manager-next-uncleared-session))
-     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-     (jump "01-input-a")
-     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-     (jump "01-input-a" command)
-     (jump "02-input-b" command)
-     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-     (jump "02-input-b")
-     (jump "03-working" command)
-     (claude-code-ide-tests--reset-manager-state)
-     (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
-     (jump "01-input-a" command))))
+      '(("00-current" idle) ("01-input-a" needs-input)
+        ("02-input-b" needs-input) ("03-working" working))
+    (let ((command #'claude-code-ide-manager-next-uncleared-session))
+      (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+      (jump "01-input-a")
+      (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+      (jump "01-input-a" command)
+      (jump "02-input-b" command)
+      (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+      (jump "02-input-b")
+      (jump "03-working" command)
+      (claude-code-ide-tests--reset-manager-state)
+      (claude-code-ide-manager-switch-to-session (session-key "00-current") nil scope)
+      (jump "01-input-a" command))))
 
 (ert-deftest claude-code-ide-test-manager-priority-sidebar-keys ()
   "The pass keys belong to the manager sidebar, not the global map."
@@ -7925,81 +7925,81 @@ Local helpers add-session, session-key, session-buffer, and jump use NAME."
 (ert-deftest claude-code-ide-test-manager-priority-previous-pops-visit-history ()
   "Back walks the pass trail, and the forward pass resumes without repeats."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" working) ("02" working) ("03" working) ("04" working))
-   (let ((back #'claude-code-ide-manager-previous-priority-session))
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (jump "02")
-     (jump "03")
-     (jump "02" back)
-     (jump "01" back)
-     (should-error (call-interactively back) :type 'user-error)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "01")))
-     (jump "04"))))
+      '(("01" working) ("02" working) ("03" working) ("04" working))
+    (let ((back #'claude-code-ide-manager-previous-priority-session))
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (jump "02")
+      (jump "03")
+      (jump "02" back)
+      (jump "01" back)
+      (should-error (call-interactively back) :type 'user-error)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "01")))
+      (jump "04"))))
 
 (ert-deftest claude-code-ide-test-manager-previous-restores-saved-focus ()
   "Back restores the buffer the user last selected in the target session."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" working) ("02" working))
-   (let ((editor (generate-new-buffer "*cc-priority-editor*")))
-     (unwind-protect
-         (progn
-           (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-           (select-window (split-window-right))
-           (switch-to-buffer editor)
-           (jump "02")
-           (call-interactively
-            #'claude-code-ide-manager-previous-priority-session)
-           (should (equal claude-code-ide-manager--current-session-key
-                          (session-key "01")))
-           (should (eq (window-buffer (selected-window)) editor)))
-       (kill-buffer editor)))))
+      '(("01" working) ("02" working))
+    (let ((editor (generate-new-buffer "*cc-priority-editor*")))
+      (unwind-protect
+          (progn
+            (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+            (select-window (split-window-right))
+            (switch-to-buffer editor)
+            (jump "02")
+            (call-interactively
+             #'claude-code-ide-manager-previous-priority-session)
+            (should (equal claude-code-ide-manager--current-session-key
+                           (session-key "01")))
+            (should (eq (window-buffer (selected-window)) editor)))
+        (kill-buffer editor)))))
 
 (ert-deftest claude-code-ide-test-manager-previous-skips-dead-and-keeps-passes-separate ()
   "Back skips departed sessions, and each pass pops only its own trail."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" needs-input) ("02" needs-input) ("03" needs-input))
-   (let ((forward #'claude-code-ide-manager-next-uncleared-session)
-         (back #'claude-code-ide-manager-previous-uncleared-session))
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (jump "02" forward)
-     (jump "03" forward)
-     (should-error
-      (call-interactively #'claude-code-ide-manager-previous-priority-session)
-      :type 'user-error)
-     (kill-buffer (session-buffer "02"))
-     (jump "01" back)
-     (should-error (call-interactively back) :type 'user-error))))
+      '(("01" needs-input) ("02" needs-input) ("03" needs-input))
+    (let ((forward #'claude-code-ide-manager-next-uncleared-session)
+          (back #'claude-code-ide-manager-previous-uncleared-session))
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (jump "02" forward)
+      (jump "03" forward)
+      (should-error
+       (call-interactively #'claude-code-ide-manager-previous-priority-session)
+       :type 'user-error)
+      (kill-buffer (session-buffer "02"))
+      (jump "01" back)
+      (should-error (call-interactively back) :type 'user-error))))
 
 (ert-deftest claude-code-ide-test-manager-previous-drops-fully-dead-history ()
   "A trail of dead sessions is pruned, so the next press does not rescan it."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" working) ("02" working) ("03" working))
-   (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-   (jump "02")
-   (jump "03")
-   (kill-buffer (session-buffer "01"))
-   (kill-buffer (session-buffer "02"))
-   (should-error (call-interactively #'claude-code-ide-manager-previous-priority-session)
-                 :type 'user-error)
-   (should-not (plist-get (gethash (claude-code-ide-manager--scope-key scope)
-                                   claude-code-ide-manager--priority-visits)
-                          :history))))
+      '(("01" working) ("02" working) ("03" working))
+    (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+    (jump "02")
+    (jump "03")
+    (kill-buffer (session-buffer "01"))
+    (kill-buffer (session-buffer "02"))
+    (should-error (call-interactively #'claude-code-ide-manager-previous-priority-session)
+                  :type 'user-error)
+    (should-not (plist-get (gethash (claude-code-ide-manager--scope-key scope)
+                                    claude-code-ide-manager--priority-visits)
+                           :history))))
 
 (ert-deftest claude-code-ide-test-manager-previous-walks-non-pass-switches ()
   "Back walks slot switches, and both passes record them."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" working) ("02" working) ("03" working))
-   (let ((back #'claude-code-ide-manager-previous-uncleared-session))
-     (claude-code-ide-manager-refresh-items scope)
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (claude-code-ide-manager-switch-by-slot 2)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "02")))
-     (claude-code-ide-manager-switch-by-slot 3)
-     (should (equal claude-code-ide-manager--current-session-key (session-key "03")))
-     (jump "02" back)
-     (jump "01" back)
-     (should-error (call-interactively back) :type 'user-error)
-     (jump "02" #'claude-code-ide-manager-previous-priority-session))))
+      '(("01" working) ("02" working) ("03" working))
+    (let ((back #'claude-code-ide-manager-previous-uncleared-session))
+      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (claude-code-ide-manager-switch-by-slot 2)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "02")))
+      (claude-code-ide-manager-switch-by-slot 3)
+      (should (equal claude-code-ide-manager--current-session-key (session-key "03")))
+      (jump "02" back)
+      (jump "01" back)
+      (should-error (call-interactively back) :type 'user-error)
+      (jump "02" #'claude-code-ide-manager-previous-priority-session))))
 
 (defun claude-code-ide-tests--manager-rows ()
   "Return (KEY . TEXT) for each global sidebar row, in buffer order.
@@ -8033,98 +8033,98 @@ same order, under a count line that belongs to no Session."
                          '((("01" idle) ("02" nil)))))
     (ert-info ((format "Seed %S, mix %S" "017-focused" specs))
       (claude-code-ide-tests--with-priority-sessions
-       specs
-       (let ((claude-code-ide-manager--focus-kept-session-key nil)
-             (claude-code-ide-manager-show-session-titles nil)
-             (members (mapcar (lambda (spec) (session-key (car spec)))
-                              (cl-remove-if (lambda (spec)
-                                              (member (cdr spec) '((idle) (nil))))
-                                            specs)))
-             full)
-         (claude-code-ide-manager-refresh-items scope)
-         (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-           (let ((claude-code-ide-manager-focused-view nil))
-             (claude-code-ide-manager--render scope)
-             (setq full (mapcar #'car (claude-code-ide-tests--manager-rows)))
-             (should (= (length full) (length specs)))
-             (should (equal full (mapcar #'claude-code-ide-manager-item-session-key
-                                         (claude-code-ide-manager--sorted-items
-                                          (claude-code-ide-manager--scope-items scope)
-                                          nil scope))))
-             (should-not (string-match-p "^Focused:" (buffer-string))))
-           (let ((claude-code-ide-manager-focused-view t))
-             (claude-code-ide-manager--render scope)
-             (let ((focused (mapcar #'car (claude-code-ide-tests--manager-rows))))
-               (should (equal (sort (copy-sequence focused) #'string<)
-                              (sort (copy-sequence members) #'string<)))
-               ;; The filter removes rows and never reorders them.
-               (should (equal focused (cl-remove-if-not
-                                       (lambda (key) (member key focused)) full))))
-             (goto-char (point-min))
-             (should (equal (claude-code-ide-tests--manager-row-text)
-                            (if members
-                                (format "Focused: %d of %d" (length members) (length specs))
-                              "Focused: no Session needs attention")))
-             (should (eq (get-text-property (point) 'face) 'shadow))
-             (should-not (text-property-not-all
-                          (point) (line-beginning-position 2)
-                          'claude-code-ide-manager-session-key nil))
-             (unless members
-               (should (equal (string-trim-right (buffer-string))
-                              "Focused: no Session needs attention"))))))))))
+          specs
+        (let ((claude-code-ide-manager--focus-kept-session-key nil)
+              (claude-code-ide-manager-show-session-titles nil)
+              (members (mapcar (lambda (spec) (session-key (car spec)))
+                               (cl-remove-if (lambda (spec)
+                                               (member (cdr spec) '((idle) (nil))))
+                                             specs)))
+              full)
+          (claude-code-ide-manager-refresh-items scope)
+          (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+            (let ((claude-code-ide-manager-focused-view nil))
+              (claude-code-ide-manager--render scope)
+              (setq full (mapcar #'car (claude-code-ide-tests--manager-rows)))
+              (should (= (length full) (length specs)))
+              (should (equal full (mapcar #'claude-code-ide-manager-item-session-key
+                                          (claude-code-ide-manager--sorted-items
+                                           (claude-code-ide-manager--scope-items scope)
+                                           nil scope))))
+              (should-not (string-match-p "^Focused:" (buffer-string))))
+            (let ((claude-code-ide-manager-focused-view t))
+              (claude-code-ide-manager--render scope)
+              (let ((focused (mapcar #'car (claude-code-ide-tests--manager-rows))))
+                (should (equal (sort (copy-sequence focused) #'string<)
+                               (sort (copy-sequence members) #'string<)))
+                ;; The filter removes rows and never reorders them.
+                (should (equal focused (cl-remove-if-not
+                                        (lambda (key) (member key focused)) full))))
+              (goto-char (point-min))
+              (should (equal (claude-code-ide-tests--manager-row-text)
+                             (if members
+                                 (format "Focused: %d of %d" (length members) (length specs))
+                               "Focused: no Session needs attention")))
+              (should (eq (get-text-property (point) 'face) 'shadow))
+              (should-not (text-property-not-all
+                           (point) (line-beginning-position 2)
+                           'claude-code-ide-manager-session-key nil))
+              (unless members
+                (should (equal (string-trim-right (buffer-string))
+                               "Focused: no Session needs attention"))))))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-toggle-changes-only-the-view ()
   "The toggle reports the view and changes no status, setting, saved state, or focus."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" needs-input) ("02" done) ("03" failed) ("04" nil t t) ("05" idle) ("06" nil))
-   (let ((claude-code-ide-manager-focused-view nil)
-         (claude-code-ide-manager--focus-kept-session-key nil)
-         (claude-code-ide-manager-show-session-titles nil)
-         reported)
-     (claude-code-ide-manager-refresh-items scope)
-     (claude-code-ide-manager-switch-to-session (session-key "06") nil scope)
-     (cl-flet ((snapshot ()
-                 (list (mapcar (lambda (entry)
-                                 (with-current-buffer (claude-code-ide-session-buffer (cdr entry))
-                                   (list claude-code-ide-session-agent-state
-                                         claude-code-ide-session-idle-p
-                                         claude-code-ide-session-acknowledged-agent-state)))
-                               sessions)
-                       (get 'claude-code-ide-manager-focused-view 'saved-value)
-                       (get 'claude-code-ide-manager-focused-view 'customized-value)
-                       (claude-code-ide-manager--serialize-state)
-                       claude-code-ide-manager--current-session-key
-                       (selected-window)
-                       (mapcar #'window-buffer (window-list)))))
-       (let ((before (snapshot)))
-         (cl-letf (((symbol-function 'message)
-                    (lambda (&rest args)
-                      (when (car args) (setq reported (apply #'format args))))))
-           (claude-code-ide-manager-toggle-focused-view)
-           (should (string-match-p "\\_<on (4 of 6 Sessions)" reported))
-           (should (equal (snapshot) before))
-           (claude-code-ide-manager-toggle-focused-view)
-           (should (string-match-p "\\_<off\\_>" reported))
-           (should (equal (snapshot) before))))))))
+      '(("01" needs-input) ("02" done) ("03" failed) ("04" nil t t) ("05" idle) ("06" nil))
+    (let ((claude-code-ide-manager-focused-view nil)
+          (claude-code-ide-manager--focus-kept-session-key nil)
+          (claude-code-ide-manager-show-session-titles nil)
+          reported)
+      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager-switch-to-session (session-key "06") nil scope)
+      (cl-flet ((snapshot ()
+                  (list (mapcar (lambda (entry)
+                                  (with-current-buffer (claude-code-ide-session-buffer (cdr entry))
+                                    (list claude-code-ide-session-agent-state
+                                          claude-code-ide-session-idle-p
+                                          claude-code-ide-session-acknowledged-agent-state)))
+                                sessions)
+                        (get 'claude-code-ide-manager-focused-view 'saved-value)
+                        (get 'claude-code-ide-manager-focused-view 'customized-value)
+                        (claude-code-ide-manager--serialize-state)
+                        claude-code-ide-manager--current-session-key
+                        (selected-window)
+                        (mapcar #'window-buffer (window-list)))))
+        (let ((before (snapshot)))
+          (cl-letf (((symbol-function 'message)
+                     (lambda (&rest args)
+                       (when (car args) (setq reported (apply #'format args))))))
+            (claude-code-ide-manager-toggle-focused-view)
+            (should (string-match-p "\\_<on (4 of 6 Sessions)" reported))
+            (should (equal (snapshot) before))
+            (claude-code-ide-manager-toggle-focused-view)
+            (should (string-match-p "\\_<off\\_>" reported))
+            (should (equal (snapshot) before))))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-customize-redraws-sidebar ()
   "Setting the option through customize redraws the open sidebar."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" needs-input) ("02" idle))
-   (let ((claude-code-ide-manager-focused-view nil)
-         (claude-code-ide-manager--focus-kept-session-key nil)
-         (claude-code-ide-manager-show-session-titles nil))
-     (claude-code-ide-manager-refresh-items scope)
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (unwind-protect
-         (progn
-           (customize-set-variable 'claude-code-ide-manager-focused-view t)
-           (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
-                          (list (session-key "01"))))
-           (customize-set-variable 'claude-code-ide-manager-focused-view nil)
-           (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
-                          (mapcar #'session-key '("01" "02")))))
-       (put 'claude-code-ide-manager-focused-view 'customized-value nil)))))
+      '(("01" needs-input) ("02" idle))
+    (let ((claude-code-ide-manager-focused-view nil)
+          (claude-code-ide-manager--focus-kept-session-key nil)
+          (claude-code-ide-manager-show-session-titles nil))
+      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (unwind-protect
+          (progn
+            (customize-set-variable 'claude-code-ide-manager-focused-view t)
+            (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                           (list (session-key "01"))))
+            (customize-set-variable 'claude-code-ide-manager-focused-view nil)
+            (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                           (mapcar #'session-key '("01" "02")))))
+        (put 'claude-code-ide-manager-focused-view 'customized-value nil)))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-numbers-match-rows ()
   "Quick numbers count the visible rows, and each number switches to its row."
@@ -8135,71 +8135,71 @@ same order, under a count line that belongs to no Session."
       (dolist (specs mixes)
         (ert-info ((format "Seed %S, %s view, mix %S" "017-focused" view specs))
           (claude-code-ide-tests--with-priority-sessions
-           specs
-           (let ((claude-code-ide-manager-focused-view t)
-                 (claude-code-ide-manager--focus-kept-session-key nil)
-                 (claude-code-ide-manager-show-session-titles nil)
-                 (members (mapcar (lambda (spec) (session-key (car spec)))
-                                  (cl-remove-if (lambda (spec)
-                                                  (member (cdr spec) '((idle) (nil))))
-                                                specs)))
-                 (slot 1))
-             (when (eq view 'grouped)
-               (dolist (entry sessions)
-                 (let* ((session (cdr entry))
-                        (directory (claude-code-ide-session-directory session))
-                        (project (if (cl-oddp (string-to-number (car entry)))
-                                     "/tmp/group-a" "/tmp/group-b")))
-                   (claude-code-ide--set-session-group-metadata
-                    session (list :kind 'git :host nil :directory directory
-                                  :common-dir (concat project "/.git") :project-path project
-                                  :worktree-path directory :branch (car entry)))))
-               (puthash "global" (list :view 'grouped) claude-code-ide-manager--scope-state))
-             (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
-               (claude-code-ide-manager-refresh-items scope))
-             (should (eq (claude-code-ide-manager--view scope) view))
-             (cl-flet ((rows ()
-                         (claude-code-ide-manager--render scope)
-                         (let ((rows (claude-code-ide-tests--manager-rows)))
-                           (should (equal (mapcar #'car rows)
-                                          (claude-code-ide-manager--visible-session-keys scope)))
-                           (cl-loop for (_key . text) in rows
-                                    for index from 1
-                                    do (should (string-prefix-p
-                                                (if (<= index 10) (format "%2d. " index) " -  ")
-                                                text)))
-                           rows)))
-               (let ((rows (rows)))
-                 (should (equal (sort (mapcar #'car rows) #'string<)
-                                (sort members #'string<)))
-                 (while (<= slot (min 10 (length rows)))
-                   (claude-code-ide-manager-switch-by-slot slot)
-                   (should (equal claude-code-ide-manager--current-session-key
-                                  (car (nth (1- slot) rows))))
-                   (setq rows (rows)
-                         slot (1+ slot)))
-                 ;; A number past the numbered rows does nothing.
-                 (let ((current claude-code-ide-manager--current-session-key))
-                   (claude-code-ide-manager-switch-by-slot (1+ (min 10 (length rows))))
-                   (should (equal claude-code-ide-manager--current-session-key
-                                  current))))))))))))
+              specs
+            (let ((claude-code-ide-manager-focused-view t)
+                  (claude-code-ide-manager--focus-kept-session-key nil)
+                  (claude-code-ide-manager-show-session-titles nil)
+                  (members (mapcar (lambda (spec) (session-key (car spec)))
+                                   (cl-remove-if (lambda (spec)
+                                                   (member (cdr spec) '((idle) (nil))))
+                                                 specs)))
+                  (slot 1))
+              (when (eq view 'grouped)
+                (dolist (entry sessions)
+                  (let* ((session (cdr entry))
+                         (directory (claude-code-ide-session-directory session))
+                         (project (if (cl-oddp (string-to-number (car entry)))
+                                      "/tmp/group-a" "/tmp/group-b")))
+                    (claude-code-ide--set-session-group-metadata
+                     session (list :kind 'git :host nil :directory directory
+                                   :common-dir (concat project "/.git") :project-path project
+                                   :worktree-path directory :branch (car entry)))))
+                (puthash "global" (list :view 'grouped) claude-code-ide-manager--scope-state))
+              (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
+                (claude-code-ide-manager-refresh-items scope))
+              (should (eq (claude-code-ide-manager--view scope) view))
+              (cl-flet ((rows ()
+                          (claude-code-ide-manager--render scope)
+                          (let ((rows (claude-code-ide-tests--manager-rows)))
+                            (should (equal (mapcar #'car rows)
+                                           (claude-code-ide-manager--visible-session-keys scope)))
+                            (cl-loop for (_key . text) in rows
+                                     for index from 1
+                                     do (should (string-prefix-p
+                                                 (if (<= index 10) (format "%2d. " index) " -  ")
+                                                 text)))
+                            rows)))
+                (let ((rows (rows)))
+                  (should (equal (sort (mapcar #'car rows) #'string<)
+                                 (sort members #'string<)))
+                  (while (<= slot (min 10 (length rows)))
+                    (claude-code-ide-manager-switch-by-slot slot)
+                    (should (equal claude-code-ide-manager--current-session-key
+                                   (car (nth (1- slot) rows))))
+                    (setq rows (rows)
+                          slot (1+ slot)))
+                  ;; A number past the numbered rows does nothing.
+                  (let ((current claude-code-ide-manager--current-session-key))
+                    (claude-code-ide-manager-switch-by-slot (1+ (min 10 (length rows))))
+                    (should (equal claude-code-ide-manager--current-session-key
+                                   current))))))))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-move-swaps-visible-rows ()
   "A row move skips hidden Sessions, so the two visible rows trade places."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" needs-input) ("02" idle) ("03" needs-input))
-   (let ((claude-code-ide-manager-focused-view t)
-         (claude-code-ide-manager--focus-kept-session-key nil)
-         (claude-code-ide-manager-show-session-titles nil))
-     (claude-code-ide-manager-refresh-items scope)
-     (claude-code-ide-manager--render scope)
-     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
-                    (mapcar #'session-key '("01" "03"))))
-     (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-       (claude-code-ide-manager--move-point-to-session-key (session-key "01"))
-       (claude-code-ide-manager-move-down))
-     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
-                    (mapcar #'session-key '("03" "01")))))))
+      '(("01" needs-input) ("02" idle) ("03" needs-input))
+    (let ((claude-code-ide-manager-focused-view t)
+          (claude-code-ide-manager--focus-kept-session-key nil)
+          (claude-code-ide-manager-show-session-titles nil))
+      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager--render scope)
+      (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                     (mapcar #'session-key '("01" "03"))))
+      (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+        (claude-code-ide-manager--move-point-to-session-key (session-key "01"))
+        (claude-code-ide-manager-move-down))
+      (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                     (mapcar #'session-key '("03" "01")))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-switch-keeps-target-until-left ()
   "A switched-to Session keeps its row and number while it is active.
@@ -8208,98 +8208,98 @@ visit and a return to a saved layout behave the same."
   (pcase-dolist (`(,kind . ,stays) '(((nil t t) . nil) ((done) . nil) ((failed) . nil)
                                      ((needs-input) . t) ((working) . t)))
     (claude-code-ide-tests--with-priority-sessions
-     `(("01" needs-input) ("02" ,@kind) ("03" needs-input))
-     (let ((claude-code-ide-manager-focused-view t)
-           (claude-code-ide-manager--focus-kept-session-key nil)
-           (claude-code-ide-manager-show-session-titles nil)
-           (target (session-key "02")))
-       (claude-code-ide-manager-refresh-items scope)
-       (dotimes (visit 2)
-         (ert-info ((format "Target %S, visit %d" kind (1+ visit)))
-           ;; A new result arrives before each visit.
-           (with-current-buffer (session-buffer "02")
-             (setq-local claude-code-ide-session-agent-state (car kind)
-                         claude-code-ide-session-idle-p (nth 2 kind)))
-           (claude-code-ide-manager--render scope)
-           (let ((row (assoc target (claude-code-ide-tests--manager-rows))))
-             (should row)
-             (claude-code-ide-manager-switch-to-session target nil scope)
-             (should (equal (assoc target (claude-code-ide-tests--manager-rows)) row)))
-           (unless stays
-             ;; The switch acknowledged the target, so only the activation keeps it.
-             (with-current-buffer (session-buffer "02")
-               (should-not (or claude-code-ide-session-idle-p
-                               (memq claude-code-ide-session-agent-state '(done failed))))))
-           (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-           (should (eq stays (and (assoc target (claude-code-ide-tests--manager-rows))
-                                  t)))))))))
+        `(("01" needs-input) ("02" ,@kind) ("03" needs-input))
+      (let ((claude-code-ide-manager-focused-view t)
+            (claude-code-ide-manager--focus-kept-session-key nil)
+            (claude-code-ide-manager-show-session-titles nil)
+            (target (session-key "02")))
+        (claude-code-ide-manager-refresh-items scope)
+        (dotimes (visit 2)
+          (ert-info ((format "Target %S, visit %d" kind (1+ visit)))
+            ;; A new result arrives before each visit.
+            (with-current-buffer (session-buffer "02")
+              (setq-local claude-code-ide-session-agent-state (car kind)
+                          claude-code-ide-session-idle-p (nth 2 kind)))
+            (claude-code-ide-manager--render scope)
+            (let ((row (assoc target (claude-code-ide-tests--manager-rows))))
+              (should row)
+              (claude-code-ide-manager-switch-to-session target nil scope)
+              (should (equal (assoc target (claude-code-ide-tests--manager-rows)) row)))
+            (unless stays
+              ;; The switch acknowledged the target, so only the activation keeps it.
+              (with-current-buffer (session-buffer "02")
+                (should-not (or claude-code-ide-session-idle-p
+                                (memq claude-code-ide-session-agent-state '(done failed))))))
+            (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+            (should (eq stays (and (assoc target (claude-code-ide-tests--manager-rows))
+                                   t)))))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-active-row-needs-a-status ()
   "Activation alone shows no row.  A status earned while active keeps one."
   (dolist (kind '((idle) (nil)))
     (ert-info ((format "Quiet kind %S" kind))
       (claude-code-ide-tests--with-priority-sessions
-       `(("01" ,@kind) ("02" needs-input))
-       (let ((claude-code-ide-manager-focused-view t)
-             (claude-code-ide-manager--focus-kept-session-key nil)
-             (claude-code-ide-manager-show-session-titles nil)
-             (quiet (session-key "01")))
-         (claude-code-ide-manager-refresh-items scope)
-         (claude-code-ide-manager-switch-to-session quiet nil scope)
-         (should-not (assoc quiet (claude-code-ide-tests--manager-rows)))
-         (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-           (should-not (text-property-any (point-min) (point-max) 'face
-                                          'claude-code-ide-manager-current-session-face)))
-         (with-current-buffer (session-buffer "01")
-           (claude-code-ide-session-idle-set-agent-state 'working))
-         (claude-code-ide-manager--render scope)
-         (should (assoc quiet (claude-code-ide-tests--manager-rows)))
-         ;; A finish the user watches folds straight to the acknowledged state.
-         (cl-letf (((symbol-function
-                     'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
-                    (lambda (&optional _buffer) t)))
-           (with-current-buffer (session-buffer "01")
-             (claude-code-ide-session-idle-set-agent-state 'done)
-             (should (eq claude-code-ide-session-agent-state 'idle))))
-         (claude-code-ide-manager--render scope)
-         (should (assoc quiet (claude-code-ide-tests--manager-rows)))
-         (claude-code-ide-manager-switch-to-session (session-key "02") nil scope)
-         (should-not (assoc quiet (claude-code-ide-tests--manager-rows))))))))
+          `(("01" ,@kind) ("02" needs-input))
+        (let ((claude-code-ide-manager-focused-view t)
+              (claude-code-ide-manager--focus-kept-session-key nil)
+              (claude-code-ide-manager-show-session-titles nil)
+              (quiet (session-key "01")))
+          (claude-code-ide-manager-refresh-items scope)
+          (claude-code-ide-manager-switch-to-session quiet nil scope)
+          (should-not (assoc quiet (claude-code-ide-tests--manager-rows)))
+          (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+            (should-not (text-property-any (point-min) (point-max) 'face
+                                           'claude-code-ide-manager-current-session-face)))
+          (with-current-buffer (session-buffer "01")
+            (claude-code-ide-session-idle-set-agent-state 'working))
+          (claude-code-ide-manager--render scope)
+          (should (assoc quiet (claude-code-ide-tests--manager-rows)))
+          ;; A finish the user watches folds straight to the acknowledged state.
+          (cl-letf (((symbol-function
+                      'claude-code-ide-session-idle--buffer-visible-in-focused-frame-p)
+                     (lambda (&optional _buffer) t)))
+            (with-current-buffer (session-buffer "01")
+              (claude-code-ide-session-idle-set-agent-state 'done)
+              (should (eq claude-code-ide-session-agent-state 'idle))))
+          (claude-code-ide-manager--render scope)
+          (should (assoc quiet (claude-code-ide-tests--manager-rows)))
+          (claude-code-ide-manager-switch-to-session (session-key "02") nil scope)
+          (should-not (assoc quiet (claude-code-ide-tests--manager-rows))))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-clear-all-keeps-active-row ()
   "Clearing all idle state drops acknowledged rows but keeps the active one."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" done) ("02" done) ("03" nil t t) ("04" needs-input) ("05" working))
-   (let ((claude-code-ide-manager-focused-view t)
-         (claude-code-ide-manager--focus-kept-session-key nil)
-         (claude-code-ide-manager-show-session-titles nil))
-     (claude-code-ide-manager-refresh-items scope)
-     (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
-                    (mapcar #'session-key '("01" "02" "03" "04" "05"))))
-     (claude-code-ide-manager-clear-all-idle-state)
-     (claude-code-ide-manager--render scope)
-     (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
-                    (mapcar #'session-key '("01" "04" "05")))))))
+      '(("01" done) ("02" done) ("03" nil t t) ("04" needs-input) ("05" working))
+    (let ((claude-code-ide-manager-focused-view t)
+          (claude-code-ide-manager--focus-kept-session-key nil)
+          (claude-code-ide-manager-show-session-titles nil))
+      (claude-code-ide-manager-refresh-items scope)
+      (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+      (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                     (mapcar #'session-key '("01" "02" "03" "04" "05"))))
+      (claude-code-ide-manager-clear-all-idle-state)
+      (claude-code-ide-manager--render scope)
+      (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows))
+                     (mapcar #'session-key '("01" "04" "05")))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-new-activation-rechecks-row ()
   "A repeat switch keeps an earned row.  A return after leaving checks again."
   (dolist (other '((needs-input) (nil)))
     (ert-info ((format "Other Session %S" other))
       (claude-code-ide-tests--with-priority-sessions
-       `(("01" done) ("02" ,@other))
-       (let ((claude-code-ide-manager-focused-view t)
-             (claude-code-ide-manager--focus-kept-session-key nil)
-             (claude-code-ide-manager-show-session-titles nil)
-             (earned (session-key "01")))
-         (claude-code-ide-manager-refresh-items scope)
-         (claude-code-ide-manager-switch-to-session earned nil scope)
-         (claude-code-ide-manager-switch-to-session earned nil scope)
-         (should (assoc earned (claude-code-ide-tests--manager-rows)))
-         (claude-code-ide-manager-switch-to-session (session-key "02") nil scope)
-         (claude-code-ide-manager-switch-to-session earned nil scope)
-         (should (equal claude-code-ide-manager--current-session-key earned))
-         (should-not (assoc earned (claude-code-ide-tests--manager-rows))))))))
+          `(("01" done) ("02" ,@other))
+        (let ((claude-code-ide-manager-focused-view t)
+              (claude-code-ide-manager--focus-kept-session-key nil)
+              (claude-code-ide-manager-show-session-titles nil)
+              (earned (session-key "01")))
+          (claude-code-ide-manager-refresh-items scope)
+          (claude-code-ide-manager-switch-to-session earned nil scope)
+          (claude-code-ide-manager-switch-to-session earned nil scope)
+          (should (assoc earned (claude-code-ide-tests--manager-rows)))
+          (claude-code-ide-manager-switch-to-session (session-key "02") nil scope)
+          (claude-code-ide-manager-switch-to-session earned nil scope)
+          (should (equal claude-code-ide-manager--current-session-key earned))
+          (should-not (assoc earned (claude-code-ide-tests--manager-rows))))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-g-jumps-to-any-session ()
   "G offers every Session for one Avy pick, then the focused view returns.
@@ -8308,37 +8308,37 @@ cases the rows after the command are the focused rows again."
   (dolist (pick '("02" quit))
     (ert-info ((format "Pick %S" pick))
       (claude-code-ide-tests--with-priority-sessions
-       '(("01" needs-input) ("02" nil) ("03" working))
-       (let ((claude-code-ide-manager-focused-view t)
-             (claude-code-ide-manager-show-session-titles nil)
-             (focused (mapcar #'session-key '("01" "03")))
-             offered)
-         (claude-code-ide-manager-refresh-items scope)
-         (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
-         (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows)) focused))
-         (cl-letf (((symbol-function 'avy-jump)
-                    (lambda (_regexp &rest args)
-                      (setq offered (mapcar #'car (claude-code-ide-tests--manager-rows)))
-                      (if (eq pick 'quit)
-                          (signal 'quit nil)
-                        ;; Act on the picked row the way Avy does: from its position.
-                        (let ((target (session-key pick))
-                              (pos (point-min)))
-                          (while (not (equal (get-text-property
-                                              pos 'claude-code-ide-manager-session-key)
-                                             target))
-                            (setq pos (next-single-property-change
-                                       pos 'claude-code-ide-manager-session-key)))
-                          (funcall (plist-get args :action) pos))))))
-           (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-             (condition-case nil
-                 (claude-code-ide-manager-avy-switch-all-or-refresh)
-               (quit nil))))
-         (should (equal offered (mapcar #'session-key '("01" "02" "03"))))
-         (should claude-code-ide-manager-focused-view)
-         (should (equal claude-code-ide-manager--current-session-key
-                        (session-key (if (eq pick 'quit) "01" pick))))
-         (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows)) focused)))))))
+          '(("01" needs-input) ("02" nil) ("03" working))
+        (let ((claude-code-ide-manager-focused-view t)
+              (claude-code-ide-manager-show-session-titles nil)
+              (focused (mapcar #'session-key '("01" "03")))
+              offered)
+          (claude-code-ide-manager-refresh-items scope)
+          (claude-code-ide-manager-switch-to-session (session-key "01") nil scope)
+          (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows)) focused))
+          (cl-letf (((symbol-function 'avy-jump)
+                     (lambda (_regexp &rest args)
+                       (setq offered (mapcar #'car (claude-code-ide-tests--manager-rows)))
+                       (if (eq pick 'quit)
+                           (signal 'quit nil)
+                         ;; Act on the picked row the way Avy does: from its position.
+                         (let ((target (session-key pick))
+                               (pos (point-min)))
+                           (while (not (equal (get-text-property
+                                               pos 'claude-code-ide-manager-session-key)
+                                              target))
+                             (setq pos (next-single-property-change
+                                        pos 'claude-code-ide-manager-session-key)))
+                           (funcall (plist-get args :action) pos))))))
+            (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+              (condition-case nil
+                  (claude-code-ide-manager-avy-switch-all-or-refresh)
+                (quit nil))))
+          (should (equal offered (mapcar #'session-key '("01" "02" "03"))))
+          (should claude-code-ide-manager-focused-view)
+          (should (equal claude-code-ide-manager--current-session-key
+                         (session-key (if (eq pick 'quit) "01" pick))))
+          (should (equal (mapcar #'car (claude-code-ide-tests--manager-rows)) focused)))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-window-change-keeps-shown-session ()
   "A Session that a window change shows keeps its row.
@@ -8348,109 +8348,109 @@ capture, the row disappears, so the test detects that race."
     (dolist (capture '(t nil))
       (ert-info ((format "Shown kind %S, capture %S" kind capture))
         (claude-code-ide-tests--with-priority-sessions
-         `(("a" working) ("b" ,@kind))
-         (let ((claude-code-ide-manager-focused-view t)
-               (claude-code-ide-manager--focus-kept-session-key nil)
-               (claude-code-ide-manager-show-session-titles nil)
-               (window-configuration-change-hook nil)
-               (shown (session-key "b")))
-           ;; The real load order: the manager first, then the idle module.
-           (claude-code-ide-manager--install-window-config-refresh-hook)
-           (add-hook 'window-configuration-change-hook
-                     #'claude-code-ide-session-idle--handle-visibility-change)
-           (unless capture
-             (remove-hook 'window-configuration-change-hook
-                          #'claude-code-ide-manager--note-focus-on-window-change))
-           (claude-code-ide-manager-refresh-items scope)
-           (claude-code-ide-manager-switch-to-session (session-key "a") nil scope)
-           (set-window-buffer (get-buffer-window (session-buffer "a"))
-                              (session-buffer "b"))
-           (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) t)))
-             (with-no-warnings (run-window-configuration-change-hook)))
-           (should (equal claude-code-ide-manager--current-session-key shown))
-           (with-current-buffer (session-buffer "b")
-             (should-not (or claude-code-ide-session-idle-p
-                             (eq claude-code-ide-session-agent-state 'done))))
-           (should (eq capture (and (assoc shown (claude-code-ide-tests--manager-rows)) t)))
-           (when capture
-             (claude-code-ide-manager-switch-to-session (session-key "a") nil scope)
-             (should-not (assoc shown (claude-code-ide-tests--manager-rows))))))))))
+            `(("a" working) ("b" ,@kind))
+          (let ((claude-code-ide-manager-focused-view t)
+                (claude-code-ide-manager--focus-kept-session-key nil)
+                (claude-code-ide-manager-show-session-titles nil)
+                (window-configuration-change-hook nil)
+                (shown (session-key "b")))
+            ;; The real load order: the manager first, then the idle module.
+            (claude-code-ide-manager--install-window-config-refresh-hook)
+            (add-hook 'window-configuration-change-hook
+                      #'claude-code-ide-session-idle--handle-visibility-change)
+            (unless capture
+              (remove-hook 'window-configuration-change-hook
+                           #'claude-code-ide-manager--note-focus-on-window-change))
+            (claude-code-ide-manager-refresh-items scope)
+            (claude-code-ide-manager-switch-to-session (session-key "a") nil scope)
+            (set-window-buffer (get-buffer-window (session-buffer "a"))
+                               (session-buffer "b"))
+            (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) t)))
+              (with-no-warnings (run-window-configuration-change-hook)))
+            (should (equal claude-code-ide-manager--current-session-key shown))
+            (with-current-buffer (session-buffer "b")
+              (should-not (or claude-code-ide-session-idle-p
+                              (eq claude-code-ide-session-agent-state 'done))))
+            (should (eq capture (and (assoc shown (claude-code-ide-tests--manager-rows)) t)))
+            (when capture
+              (claude-code-ide-manager-switch-to-session (session-key "a") nil scope)
+              (should-not (assoc shown (claude-code-ide-tests--manager-rows))))))))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-keeps-remote-context ()
   "Focused rows keep their headings and labels in both arrangements.
 Hosts and groups with no focused row get no heading.  The arrangement
 switch keeps the filter, and no process starts."
   (claude-code-ide-tests--with-priority-sessions
-   '(("01" needs-input)
-     ("02" done nil nil nil "/work/p/")
-     ("03" working nil nil nil "/work/p-topic/")
-     ("04" idle nil nil nil "/work/q/")
-     ("05" nil nil nil nil "/work/q-topic/")
-     ("06" nil nil nil nil "/work/r/"))
-   (pcase-dolist (`(,name ,host ,project)
-                  '(("02" "alpha" "/work/p") ("03" "alpha" "/work/p")
-                    ("04" "alpha" "/work/q") ("05" "alpha" "/work/q")
-                    ("06" "beta" "/work/r")))
-     (let* ((session (cdr (assoc name sessions)))
-            (directory (claude-code-ide-session-directory session)))
-       (setf (claude-code-ide-session-host session) host)
-       (claude-code-ide--set-session-group-metadata
-        session (list :kind 'git :host host :directory directory
-                      :common-dir (concat project "/.git") :project-path project
-                      :worktree-path directory :branch name))))
-   (let ((claude-code-ide-manager-focused-view t)
-         (claude-code-ide-manager--focus-kept-session-key nil)
-         (claude-code-ide-manager-show-session-titles nil)
-         (members (sort (mapcar #'session-key '("01" "02" "03")) #'string<)))
-     (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
-       (claude-code-ide-manager-refresh-items scope))
-     (claude-code-ide-manager--render scope)
-     (cl-letf (((symbol-function 'make-process)
-                (lambda (&rest _) (ert-fail "The focused view started a process")))
-               ((symbol-function 'process-file)
-                (lambda (&rest _) (ert-fail "The focused view ran a process"))))
-       (dolist (view '(flat grouped flat))
-         (ert-info ((format "%s view" view))
-           (unless (eq view (claude-code-ide-manager--view scope))
-             (claude-code-ide-manager-toggle-grouped-view))
-           (let ((rows (claude-code-ide-tests--manager-rows)))
-             (should (equal (sort (mapcar #'car rows) #'string<) members))
-             (when (eq view 'grouped)
-               ;; Each heading has a row of its own below it, and a remote row
-               ;; sits under the heading of its host.
-               (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-                 (goto-char (point-min))
-                 (let (host group (host-rows 0) (group-rows 0))
-                   (while (not (eobp))
-                     (let* ((heading (get-text-property
-                                      (point) 'claude-code-ide-manager-group-heading))
-                            (key (get-text-property
-                                  (point) 'claude-code-ide-manager-session-key))
-                            (item (and key (claude-code-ide-manager--item-by-session-key
-                                            scope key))))
-                       (cond
-                        ((eq (car-safe heading) 'host)
-                         (should (or (null host) (> host-rows 0)))
-                         (should (or (null group) (> group-rows 0)))
-                         (setq host (cadr heading) host-rows 0 group nil))
-                        (heading
-                         (should (or (null group) (> group-rows 0)))
-                         (setq group heading group-rows 0))
-                        (item
-                         (should (equal (claude-code-ide-manager--group-key item) group))
-                         (cl-incf group-rows)
-                         (when (claude-code-ide-manager-item-host item)
-                           (should (equal (claude-code-ide-manager-item-host item) host))
-                           (cl-incf host-rows)))))
-                     (forward-line 1))
-                   (should (or (null host) (> host-rows 0)))
-                   (should (or (null group) (> group-rows 0))))))
-             (let ((full (let ((claude-code-ide-manager-focused-view nil))
-                           (claude-code-ide-manager--render scope)
-                           (claude-code-ide-tests--manager-rows))))
-               (pcase-dolist (`(,key . ,text) rows)
-                 (should (equal (substring text 4)
-                                (substring (cdr (assoc key full)) 4))))))))))))
+      '(("01" needs-input)
+        ("02" done nil nil nil "/work/p/")
+        ("03" working nil nil nil "/work/p-topic/")
+        ("04" idle nil nil nil "/work/q/")
+        ("05" nil nil nil nil "/work/q-topic/")
+        ("06" nil nil nil nil "/work/r/"))
+    (pcase-dolist (`(,name ,host ,project)
+                   '(("02" "alpha" "/work/p") ("03" "alpha" "/work/p")
+                     ("04" "alpha" "/work/q") ("05" "alpha" "/work/q")
+                     ("06" "beta" "/work/r")))
+      (let* ((session (cdr (assoc name sessions)))
+             (directory (claude-code-ide-session-directory session)))
+        (setf (claude-code-ide-session-host session) host)
+        (claude-code-ide--set-session-group-metadata
+         session (list :kind 'git :host host :directory directory
+                       :common-dir (concat project "/.git") :project-path project
+                       :worktree-path directory :branch name))))
+    (let ((claude-code-ide-manager-focused-view t)
+          (claude-code-ide-manager--focus-kept-session-key nil)
+          (claude-code-ide-manager-show-session-titles nil)
+          (members (sort (mapcar #'session-key '("01" "02" "03")) #'string<)))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
+        (claude-code-ide-manager-refresh-items scope))
+      (claude-code-ide-manager--render scope)
+      (cl-letf (((symbol-function 'make-process)
+                 (lambda (&rest _) (ert-fail "The focused view started a process")))
+                ((symbol-function 'process-file)
+                 (lambda (&rest _) (ert-fail "The focused view ran a process"))))
+        (dolist (view '(flat grouped flat))
+          (ert-info ((format "%s view" view))
+            (unless (eq view (claude-code-ide-manager--view scope))
+              (claude-code-ide-manager-toggle-grouped-view))
+            (let ((rows (claude-code-ide-tests--manager-rows)))
+              (should (equal (sort (mapcar #'car rows) #'string<) members))
+              (when (eq view 'grouped)
+                ;; Each heading has a row of its own below it, and a remote row
+                ;; sits under the heading of its host.
+                (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+                  (goto-char (point-min))
+                  (let (host group (host-rows 0) (group-rows 0))
+                    (while (not (eobp))
+                      (let* ((heading (get-text-property
+                                       (point) 'claude-code-ide-manager-group-heading))
+                             (key (get-text-property
+                                   (point) 'claude-code-ide-manager-session-key))
+                             (item (and key (claude-code-ide-manager--item-by-session-key
+                                             scope key))))
+                        (cond
+                         ((eq (car-safe heading) 'host)
+                          (should (or (null host) (> host-rows 0)))
+                          (should (or (null group) (> group-rows 0)))
+                          (setq host (cadr heading) host-rows 0 group nil))
+                         (heading
+                          (should (or (null group) (> group-rows 0)))
+                          (setq group heading group-rows 0))
+                         (item
+                          (should (equal (claude-code-ide-manager--group-key item) group))
+                          (cl-incf group-rows)
+                          (when (claude-code-ide-manager-item-host item)
+                            (should (equal (claude-code-ide-manager-item-host item) host))
+                            (cl-incf host-rows)))))
+                      (forward-line 1))
+                    (should (or (null host) (> host-rows 0)))
+                    (should (or (null group) (> group-rows 0))))))
+              (let ((full (let ((claude-code-ide-manager-focused-view nil))
+                            (claude-code-ide-manager--render scope)
+                            (claude-code-ide-tests--manager-rows))))
+                (pcase-dolist (`(,key . ,text) rows)
+                  (should (equal (substring text 4)
+                                 (substring (cdr (assoc key full)) 4))))))))))))
 
 (ert-deftest claude-code-ide-test-manager-avy-switch-selects-only-current-window ()
   "Avy selects only session rows in the selected manager window."
@@ -9228,125 +9228,125 @@ switch keeps the filter, and no process starts."
 (ert-deftest claude-code-ide-test-manager-layout-preset-non-shell-arrangements ()
   "Reset preserves custom content and gives Dired its own directory view."
   (claude-code-ide-tests--with-grouped-state
-   (save-window-excursion
-     (let* ((agent (generate-new-buffer "*claude-code[preset]*"))
-            (custom (generate-new-buffer "*preset-custom*"))
-            (directory (make-temp-file "preset-directory-" t))
-            (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
-            opened-views)
-       (unwind-protect
-           (progn
-             (claude-code-ide--put-session
-              (claude-code-ide-session-create
-               :id "preset" :directory directory :buffer agent
-               :process agent :cli-type 'omp))
-             (dolist (case '((magit-left left git) (magit-right right git)
-                             (dired-left left dired) (dired-right right dired)))
-               (let ((claude-code-ide-manager-layout-preset (nth 0 case)))
-                 (cl-progv '(claude-code-ide-manager-session-window-side) '(left)
-                   (claude-code-ide-manager-reset-layout "preset"))
-                 (let* ((agent-window (get-buffer-window agent))
-                        (companion-window
-                         (seq-find
-                          (lambda (window)
-                            (and (not (window-parameter window 'window-side))
-                                 (not (eq window agent-window))))
-                          (window-list)))
-                        (companion (window-buffer companion-window)))
-                   (should (eq agent-window (selected-window)))
-                   (should (get-buffer-window
-                            (claude-code-ide-manager--buffer-name-for-scope '(:type global))))
-                   (should (eq (nth 1 case)
-                               (if (< (car (window-edges companion-window))
-                                      (car (window-edges agent-window)))
-                                   'left 'right)))
-                   (if (eq (nth 2 case) 'git)
-                       (should (eq custom companion))
-                     (push companion opened-views)
-                     (with-current-buffer companion
-                       (should (derived-mode-p 'dired-mode))
-                       (should (equal (file-name-as-directory directory)
-                                      default-directory))))
-                   (should (eq custom
-                               (funcall claude-code-ide-manager-status-buffer-function
-                                        directory))))))
-             (claude-code-ide-manager-reset-layout "preset" t)
-             (should (eq (selected-window)
-                         (claude-code-ide-manager--sidebar-window '(:type global)))))
-         (dolist (buffer (cons agent (cons custom opened-views)))
-           (when (buffer-live-p buffer) (kill-buffer buffer)))
-         (delete-directory directory t))))))
+    (save-window-excursion
+      (let* ((agent (generate-new-buffer "*claude-code[preset]*"))
+             (custom (generate-new-buffer "*preset-custom*"))
+             (directory (make-temp-file "preset-directory-" t))
+             (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+             opened-views)
+        (unwind-protect
+            (progn
+              (claude-code-ide--put-session
+               (claude-code-ide-session-create
+                :id "preset" :directory directory :buffer agent
+                :process agent :cli-type 'omp))
+              (dolist (case '((magit-left left git) (magit-right right git)
+                              (dired-left left dired) (dired-right right dired)))
+                (let ((claude-code-ide-manager-layout-preset (nth 0 case)))
+                  (cl-progv '(claude-code-ide-manager-session-window-side) '(left)
+                    (claude-code-ide-manager-reset-layout "preset"))
+                  (let* ((agent-window (get-buffer-window agent))
+                         (companion-window
+                          (seq-find
+                           (lambda (window)
+                             (and (not (window-parameter window 'window-side))
+                                  (not (eq window agent-window))))
+                           (window-list)))
+                         (companion (window-buffer companion-window)))
+                    (should (eq agent-window (selected-window)))
+                    (should (get-buffer-window
+                             (claude-code-ide-manager--buffer-name-for-scope '(:type global))))
+                    (should (eq (nth 1 case)
+                                (if (< (car (window-edges companion-window))
+                                       (car (window-edges agent-window)))
+                                    'left 'right)))
+                    (if (eq (nth 2 case) 'git)
+                        (should (eq custom companion))
+                      (push companion opened-views)
+                      (with-current-buffer companion
+                        (should (derived-mode-p 'dired-mode))
+                        (should (equal (file-name-as-directory directory)
+                                       default-directory))))
+                    (should (eq custom
+                                (funcall claude-code-ide-manager-status-buffer-function
+                                         directory))))))
+              (claude-code-ide-manager-reset-layout "preset" t)
+              (should (eq (selected-window)
+                          (claude-code-ide-manager--sidebar-window '(:type global)))))
+          (dolist (buffer (cons agent (cons custom opened-views)))
+            (when (buffer-live-p buffer) (kill-buffer buffer)))
+          (delete-directory directory t))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-invalid-reset-preserves-work ()
   "An invalid preset leaves the saved layout and visible Agent intact."
   (claude-code-ide-tests--with-grouped-state
-   (save-window-excursion
-     (let ((agent (generate-new-buffer "*preset-agent*"))
-           (directory (make-temp-file "preset-directory-" t)))
-       (unwind-protect
-           (progn
-             (claude-code-ide--put-session
-              (claude-code-ide-session-create
-               :id "preset" :directory directory :buffer agent
-               :process agent :cli-type 'omp))
-             (set-window-buffer (selected-window) agent)
-             (let ((saved (list :window-state
-                                (window-state-get (frame-root-window) t))))
-               (puthash "preset" saved claude-code-ide-manager--layouts)
-               (cl-progv '(claude-code-ide-manager-layout-preset) '(unknown)
-                 (should-error (claude-code-ide-manager-reset-layout "preset")
-                               :type 'user-error))
-               (should (eq saved (gethash "preset" claude-code-ide-manager--layouts)))
-               (should (eq agent (window-buffer (selected-window))))))
-         (when (buffer-live-p agent) (kill-buffer agent))
-         (delete-directory directory t))))))
+    (save-window-excursion
+      (let ((agent (generate-new-buffer "*preset-agent*"))
+            (directory (make-temp-file "preset-directory-" t)))
+        (unwind-protect
+            (progn
+              (claude-code-ide--put-session
+               (claude-code-ide-session-create
+                :id "preset" :directory directory :buffer agent
+                :process agent :cli-type 'omp))
+              (set-window-buffer (selected-window) agent)
+              (let ((saved (list :window-state
+                                 (window-state-get (frame-root-window) t))))
+                (puthash "preset" saved claude-code-ide-manager--layouts)
+                (cl-progv '(claude-code-ide-manager-layout-preset) '(unknown)
+                  (should-error (claude-code-ide-manager-reset-layout "preset")
+                                :type 'user-error))
+                (should (eq saved (gethash "preset" claude-code-ide-manager--layouts)))
+                (should (eq agent (window-buffer (selected-window))))))
+          (when (buffer-live-p agent) (kill-buffer agent))
+          (delete-directory directory t))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-failures-keep-agent ()
   "Provider, split, and directory failures never replace the Agent."
   (claude-code-ide-tests--with-grouped-state
-   (save-window-excursion
-     (let* ((agent (generate-new-buffer "*claude-code[preset-errors]*"))
-            (directory (make-temp-file "preset-errors-" t))
-            (session (claude-code-ide-session-create
-                      :id "preset" :directory directory :buffer agent
-                      :process agent :cli-type 'omp))
-            (claude-code-ide-manager-layout-preset 'magit-left)
-            (claude-code-ide-manager-status-buffer-function
-             (lambda (_) (error "Provider refused")))
-            view)
-       (unwind-protect
-           (progn
-             (claude-code-ide--put-session session)
-             (claude-code-ide-manager-reset-layout "preset")
-             (setq view
-                   (window-buffer
-                    (seq-find
-                     (lambda (window)
-                       (with-current-buffer (window-buffer window)
-                         (derived-mode-p 'dired-mode)))
-                     (window-list))))
-             (with-current-buffer view
-               (should (derived-mode-p 'dired-mode))
-               (should (equal default-directory (file-name-as-directory directory))))
-             (cl-letf (((symbol-function 'split-window)
-                        (lambda (&rest _) (error "Split refused"))))
-               (claude-code-ide-manager-reset-layout "preset"))
-             (should (eq agent (window-buffer (selected-window))))
-             (setf (claude-code-ide-session-directory session)
-                   (expand-file-name "missing" directory))
-             (let ((claude-code-ide-manager-layout-preset 'dired-left))
-               (claude-code-ide-manager-reset-layout "preset"))
-             (should (eq agent (window-buffer (selected-window))))
-             (should (equal
-                      (mapcar #'window-buffer
-                              (seq-remove
-                               (lambda (window) (window-parameter window 'window-side))
-                               (window-list)))
-                      (list agent)))
-             (should (claude-code-ide-manager--sidebar-window '(:type global))))
-         (dolist (buffer (list agent view))
-           (when (buffer-live-p buffer) (kill-buffer buffer)))
-         (delete-directory directory t))))))
+    (save-window-excursion
+      (let* ((agent (generate-new-buffer "*claude-code[preset-errors]*"))
+             (directory (make-temp-file "preset-errors-" t))
+             (session (claude-code-ide-session-create
+                       :id "preset" :directory directory :buffer agent
+                       :process agent :cli-type 'omp))
+             (claude-code-ide-manager-layout-preset 'magit-left)
+             (claude-code-ide-manager-status-buffer-function
+              (lambda (_) (error "Provider refused")))
+             view)
+        (unwind-protect
+            (progn
+              (claude-code-ide--put-session session)
+              (claude-code-ide-manager-reset-layout "preset")
+              (setq view
+                    (window-buffer
+                     (seq-find
+                      (lambda (window)
+                        (with-current-buffer (window-buffer window)
+                          (derived-mode-p 'dired-mode)))
+                      (window-list))))
+              (with-current-buffer view
+                (should (derived-mode-p 'dired-mode))
+                (should (equal default-directory (file-name-as-directory directory))))
+              (cl-letf (((symbol-function 'split-window)
+                         (lambda (&rest _) (error "Split refused"))))
+                (claude-code-ide-manager-reset-layout "preset"))
+              (should (eq agent (window-buffer (selected-window))))
+              (setf (claude-code-ide-session-directory session)
+                    (expand-file-name "missing" directory))
+              (let ((claude-code-ide-manager-layout-preset 'dired-left))
+                (claude-code-ide-manager-reset-layout "preset"))
+              (should (eq agent (window-buffer (selected-window))))
+              (should (equal
+                       (mapcar #'window-buffer
+                               (seq-remove
+                                (lambda (window) (window-parameter window 'window-side))
+                                (window-list)))
+                       (list agent)))
+              (should (claude-code-ide-manager--sidebar-window '(:type global))))
+          (dolist (buffer (list agent view))
+            (when (buffer-live-p buffer) (kill-buffer buffer)))
+          (delete-directory directory t))))))
 
 (defun claude-code-ide-tests--create-companion-pipe (name &optional _display _identity)
   "Create a disposable Ghostel-shaped buffer with a real lifecycle process."
@@ -9363,66 +9363,66 @@ switch keeps the filter, and no process starts."
   "Same-directory Sessions keep separate shells through mirrors and presets."
   (cl-progv '(features) (list (cons 'ghostel features))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (let* ((agent-a (generate-new-buffer "*claude-code[shell-a]*"))
-              (agent-b (generate-new-buffer "*claude-code[shell-b]*"))
-              (custom (generate-new-buffer "*shell-custom*"))
-              (directory (make-temp-file "shell-ownership-" t))
-              (changed-directory (expand-file-name "changed/" directory))
-              (ghostel-mode-hook nil)
-              (claude-code-ide-manager-layout-preset 'shell-left)
-              (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
-              shell-a shell-b process-a)
-         (unwind-protect
-             (cl-letf (((symbol-function 'ghostel--new) #'ignore)
-                       ((symbol-function 'ghostel-create)
-                        #'claude-code-ide-tests--create-companion-pipe))
-               (make-directory changed-directory)
-               (dolist (buffer (list agent-a agent-b))
-                 (with-current-buffer buffer
-                   (setq-local major-mode 'ghostel-mode)))
-               (with-current-buffer agent-a
-                 (insert "Agent prompt"))
-               (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
-                 (claude-code-ide--put-session
-                  (claude-code-ide-session-create
-                   :id (car entry) :directory directory :buffer (cdr entry)
-                   :process (cdr entry) :cli-type 'omp)))
-               (claude-code-ide-manager-reset-layout "a")
-               (setq shell-a (gethash "a" claude-code-ide-manager--companion-shells)
-                     process-a (buffer-local-value 'ghostel--process shell-a))
-               (should (< (window-left-column (get-buffer-window shell-a))
-                          (window-left-column (get-buffer-window agent-a))))
-               (claude-code-ide-manager-reset-layout "b")
-               (setq shell-b (gethash "b" claude-code-ide-manager--companion-shells))
-               (should-not (eq shell-a shell-b))
-               (should-not (eq process-a (buffer-local-value 'ghostel--process shell-b)))
-               (with-current-buffer shell-a
-                 (insert "Keep this command output")
-                 (setq default-directory changed-directory))
-               (let ((claude-code-ide-manager-layout-preset 'shell-right))
-                 (claude-code-ide-manager-reset-layout "a"))
-               (should (> (window-left-column (get-buffer-window shell-a))
-                          (window-left-column (get-buffer-window agent-a))))
-               (with-current-buffer shell-a
-                 (should (equal (buffer-string) "Keep this command output"))
-                 (should (equal default-directory changed-directory))
-                 (should (eq ghostel--process process-a)))
-               (let ((claude-code-ide-manager-layout-preset 'magit-left))
-                 (claude-code-ide-manager-reset-layout "a"))
-               (should-not (get-buffer-window shell-a))
-               (should (claude-code-ide-session--companion-shell-live-p shell-a))
-               (should (eq shell-a
-                           (claude-code-ide-manager--companion-shell
-                            directory
-                            (claude-code-ide-manager--make-layout-request
-                             directory 'shell-left nil))))
-               (should (= (hash-table-count claude-code-ide--sessions) 2))
-               (with-current-buffer agent-a
-                 (should (equal (buffer-string) "Agent prompt"))))
-           (dolist (buffer (list agent-a agent-b custom shell-a shell-b))
-             (when (buffer-live-p buffer) (kill-buffer buffer)))
-           (delete-directory directory t)))))))
+      (save-window-excursion
+        (let* ((agent-a (generate-new-buffer "*claude-code[shell-a]*"))
+               (agent-b (generate-new-buffer "*claude-code[shell-b]*"))
+               (custom (generate-new-buffer "*shell-custom*"))
+               (directory (make-temp-file "shell-ownership-" t))
+               (changed-directory (expand-file-name "changed/" directory))
+               (ghostel-mode-hook nil)
+               (claude-code-ide-manager-layout-preset 'shell-left)
+               (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+               shell-a shell-b process-a)
+          (unwind-protect
+              (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                        ((symbol-function 'ghostel-create)
+                         #'claude-code-ide-tests--create-companion-pipe))
+                (make-directory changed-directory)
+                (dolist (buffer (list agent-a agent-b))
+                  (with-current-buffer buffer
+                    (setq-local major-mode 'ghostel-mode)))
+                (with-current-buffer agent-a
+                  (insert "Agent prompt"))
+                (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+                  (claude-code-ide--put-session
+                   (claude-code-ide-session-create
+                    :id (car entry) :directory directory :buffer (cdr entry)
+                    :process (cdr entry) :cli-type 'omp)))
+                (claude-code-ide-manager-reset-layout "a")
+                (setq shell-a (gethash "a" claude-code-ide-manager--companion-shells)
+                      process-a (buffer-local-value 'ghostel--process shell-a))
+                (should (< (window-left-column (get-buffer-window shell-a))
+                           (window-left-column (get-buffer-window agent-a))))
+                (claude-code-ide-manager-reset-layout "b")
+                (setq shell-b (gethash "b" claude-code-ide-manager--companion-shells))
+                (should-not (eq shell-a shell-b))
+                (should-not (eq process-a (buffer-local-value 'ghostel--process shell-b)))
+                (with-current-buffer shell-a
+                  (insert "Keep this command output")
+                  (setq default-directory changed-directory))
+                (let ((claude-code-ide-manager-layout-preset 'shell-right))
+                  (claude-code-ide-manager-reset-layout "a"))
+                (should (> (window-left-column (get-buffer-window shell-a))
+                           (window-left-column (get-buffer-window agent-a))))
+                (with-current-buffer shell-a
+                  (should (equal (buffer-string) "Keep this command output"))
+                  (should (equal default-directory changed-directory))
+                  (should (eq ghostel--process process-a)))
+                (let ((claude-code-ide-manager-layout-preset 'magit-left))
+                  (claude-code-ide-manager-reset-layout "a"))
+                (should-not (get-buffer-window shell-a))
+                (should (claude-code-ide-session--companion-shell-live-p shell-a))
+                (should (eq shell-a
+                            (claude-code-ide-manager--companion-shell
+                             directory
+                             (claude-code-ide-manager--make-layout-request
+                              directory 'shell-left nil))))
+                (should (= (hash-table-count claude-code-ide--sessions) 2))
+                (with-current-buffer agent-a
+                  (should (equal (buffer-string) "Agent prompt"))))
+            (dolist (buffer (list agent-a agent-b custom shell-a shell-b))
+              (when (buffer-live-p buffer) (kill-buffer buffer)))
+            (delete-directory directory t)))))))
 
 (ert-deftest claude-code-ide-test-ghostel-native-preflight-prevents-session-effects ()
   "Rejected directory or native prerequisites leave existing Sessions and MCP untouched."
@@ -9507,321 +9507,321 @@ switch keeps the filter, and no process starts."
   "A layout change during startup leaves its live shell unowned."
   (cl-progv '(features) (list (cons 'ghostel features))
     (claude-code-ide-tests--with-grouped-state
-     (let ((directory (make-temp-file "shell-stale-" t))
-           (agent (generate-new-buffer "*claude-code[shell-stale]*"))
-           (ghostel-mode-hook nil)
-           (invalidate t)
-           created)
-       (unwind-protect
-           (cl-letf (((symbol-function 'ghostel--new) #'ignore)
-                     ((symbol-function 'ghostel-create)
-                      (lambda (&rest arguments)
-                        (let ((buffer (apply #'claude-code-ide-tests--create-companion-pipe
-                                             arguments)))
-                          (push buffer created)
-                          (when invalidate
-                            (setq invalidate nil)
-                            (claude-code-ide-manager--advance-layout-epoch))
-                          buffer))))
-             (claude-code-ide--put-session
-              (claude-code-ide-session-create
-               :id "stale" :directory directory :buffer agent
-               :process agent :cli-type 'omp))
-             (should-error
-              (claude-code-ide-manager--companion-shell
-               "stale" (claude-code-ide-manager--make-layout-request "stale" 'shell-left t))
-              :type 'user-error)
-             (let ((ordinary (car created))
-                   (replacement
-                    (claude-code-ide-manager--companion-shell
-                     "stale" (claude-code-ide-manager--make-layout-request "stale" 'shell-left t))))
-               (should-not (eq ordinary replacement))
-               (should (claude-code-ide-session--companion-shell-live-p ordinary))
-               (should (claude-code-ide-session--companion-shell-live-p replacement))))
-         (dolist (buffer (cons agent created))
-           (when (buffer-live-p buffer) (kill-buffer buffer)))
-         (delete-directory directory t))))))
+      (let ((directory (make-temp-file "shell-stale-" t))
+            (agent (generate-new-buffer "*claude-code[shell-stale]*"))
+            (ghostel-mode-hook nil)
+            (invalidate t)
+            created)
+        (unwind-protect
+            (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                      ((symbol-function 'ghostel-create)
+                       (lambda (&rest arguments)
+                         (let ((buffer (apply #'claude-code-ide-tests--create-companion-pipe
+                                              arguments)))
+                           (push buffer created)
+                           (when invalidate
+                             (setq invalidate nil)
+                             (claude-code-ide-manager--advance-layout-epoch))
+                           buffer))))
+              (claude-code-ide--put-session
+               (claude-code-ide-session-create
+                :id "stale" :directory directory :buffer agent
+                :process agent :cli-type 'omp))
+              (should-error
+               (claude-code-ide-manager--companion-shell
+                "stale" (claude-code-ide-manager--make-layout-request "stale" 'shell-left t))
+               :type 'user-error)
+              (let ((ordinary (car created))
+                    (replacement
+                     (claude-code-ide-manager--companion-shell
+                      "stale" (claude-code-ide-manager--make-layout-request "stale" 'shell-left t))))
+                (should-not (eq ordinary replacement))
+                (should (claude-code-ide-session--companion-shell-live-p ordinary))
+                (should (claude-code-ide-session--companion-shell-live-p replacement))))
+          (dolist (buffer (cons agent created))
+            (when (buffer-live-p buffer) (kill-buffer buffer)))
+          (delete-directory directory t))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-restores-renamed-shell ()
   "Saved layout selection and size follow shell identity, not reused names."
   (cl-progv '(features) (list (cons 'ghostel features))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (let* ((directory (make-temp-file "shell-restore-" t))
-              (agent-a (generate-new-buffer "*claude-code[restore-a]*"))
-              (agent-b (generate-new-buffer "*claude-code[restore-b]*"))
-              (custom (generate-new-buffer "*restore-custom*"))
-              (ghostel-mode-hook nil)
-              (claude-code-ide-manager-layout-preset 'shell-left)
-              (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
-              shell reused-name width)
-         (unwind-protect
-             (cl-letf (((symbol-function 'ghostel--new) #'ignore)
-                       ((symbol-function 'ghostel-create)
-                        #'claude-code-ide-tests--create-companion-pipe))
-               (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
-                 (claude-code-ide--put-session
-                  (claude-code-ide-session-create
-                   :id (car entry) :directory directory :buffer (cdr entry)
-                   :process (cdr entry) :cli-type 'omp)))
-               (claude-code-ide-manager-reset-layout "a")
-               (setq shell (gethash "a" claude-code-ide-manager--companion-shells))
-               (select-window (get-buffer-window shell))
-               (window-resize (selected-window) 2 t)
-               (setq width (window-total-width (selected-window))
-                     claude-code-ide-manager-layout-preset 'magit-right)
-               (claude-code-ide-manager-switch-to-session "b")
-               (let ((old-name (buffer-name shell)))
-                 (with-current-buffer shell (rename-buffer "*renamed-owned-shell*" t))
-                 (setq reused-name (generate-new-buffer old-name)))
-               (claude-code-ide-manager-switch-to-session "a")
-               (should (eq shell (window-buffer (selected-window))))
-               (should (= width (window-total-width (selected-window))))
-               (should-not (get-buffer-window reused-name))
-               (delete-window (get-buffer-window shell))
-               (claude-code-ide-manager-switch-to-session "b")
-               (claude-code-ide-manager-switch-to-session "a")
-               (should-not (get-buffer-window shell))
-               (should (claude-code-ide-session--companion-shell-live-p shell)))
-           (dolist (buffer (list agent-a agent-b custom shell reused-name))
-             (when (buffer-live-p buffer) (kill-buffer buffer)))
-           (delete-directory directory t)))))))
+      (save-window-excursion
+        (let* ((directory (make-temp-file "shell-restore-" t))
+               (agent-a (generate-new-buffer "*claude-code[restore-a]*"))
+               (agent-b (generate-new-buffer "*claude-code[restore-b]*"))
+               (custom (generate-new-buffer "*restore-custom*"))
+               (ghostel-mode-hook nil)
+               (claude-code-ide-manager-layout-preset 'shell-left)
+               (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+               shell reused-name width)
+          (unwind-protect
+              (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                        ((symbol-function 'ghostel-create)
+                         #'claude-code-ide-tests--create-companion-pipe))
+                (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+                  (claude-code-ide--put-session
+                   (claude-code-ide-session-create
+                    :id (car entry) :directory directory :buffer (cdr entry)
+                    :process (cdr entry) :cli-type 'omp)))
+                (claude-code-ide-manager-reset-layout "a")
+                (setq shell (gethash "a" claude-code-ide-manager--companion-shells))
+                (select-window (get-buffer-window shell))
+                (window-resize (selected-window) 2 t)
+                (setq width (window-total-width (selected-window))
+                      claude-code-ide-manager-layout-preset 'magit-right)
+                (claude-code-ide-manager-switch-to-session "b")
+                (let ((old-name (buffer-name shell)))
+                  (with-current-buffer shell (rename-buffer "*renamed-owned-shell*" t))
+                  (setq reused-name (generate-new-buffer old-name)))
+                (claude-code-ide-manager-switch-to-session "a")
+                (should (eq shell (window-buffer (selected-window))))
+                (should (= width (window-total-width (selected-window))))
+                (should-not (get-buffer-window reused-name))
+                (delete-window (get-buffer-window shell))
+                (claude-code-ide-manager-switch-to-session "b")
+                (claude-code-ide-manager-switch-to-session "a")
+                (should-not (get-buffer-window shell))
+                (should (claude-code-ide-session--companion-shell-live-p shell)))
+            (dolist (buffer (list agent-a agent-b custom shell reused-name))
+              (when (buffer-live-p buffer) (kill-buffer buffer)))
+            (delete-directory directory t)))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-missing-shell-never-restarts ()
   "Exit, deletion, persisted names, and restore errors never grant creation."
   (cl-progv '(features) (list (cons 'ghostel features))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (let* ((directory (make-temp-file "shell-missing-" t))
-              (agent-a (generate-new-buffer "*claude-code[missing-a]*"))
-              (agent-b (generate-new-buffer "*claude-code[missing-b]*"))
-              (custom (generate-new-buffer "*missing-custom*"))
-              (ghostel-mode-hook nil)
-              (claude-code-ide-manager-layout-preset 'shell-left)
-              (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
-              shell replacement reused-name)
-         (unwind-protect
-             (cl-letf (((symbol-function 'ghostel--new) #'ignore)
-                       ((symbol-function 'ghostel-create)
-                        #'claude-code-ide-tests--create-companion-pipe))
-               (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
-                 (claude-code-ide--put-session
-                  (claude-code-ide-session-create
-                   :id (car entry) :directory directory :buffer (cdr entry)
-                   :process (cdr entry) :cli-type 'omp)))
-               (claude-code-ide-manager-reset-layout "a")
-               (setq shell (gethash "a" claude-code-ide-manager--companion-shells))
-               (with-current-buffer shell (insert "Retained output"))
-               (select-window (get-buffer-window shell))
-               (setq claude-code-ide-manager-layout-preset 'magit-right)
-               (claude-code-ide-manager-switch-to-session "b")
-               (delete-process (buffer-local-value 'ghostel--process shell))
-               (cl-letf (((symbol-function 'ghostel-create)
-                          (lambda (&rest _) (ert-fail "Normal return created a shell"))))
-                 (claude-code-ide-manager-switch-to-session "a")
-                 (should (eq shell (window-buffer (selected-window))))
-                 (with-current-buffer shell
-                   (should (string-match-p "Retained output" (buffer-string))))
-                 (claude-code-ide-manager-switch-to-session "b")
-                 (let ((old-name (buffer-name shell)))
-                   (kill-buffer shell)
-                   (setq reused-name (generate-new-buffer old-name)))
-                 (claude-code-ide-manager-switch-to-session "a")
-                 (should-not (get-buffer-window reused-name))
-                 (should (get-buffer-window agent-a))
-                 (claude-code-ide-manager-switch-to-session "b")
-                 (cl-letf (((symbol-function 'window-state-put)
-                            (lambda (&rest _) (error "Unrelated restoration failure"))))
-                   (claude-code-ide-manager-switch-to-session "a"))
-                 (should (eq agent-a (window-buffer (selected-window)))))
-               (setq claude-code-ide-manager-layout-preset 'shell-right)
-               (claude-code-ide-manager-reset-layout "a")
-               (setq replacement (gethash "a" claude-code-ide-manager--companion-shells))
-               (should-not (eq replacement reused-name))
-               (should (claude-code-ide-session--companion-shell-live-p replacement))
-               (puthash "a"
-                        (read (prin1-to-string
-                               (claude-code-ide-manager--persistable-layout
-                                (claude-code-ide-manager--capture-layout "a"))))
-                        claude-code-ide-manager--layouts)
-               (clrhash claude-code-ide-manager--companion-shells)
-               (cl-letf (((symbol-function 'ghostel-create)
-                          (lambda (&rest _) (ert-fail "Persisted state created a shell"))))
-                 (claude-code-ide-manager-switch-to-session "b")
-                 (claude-code-ide-manager-switch-to-session "a")
-                 (should-not (get-buffer-window replacement))
-                 (should (claude-code-ide-session--companion-shell-live-p replacement))))
-           (dolist (buffer (list agent-a agent-b custom shell replacement reused-name))
-             (when (buffer-live-p buffer) (kill-buffer buffer)))
-           (delete-directory directory t)))))))
+      (save-window-excursion
+        (let* ((directory (make-temp-file "shell-missing-" t))
+               (agent-a (generate-new-buffer "*claude-code[missing-a]*"))
+               (agent-b (generate-new-buffer "*claude-code[missing-b]*"))
+               (custom (generate-new-buffer "*missing-custom*"))
+               (ghostel-mode-hook nil)
+               (claude-code-ide-manager-layout-preset 'shell-left)
+               (claude-code-ide-manager-status-buffer-function (lambda (_) custom))
+               shell replacement reused-name)
+          (unwind-protect
+              (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                        ((symbol-function 'ghostel-create)
+                         #'claude-code-ide-tests--create-companion-pipe))
+                (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+                  (claude-code-ide--put-session
+                   (claude-code-ide-session-create
+                    :id (car entry) :directory directory :buffer (cdr entry)
+                    :process (cdr entry) :cli-type 'omp)))
+                (claude-code-ide-manager-reset-layout "a")
+                (setq shell (gethash "a" claude-code-ide-manager--companion-shells))
+                (with-current-buffer shell (insert "Retained output"))
+                (select-window (get-buffer-window shell))
+                (setq claude-code-ide-manager-layout-preset 'magit-right)
+                (claude-code-ide-manager-switch-to-session "b")
+                (delete-process (buffer-local-value 'ghostel--process shell))
+                (cl-letf (((symbol-function 'ghostel-create)
+                           (lambda (&rest _) (ert-fail "Normal return created a shell"))))
+                  (claude-code-ide-manager-switch-to-session "a")
+                  (should (eq shell (window-buffer (selected-window))))
+                  (with-current-buffer shell
+                    (should (string-match-p "Retained output" (buffer-string))))
+                  (claude-code-ide-manager-switch-to-session "b")
+                  (let ((old-name (buffer-name shell)))
+                    (kill-buffer shell)
+                    (setq reused-name (generate-new-buffer old-name)))
+                  (claude-code-ide-manager-switch-to-session "a")
+                  (should-not (get-buffer-window reused-name))
+                  (should (get-buffer-window agent-a))
+                  (claude-code-ide-manager-switch-to-session "b")
+                  (cl-letf (((symbol-function 'window-state-put)
+                             (lambda (&rest _) (error "Unrelated restoration failure"))))
+                    (claude-code-ide-manager-switch-to-session "a"))
+                  (should (eq agent-a (window-buffer (selected-window)))))
+                (setq claude-code-ide-manager-layout-preset 'shell-right)
+                (claude-code-ide-manager-reset-layout "a")
+                (setq replacement (gethash "a" claude-code-ide-manager--companion-shells))
+                (should-not (eq replacement reused-name))
+                (should (claude-code-ide-session--companion-shell-live-p replacement))
+                (puthash "a"
+                         (read (prin1-to-string
+                                (claude-code-ide-manager--persistable-layout
+                                 (claude-code-ide-manager--capture-layout "a"))))
+                         claude-code-ide-manager--layouts)
+                (clrhash claude-code-ide-manager--companion-shells)
+                (cl-letf (((symbol-function 'ghostel-create)
+                           (lambda (&rest _) (ert-fail "Persisted state created a shell"))))
+                  (claude-code-ide-manager-switch-to-session "b")
+                  (claude-code-ide-manager-switch-to-session "a")
+                  (should-not (get-buffer-window replacement))
+                  (should (claude-code-ide-session--companion-shell-live-p replacement))))
+            (dolist (buffer (list agent-a agent-b custom shell replacement reused-name))
+              (when (buffer-live-p buffer) (kill-buffer buffer)))
+            (delete-directory directory t)))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-provider-window-isolation ()
   "Provider window changes cannot replace the Agent or the requested layout."
   (dolist (case '((magit-left replace nil)
                   (magit-right delete t)))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (let* ((agent (generate-new-buffer "*claude-code[provider-windows]*"))
-              (process (make-pipe-process :name "provider-windows" :buffer agent :noquery t))
-              (view (generate-new-buffer "*provider-window-view*"))
-              (claude-code-ide-manager-layout-preset (nth 0 case))
-              (claude-code-ide-manager-status-buffer-function
-               (lambda (_)
-                 (set-window-buffer (selected-window) view)
-                 (when (eq (nth 1 case) 'delete)
-                   (delete-other-windows))
-                 view)))
-         (unwind-protect
-             (progn
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id "provider" :directory temporary-file-directory
-                 :buffer agent :process process :order 1 :cli-type 'omp))
-               (claude-code-ide-manager-reset-layout "provider" (nth 2 case))
-               (let ((agent-window (get-buffer-window agent))
-                     (view-window (get-buffer-window view))
-                     (sidebar (claude-code-ide-manager--sidebar-window '(:type global))))
-                 (should (window-live-p agent-window))
-                 (should (process-live-p process))
-                 (should (window-live-p sidebar))
-                 (should (= (length (get-buffer-window-list view nil nil)) 1))
-                 (should (eq (selected-window)
-                             (if (nth 2 case) sidebar agent-window)))
-                 (should (eq (eq (nth 0 case) 'magit-left)
-                             (< (car (window-edges view-window))
-                                (car (window-edges agent-window)))))))
-           (when (process-live-p process) (delete-process process))
-           (kill-buffer agent)
-           (kill-buffer view)))))))
+      (save-window-excursion
+        (let* ((agent (generate-new-buffer "*claude-code[provider-windows]*"))
+               (process (make-pipe-process :name "provider-windows" :buffer agent :noquery t))
+               (view (generate-new-buffer "*provider-window-view*"))
+               (claude-code-ide-manager-layout-preset (nth 0 case))
+               (claude-code-ide-manager-status-buffer-function
+                (lambda (_)
+                  (set-window-buffer (selected-window) view)
+                  (when (eq (nth 1 case) 'delete)
+                    (delete-other-windows))
+                  view)))
+          (unwind-protect
+              (progn
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id "provider" :directory temporary-file-directory
+                  :buffer agent :process process :order 1 :cli-type 'omp))
+                (claude-code-ide-manager-reset-layout "provider" (nth 2 case))
+                (let ((agent-window (get-buffer-window agent))
+                      (view-window (get-buffer-window view))
+                      (sidebar (claude-code-ide-manager--sidebar-window '(:type global))))
+                  (should (window-live-p agent-window))
+                  (should (process-live-p process))
+                  (should (window-live-p sidebar))
+                  (should (= (length (get-buffer-window-list view nil nil)) 1))
+                  (should (eq (selected-window)
+                              (if (nth 2 case) sidebar agent-window)))
+                  (should (eq (eq (nth 0 case) 'magit-left)
+                              (< (car (window-edges view-window))
+                                 (car (window-edges agent-window)))))))
+            (when (process-live-p process) (delete-process process))
+            (kill-buffer agent)
+            (kill-buffer view)))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-non-shell-restore-fallback ()
   "A non-shell restoration error replaces the previous Session's companion."
   (claude-code-ide-tests--with-grouped-state
-   (save-window-excursion
-     (let* ((agent-a (generate-new-buffer "*claude-code[fallback-a]*"))
-            (agent-b (generate-new-buffer "*claude-code[fallback-b]*"))
-            (view-a (generate-new-buffer "*fallback-view-a*"))
-            (view-b (generate-new-buffer "*fallback-view-b*"))
-            (claude-code-ide-manager-layout-preset 'magit-left)
-            (claude-code-ide-manager-status-buffer-function (lambda (_) view-a)))
-       (unwind-protect
-           (progn
-             (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id (car entry) :directory temporary-file-directory
-                 :buffer (cdr entry) :process (cdr entry) :cli-type 'omp)))
-             (claude-code-ide-manager-reset-layout "a")
-             (let ((claude-code-ide-manager-status-buffer-function (lambda (_) view-b)))
-               (claude-code-ide-manager-reset-layout "b"))
-             (cl-letf (((symbol-function 'window-state-put)
-                        (lambda (&rest _) (error "Native restoration failure"))))
-               (claude-code-ide-manager-switch-to-session "a"))
-             (should (get-buffer-window view-a))
-             (should-not (get-buffer-window view-b))
-             (should (eq agent-a (window-buffer (selected-window)))))
-         (dolist (buffer (list agent-a agent-b view-a view-b))
-           (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+    (save-window-excursion
+      (let* ((agent-a (generate-new-buffer "*claude-code[fallback-a]*"))
+             (agent-b (generate-new-buffer "*claude-code[fallback-b]*"))
+             (view-a (generate-new-buffer "*fallback-view-a*"))
+             (view-b (generate-new-buffer "*fallback-view-b*"))
+             (claude-code-ide-manager-layout-preset 'magit-left)
+             (claude-code-ide-manager-status-buffer-function (lambda (_) view-a)))
+        (unwind-protect
+            (progn
+              (dolist (entry `(("a" . ,agent-a) ("b" . ,agent-b)))
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id (car entry) :directory temporary-file-directory
+                  :buffer (cdr entry) :process (cdr entry) :cli-type 'omp)))
+              (claude-code-ide-manager-reset-layout "a")
+              (let ((claude-code-ide-manager-status-buffer-function (lambda (_) view-b)))
+                (claude-code-ide-manager-reset-layout "b"))
+              (cl-letf (((symbol-function 'window-state-put)
+                         (lambda (&rest _) (error "Native restoration failure"))))
+                (claude-code-ide-manager-switch-to-session "a"))
+              (should (get-buffer-window view-a))
+              (should-not (get-buffer-window view-b))
+              (should (eq agent-a (window-buffer (selected-window)))))
+          (dolist (buffer (list agent-a agent-b view-a view-b))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-old-layout-precedes-shell-default ()
   "An old native layout does not gain a shell from the new default."
   (claude-code-ide-tests--with-grouped-state
-   (save-window-excursion
-     (let ((agent (generate-new-buffer "*claude-code[old-layout]*"))
-           (editor (generate-new-buffer "*old-layout-editor*"))
-           (claude-code-ide-manager-layout-preset 'shell-left))
-       (unwind-protect
-           (progn
-             (claude-code-ide--put-session
-              (claude-code-ide-session-create
-               :id "old" :directory temporary-file-directory :buffer agent
-               :process agent :cli-type 'omp))
-             (delete-other-windows)
-             (set-window-buffer (selected-window) agent)
-             (select-window (split-window-right))
-             (set-window-buffer (selected-window) editor)
-             (puthash "old"
-                      (list :window-state (window-state-get (frame-root-window) t)
-                            :selected-buffer-name (buffer-name editor))
-                      claude-code-ide-manager--layouts)
-             (delete-other-windows)
-             (set-window-buffer (selected-window) agent)
-             (cl-letf (((symbol-function 'ghostel-create)
-                        (lambda (&rest _) (ert-fail "An old layout started a shell"))))
-               (claude-code-ide-manager-switch-to-session "old"))
-             (should (eq editor (window-buffer (selected-window))))
-             (should (get-buffer-window agent)))
-         (dolist (buffer (list agent editor))
-           (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+    (save-window-excursion
+      (let ((agent (generate-new-buffer "*claude-code[old-layout]*"))
+            (editor (generate-new-buffer "*old-layout-editor*"))
+            (claude-code-ide-manager-layout-preset 'shell-left))
+        (unwind-protect
+            (progn
+              (claude-code-ide--put-session
+               (claude-code-ide-session-create
+                :id "old" :directory temporary-file-directory :buffer agent
+                :process agent :cli-type 'omp))
+              (delete-other-windows)
+              (set-window-buffer (selected-window) agent)
+              (select-window (split-window-right))
+              (set-window-buffer (selected-window) editor)
+              (puthash "old"
+                       (list :window-state (window-state-get (frame-root-window) t)
+                             :selected-buffer-name (buffer-name editor))
+                       claude-code-ide-manager--layouts)
+              (delete-other-windows)
+              (set-window-buffer (selected-window) agent)
+              (cl-letf (((symbol-function 'ghostel-create)
+                         (lambda (&rest _) (ert-fail "An old layout started a shell"))))
+                (claude-code-ide-manager-switch-to-session "old"))
+              (should (eq editor (window-buffer (selected-window))))
+              (should (get-buffer-window agent)))
+          (dolist (buffer (list agent editor))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-session-end-releases-shell ()
   "Core Session cleanup releases ownership but leaves the shell alive."
   (cl-progv '(features) (list (cons 'ghostel features))
     (claude-code-ide-tests--with-grouped-state
-     (let* ((directory (make-temp-file "shell-release-" t))
-            (ghostel-mode-hook nil)
-            (agent (claude-code-ide-tests--create-companion-pipe "*claude-code[ending]*"))
-            (next-agent (claude-code-ide-tests--create-companion-pipe "*claude-code[next]*"))
-            (session (claude-code-ide-session-create
-                      :id "ending" :directory directory :buffer agent
-                      :process (buffer-local-value 'ghostel--process agent) :cli-type 'omp))
-            shell replacement)
-       (unwind-protect
-           (cl-letf (((symbol-function 'ghostel--new) #'ignore)
-                     ((symbol-function 'ghostel-create)
-                      #'claude-code-ide-tests--create-companion-pipe))
-             (claude-code-ide--put-session session)
-             (setq shell (claude-code-ide-manager--companion-shell
-                          "ending" (claude-code-ide-manager--make-layout-request
-                                    "ending" 'shell-left t)))
-             (remhash "ending" claude-code-ide--sessions)
-             (claude-code-ide--cleanup-session-resources session)
-             (should (claude-code-ide-session--companion-shell-live-p shell))
-             (setf (claude-code-ide-session-buffer session) next-agent
-                   (claude-code-ide-session-process session)
-                   (buffer-local-value 'ghostel--process next-agent))
-             (claude-code-ide--put-session session)
-             (setq replacement
-                   (claude-code-ide-manager--companion-shell
-                    "ending" (claude-code-ide-manager--make-layout-request
-                              "ending" 'shell-left t)))
-             (should-not (eq shell replacement))
-             (should (claude-code-ide-session--companion-shell-live-p shell)))
-         (dolist (buffer (list agent next-agent shell replacement))
-           (when (buffer-live-p buffer) (kill-buffer buffer)))
-         (delete-directory directory t))))))
+      (let* ((directory (make-temp-file "shell-release-" t))
+             (ghostel-mode-hook nil)
+             (agent (claude-code-ide-tests--create-companion-pipe "*claude-code[ending]*"))
+             (next-agent (claude-code-ide-tests--create-companion-pipe "*claude-code[next]*"))
+             (session (claude-code-ide-session-create
+                       :id "ending" :directory directory :buffer agent
+                       :process (buffer-local-value 'ghostel--process agent) :cli-type 'omp))
+             shell replacement)
+        (unwind-protect
+            (cl-letf (((symbol-function 'ghostel--new) #'ignore)
+                      ((symbol-function 'ghostel-create)
+                       #'claude-code-ide-tests--create-companion-pipe))
+              (claude-code-ide--put-session session)
+              (setq shell (claude-code-ide-manager--companion-shell
+                           "ending" (claude-code-ide-manager--make-layout-request
+                                     "ending" 'shell-left t)))
+              (remhash "ending" claude-code-ide--sessions)
+              (claude-code-ide--cleanup-session-resources session)
+              (should (claude-code-ide-session--companion-shell-live-p shell))
+              (setf (claude-code-ide-session-buffer session) next-agent
+                    (claude-code-ide-session-process session)
+                    (buffer-local-value 'ghostel--process next-agent))
+              (claude-code-ide--put-session session)
+              (setq replacement
+                    (claude-code-ide-manager--companion-shell
+                     "ending" (claude-code-ide-manager--make-layout-request
+                               "ending" 'shell-left t)))
+              (should-not (eq shell replacement))
+              (should (claude-code-ide-session--companion-shell-live-p shell)))
+          (dolist (buffer (list agent next-agent shell replacement))
+            (when (buffer-live-p buffer) (kill-buffer buffer)))
+          (delete-directory directory t))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-disconnect-keeps-shell ()
   "Temporary disconnect retains a shell, while explicit removal releases it."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((ghostel-mode-hook nil)
-          (agent (claude-code-ide-tests--create-companion-pipe "*claude-code[remote-shell]*"))
-          (shell (claude-code-ide-tests--create-companion-pipe "*remote-owned-shell*"))
-          (session (claude-code-ide-session-create
-                    :id "stable" :host "removed-host" :directory "/remote/project"
-                    :zmx-name "agent" :buffer agent :cli-type 'omp
-                    :process (buffer-local-value 'ghostel--process agent))))
-     (unwind-protect
-         (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
-                    (lambda (&rest _) (ert-fail "Disconnection contacted a host"))))
-           (puthash "stable" shell claude-code-ide-manager--companion-shells)
-           (claude-code-ide-manager--remember-session session)
-           (claude-code-ide-manager-session-ended "stable")
-           (claude-code-ide--put-session session)
-           (should (eq shell
-                       (claude-code-ide-manager--companion-shell
-                        "stable" (claude-code-ide-manager--make-layout-request
-                                  "stable" 'shell-left nil))))
-           (remhash "stable" claude-code-ide--sessions)
-           (claude-code-ide-manager-session-ended "stable" t)
-           (claude-code-ide--put-session session)
-           (should-error
-            (claude-code-ide-manager--companion-shell
-             "stable" (claude-code-ide-manager--make-layout-request "stable" 'shell-left nil))
-            :type 'user-error)
-           (should (claude-code-ide-session--companion-shell-live-p shell)))
-       (dolist (buffer (list agent shell))
-         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+    (let* ((ghostel-mode-hook nil)
+           (agent (claude-code-ide-tests--create-companion-pipe "*claude-code[remote-shell]*"))
+           (shell (claude-code-ide-tests--create-companion-pipe "*remote-owned-shell*"))
+           (session (claude-code-ide-session-create
+                     :id "stable" :host "removed-host" :directory "/remote/project"
+                     :zmx-name "agent" :buffer agent :cli-type 'omp
+                     :process (buffer-local-value 'ghostel--process agent))))
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+                     (lambda (&rest _) (ert-fail "Disconnection contacted a host"))))
+            (puthash "stable" shell claude-code-ide-manager--companion-shells)
+            (claude-code-ide-manager--remember-session session)
+            (claude-code-ide-manager-session-ended "stable")
+            (claude-code-ide--put-session session)
+            (should (eq shell
+                        (claude-code-ide-manager--companion-shell
+                         "stable" (claude-code-ide-manager--make-layout-request
+                                   "stable" 'shell-left nil))))
+            (remhash "stable" claude-code-ide--sessions)
+            (claude-code-ide-manager-session-ended "stable" t)
+            (claude-code-ide--put-session session)
+            (should-error
+             (claude-code-ide-manager--companion-shell
+              "stable" (claude-code-ide-manager--make-layout-request "stable" 'shell-left nil))
+             :type 'user-error)
+            (should (claude-code-ide-session--companion-shell-live-p shell)))
+        (dolist (buffer (list agent shell))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (ert-deftest claude-code-ide-test-manager-builds-default-layout-with-magit ()
   "Test first-open layout uses magit when available."
@@ -12198,29 +12198,29 @@ switch keeps the filter, and no process starts."
   "Test the openFile tool implementation."
   ;; Test successful file open
   (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3\nLine 4"
-                                             (let ((result (claude-code-ide-mcp-handle-open-file `((path . ,test-file)))))
-                                               ;; Handler returns VS Code format
-                                               (should (listp result))
-                                               (let ((first-item (car result)))
-                                                 (should (equal (alist-get 'type first-item) "text"))
-                                                 (should (equal (alist-get 'text first-item) "FILE_OPENED")))
-                                               (should (equal (buffer-file-name) test-file))
-                                               (kill-buffer)))
+    (let ((result (claude-code-ide-mcp-handle-open-file `((path . ,test-file)))))
+      ;; Handler returns VS Code format
+      (should (listp result))
+      (let ((first-item (car result)))
+        (should (equal (alist-get 'type first-item) "text"))
+        (should (equal (alist-get 'text first-item) "FILE_OPENED")))
+      (should (equal (buffer-file-name) test-file))
+      (kill-buffer)))
 
   ;; Test with selection
   (claude-code-ide-mcp-tests--with-temp-file test-file "Line 1\nLine 2\nLine 3\nLine 4"
-                                             (let ((result (claude-code-ide-mcp-handle-open-file
-                                                            `((path . ,test-file)
-                                                              (startLine . 2)
-                                                              (endLine . 3)))))
-                                               ;; Handler returns VS Code format
-                                               (should (listp result))
-                                               (let ((first-item (car result)))
-                                                 (should (equal (alist-get 'type first-item) "text"))
-                                                 (should (equal (alist-get 'text first-item) "FILE_OPENED")))
-                                               (should (use-region-p))
-                                               (should (= (line-number-at-pos (region-beginning)) 2))
-                                               (kill-buffer)))
+    (let ((result (claude-code-ide-mcp-handle-open-file
+                   `((path . ,test-file)
+                     (startLine . 2)
+                     (endLine . 3)))))
+      ;; Handler returns VS Code format
+      (should (listp result))
+      (let ((first-item (car result)))
+        (should (equal (alist-get 'type first-item) "text"))
+        (should (equal (alist-get 'text first-item) "FILE_OPENED")))
+      (should (use-region-p))
+      (should (= (line-number-at-pos (region-beginning)) 2))
+      (kill-buffer)))
 
   ;; Test missing path parameter
   (should-error (claude-code-ide-mcp-handle-open-file '())
@@ -12230,30 +12230,30 @@ switch keeps the filter, and no process starts."
   "Test the getCurrentSelection tool implementation."
   ;; Test with active selection
   (claude-code-ide-mcp-tests--with-temp-buffer "Line 1\nLine 2\nLine 3"
-                                               (goto-char (point-min))
-                                               (set-mark (point))
-                                               (forward-line 2)
-                                               ;; Ensure transient-mark-mode is on and region is active
-                                               (let ((transient-mark-mode t))
-                                                 (activate-mark)
-                                                 (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
-                                                   (should (equal (alist-get 'text result) "Line 1\nLine 2\n"))
-                                                   ;; Check the selection structure
-                                                   (let ((selection (alist-get 'selection result)))
-                                                     (should selection)
-                                                     (let ((start (alist-get 'start selection))
-                                                           (end (alist-get 'end selection)))
-                                                       (should (= (alist-get 'line start) 1))  ; 1-based
-                                                       (should (= (alist-get 'line end) 3)))))))  ; 1-based
+    (goto-char (point-min))
+    (set-mark (point))
+    (forward-line 2)
+    ;; Ensure transient-mark-mode is on and region is active
+    (let ((transient-mark-mode t))
+      (activate-mark)
+      (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
+        (should (equal (alist-get 'text result) "Line 1\nLine 2\n"))
+        ;; Check the selection structure
+        (let ((selection (alist-get 'selection result)))
+          (should selection)
+          (let ((start (alist-get 'start selection))
+                (end (alist-get 'end selection)))
+            (should (= (alist-get 'line start) 1))  ; 1-based
+            (should (= (alist-get 'line end) 3)))))))  ; 1-based
 
   ;; Test without selection
   (claude-code-ide-mcp-tests--with-temp-buffer "Test"
-                                               (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
-                                                 (should (equal (alist-get 'text result) ""))
-                                                 ;; When no selection, we should get the selection structure
-                                                 (let ((selection (alist-get 'selection result)))
-                                                   (should selection)
-                                                   (should (alist-get 'isEmpty selection))))))
+    (let ((result (claude-code-ide-mcp-handle-get-current-selection nil)))
+      (should (equal (alist-get 'text result) ""))
+      ;; When no selection, we should get the selection structure
+      (let ((selection (alist-get 'selection result)))
+        (should selection)
+        (should (alist-get 'isEmpty selection))))))
 
 (ert-deftest claude-code-ide-test-mcp-get-open-editors ()
   "Test the getOpenEditors tool implementation."
@@ -12340,19 +12340,19 @@ switch keeps the filter, and no process starts."
 (ert-deftest claude-code-ide-test-mcp-save-document ()
   "Test the saveDocument tool implementation."
   (claude-code-ide-mcp-tests--with-temp-file test-file "Initial content"
-                                             (with-current-buffer (find-file-noselect test-file)
-                                               ;; Modify buffer
-                                               (goto-char (point-max))
-                                               (insert "\nNew line")
-                                               ;; Save using tool
-                                               (let ((result (claude-code-ide-mcp-handle-save-document `((path . ,test-file)))))
-                                                 ;; Handler returns VS Code format
-                                                 (should (listp result))
-                                                 (let ((first-item (car result)))
-                                                   (should (equal (alist-get 'type first-item) "text"))
-                                                   (should (equal (alist-get 'text first-item) "DOCUMENT_SAVED")))
-                                                 (should-not (buffer-modified-p)))
-                                               (kill-buffer)))
+    (with-current-buffer (find-file-noselect test-file)
+      ;; Modify buffer
+      (goto-char (point-max))
+      (insert "\nNew line")
+      ;; Save using tool
+      (let ((result (claude-code-ide-mcp-handle-save-document `((path . ,test-file)))))
+        ;; Handler returns VS Code format
+        (should (listp result))
+        (let ((first-item (car result)))
+          (should (equal (alist-get 'type first-item) "text"))
+          (should (equal (alist-get 'text first-item) "DOCUMENT_SAVED")))
+        (should-not (buffer-modified-p)))
+      (kill-buffer)))
 
   ;; Test missing path
   (should-error (claude-code-ide-mcp-handle-save-document '())
@@ -12361,15 +12361,15 @@ switch keeps the filter, and no process starts."
 (ert-deftest claude-code-ide-test-mcp-close-tab ()
   "Test the close_tab tool implementation."
   (claude-code-ide-mcp-tests--with-temp-file test-file "Content"
-                                             (find-file-noselect test-file)
-                                             ;; Close using tool
-                                             (let ((result (claude-code-ide-mcp-handle-close-tab `((path . ,test-file)))))
-                                               ;; Handler returns VS Code format
-                                               (should (listp result))
-                                               (let ((first-item (car result)))
-                                                 (should (equal (alist-get 'type first-item) "text"))
-                                                 (should (equal (alist-get 'text first-item) "TAB_CLOSED")))
-                                               (should-not (find-buffer-visiting test-file))))
+    (find-file-noselect test-file)
+    ;; Close using tool
+    (let ((result (claude-code-ide-mcp-handle-close-tab `((path . ,test-file)))))
+      ;; Handler returns VS Code format
+      (should (listp result))
+      (let ((first-item (car result)))
+        (should (equal (alist-get 'type first-item) "text"))
+        (should (equal (alist-get 'text first-item) "TAB_CLOSED")))
+      (should-not (find-buffer-visiting test-file))))
 
   ;; Test non-existent buffer - should throw an error
   (should-error (claude-code-ide-mcp-handle-close-tab '((path . "/nonexistent/file")))
@@ -17326,12 +17326,12 @@ are stubbed."
   "Test that C-g and RET resolve to the marked senders in a Session."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (should (eq (key-binding (kbd "C-g"))
-                                                                  #'claude-code-ide-session-send-control-g-marked))
-                                                      (should (eq (key-binding (kbd "RET"))
-                                                                  #'claude-code-ide-session-send-return-marked))
-                                                      (should (eq (claude-code-ide-session--shadowed-binding (kbd "C-g"))
-                                                                  #'ghostel-send-C-g))))
+    (should (eq (key-binding (kbd "C-g"))
+                #'claude-code-ide-session-send-control-g-marked))
+    (should (eq (key-binding (kbd "RET"))
+                #'claude-code-ide-session-send-return-marked))
+    (should (eq (claude-code-ide-session--shadowed-binding (kbd "C-g"))
+                #'ghostel-send-C-g))))
 
 (ert-deftest claude-code-ide-test-session-editor-c-g-sends-marker-then-key ()
   "Test that C-g in an Oh My Pi Session sends the open marker and CSI-u ctrl+g as one write.
@@ -17340,9 +17340,9 @@ Like `ghostel-send-C-g', it does not run `ghostel--on-user-input', so a
 scrolled-back window keeps its position."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (claude-code-ide-session-send-control-g-marked)
-                                                      (should (equal sent '("\e_pi:editor-open;n0nce\e\\\e[103;5u")))
-                                                      (should-not (memq 'on-user-input sent))))
+    (claude-code-ide-session-send-control-g-marked)
+    (should (equal sent '("\e_pi:editor-open;n0nce\e\\\e[103;5u")))
+    (should-not (memq 'on-user-input sent))))
 
 (ert-deftest claude-code-ide-test-session-editor-c-g-records-pressed-window ()
   "Test that C-g records the window it was pressed in for the prompt.
@@ -17350,30 +17350,30 @@ A binding that moves to another window first therefore opens the prompt
 there; a plain C-g records the Session's own window."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (save-window-excursion
-                                                        (delete-other-windows)
-                                                        (let ((session-buffer (current-buffer))
-                                                              (session-window (selected-window))
-                                                              (other-window (split-window-right)))
-                                                          (with-current-buffer session-buffer
-                                                            (claude-code-ide-session-send-control-g))
-                                                          (should (equal claude-code-ide-session--editor-window
-                                                                         (cons session-buffer session-window)))
-                                                          (select-window other-window)
-                                                          (with-current-buffer session-buffer
-                                                            (claude-code-ide-session-send-control-g))
-                                                          (should (eq (cdr claude-code-ide-session--editor-window) other-window))
-                                                          (should (eq (car claude-code-ide-session--editor-window) session-buffer))
-                                                          (select-window session-window)
-                                                          (with-current-buffer session-buffer
-                                                            (claude-code-ide-session-send-return-marked))
-                                                          (should (eq (cdr claude-code-ide-session--editor-window) session-window))
-                                                          (should (equal (seq-filter
-                                                                          (lambda (item)
-                                                                            (and (stringp item)
-                                                                                 (string-prefix-p "\e_pi:editor-open" item)))
-                                                                          sent)
-                                                                         (make-list 2 "\e_pi:editor-open;n0nce\e\\\e[103;5u")))))))
+    (save-window-excursion
+      (delete-other-windows)
+      (let ((session-buffer (current-buffer))
+            (session-window (selected-window))
+            (other-window (split-window-right)))
+        (with-current-buffer session-buffer
+          (claude-code-ide-session-send-control-g))
+        (should (equal claude-code-ide-session--editor-window
+                       (cons session-buffer session-window)))
+        (select-window other-window)
+        (with-current-buffer session-buffer
+          (claude-code-ide-session-send-control-g))
+        (should (eq (cdr claude-code-ide-session--editor-window) other-window))
+        (should (eq (car claude-code-ide-session--editor-window) session-buffer))
+        (select-window session-window)
+        (with-current-buffer session-buffer
+          (claude-code-ide-session-send-return-marked))
+        (should (eq (cdr claude-code-ide-session--editor-window) session-window))
+        (should (equal (seq-filter
+                        (lambda (item)
+                          (and (stringp item)
+                               (string-prefix-p "\e_pi:editor-open" item)))
+                        sent)
+                       (make-list 2 "\e_pi:editor-open;n0nce\e\\\e[103;5u")))))))
 
 (ert-deftest claude-code-ide-test-session-editor-return-sends-marker-then-cr ()
   "Test that RET in an Oh My Pi Session runs user-input handling, then the marked CR.
@@ -17381,42 +17381,42 @@ there; a plain C-g records the Session's own window."
 before the raw CR, so a scrolled-back window follows the input the same way."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (claude-code-ide-session-send-return-marked)
-                                                      (should (equal (reverse sent)
-                                                                     '(on-user-input "\e_pi:editor-submit;n0nce\e\\\r")))))
+    (claude-code-ide-session-send-return-marked)
+    (should (equal (reverse sent)
+                   '(on-user-input "\e_pi:editor-submit;n0nce\e\\\r")))))
 
 (ert-deftest claude-code-ide-test-session-editor-keys-fall-through-for-other-cli ()
   "Test that a non-omp Session keeps the shadowed Ghostel bindings."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "claude" sent
-                                                      (claude-code-ide-session-send-control-g-marked)
-                                                      (claude-code-ide-session-send-return-marked)
-                                                      (should (equal (reverse sent) '(ghostel-send-C-g ghostel--send-event)))))
+    (claude-code-ide-session-send-control-g-marked)
+    (claude-code-ide-session-send-return-marked)
+    (should (equal (reverse sent) '(ghostel-send-C-g ghostel--send-event)))))
 
 (ert-deftest claude-code-ide-test-session-send-control-g-marks-only-omp ()
   "Test that the public C-g command marks in omp and stays raw elsewhere."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (claude-code-ide-session-send-control-g)
-                                                      (should (equal sent '("\e_pi:editor-open;n0nce\e\\\e[103;5u"))))
+    (claude-code-ide-session-send-control-g)
+    (should (equal sent '("\e_pi:editor-open;n0nce\e\\\e[103;5u"))))
   (claude-code-ide-tests--with-editor-handoff-session "claude" sent
-                                                      (claude-code-ide-session-send-control-g)
-                                                      (should (equal sent '(ghostel-send-C-g)))))
+    (claude-code-ide-session-send-control-g)
+    (should (equal sent '(ghostel-send-C-g)))))
 
 (ert-deftest claude-code-ide-test-session-editor-keys-fall-through-in-copy-mode ()
   "Test that a non-terminal binding (copy mode) runs unchanged."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (let ((copy-map (make-sparse-keymap))
-                                                            (ran nil))
-                                                        (define-key copy-map (kbd "C-g") (lambda () (interactive) (setq ran 'c-g)))
-                                                        (define-key copy-map (kbd "RET") (lambda () (interactive) (setq ran 'ret)))
-                                                        (use-local-map copy-map)
-                                                        (claude-code-ide-session-send-control-g-marked)
-                                                        (should (eq ran 'c-g))
-                                                        (claude-code-ide-session-send-return-marked)
-                                                        (should (eq ran 'ret))
-                                                        (should-not sent))))
+    (let ((copy-map (make-sparse-keymap))
+          (ran nil))
+      (define-key copy-map (kbd "C-g") (lambda () (interactive) (setq ran 'c-g)))
+      (define-key copy-map (kbd "RET") (lambda () (interactive) (setq ran 'ret)))
+      (use-local-map copy-map)
+      (claude-code-ide-session-send-control-g-marked)
+      (should (eq ran 'c-g))
+      (claude-code-ide-session-send-return-marked)
+      (should (eq ran 'ret))
+      (should-not sent))))
 
 (ert-deftest claude-code-ide-test-session-editor-keys-fall-through-in-line-mode ()
   "Test that Ghostel line mode keeps its own Return and C-g with no marker.
@@ -17427,38 +17427,38 @@ Ghostel installs `ghostel-line-mode-map' with `use-local-map'
 is rebuilt here with the same bindings."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (let ((line-map (make-sparse-keymap)))
-                                                        (define-key line-map (kbd "RET") #'ghostel-line-mode-send-or-open-link)
-                                                        (define-key line-map (kbd "<return>") #'ghostel-line-mode-send-or-open-link)
-                                                        (cl-letf (((symbol-function 'ghostel-line-mode-send-or-open-link)
-                                                                   (lambda () (interactive) (push 'line-send sent)))
-                                                                  ((symbol-function 'keyboard-quit)
-                                                                   (lambda () (interactive) (push 'keyboard-quit sent))))
-                                                          (use-local-map line-map)
-                                                          (should (eq (claude-code-ide-session--shadowed-binding (kbd "RET"))
-                                                                      #'ghostel-line-mode-send-or-open-link))
-                                                          (should (eq (claude-code-ide-session--shadowed-binding (kbd "C-g"))
-                                                                      #'keyboard-quit))
-                                                          (claude-code-ide-session-send-return-marked)
-                                                          (claude-code-ide-session-send-control-g-marked)
-                                                          (should (equal (reverse sent) '(line-send keyboard-quit)))))))
+    (let ((line-map (make-sparse-keymap)))
+      (define-key line-map (kbd "RET") #'ghostel-line-mode-send-or-open-link)
+      (define-key line-map (kbd "<return>") #'ghostel-line-mode-send-or-open-link)
+      (cl-letf (((symbol-function 'ghostel-line-mode-send-or-open-link)
+                 (lambda () (interactive) (push 'line-send sent)))
+                ((symbol-function 'keyboard-quit)
+                 (lambda () (interactive) (push 'keyboard-quit sent))))
+        (use-local-map line-map)
+        (should (eq (claude-code-ide-session--shadowed-binding (kbd "RET"))
+                    #'ghostel-line-mode-send-or-open-link))
+        (should (eq (claude-code-ide-session--shadowed-binding (kbd "C-g"))
+                    #'keyboard-quit))
+        (claude-code-ide-session-send-return-marked)
+        (claude-code-ide-session-send-control-g-marked)
+        (should (equal (reverse sent) '(line-send keyboard-quit)))))))
 
 (ert-deftest claude-code-ide-test-session-editor-keys-fall-through-in-evil-state ()
   "Test that an Evil emulation map after the package map wins over Ghostel's map."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (let ((evil-map (make-sparse-keymap))
-                                                            (ran nil))
-                                                        (define-key evil-map (kbd "RET") (lambda () (interactive) (setq ran 'evil-ret)))
-                                                        (define-key evil-map (kbd "C-g") (lambda () (interactive) (setq ran 'evil-c-g)))
-                                                        (setq-local emulation-mode-map-alists
-                                                                    (append emulation-mode-map-alists (list (list (cons t evil-map)))))
-                                                        (should (eq (key-binding (kbd "RET")) #'claude-code-ide-session-send-return-marked))
-                                                        (claude-code-ide-session-send-return-marked)
-                                                        (should (eq ran 'evil-ret))
-                                                        (claude-code-ide-session-send-control-g-marked)
-                                                        (should (eq ran 'evil-c-g))
-                                                        (should-not sent))))
+    (let ((evil-map (make-sparse-keymap))
+          (ran nil))
+      (define-key evil-map (kbd "RET") (lambda () (interactive) (setq ran 'evil-ret)))
+      (define-key evil-map (kbd "C-g") (lambda () (interactive) (setq ran 'evil-c-g)))
+      (setq-local emulation-mode-map-alists
+                  (append emulation-mode-map-alists (list (list (cons t evil-map)))))
+      (should (eq (key-binding (kbd "RET")) #'claude-code-ide-session-send-return-marked))
+      (claude-code-ide-session-send-return-marked)
+      (should (eq ran 'evil-ret))
+      (claude-code-ide-session-send-control-g-marked)
+      (should (eq ran 'evil-c-g))
+      (should-not sent))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-one-buffer-for-two-windows ()
   "Test that one request opens exactly one prompt buffer.
@@ -17468,28 +17468,28 @@ repeat of an accepted request id is ignored, and the prompt shows once."
   (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n")))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (let ((session-buffer (current-buffer)))
-                                                              (save-window-excursion
-                                                                (delete-other-windows)
-                                                                (set-window-buffer (selected-window) session-buffer)
-                                                                (set-window-buffer (split-window) session-buffer)
-                                                                (should (= 2 (length (get-buffer-window-list session-buffer))))
-                                                                (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                           (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                          ((symbol-function 'claude-code-ide-session-host)
-                                                                           (lambda (_) nil)))
-                                                                  (claude-code-ide-session-editor-request "r11" "n0nce" file)
-                                                                  (claude-code-ide-session-editor-request "r11" "n0nce" file)
-                                                                  (should (equal sent '("\e_pi:editor-ack;r11\e\\")))
-                                                                  (let ((prompt (find-buffer-visiting file)))
-                                                                    (should prompt)
-                                                                    (should (= 1 (length (get-buffer-window-list prompt))))
-                                                                    (should (= 1 (length (get-buffer-window-list session-buffer))))
-                                                                    (should (eq (window-buffer (selected-window)) prompt))
-                                                                    (should (equal (mapcar #'car claude-code-ide-session--editor-requests)
-                                                                                   '("r11")))
-                                                                    (with-current-buffer prompt
-                                                                      (with-editor-cancel nil)))))))
+          (let ((session-buffer (current-buffer)))
+            (save-window-excursion
+              (delete-other-windows)
+              (set-window-buffer (selected-window) session-buffer)
+              (set-window-buffer (split-window) session-buffer)
+              (should (= 2 (length (get-buffer-window-list session-buffer))))
+              (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                         (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                        ((symbol-function 'claude-code-ide-session-host)
+                         (lambda (_) nil)))
+                (claude-code-ide-session-editor-request "r11" "n0nce" file)
+                (claude-code-ide-session-editor-request "r11" "n0nce" file)
+                (should (equal sent '("\e_pi:editor-ack;r11\e\\")))
+                (let ((prompt (find-buffer-visiting file)))
+                  (should prompt)
+                  (should (= 1 (length (get-buffer-window-list prompt))))
+                  (should (= 1 (length (get-buffer-window-list session-buffer))))
+                  (should (eq (window-buffer (selected-window)) prompt))
+                  (should (equal (mapcar #'car claude-code-ide-session--editor-requests)
+                                 '("r11")))
+                  (with-current-buffer prompt
+                    (with-editor-cancel nil)))))))
       (when (file-exists-p file) (delete-file file)))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-accepts-own-nonce ()
@@ -17499,22 +17499,22 @@ repeat of an accepted request id is ignored, and the prompt shows once."
         (visited nil))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil))
-                                                                      ((symbol-function 'switch-to-buffer)
-                                                                       (lambda (buffer &rest _) (setq visited buffer))))
-                                                              (claude-code-ide-session-editor-request "r1" "n0nce" file)
-                                                              (should (equal sent '("\e_pi:editor-ack;r1\e\\")))
-                                                              (should (equal (buffer-file-name visited) file))
-                                                              (should (buffer-local-value 'with-editor-mode visited))
-                                                              (should (equal claude-code-ide-session--editor-requests
-                                                                             (list (cons "r1" (current-buffer)))))
-                                                              (with-current-buffer visited
-                                                                (with-editor-finish nil))
-                                                              (should (equal (car sent) "\e_pi:editor-done;r1\e\\"))
-                                                              (should-not claude-code-ide-session--editor-requests)))
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (setq visited buffer))))
+            (claude-code-ide-session-editor-request "r1" "n0nce" file)
+            (should (equal sent '("\e_pi:editor-ack;r1\e\\")))
+            (should (equal (buffer-file-name visited) file))
+            (should (buffer-local-value 'with-editor-mode visited))
+            (should (equal claude-code-ide-session--editor-requests
+                           (list (cons "r1" (current-buffer)))))
+            (with-current-buffer visited
+              (with-editor-finish nil))
+            (should (equal (car sent) "\e_pi:editor-done;r1\e\\"))
+            (should-not claude-code-ide-session--editor-requests)))
       (delete-file file))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-cancel-answers-cancel ()
@@ -17524,17 +17524,17 @@ repeat of an accepted request id is ignored, and the prompt shows once."
         (visited nil))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil))
-                                                                      ((symbol-function 'switch-to-buffer)
-                                                                       (lambda (buffer &rest _) (setq visited buffer))))
-                                                              (claude-code-ide-session-editor-request "r2" "n0nce" file)
-                                                              (with-current-buffer visited
-                                                                (with-editor-cancel nil))
-                                                              (should (equal (car sent) "\e_pi:editor-cancel;r2\e\\"))
-                                                              (should-not claude-code-ide-session--editor-requests)))
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (setq visited buffer))))
+            (claude-code-ide-session-editor-request "r2" "n0nce" file)
+            (with-current-buffer visited
+              (with-editor-cancel nil))
+            (should (equal (car sent) "\e_pi:editor-cancel;r2\e\\"))
+            (should-not claude-code-ide-session--editor-requests)))
       (when (file-exists-p file) (delete-file file)))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-survives-find-file-hook-buffer-leak ()
@@ -17548,19 +17548,19 @@ with-editor hooks must still land on the buffer that visits the file."
          (visited nil))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (add-hook 'find-file-hook leak-hook 90)
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil))
-                                                                      ((symbol-function 'switch-to-buffer)
-                                                                       (lambda (buffer &rest _) (setq visited buffer))))
-                                                              (claude-code-ide-session-editor-request "r20" "n0nce" file)
-                                                              (should (equal (buffer-file-name visited) file))
-                                                              (should-not (buffer-local-value 'with-editor-mode leak))
-                                                              (with-current-buffer visited
-                                                                (with-editor-finish nil))
-                                                              (should (equal (car sent) "\e_pi:editor-done;r20\e\\"))))
+          (add-hook 'find-file-hook leak-hook 90)
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (setq visited buffer))))
+            (claude-code-ide-session-editor-request "r20" "n0nce" file)
+            (should (equal (buffer-file-name visited) file))
+            (should-not (buffer-local-value 'with-editor-mode leak))
+            (with-current-buffer visited
+              (with-editor-finish nil))
+            (should (equal (car sent) "\e_pi:editor-done;r20\e\\"))))
       (remove-hook 'find-file-hook leak-hook)
       (kill-buffer leak)
       (when (file-exists-p file) (delete-file file)))))
@@ -17575,24 +17575,24 @@ so a later request opens its own prompt, and each prompt answers its own id."
         (visited nil))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil))
-                                                                      ((symbol-function 'switch-to-buffer)
-                                                                       (lambda (buffer &rest _) (push buffer visited))))
-                                                              (claude-code-ide-session-editor-request "r21" "n0nce" first)
-                                                              (claude-code-ide-session-editor-request "r22" "n0nce" second)
-                                                              (should (equal (reverse sent)
-                                                                             '("\e_pi:editor-ack;r21\e\\" "\e_pi:editor-ack;r22\e\\")))
-                                                              (with-current-buffer (find-buffer-visiting first)
-                                                                (with-editor-finish nil))
-                                                              (should (equal (car sent) "\e_pi:editor-done;r21\e\\"))
-                                                              (should (equal (mapcar #'car claude-code-ide-session--editor-requests) '("r22")))
-                                                              (with-current-buffer (find-buffer-visiting second)
-                                                                (with-editor-cancel nil))
-                                                              (should (equal (car sent) "\e_pi:editor-cancel;r22\e\\"))
-                                                              (should-not claude-code-ide-session--editor-requests)))
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (buffer &rest _) (push buffer visited))))
+            (claude-code-ide-session-editor-request "r21" "n0nce" first)
+            (claude-code-ide-session-editor-request "r22" "n0nce" second)
+            (should (equal (reverse sent)
+                           '("\e_pi:editor-ack;r21\e\\" "\e_pi:editor-ack;r22\e\\")))
+            (with-current-buffer (find-buffer-visiting first)
+              (with-editor-finish nil))
+            (should (equal (car sent) "\e_pi:editor-done;r21\e\\"))
+            (should (equal (mapcar #'car claude-code-ide-session--editor-requests) '("r22")))
+            (with-current-buffer (find-buffer-visiting second)
+              (with-editor-cancel nil))
+            (should (equal (car sent) "\e_pi:editor-cancel;r22\e\\"))
+            (should-not claude-code-ide-session--editor-requests)))
       (dolist (file (list first second))
         (when (file-exists-p file) (delete-file file))))))
 
@@ -17600,22 +17600,22 @@ so a later request opens its own prompt, and each prompt answers its own id."
   "Test that another client's nonce, or a non-Session buffer, gets no answer."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
-                                                        (claude-code-ide-session-editor-request "r3" "other" "/tmp/x.md")
-                                                        (should-not sent)
-                                                        (should-not claude-code-ide-session--editor-requests))
-                                                      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                 (lambda (&optional _) nil)))
-                                                        (claude-code-ide-session-editor-request "r3" "n0nce" "/tmp/x.md")
-                                                        (should-not sent)
-                                                        (should-not claude-code-ide-session--editor-requests))
-                                                      (let ((claude-code-ide-session--editor-nonce nil))
-                                                        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
-                                                          (claude-code-ide-session-editor-request "r3" "" "/tmp/x.md")
-                                                          (should-not sent)
-                                                          (should-not claude-code-ide-session--editor-requests)))))
+    (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+               (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
+      (claude-code-ide-session-editor-request "r3" "other" "/tmp/x.md")
+      (should-not sent)
+      (should-not claude-code-ide-session--editor-requests))
+    (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+               (lambda (&optional _) nil)))
+      (claude-code-ide-session-editor-request "r3" "n0nce" "/tmp/x.md")
+      (should-not sent)
+      (should-not claude-code-ide-session--editor-requests))
+    (let ((claude-code-ide-session--editor-nonce nil))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test"))))
+        (claude-code-ide-session-editor-request "r3" "" "/tmp/x.md")
+        (should-not sent)
+        (should-not claude-code-ide-session--editor-requests)))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-remote-uses-rpc-open-file ()
   "Test that a remote Session visits the path through `claude-code-ide-remote-project-open-file'."
@@ -17624,30 +17624,30 @@ so a later request opens its own prompt, and each prompt answers its own id."
         (visited nil)
         (claude-code-ide-remote-hosts '("box")))
     (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                  ((symbol-function 'claude-code-ide-session-host)
-                                                                   (lambda (_) "box"))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-target-available-p)
-                                                                   (lambda () t))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-open-file)
-                                                                   (lambda (host path callback)
-                                                                     (setq opened (list host path callback))))
-                                                                  ((symbol-function 'switch-to-buffer)
-                                                                   (lambda (buffer &rest _) (setq visited buffer))))
-                                                          (claude-code-ide-session-editor-request "r4" "n0nce" "/tmp/remote.md")
-                                                          (should (equal sent '("\e_pi:editor-ack;r4\e\\")))
-                                                          (should (equal (seq-take opened 2) '("box" "/tmp/remote.md")))
-                                                          (let ((buffer (generate-new-buffer " *remote prompt*")))
-                                                            (unwind-protect
-                                                                (progn
-                                                                  (funcall (nth 2 opened) (list :status 'completed :buffer buffer))
-                                                                  (should (eq visited buffer))
-                                                                  (should (buffer-local-value 'with-editor-mode buffer)))
-                                                              (with-current-buffer buffer
-                                                                (remove-hook 'kill-buffer-query-functions
-                                                                             #'with-editor-kill-buffer-noop t))
-                                                              (kill-buffer buffer)))))))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t))
+                ((symbol-function 'claude-code-ide-remote-project-open-file)
+                 (lambda (host path callback)
+                   (setq opened (list host path callback))))
+                ((symbol-function 'switch-to-buffer)
+                 (lambda (buffer &rest _) (setq visited buffer))))
+        (claude-code-ide-session-editor-request "r4" "n0nce" "/tmp/remote.md")
+        (should (equal sent '("\e_pi:editor-ack;r4\e\\")))
+        (should (equal (seq-take opened 2) '("box" "/tmp/remote.md")))
+        (let ((buffer (generate-new-buffer " *remote prompt*")))
+          (unwind-protect
+              (progn
+                (funcall (nth 2 opened) (list :status 'completed :buffer buffer))
+                (should (eq visited buffer))
+                (should (buffer-local-value 'with-editor-mode buffer)))
+            (with-current-buffer buffer
+              (remove-hook 'kill-buffer-query-functions
+                           #'with-editor-kill-buffer-noop t))
+            (kill-buffer buffer)))))))
 
 (ert-deftest claude-code-ide-test-session-editor-late-remote-open-lands-in-session-window ()
   "Test that a slow remote open shows the prompt in the Session's window.
@@ -17658,36 +17658,36 @@ The prompt must not replace that companion buffer."
         (claude-code-ide-remote-hosts '("box"))
         (companion (generate-new-buffer " *remote companion*")))
     (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                  ((symbol-function 'claude-code-ide-session-host)
-                                                                   (lambda (_) "box"))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-target-available-p)
-                                                                   (lambda () t))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-open-file)
-                                                                   (lambda (host path callback)
-                                                                     (setq opened (list host path callback)))))
-                                                          (let ((session-buffer (current-buffer))
-                                                                (prompt (generate-new-buffer " *remote prompt*")))
-                                                            (unwind-protect
-                                                                (save-window-excursion
-                                                                  (delete-other-windows)
-                                                                  (set-window-buffer (selected-window) session-buffer)
-                                                                  (let ((session-window (selected-window))
-                                                                        (companion-window (split-window)))
-                                                                    (set-window-buffer companion-window companion)
-                                                                    (with-current-buffer session-buffer
-                                                                      (claude-code-ide-session-send-control-g))
-                                                                    (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
-                                                                    (select-window companion-window)
-                                                                    (funcall (nth 2 opened) (list :status 'completed :buffer prompt))
-                                                                    (should (eq (window-buffer session-window) prompt))
-                                                                    (should (eq (window-buffer companion-window) companion))))
-                                                              (with-current-buffer prompt
-                                                                (remove-hook 'kill-buffer-query-functions
-                                                                             #'with-editor-kill-buffer-noop t))
-                                                              (kill-buffer prompt)
-                                                              (kill-buffer companion)))))))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t))
+                ((symbol-function 'claude-code-ide-remote-project-open-file)
+                 (lambda (host path callback)
+                   (setq opened (list host path callback)))))
+        (let ((session-buffer (current-buffer))
+              (prompt (generate-new-buffer " *remote prompt*")))
+          (unwind-protect
+              (save-window-excursion
+                (delete-other-windows)
+                (set-window-buffer (selected-window) session-buffer)
+                (let ((session-window (selected-window))
+                      (companion-window (split-window)))
+                  (set-window-buffer companion-window companion)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-send-control-g))
+                  (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
+                  (select-window companion-window)
+                  (funcall (nth 2 opened) (list :status 'completed :buffer prompt))
+                  (should (eq (window-buffer session-window) prompt))
+                  (should (eq (window-buffer companion-window) companion))))
+            (with-current-buffer prompt
+              (remove-hook 'kill-buffer-query-functions
+                           #'with-editor-kill-buffer-noop t))
+            (kill-buffer prompt)
+            (kill-buffer companion)))))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-opens-in-pressed-window ()
   "Test that the prompt replaces the buffer of the window C-g was pressed in.
@@ -17698,33 +17698,33 @@ recorded window back to its previous buffer."
         (companion (generate-new-buffer "cc-companion")))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil)))
-                                                              (let ((session-buffer (current-buffer)))
-                                                                (save-window-excursion
-                                                                  (delete-other-windows)
-                                                                  (set-window-buffer (selected-window) session-buffer)
-                                                                  (let* ((session-window (selected-window))
-                                                                         (companion-window (split-window-right)))
-                                                                    (select-window companion-window)
-                                                                    (switch-to-buffer companion)
-                                                                    (with-current-buffer session-buffer
-                                                                      (claude-code-ide-session-send-control-g))
-                                                                    (should (eq (cdr claude-code-ide-session--editor-window)
-                                                                                companion-window))
-                                                                    (with-current-buffer session-buffer
-                                                                      (claude-code-ide-session-editor-request "r11" "n0nce" file))
-                                                                    (let ((prompt (find-buffer-visiting file)))
-                                                                      (should (eq (window-buffer companion-window) prompt))
-                                                                      (should (eq (window-buffer session-window) session-buffer))
-                                                                      (should (eq (selected-window) companion-window))
-                                                                      (with-current-buffer prompt
-                                                                        (with-editor-finish nil)))
-                                                                    (should (equal (car sent) "\e_pi:editor-done;r11\e\\"))
-                                                                    (should-not claude-code-ide-session--editor-requests)
-                                                                    (should (eq (window-buffer companion-window) companion)))))))
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil)))
+            (let ((session-buffer (current-buffer)))
+              (save-window-excursion
+                (delete-other-windows)
+                (set-window-buffer (selected-window) session-buffer)
+                (let* ((session-window (selected-window))
+                       (companion-window (split-window-right)))
+                  (select-window companion-window)
+                  (switch-to-buffer companion)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-send-control-g))
+                  (should (eq (cdr claude-code-ide-session--editor-window)
+                              companion-window))
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-editor-request "r11" "n0nce" file))
+                  (let ((prompt (find-buffer-visiting file)))
+                    (should (eq (window-buffer companion-window) prompt))
+                    (should (eq (window-buffer session-window) session-buffer))
+                    (should (eq (selected-window) companion-window))
+                    (with-current-buffer prompt
+                      (with-editor-finish nil)))
+                  (should (equal (car sent) "\e_pi:editor-done;r11\e\\"))
+                  (should-not claude-code-ide-session--editor-requests)
+                  (should (eq (window-buffer companion-window) companion)))))))
       (when-let* ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
       (when (buffer-live-p companion) (kill-buffer companion))
@@ -17737,26 +17737,26 @@ A slow open can outlive the window the key was pressed in."
   (let ((file (make-temp-file "cc-editor-" nil ".md" "draft\n")))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil)))
-                                                              (let ((session-buffer (current-buffer)))
-                                                                (save-window-excursion
-                                                                  (delete-other-windows)
-                                                                  (set-window-buffer (selected-window) session-buffer)
-                                                                  (let* ((session-window (selected-window))
-                                                                         (other-window (split-window-right)))
-                                                                    (select-window other-window)
-                                                                    (with-current-buffer session-buffer
-                                                                      (claude-code-ide-session-send-control-g))
-                                                                    (delete-window other-window)
-                                                                    (with-current-buffer session-buffer
-                                                                      (claude-code-ide-session-editor-request "r12" "n0nce" file))
-                                                                    (let ((prompt (find-buffer-visiting file)))
-                                                                      (should (eq (window-buffer session-window) prompt))
-                                                                      (with-current-buffer prompt
-                                                                        (with-editor-finish nil))))))))
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil)))
+            (let ((session-buffer (current-buffer)))
+              (save-window-excursion
+                (delete-other-windows)
+                (set-window-buffer (selected-window) session-buffer)
+                (let* ((session-window (selected-window))
+                       (other-window (split-window-right)))
+                  (select-window other-window)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-send-control-g))
+                  (delete-window other-window)
+                  (with-current-buffer session-buffer
+                    (claude-code-ide-session-editor-request "r12" "n0nce" file))
+                  (let ((prompt (find-buffer-visiting file)))
+                    (should (eq (window-buffer session-window) prompt))
+                    (with-current-buffer prompt
+                      (with-editor-finish nil))))))))
       (when-let* ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
       (delete-file file))))
@@ -17770,34 +17770,34 @@ not pull another Session's prompt into itself."
         (companion (generate-new-buffer "cc-companion")))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil)))
-                                                              (let ((session-buffer (current-buffer))
-                                                                    (other-session (generate-new-buffer "*claude-code[test-other-session]*")))
-                                                                (unwind-protect
-                                                                    (save-window-excursion
-                                                                      (delete-other-windows)
-                                                                      (with-current-buffer other-session
-                                                                        (setq-local major-mode 'ghostel-mode))
-                                                                      (set-window-buffer (selected-window) other-session)
-                                                                      (let* ((other-window (selected-window))
-                                                                             (recorded-window (split-window-right)))
-                                                                        (set-window-buffer recorded-window companion)
-                                                                        (select-window recorded-window)
-                                                                        (with-current-buffer session-buffer
-                                                                          (claude-code-ide-session-send-control-g))
-                                                                        (should (eq (cdr claude-code-ide-session--editor-window)
-                                                                                    recorded-window))
-                                                                        (with-current-buffer other-session
-                                                                          (claude-code-ide-session-editor-request "r13" "n0nce" file))
-                                                                        (should (eq (window-buffer other-window)
-                                                                                    (find-buffer-visiting file)))
-                                                                        (should (eq (window-buffer recorded-window) companion))
-                                                                        (with-current-buffer (find-buffer-visiting file)
-                                                                          (with-editor-finish nil))))
-                                                                  (kill-buffer other-session)))))
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil)))
+            (let ((session-buffer (current-buffer))
+                  (other-session (generate-new-buffer "*claude-code[test-other-session]*")))
+              (unwind-protect
+                  (save-window-excursion
+                    (delete-other-windows)
+                    (with-current-buffer other-session
+                      (setq-local major-mode 'ghostel-mode))
+                    (set-window-buffer (selected-window) other-session)
+                    (let* ((other-window (selected-window))
+                           (recorded-window (split-window-right)))
+                      (set-window-buffer recorded-window companion)
+                      (select-window recorded-window)
+                      (with-current-buffer session-buffer
+                        (claude-code-ide-session-send-control-g))
+                      (should (eq (cdr claude-code-ide-session--editor-window)
+                                  recorded-window))
+                      (with-current-buffer other-session
+                        (claude-code-ide-session-editor-request "r13" "n0nce" file))
+                      (should (eq (window-buffer other-window)
+                                  (find-buffer-visiting file)))
+                      (should (eq (window-buffer recorded-window) companion))
+                      (with-current-buffer (find-buffer-visiting file)
+                        (with-editor-finish nil))))
+                (kill-buffer other-session)))))
       (when-let* ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
       (when (buffer-live-p companion) (kill-buffer companion))
@@ -17808,87 +17808,87 @@ not pull another Session's prompt into itself."
   (should (require 'claude-code-ide-session nil t))
   (let ((claude-code-ide-remote-hosts '("box")))
     (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                  ((symbol-function 'claude-code-ide-session-host)
-                                                                   (lambda (_) "box"))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-target-available-p)
-                                                                   (lambda () t))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-open-file)
-                                                                   (lambda (_host _path callback)
-                                                                     (funcall callback (list :status 'failed :error "boom")))))
-                                                          (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
-                                                          (should (equal (reverse sent)
-                                                                         '("\e_pi:editor-ack;r5\e\\" "\e_pi:editor-cancel;r5\e\\")))
-                                                          (should-not claude-code-ide-session--editor-requests)))))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t))
+                ((symbol-function 'claude-code-ide-remote-project-open-file)
+                 (lambda (_host _path callback)
+                   (funcall callback (list :status 'failed :error "boom")))))
+        (claude-code-ide-session-editor-request "r5" "n0nce" "/tmp/remote.md")
+        (should (equal (reverse sent)
+                       '("\e_pi:editor-ack;r5\e\\" "\e_pi:editor-cancel;r5\e\\")))
+        (should-not claude-code-ide-session--editor-requests)))))
 
 (ert-deftest claude-code-ide-test-session-editor-request-remote-preflight-sends-no-ack ()
   "Test that an unapproved host or unavailable RPC signals before any packet."
   (should (require 'claude-code-ide-session nil t))
   (let ((claude-code-ide-remote-hosts '("box")))
     (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                  ((symbol-function 'claude-code-ide-session-host)
-                                                                   (lambda (_) "elsewhere"))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-target-available-p)
-                                                                   (lambda () t)))
-                                                          (should-error (claude-code-ide-session-editor-request "r6" "n0nce" "/tmp/remote.md")
-                                                                        :type 'user-error))
-                                                        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                  ((symbol-function 'claude-code-ide-session-host)
-                                                                   (lambda (_) "box"))
-                                                                  ((symbol-function 'claude-code-ide-remote-project-target-available-p)
-                                                                   (lambda () nil)))
-                                                          (should-error (claude-code-ide-session-editor-request "r7" "n0nce" "/tmp/remote.md")
-                                                                        :type 'user-error))
-                                                        (should-not sent)
-                                                        (should-not claude-code-ide-session--editor-requests))))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "elsewhere"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () t)))
+        (should-error (claude-code-ide-session-editor-request "r6" "n0nce" "/tmp/remote.md")
+                      :type 'user-error))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) "box"))
+                ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                 (lambda () nil)))
+        (should-error (claude-code-ide-session-editor-request "r7" "n0nce" "/tmp/remote.md")
+                      :type 'user-error))
+      (should-not sent)
+      (should-not claude-code-ide-session--editor-requests))))
 
 (ert-deftest claude-code-ide-test-session-spawn-announce-ignores-bad-callers ()
   "Test that a spawn announcement from a wrong buffer or with a bad name schedules nothing."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (let (scheduled)
-                                                        (cl-letf (((symbol-function 'run-at-time)
-                                                                   (lambda (&rest args) (push args scheduled))))
-                                                          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                     (lambda (&optional _) nil)))
-                                                            (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
-                                                          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                     (lambda (&optional _)
-                                                                       (claude-code-ide-session-create :id "a" :cli-type 'claude))))
-                                                            (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
-                                                          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                     (lambda (&optional _)
-                                                                       (claude-code-ide-session-create :id "a" :cli-type 'omp))))
-                                                            (dolist (name '("" "-cci-omp" "cci-omp/x" "other-omp-proj-abc123" nil 42))
-                                                              (should-not (claude-code-ide-session-spawn-announce name)))))
-                                                        (should-not scheduled)
-                                                        (should-not sent))))
+    (let (scheduled)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (&rest args) (push args scheduled))))
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _) nil)))
+          (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _)
+                     (claude-code-ide-session-create :id "a" :cli-type 'claude))))
+          (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
+        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                   (lambda (&optional _)
+                     (claude-code-ide-session-create :id "a" :cli-type 'omp))))
+          (dolist (name '("" "-cci-omp" "cci-omp/x" "other-omp-proj-abc123" nil 42))
+            (should-not (claude-code-ide-session-spawn-announce name)))))
+      (should-not scheduled)
+      (should-not sent))))
 
 (ert-deftest claude-code-ide-test-session-spawn-announce-schedules-adopt ()
   "Test that a valid announcement only schedules the adopt step with the Session's host."
   (should (require 'claude-code-ide-session nil t))
   (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                      (let (scheduled)
-                                                        (cl-letf (((symbol-function 'run-at-time)
-                                                                   (lambda (&rest args) (push args scheduled)))
-                                                                  ((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _)
-                                                                     (claude-code-ide-session-create :id "a" :cli-type 'omp :host "box")))
-                                                                  ((symbol-function 'claude-code-ide-zmx-list-sessions)
-                                                                   (lambda () (ert-fail "The handler listed zmx inline")))
-                                                                  ((symbol-function 'claude-code-ide-zmx-discover-remote)
-                                                                   (lambda (&rest _) (ert-fail "The handler listed zmx inline")))
-                                                                  ((symbol-function 'claude-code-ide--adopt-spawned-session)
-                                                                   (lambda (&rest _) (ert-fail "The handler adopted inline"))))
-                                                          (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
-                                                        (should (equal scheduled
-                                                                       '((0 nil claude-code-ide--adopt-spawned-session
-                                                                            "box" "cci-omp-proj-abc123"))))
-                                                        (should-not sent))))
+    (let (scheduled)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (&rest args) (push args scheduled)))
+                ((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _)
+                   (claude-code-ide-session-create :id "a" :cli-type 'omp :host "box")))
+                ((symbol-function 'claude-code-ide-zmx-list-sessions)
+                 (lambda () (ert-fail "The handler listed zmx inline")))
+                ((symbol-function 'claude-code-ide-zmx-discover-remote)
+                 (lambda (&rest _) (ert-fail "The handler listed zmx inline")))
+                ((symbol-function 'claude-code-ide--adopt-spawned-session)
+                 (lambda (&rest _) (ert-fail "The handler adopted inline"))))
+        (should-not (claude-code-ide-session-spawn-announce "cci-omp-proj-abc123")))
+      (should (equal scheduled
+                     '((0 nil claude-code-ide--adopt-spawned-session
+                          "box" "cci-omp-proj-abc123"))))
+      (should-not sent))))
 
 (ert-deftest claude-code-ide-test-session-editor-visit-failure-cancels-and-kills ()
   "Test that a display failure after the ack cancels once and leaves no buffer."
@@ -17897,35 +17897,35 @@ not pull another Session's prompt into itself."
         (file (make-temp-file "cc-editor-" nil ".md" "draft\n")))
     (unwind-protect
         (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                      ((symbol-function 'claude-code-ide-session-host)
-                                                                       (lambda (_) nil))
-                                                                      ((symbol-function 'switch-to-buffer)
-                                                                       (lambda (&rest _) (error "no window"))))
-                                                              (claude-code-ide-session-editor-request "r8" "n0nce" file)
-                                                              (should (equal (reverse sent)
-                                                                             '("\e_pi:editor-ack;r8\e\\" "\e_pi:editor-cancel;r8\e\\")))
-                                                              (should-not claude-code-ide-session--editor-requests)
-                                                              (should-not (find-buffer-visiting file)))
-                                                            (setq sent nil)
-                                                            (let ((buffer (generate-new-buffer " *remote prompt*")))
-                                                              (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                         (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                        ((symbol-function 'claude-code-ide-session-host)
-                                                                         (lambda (_) "box"))
-                                                                        ((symbol-function 'claude-code-ide-remote-project-target-available-p)
-                                                                         (lambda () t))
-                                                                        ((symbol-function 'claude-code-ide-remote-project-open-file)
-                                                                         (lambda (_host _path callback)
-                                                                           (funcall callback (list :status 'completed :buffer buffer))))
-                                                                        ((symbol-function 'switch-to-buffer)
-                                                                         (lambda (&rest _) (error "no window"))))
-                                                                (claude-code-ide-session-editor-request "r9" "n0nce" "/tmp/remote.md")
-                                                                (should (equal (reverse sent)
-                                                                               '("\e_pi:editor-ack;r9\e\\" "\e_pi:editor-cancel;r9\e\\")))
-                                                                (should-not claude-code-ide-session--editor-requests)
-                                                                (should-not (buffer-live-p buffer)))))
+          (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                     (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                    ((symbol-function 'claude-code-ide-session-host)
+                     (lambda (_) nil))
+                    ((symbol-function 'switch-to-buffer)
+                     (lambda (&rest _) (error "no window"))))
+            (claude-code-ide-session-editor-request "r8" "n0nce" file)
+            (should (equal (reverse sent)
+                           '("\e_pi:editor-ack;r8\e\\" "\e_pi:editor-cancel;r8\e\\")))
+            (should-not claude-code-ide-session--editor-requests)
+            (should-not (find-buffer-visiting file)))
+          (setq sent nil)
+          (let ((buffer (generate-new-buffer " *remote prompt*")))
+            (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                       (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                      ((symbol-function 'claude-code-ide-session-host)
+                       (lambda (_) "box"))
+                      ((symbol-function 'claude-code-ide-remote-project-target-available-p)
+                       (lambda () t))
+                      ((symbol-function 'claude-code-ide-remote-project-open-file)
+                       (lambda (_host _path callback)
+                         (funcall callback (list :status 'completed :buffer buffer))))
+                      ((symbol-function 'switch-to-buffer)
+                       (lambda (&rest _) (error "no window"))))
+              (claude-code-ide-session-editor-request "r9" "n0nce" "/tmp/remote.md")
+              (should (equal (reverse sent)
+                             '("\e_pi:editor-ack;r9\e\\" "\e_pi:editor-cancel;r9\e\\")))
+              (should-not claude-code-ide-session--editor-requests)
+              (should-not (buffer-live-p buffer)))))
       (delete-file file))))
 
 (ert-deftest claude-code-ide-test-session-editor-local-open-failure-cancels ()
@@ -17933,19 +17933,19 @@ not pull another Session's prompt into itself."
   (should (require 'claude-code-ide-session nil t))
   (let ((messages nil))
     (claude-code-ide-tests--with-editor-handoff-session "omp" sent
-                                                        (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
-                                                                   (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
-                                                                  ((symbol-function 'claude-code-ide-session-host)
-                                                                   (lambda (_) nil))
-                                                                  ((symbol-function 'find-file-noselect)
-                                                                   (lambda (&rest _) (error "disk gone")))
-                                                                  ((symbol-function 'message)
-                                                                   (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
-                                                          (claude-code-ide-session-editor-request "r10" "n0nce" "/tmp/x.md")
-                                                          (should (equal (reverse sent)
-                                                                         '("\e_pi:editor-ack;r10\e\\" "\e_pi:editor-cancel;r10\e\\")))
-                                                          (should (equal messages '("Prompt open failed: disk gone")))
-                                                          (should-not claude-code-ide-session--editor-requests)))))
+      (cl-letf (((symbol-function 'claude-code-ide--session-for-buffer)
+                 (lambda (&optional _) (claude-code-ide-session-create :id "editor-test")))
+                ((symbol-function 'claude-code-ide-session-host)
+                 (lambda (_) nil))
+                ((symbol-function 'find-file-noselect)
+                 (lambda (&rest _) (error "disk gone")))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+        (claude-code-ide-session-editor-request "r10" "n0nce" "/tmp/x.md")
+        (should (equal (reverse sent)
+                       '("\e_pi:editor-ack;r10\e\\" "\e_pi:editor-cancel;r10\e\\")))
+        (should (equal messages '("Prompt open failed: disk gone")))
+        (should-not claude-code-ide-session--editor-requests)))))
 
 (ert-deftest claude-code-ide-test-find-prompt-buffer-matches-remote-localname ()
   "Test that a remote prompt buffer matches by its local name part."
@@ -20230,65 +20230,65 @@ The resync ignores pin state and stored order keys."
 (ert-deftest claude-code-ide-test-manager-compact-view-ignores-session-titles ()
   "The compact view renders one line per Session and never shows a title."
   (claude-code-ide-tests--with-grouped-state
-   (setq claude-code-ide-manager--items
-         (claude-code-ide-tests--detail-view-items))
-   (with-current-buffer (claude-code-ide-manager--get-buffer)
-     (let ((claude-code-ide-manager-show-session-titles nil))
-       (claude-code-ide-manager--render))
-     (let ((compact (buffer-substring-no-properties (point-min) (point-max))))
-       (should (= (count-lines (point-min) (point-max)) 2))
-       (should-not (string-match-p "Alpha work" compact))
-       ;; A sidebar where no Session has a title renders identically in
-       ;; both views.
-       (claude-code-ide--put-session
-        (claude-code-ide-session-create :id "/tmp/project-a"))
-       (let ((claude-code-ide-manager-show-session-titles t))
-         (claude-code-ide-manager--render))
-       (should (equal (buffer-substring-no-properties (point-min) (point-max))
-                      compact))))))
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (with-current-buffer (claude-code-ide-manager--get-buffer)
+      (let ((claude-code-ide-manager-show-session-titles nil))
+        (claude-code-ide-manager--render))
+      (let ((compact (buffer-substring-no-properties (point-min) (point-max))))
+        (should (= (count-lines (point-min) (point-max)) 2))
+        (should-not (string-match-p "Alpha work" compact))
+        ;; A sidebar where no Session has a title renders identically in
+        ;; both views.
+        (claude-code-ide--put-session
+         (claude-code-ide-session-create :id "/tmp/project-a"))
+        (let ((claude-code-ide-manager-show-session-titles t))
+          (claude-code-ide-manager--render))
+        (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                       compact))))))
 
 (ert-deftest claude-code-ide-test-manager-detail-view-adds-one-line-per-title ()
   "Only a Session with a title gains a line, and it gains exactly one."
   (claude-code-ide-tests--with-grouped-state
-   (setq claude-code-ide-manager--items
-         (claude-code-ide-tests--detail-view-items))
-   (let ((claude-code-ide-manager-show-session-titles t))
-     (with-current-buffer (claude-code-ide-manager--get-buffer)
-       (claude-code-ide-manager--render)
-       (should (= (count-lines (point-min) (point-max)) 3))
-       (should (equal (claude-code-ide-tests--session-title-lines)
-                      '("Alpha work")))
-       (goto-char (point-min))
-       (forward-line 2)
-       ;; The untitled Session keeps a single row and adds no blank line.
-       (should (string-match-p "project-b"
-                               (buffer-substring-no-properties
-                                (line-beginning-position)
-                                (line-end-position))))))))
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles t))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (should (= (count-lines (point-min) (point-max)) 3))
+        (should (equal (claude-code-ide-tests--session-title-lines)
+                       '("Alpha work")))
+        (goto-char (point-min))
+        (forward-line 2)
+        ;; The untitled Session keeps a single row and adds no blank line.
+        (should (string-match-p "project-b"
+                                (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position))))))))
 
 (ert-deftest claude-code-ide-test-manager-toggle-session-titles-redraws-and-reports ()
   "The toggle flips the view, redraws an open sidebar, and names the result."
   (claude-code-ide-tests--with-grouped-state
-   (setq claude-code-ide-manager--items
-         (claude-code-ide-tests--detail-view-items))
-   (let ((claude-code-ide-manager-show-session-titles nil)
-         reported)
-     (with-current-buffer (claude-code-ide-manager--get-buffer)
-       (claude-code-ide-manager--render)
-       (cl-letf (((symbol-function 'message)
-                  (lambda (format-string &rest args)
-                    (setq reported (apply #'format format-string args)))))
-         (claude-code-ide-manager-toggle-session-titles)
-         (should claude-code-ide-manager-show-session-titles)
-         (should (equal (claude-code-ide-tests--session-title-lines)
-                        '("Alpha work")))
-         (should (equal reported
-                        "Manager session titles: on (1 of 2 Sessions have a title)"))
-         (claude-code-ide-manager-toggle-session-titles)
-         (should-not claude-code-ide-manager-show-session-titles)
-         (should-not (claude-code-ide-tests--session-title-lines))
-         (should (equal reported
-                        "Manager session titles: off (1 of 2 Sessions have a title)")))))))
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles nil)
+          reported)
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (setq reported (apply #'format format-string args)))))
+          (claude-code-ide-manager-toggle-session-titles)
+          (should claude-code-ide-manager-show-session-titles)
+          (should (equal (claude-code-ide-tests--session-title-lines)
+                         '("Alpha work")))
+          (should (equal reported
+                         "Manager session titles: on (1 of 2 Sessions have a title)"))
+          (claude-code-ide-manager-toggle-session-titles)
+          (should-not claude-code-ide-manager-show-session-titles)
+          (should-not (claude-code-ide-tests--session-title-lines))
+          (should (equal reported
+                         "Manager session titles: off (1 of 2 Sessions have a title)")))))))
 
 (ert-deftest claude-code-ide-test-manager-toggle-session-titles-keeps-selected-row ()
   "The toggle keeps the sidebar window on its Session when lines shift."
@@ -20356,117 +20356,117 @@ The resync ignores pin state and stored order keys."
 (ert-deftest claude-code-ide-test-manager-detail-line-is-dim-and-aligned ()
   "The title line uses the dim face alone and starts at the label column."
   (claude-code-ide-tests--with-grouped-state
-   (claude-code-ide--put-session
-    (claude-code-ide-session-create
-     :id "/tmp/project-a" :title "Reviewing\nsession state"))
-   (setq claude-code-ide-manager--items
-         (list (make-claude-code-ide-manager-item
-                :session-key "/tmp/project-a" :display-name "project-a"
-                :secondary-text "/tmp/project-a" :order-key 1 :live-p t)))
-   (let ((claude-code-ide-manager-show-session-titles t)
-         (claude-code-ide-manager--current-session-key "/tmp/project-a"))
-     (with-current-buffer (claude-code-ide-manager--get-buffer)
-       (claude-code-ide-manager--render)
-       (goto-char (point-min))
-       ;; The row above carries the current-session status face.
-       (should (eq (get-text-property (point) 'face)
-                   'claude-code-ide-manager-current-session-face))
-       (let* ((name-start
-               (next-single-property-change
-                (point-min) 'claude-code-ide-manager-session-name-start))
-              (label-column
-               (cl-loop for pos from (line-beginning-position)
-                        below (line-end-position)
-                        for spec = (get-text-property pos 'display)
-                        when (eq (car-safe spec) 'space)
-                        return (+ (plist-get (cdr spec) :align-to)
-                                  (- name-start pos 1))))
-              (detail-start (progn (forward-line 1) (point))))
-         (should (= label-column 7))
-         (should (equal (get-text-property detail-start 'display)
-                        (list 'space :align-to label-column)))
-         ;; The whole detail line carries the dim face and no row face.
-         (cl-loop for pos from detail-start below (point-max)
-                  do (should (eq (get-text-property pos 'face)
-                                 'claude-code-ide-manager-session-title-face)))
-         ;; A title holding a newline still renders as one line.
-         (should (equal (buffer-substring-no-properties
-                         detail-start (1- (point-max)))
-                        " Reviewing session state"))
-         (should (= (count-lines (point-min) (point-max)) 2)))))))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create
+      :id "/tmp/project-a" :title "Reviewing\nsession state"))
+    (setq claude-code-ide-manager--items
+          (list (make-claude-code-ide-manager-item
+                 :session-key "/tmp/project-a" :display-name "project-a"
+                 :secondary-text "/tmp/project-a" :order-key 1 :live-p t)))
+    (let ((claude-code-ide-manager-show-session-titles t)
+          (claude-code-ide-manager--current-session-key "/tmp/project-a"))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (goto-char (point-min))
+        ;; The row above carries the current-session status face.
+        (should (eq (get-text-property (point) 'face)
+                    'claude-code-ide-manager-current-session-face))
+        (let* ((name-start
+                (next-single-property-change
+                 (point-min) 'claude-code-ide-manager-session-name-start))
+               (label-column
+                (cl-loop for pos from (line-beginning-position)
+                         below (line-end-position)
+                         for spec = (get-text-property pos 'display)
+                         when (eq (car-safe spec) 'space)
+                         return (+ (plist-get (cdr spec) :align-to)
+                                   (- name-start pos 1))))
+               (detail-start (progn (forward-line 1) (point))))
+          (should (= label-column 7))
+          (should (equal (get-text-property detail-start 'display)
+                         (list 'space :align-to label-column)))
+          ;; The whole detail line carries the dim face and no row face.
+          (cl-loop for pos from detail-start below (point-max)
+                   do (should (eq (get-text-property pos 'face)
+                                  'claude-code-ide-manager-session-title-face)))
+          ;; A title holding a newline still renders as one line.
+          (should (equal (buffer-substring-no-properties
+                          detail-start (1- (point-max)))
+                         " Reviewing session state"))
+          (should (= (count-lines (point-min) (point-max)) 2)))))))
 
 (ert-deftest claude-code-ide-test-manager-detail-line-resolves-to-its-row ()
   "The title line points at its own Session but is not a navigation target."
   (claude-code-ide-tests--with-grouped-state
-   (setq claude-code-ide-manager--items
-         (claude-code-ide-tests--detail-view-items))
-   (let ((claude-code-ide-manager-show-session-titles t))
-     (with-current-buffer (claude-code-ide-manager--get-buffer)
-       (claude-code-ide-manager--render)
-       (goto-char (point-min))
-       (forward-line 1)
-       (should (equal (claude-code-ide-manager-item-session-key
-                       (claude-code-ide-manager--item-at-point))
-                      "/tmp/project-a"))
-       (should-not (get-text-property
-                    (point) 'claude-code-ide-manager-session-name-start))
-       ;; One navigation anchor per Session, not per line.
-       (should (= (cl-loop for pos from (point-min) below (point-max)
-                           count (get-text-property
-                                  pos
-                                  'claude-code-ide-manager-session-name-start))
-                  2))
-       (should (string-match-p
-                "Alpha work"
-                (get-text-property (point-min) 'help-echo)))))))
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles t))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (goto-char (point-min))
+        (forward-line 1)
+        (should (equal (claude-code-ide-manager-item-session-key
+                        (claude-code-ide-manager--item-at-point))
+                       "/tmp/project-a"))
+        (should-not (get-text-property
+                     (point) 'claude-code-ide-manager-session-name-start))
+        ;; One navigation anchor per Session, not per line.
+        (should (= (cl-loop for pos from (point-min) below (point-max)
+                            count (get-text-property
+                                   pos
+                                   'claude-code-ide-manager-session-name-start))
+                   2))
+        (should (string-match-p
+                 "Alpha work"
+                 (get-text-property (point-min) 'help-echo)))))))
 
 (ert-deftest claude-code-ide-test-manager-compact-view-tooltip-omits-title ()
   "The compact view leaves the row tooltip as it is."
   (claude-code-ide-tests--with-grouped-state
-   (setq claude-code-ide-manager--items
-         (claude-code-ide-tests--detail-view-items))
-   (let ((claude-code-ide-manager-show-session-titles nil))
-     (with-current-buffer (claude-code-ide-manager--get-buffer)
-       (claude-code-ide-manager--render)
-       (should-not (string-match-p
-                    "Alpha work"
-                    (get-text-property (point-min) 'help-echo)))))))
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (let ((claude-code-ide-manager-show-session-titles nil))
+      (with-current-buffer (claude-code-ide-manager--get-buffer)
+        (claude-code-ide-manager--render)
+        (should-not (string-match-p
+                     "Alpha work"
+                     (get-text-property (point-min) 'help-echo)))))))
 
 (ert-deftest claude-code-ide-test-manager-session-titles-setting-drives-startup-only ()
   "The setting redraws on change, and the toggle never rewrites it."
   (claude-code-ide-tests--with-grouped-state
-   (setq claude-code-ide-manager--items
-         (claude-code-ide-tests--detail-view-items))
-   (should-not (eval (car (get 'claude-code-ide-manager-show-session-titles
-                               'standard-value))
-                     t))
-   (with-current-buffer (claude-code-ide-manager--get-buffer)
-     (claude-code-ide-manager--render)
-     (unwind-protect
-         (progn
-           ;; Setting the option redraws the open sidebar with no refresh call.
-           (customize-set-variable
-            'claude-code-ide-manager-show-session-titles t)
-           (should (equal (claude-code-ide-tests--session-title-lines)
-                          '("Alpha work"))))
-       (customize-set-variable
-        'claude-code-ide-manager-show-session-titles nil)
-       (put 'claude-code-ide-manager-show-session-titles 'customized-value nil))
-     ;; The toggle changes the running Emacs only.  It records no
-     ;; customization, so a restart reads the setting, not the toggle.
-     (let ((claude-code-ide-manager-show-session-titles nil))
-       (claude-code-ide-manager-toggle-session-titles)
-       (should claude-code-ide-manager-show-session-titles)
-       (should-not (get 'claude-code-ide-manager-show-session-titles
-                        'customized-value))
-       (should-not (get 'claude-code-ide-manager-show-session-titles
-                        'saved-value)))
-     ;; The view never reaches the manager state file.
-     (should (equal (cl-loop for (key _value)
-                             on (claude-code-ide-manager--serialize-state)
-                             by #'cddr
-                             collect key)
-                    '(:version :scopes :layouts :remote-repositories))))))
+    (setq claude-code-ide-manager--items
+          (claude-code-ide-tests--detail-view-items))
+    (should-not (eval (car (get 'claude-code-ide-manager-show-session-titles
+                                'standard-value))
+                      t))
+    (with-current-buffer (claude-code-ide-manager--get-buffer)
+      (claude-code-ide-manager--render)
+      (unwind-protect
+          (progn
+            ;; Setting the option redraws the open sidebar with no refresh call.
+            (customize-set-variable
+             'claude-code-ide-manager-show-session-titles t)
+            (should (equal (claude-code-ide-tests--session-title-lines)
+                           '("Alpha work"))))
+        (customize-set-variable
+         'claude-code-ide-manager-show-session-titles nil)
+        (put 'claude-code-ide-manager-show-session-titles 'customized-value nil))
+      ;; The toggle changes the running Emacs only.  It records no
+      ;; customization, so a restart reads the setting, not the toggle.
+      (let ((claude-code-ide-manager-show-session-titles nil))
+        (claude-code-ide-manager-toggle-session-titles)
+        (should claude-code-ide-manager-show-session-titles)
+        (should-not (get 'claude-code-ide-manager-show-session-titles
+                         'customized-value))
+        (should-not (get 'claude-code-ide-manager-show-session-titles
+                         'saved-value)))
+      ;; The view never reaches the manager state file.
+      (should (equal (cl-loop for (key _value)
+                              on (claude-code-ide-manager--serialize-state)
+                              by #'cddr
+                              collect key)
+                     '(:version :scopes :layouts :remote-repositories))))))
 
 (ert-deftest claude-code-ide-test-manager-pin-order-opens-selected-scope-in-content-window ()
   "The editor refreshes its scope and uses the normal content window."
@@ -21104,53 +21104,53 @@ BODY sees `window', `content-buffer' and `select-buffer'."
 (ert-deftest claude-code-ide-test-zmx-attach-select-premark-apply-attaches-marked-rows ()
   "Premarked rows attach on apply after unmarking one; buffer closes."
   (claude-code-ide-tests--with-attach-select t created
-                                             (should (string-prefix-p "[X] one  omp  one" (claude-code-ide-tests--attach-select-line 1)))
-                                             (goto-char (point-min))
-                                             (claude-code-ide-attach-select-unmark)
-                                             (should (string-prefix-p "[ ] one" (claude-code-ide-tests--attach-select-line 1)))
-                                             (let ((buffer (current-buffer)))
-                                               (claude-code-ide-attach-select-apply)
-                                               (should (equal created '("two")))
-                                               (should-not (buffer-live-p buffer))
-                                               (should (eq (window-buffer window) content-buffer)))))
+    (should (string-prefix-p "[X] one  omp  one" (claude-code-ide-tests--attach-select-line 1)))
+    (goto-char (point-min))
+    (claude-code-ide-attach-select-unmark)
+    (should (string-prefix-p "[ ] one" (claude-code-ide-tests--attach-select-line 1)))
+    (let ((buffer (current-buffer)))
+      (claude-code-ide-attach-select-apply)
+      (should (equal created '("two")))
+      (should-not (buffer-live-p buffer))
+      (should (eq (window-buffer window) content-buffer)))))
 
 (ert-deftest claude-code-ide-test-zmx-attach-select-premark-nil-toggle-all ()
   "Unmarked rows become marked by toggle-all, and apply attaches both."
   (claude-code-ide-tests--with-attach-select nil created
-                                             (should (string-prefix-p "[ ] " (claude-code-ide-tests--attach-select-line 1)))
-                                             (claude-code-ide-attach-select-toggle-all)
-                                             (should (string-prefix-p "[X] " (claude-code-ide-tests--attach-select-line 1)))
-                                             (should (string-prefix-p "[X] " (claude-code-ide-tests--attach-select-line 2)))
-                                             (claude-code-ide-attach-select-apply)
-                                             (should (equal (sort created #'string<) '("one" "two")))))
+    (should (string-prefix-p "[ ] " (claude-code-ide-tests--attach-select-line 1)))
+    (claude-code-ide-attach-select-toggle-all)
+    (should (string-prefix-p "[X] " (claude-code-ide-tests--attach-select-line 1)))
+    (should (string-prefix-p "[X] " (claude-code-ide-tests--attach-select-line 2)))
+    (claude-code-ide-attach-select-apply)
+    (should (equal (sort created #'string<) '("one" "two")))))
 
 (ert-deftest claude-code-ide-test-zmx-attach-select-toggle-flips-row-and-advances ()
   "SPC toggles the row at point and moves to the next row."
   (claude-code-ide-tests--with-attach-select t created
-                                             (should (eq (lookup-key claude-code-ide-attach-select-mode-map (kbd "SPC"))
-                                                         'claude-code-ide-attach-select-toggle))
-                                             (goto-char (point-min))
-                                             (claude-code-ide-attach-select-toggle)
-                                             (should (string-prefix-p "[ ] one" (claude-code-ide-tests--attach-select-line 1)))
-                                             (should (= (line-number-at-pos) 2))
-                                             (claude-code-ide-attach-select-apply)
-                                             (should (equal created '("two")))))
+    (should (eq (lookup-key claude-code-ide-attach-select-mode-map (kbd "SPC"))
+                'claude-code-ide-attach-select-toggle))
+    (goto-char (point-min))
+    (claude-code-ide-attach-select-toggle)
+    (should (string-prefix-p "[ ] one" (claude-code-ide-tests--attach-select-line 1)))
+    (should (= (line-number-at-pos) 2))
+    (claude-code-ide-attach-select-apply)
+    (should (equal created '("two")))))
 
 (ert-deftest claude-code-ide-test-zmx-attach-select-cancel-attaches-nothing ()
   "Cancel closes the buffer, restores content, attaches nothing."
   (claude-code-ide-tests--with-attach-select t created
-                                             (let ((buffer (current-buffer)))
-                                               (claude-code-ide-attach-select-cancel)
-                                               (should-not created)
-                                               (should-not (buffer-live-p buffer))
-                                               (should (eq (window-buffer window) content-buffer)))))
+    (let ((buffer (current-buffer)))
+      (claude-code-ide-attach-select-cancel)
+      (should-not created)
+      (should-not (buffer-live-p buffer))
+      (should (eq (window-buffer window) content-buffer)))))
 
 (ert-deftest claude-code-ide-test-zmx-attach-select-apply-without-marks-errors ()
   "Apply with no marks signals a user-error and keeps the buffer."
   (claude-code-ide-tests--with-attach-select nil created
-                                             (should-error (claude-code-ide-attach-select-apply) :type 'user-error)
-                                             (should (buffer-live-p (current-buffer)))
-                                             (should-not created)))
+    (should-error (claude-code-ide-attach-select-apply) :type 'user-error)
+    (should (buffer-live-p (current-buffer)))
+    (should-not created)))
 
 (defun claude-code-ide-tests--zmx-stop-fixture (zmx-name confirm)
   "Run `claude-code-ide-stop' on a ZMX-NAME session; CONFIRM the prompt.
@@ -22105,213 +22105,213 @@ default, so the default must not track the last saved value."
 (ert-deftest claude-code-ide-test-remote-stop-cancellation-and-pending-isolation ()
   "Cancel without dispatch, then keep Stop scoped to one host and target."
   (claude-code-ide-tests--with-remote-targets
-   (let* ((session (add-target "a" "host-a"))
-          (other (add-target "b" "host-b"))
-          (local (add-target "local" nil)))
-     (setq confirmation nil)
-     (claude-code-ide-stop "a")
-     (should-not requests)
-     (should (process-live-p (claude-code-ide-session-process session)))
-     (setq confirmation t)
-     (claude-code-ide-stop "a")
-     (should (equal (caar requests) "host-a"))
-     (should (equal (cadar requests) '("kill" "same")))
-     (should (string-match-p "host-a" (car prompts)))
-     (should (string-match-p "same" (car prompts)))
-     (should-error (claude-code-ide-stop "a") :type 'user-error)
-     (should-error (claude-code-ide--reattach-session "a") :type 'user-error)
-     (should (= (length requests) 1))
-     (reply "killed session same\n")
-     (should-error (claude-code-ide-stop "a") :type 'user-error)
-     (should (= (length requests) 2))
-     (reply "" 255 t)
-     (should (eq (claude-code-ide--get-session "a") session))
-     (should (process-live-p (claude-code-ide-session-process other)))
-     (should (process-live-p (claude-code-ide-session-process local))))))
+    (let* ((session (add-target "a" "host-a"))
+           (other (add-target "b" "host-b"))
+           (local (add-target "local" nil)))
+      (setq confirmation nil)
+      (claude-code-ide-stop "a")
+      (should-not requests)
+      (should (process-live-p (claude-code-ide-session-process session)))
+      (setq confirmation t)
+      (claude-code-ide-stop "a")
+      (should (equal (caar requests) "host-a"))
+      (should (equal (cadar requests) '("kill" "same")))
+      (should (string-match-p "host-a" (car prompts)))
+      (should (string-match-p "same" (car prompts)))
+      (should-error (claude-code-ide-stop "a") :type 'user-error)
+      (should-error (claude-code-ide--reattach-session "a") :type 'user-error)
+      (should (= (length requests) 1))
+      (reply "killed session same\n")
+      (should-error (claude-code-ide-stop "a") :type 'user-error)
+      (should (= (length requests) 2))
+      (reply "" 255 t)
+      (should (eq (claude-code-ide--get-session "a") session))
+      (should (process-live-p (claude-code-ide-session-process other)))
+      (should (process-live-p (claude-code-ide-session-process local))))))
 
 (ert-deftest claude-code-ide-test-remote-stop-finalizes-both-callback-orders ()
   "Verified Stop removes one target before or after its client exits."
   (dolist (sentinel-first '(t nil))
     (claude-code-ide-tests--with-remote-targets
-     (let* ((session (add-target "a" "host-a"))
-            (process (claude-code-ide-session-process session))
-            (other (add-target "b" "host-b")))
-       (claude-code-ide-stop "a")
-       (reply "killed session same\n")
-       (when sentinel-first
-         (claude-code-ide--cleanup-on-exit "a" nil process)
-         (should (claude-code-ide-manager--item-by-session-key "a")))
-       (reply "another-target\n")
-       (unless sentinel-first
-         (claude-code-ide--cleanup-on-exit "a" nil process))
-       (claude-code-ide-manager-refresh-items '(:type global))
-       (should-not (claude-code-ide--get-session "a"))
-       (should-not (claude-code-ide-manager--item-by-session-key "a"))
-       (should-not (process-live-p process))
-       (should (process-live-p (claude-code-ide-session-process other)))))))
+      (let* ((session (add-target "a" "host-a"))
+             (process (claude-code-ide-session-process session))
+             (other (add-target "b" "host-b")))
+        (claude-code-ide-stop "a")
+        (reply "killed session same\n")
+        (when sentinel-first
+          (claude-code-ide--cleanup-on-exit "a" nil process)
+          (should (claude-code-ide-manager--item-by-session-key "a")))
+        (reply "another-target\n")
+        (unless sentinel-first
+          (claude-code-ide--cleanup-on-exit "a" nil process))
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should-not (claude-code-ide--get-session "a"))
+        (should-not (claude-code-ide-manager--item-by-session-key "a"))
+        (should-not (process-live-p process))
+        (should (process-live-p (claude-code-ide-session-process other)))))))
 
 (ert-deftest claude-code-ide-test-remote-stop-late-result-preserves-new-owner ()
   "A delayed Stop result cannot remove a newer attachment with the same ID."
   (dolist (disconnected '(nil t))
     (claude-code-ide-tests--with-remote-targets
-     (let* ((old (add-target "a" "host-a"))
-            (old-process (claude-code-ide-session-process old)))
-       (when disconnected
-         (claude-code-ide--cleanup-on-exit "a" nil old-process))
-       (claude-code-ide-stop "a")
-       (reply "killed session same\n")
-       (let ((new (add-target "a" "host-a")))
-         (reply "another-target\n")
-         (claude-code-ide--cleanup-on-exit "a" nil old-process)
-         (should (eq (claude-code-ide--get-session "a") new))
-         (should (process-live-p (claude-code-ide-session-process new))))))))
+      (let* ((old (add-target "a" "host-a"))
+             (old-process (claude-code-ide-session-process old)))
+        (when disconnected
+          (claude-code-ide--cleanup-on-exit "a" nil old-process))
+        (claude-code-ide-stop "a")
+        (reply "killed session same\n")
+        (let ((new (add-target "a" "host-a")))
+          (reply "another-target\n")
+          (claude-code-ide--cleanup-on-exit "a" nil old-process)
+          (should (eq (claude-code-ide--get-session "a") new))
+          (should (process-live-p (claude-code-ide-session-process new))))))))
 
 (ert-deftest claude-code-ide-test-remote-detach-clears-activity-without-stop ()
   "Detach clears activity and retains metadata without a remote request."
   (claude-code-ide-tests--with-remote-targets
-   (let* ((session (add-target "a" "host-a"))
-          (buffer (claude-code-ide-session-buffer session))
-          (process (claude-code-ide-session-process session)))
-     (with-current-buffer buffer
-       (setq claude-code-ide-session-idle-enabled t
-             claude-code-ide-session-idle-p t
-             claude-code-ide-session-working-p t))
-     (claude-code-ide--cleanup-on-exit "a" t process)
-     (should-not requests)
-     (should-not (claude-code-ide--get-session "a"))
-     (should (claude-code-ide-manager--item-by-session-key "a"))
-     (with-current-buffer buffer
-       (should-not claude-code-ide-session-idle-enabled)
-       (should-not claude-code-ide-session-idle-p)
-       (should-not claude-code-ide-session-working-p)))))
+    (let* ((session (add-target "a" "host-a"))
+           (buffer (claude-code-ide-session-buffer session))
+           (process (claude-code-ide-session-process session)))
+      (with-current-buffer buffer
+        (setq claude-code-ide-session-idle-enabled t
+              claude-code-ide-session-idle-p t
+              claude-code-ide-session-working-p t))
+      (claude-code-ide--cleanup-on-exit "a" t process)
+      (should-not requests)
+      (should-not (claude-code-ide--get-session "a"))
+      (should (claude-code-ide-manager--item-by-session-key "a"))
+      (with-current-buffer buffer
+        (should-not claude-code-ide-session-idle-enabled)
+        (should-not claude-code-ide-session-idle-p)
+        (should-not claude-code-ide-session-working-p)))))
 
 (ert-deftest claude-code-ide-test-remote-disabled-persistence-does-not-restore ()
   "Disabled persistence starts without saved remote targets or requests."
   (claude-code-ide-tests--with-remote-targets
-   (let ((claude-code-ide-manager--persisted-state
-          '(:version 3 :scopes
-                     (("global" :items
-                       ((:session-key "saved" :host "host-a" :zmx-name "same"
-                                      :cli-type omp :directory "/remote/project")))))))
-     (cl-letf (((symbol-function 'persist-load) #'ignore))
-       (claude-code-ide-manager--initialize)
-       (claude-code-ide-manager-refresh-items '(:type global))
-       (should-not (claude-code-ide-manager--item-by-session-key "saved"))
-       (should-not requests)))))
+    (let ((claude-code-ide-manager--persisted-state
+           '(:version 3 :scopes
+                      (("global" :items
+                        ((:session-key "saved" :host "host-a" :zmx-name "same"
+                                       :cli-type omp :directory "/remote/project")))))))
+      (cl-letf (((symbol-function 'persist-load) #'ignore))
+        (claude-code-ide-manager--initialize)
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should-not (claude-code-ide-manager--item-by-session-key "saved"))
+        (should-not requests)))))
 
 (ert-deftest claude-code-ide-test-remote-attach-records-known-repository ()
   "Adopting a remote session records its directory for the remote Worktree menu."
   (claude-code-ide-tests--with-remote-targets
-   (let ((claude-code-ide-terminal-initialization-delay 0))
-     (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-               ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
-               ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata) #'ignore)
-               ((symbol-function 'claude-code-ide--install-terminal-resize-observer) #'ignore)
-               ((symbol-function 'claude-code-ide--create-terminal-with-command)
-                (lambda (name &rest _)
-                  (let* ((buffer (generate-new-buffer name))
-                         (process (make-pipe-process
-                                   :name "cci-record-client" :buffer buffer
-                                   :noquery t :sentinel #'ignore)))
-                    (with-current-buffer buffer
-                      (setq-local major-mode 'ghostel-mode))
-                    (push buffer buffers)
-                    (push process clients)
-                    (cons buffer process)))))
-       (should (claude-code-ide--attach-zmx-entry
-                '(:host "host-a" :name "v12") "/srv/v12x/" "/missing/omp"))
-       ;; A local adoption names no host, so it records nothing.
-       (should (claude-code-ide--attach-zmx-entry
-                '(:name "local") (make-temp-file "cci-local-" t) "/missing/omp"))
-       (should (equal claude-code-ide-manager--remote-repositories
-                      '(("host-a" "/srv/v12x"))))
-       ;; The reader behind the remote Worktree menu offers that directory.
-       (let (collection)
-         (cl-letf (((symbol-function 'completing-read)
-                    (lambda (_prompt candidates &rest _)
-                      (setq collection candidates)
-                      (car candidates))))
-           (should (equal (claude-code-ide-manager--read-remote-repository "host-a")
-                          "/srv/v12x"))
-           (should (equal collection '("/srv/v12x")))))))))
+    (let ((claude-code-ide-terminal-initialization-delay 0))
+      (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
+                ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata) #'ignore)
+                ((symbol-function 'claude-code-ide--install-terminal-resize-observer) #'ignore)
+                ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                 (lambda (name &rest _)
+                   (let* ((buffer (generate-new-buffer name))
+                          (process (make-pipe-process
+                                    :name "cci-record-client" :buffer buffer
+                                    :noquery t :sentinel #'ignore)))
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode))
+                     (push buffer buffers)
+                     (push process clients)
+                     (cons buffer process)))))
+        (should (claude-code-ide--attach-zmx-entry
+                 '(:host "host-a" :name "v12") "/srv/v12x/" "/missing/omp"))
+        ;; A local adoption names no host, so it records nothing.
+        (should (claude-code-ide--attach-zmx-entry
+                 '(:name "local") (make-temp-file "cci-local-" t) "/missing/omp"))
+        (should (equal claude-code-ide-manager--remote-repositories
+                       '(("host-a" "/srv/v12x"))))
+        ;; The reader behind the remote Worktree menu offers that directory.
+        (let (collection)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt candidates &rest _)
+                       (setq collection candidates)
+                       (car candidates))))
+            (should (equal (claude-code-ide-manager--read-remote-repository "host-a")
+                           "/srv/v12x"))
+            (should (equal collection '("/srv/v12x")))))))))
 
 (ert-deftest claude-code-ide-test-remote-failed-attach-retains-and-reattaches-same-id ()
   "Failed attachment retains one target and explicit reattach preserves it."
   (claude-code-ide-tests--with-remote-targets
-   (let ((other (add-target "b" "host-b"))
-         (claude-code-ide-terminal-initialization-delay 0)
-         (claude-code-ide-remote-launch-config
-          '(("host-a" :environment ("SKIP_TMUX=1"))))
-         (available nil))
-     (cl-letf
-         (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-          ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
-          ((symbol-function 'claude-code-ide--register-session)
-           #'claude-code-ide--put-session)
-          ((symbol-function 'claude-code-ide--create-terminal-with-command)
-           (lambda (name _directory _command _environment)
-             (unless available (user-error "Ghostel is unavailable"))
-             (let* ((buffer (generate-new-buffer name))
-                    (process (make-pipe-process
-                              :name "cci-reattached-client" :buffer buffer
-                              :noquery t :sentinel #'ignore)))
-               (with-current-buffer buffer
-                 (setq-local major-mode 'ghostel-mode))
-               (push buffer buffers)
-               (push process clients)
-               (cons buffer process)))))
-       (should-error
-        (claude-code-ide--attach-zmx-entry
-         '(:host "host-a" :name "same")
-         "/tmp/shared/" "/missing/omp" "stable")
-        :type 'user-error)
-       (should-not (claude-code-ide--get-session "stable"))
-       (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
-         (should item)
-         (setf (claude-code-ide-manager-item-custom-name item) "Saved"
-               (claude-code-ide-manager-item-order item) 7
-               (claude-code-ide-manager-item-pinned item) t))
-       (let ((claude-code-ide-manager-auto-reattach nil))
-         (should-error (claude-code-ide-manager--ensure-live-target "stable")
-                       :type 'user-error))
-       (let ((claude-code-ide-remote-hosts nil))
-         (should-error (claude-code-ide--reattach-session "stable")
-                       :type 'user-error))
-       (should-not requests)
-       (should-error (claude-code-ide--reattach-session "stable")
-                     :type 'user-error)
-       (should-not requests)
-       (should-not (claude-code-ide--get-session "stable"))
-       (should (claude-code-ide-manager--item-by-session-key "stable"))
-       (setq available t)
-       ;; Selection reattaches the same Session ID by default.
-       (should (claude-code-ide-manager--ensure-live-target "stable"))
-       (let ((session (claude-code-ide--get-session "stable")))
-         (should (process-live-p (claude-code-ide-session-process session)))
-         (should (equal (claude-code-ide-session-custom-name session) "Saved"))
-         (should (= (claude-code-ide-session-order session) 7)))
-       (claude-code-ide-manager-refresh-items '(:type global))
-       (should (claude-code-ide-manager-item-pinned
-                (claude-code-ide-manager--item-by-session-key "stable")))
-       (should (eq (claude-code-ide--get-session "b") other))))))
+    (let ((other (add-target "b" "host-b"))
+          (claude-code-ide-terminal-initialization-delay 0)
+          (claude-code-ide-remote-launch-config
+           '(("host-a" :environment ("SKIP_TMUX=1"))))
+          (available nil))
+      (cl-letf
+          (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+           ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
+           ((symbol-function 'claude-code-ide--register-session)
+            #'claude-code-ide--put-session)
+           ((symbol-function 'claude-code-ide--create-terminal-with-command)
+            (lambda (name _directory _command _environment)
+              (unless available (user-error "Ghostel is unavailable"))
+              (let* ((buffer (generate-new-buffer name))
+                     (process (make-pipe-process
+                               :name "cci-reattached-client" :buffer buffer
+                               :noquery t :sentinel #'ignore)))
+                (with-current-buffer buffer
+                  (setq-local major-mode 'ghostel-mode))
+                (push buffer buffers)
+                (push process clients)
+                (cons buffer process)))))
+        (should-error
+         (claude-code-ide--attach-zmx-entry
+          '(:host "host-a" :name "same")
+          "/tmp/shared/" "/missing/omp" "stable")
+         :type 'user-error)
+        (should-not (claude-code-ide--get-session "stable"))
+        (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
+          (should item)
+          (setf (claude-code-ide-manager-item-custom-name item) "Saved"
+                (claude-code-ide-manager-item-order item) 7
+                (claude-code-ide-manager-item-pinned item) t))
+        (let ((claude-code-ide-manager-auto-reattach nil))
+          (should-error (claude-code-ide-manager--ensure-live-target "stable")
+                        :type 'user-error))
+        (let ((claude-code-ide-remote-hosts nil))
+          (should-error (claude-code-ide--reattach-session "stable")
+                        :type 'user-error))
+        (should-not requests)
+        (should-error (claude-code-ide--reattach-session "stable")
+                      :type 'user-error)
+        (should-not requests)
+        (should-not (claude-code-ide--get-session "stable"))
+        (should (claude-code-ide-manager--item-by-session-key "stable"))
+        (setq available t)
+        ;; Selection reattaches the same Session ID by default.
+        (should (claude-code-ide-manager--ensure-live-target "stable"))
+        (let ((session (claude-code-ide--get-session "stable")))
+          (should (process-live-p (claude-code-ide-session-process session)))
+          (should (equal (claude-code-ide-session-custom-name session) "Saved"))
+          (should (= (claude-code-ide-session-order session) 7)))
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should (claude-code-ide-manager-item-pinned
+                 (claude-code-ide-manager--item-by-session-key "stable")))
+        (should (eq (claude-code-ide--get-session "b") other))))))
 
 (ert-deftest claude-code-ide-test-remote-reattach-rejects-missing-target ()
   "A remembered target must still exist before a new terminal can attach."
   (claude-code-ide-tests--with-remote-targets
-   (claude-code-ide--materialize-remote-target
-    "stable" "host-a" "same" "/tmp/shared/" 1 1)
-   (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
-              (lambda (host _args callback &optional _name)
-                (funcall callback (list :host host :status 0
-                                        :stdout "same-other\n" :stderr ""))
-                nil))
-             ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-             ((symbol-function 'claude-code-ide--create-terminal-with-command)
-              (lambda (&rest _) (ert-fail "A missing target started a terminal"))))
-     (should-error (claude-code-ide--reattach-session "stable")
-                   :type 'user-error)
-     (should-not (claude-code-ide--get-session "stable"))
-     (should (claude-code-ide-manager--item-by-session-key "stable")))))
+    (claude-code-ide--materialize-remote-target
+     "stable" "host-a" "same" "/tmp/shared/" 1 1)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+               (lambda (host _args callback &optional _name)
+                 (funcall callback (list :host host :status 0
+                                         :stdout "same-other\n" :stderr ""))
+                 nil))
+              ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+              ((symbol-function 'claude-code-ide--create-terminal-with-command)
+               (lambda (&rest _) (ert-fail "A missing target started a terminal"))))
+      (should-error (claude-code-ide--reattach-session "stable")
+                    :type 'user-error)
+      (should-not (claude-code-ide--get-session "stable"))
+      (should (claude-code-ide-manager--item-by-session-key "stable")))))
 
 (ert-deftest claude-code-ide-test-remote-selection-auto-reattach-switches ()
   "Selecting a disconnected remote row reattaches it only when enabled."
@@ -22319,43 +22319,43 @@ default, so the default must not track the last saved value."
         (claude-code-ide-terminal-initialization-delay 0)
         (starts 0))
     (claude-code-ide-tests--with-remote-targets
-     (claude-code-ide--materialize-remote-target
-      "stable" "host-a" "same" "/tmp/shared/" 1 1)
-     (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session) switch)
-               ((symbol-function 'claude-code-ide--reattach-cli-path)
-                (lambda (_item) "/missing/omp"))
-               ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
-               ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-               ((symbol-function 'claude-code-ide--register-session)
-                #'claude-code-ide--put-session)
-               ((symbol-function 'claude-code-ide--create-terminal-with-command)
-                (lambda (name &rest _)
-                  (cl-incf starts)
-                  (let* ((buffer (generate-new-buffer name))
-                         (process (make-pipe-process
-                                   :name "cci-selected-client" :buffer buffer
-                                   :noquery t :sentinel #'ignore)))
-                    (with-current-buffer buffer
-                      (setq-local major-mode 'ghostel-mode))
-                    (push buffer buffers)
-                    (push process clients)
-                    (cons buffer process)))))
-       (let ((claude-code-ide-manager-auto-reattach nil))
-         (should (string-match-p
-                  "Press c to reattach"
-                  (cadr (should-error
-                         (claude-code-ide-manager-switch-to-session "stable")
-                         :type 'user-error))))
-         (should (zerop starts))
-         (should-not (claude-code-ide--get-session "stable")))
-       (save-window-excursion
-         (let ((window (claude-code-ide-manager-switch-to-session "stable"))
-               (session (claude-code-ide--get-session "stable")))
-           (should (= starts 1))
-           (should (process-live-p (claude-code-ide-session-process session)))
-           (should (eq (window-buffer window)
-                       (claude-code-ide-session-buffer session)))
-           (should (equal claude-code-ide-manager--current-session-key "stable"))))))))
+      (claude-code-ide--materialize-remote-target
+       "stable" "host-a" "same" "/tmp/shared/" 1 1)
+      (cl-letf (((symbol-function 'claude-code-ide-manager-switch-to-session) switch)
+                ((symbol-function 'claude-code-ide--reattach-cli-path)
+                 (lambda (_item) "/missing/omp"))
+                ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
+                ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                ((symbol-function 'claude-code-ide--register-session)
+                 #'claude-code-ide--put-session)
+                ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                 (lambda (name &rest _)
+                   (cl-incf starts)
+                   (let* ((buffer (generate-new-buffer name))
+                          (process (make-pipe-process
+                                    :name "cci-selected-client" :buffer buffer
+                                    :noquery t :sentinel #'ignore)))
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode))
+                     (push buffer buffers)
+                     (push process clients)
+                     (cons buffer process)))))
+        (let ((claude-code-ide-manager-auto-reattach nil))
+          (should (string-match-p
+                   "Press c to reattach"
+                   (cadr (should-error
+                          (claude-code-ide-manager-switch-to-session "stable")
+                          :type 'user-error))))
+          (should (zerop starts))
+          (should-not (claude-code-ide--get-session "stable")))
+        (save-window-excursion
+          (let ((window (claude-code-ide-manager-switch-to-session "stable"))
+                (session (claude-code-ide--get-session "stable")))
+            (should (= starts 1))
+            (should (process-live-p (claude-code-ide-session-process session)))
+            (should (eq (window-buffer window)
+                        (claude-code-ide-session-buffer session)))
+            (should (equal claude-code-ide-manager--current-session-key "stable"))))))))
 
 (defmacro claude-code-ide-tests--with-local-targets (&rest body)
   "Run BODY with isolated local zmx rows on top of the remote fixture.
@@ -22365,130 +22365,130 @@ killed zmx names, LIST-CALLS, and DIR, an accessible directory.
 `remember-local' adds a disconnected row and `add-local' a live one."
   (declare (indent 0))
   `(claude-code-ide-tests--with-remote-targets
-    (let ((listed nil) (attaches nil) (kills nil) (list-calls 0)
-          (dir (file-name-as-directory temporary-file-directory))
-          (claude-code-ide-terminal-initialization-delay 0)
-          (claude-code-ide-enable-ide-integration nil))
-      (cl-labels
-          ((remember-local
-             (id name order)
-             (claude-code-ide-manager--remember-session
-              (claude-code-ide-session-create
-               :id id :zmx-name name :directory dir :cli-type 'omp
-               :order order :created-at 100.0)))
-           (add-local
-             (id name)
-             (let* ((buffer (generate-new-buffer "*claude-code[local-test]*"))
-                    (process (make-pipe-process
-                              :name "cci-local-client" :buffer buffer
-                              :noquery t :sentinel #'ignore)))
-               (push buffer buffers)
-               (push process clients)
-               (with-current-buffer buffer
-                 (add-hook 'kill-buffer-hook
-                           (lambda () (claude-code-ide--cleanup-on-exit id t process))
-                           nil t))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id id :zmx-name name :directory dir :buffer buffer
-                 :process process :cli-type 'omp :order 1))
-               (claude-code-ide-manager-refresh-items '(:type global) t))))
-        (cl-letf (((symbol-function 'claude-code-ide-zmx-session-names)
-                   (lambda ()
-                     (cl-incf list-calls)
-                     (if (eq listed 'fail) (error "zmx list failed") listed)))
-                  ((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
-                  ((symbol-function 'claude-code-ide-zmx-kill)
-                   (lambda (name)
-                     (when (equal name "fail-name") (error "zmx kill failed"))
-                     (push name kills)))
-                  ((symbol-function 'claude-code-ide--reattach-cli-path)
-                   (lambda (_item) "/missing/omp"))
-                  ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-                  ((symbol-function 'claude-code-ide--register-session)
-                   #'claude-code-ide--put-session)
-                  ((symbol-function 'claude-code-ide--create-terminal-session)
-                   (lambda (name &rest _)
-                     (push (cons claude-code-ide-zmx--pending-name
-                                 claude-code-ide-zmx--pending-attach-only)
-                           attaches)
-                     (let* ((buffer (generate-new-buffer name))
-                            (process (make-pipe-process
-                                      :name "cci-local-attach" :buffer buffer
-                                      :noquery t :sentinel #'ignore)))
-                       (with-current-buffer buffer
-                         (setq-local major-mode 'ghostel-mode))
-                       (push buffer buffers)
-                       (push process clients)
-                       (cons buffer process)))))
-          ,@body)))))
+     (let ((listed nil) (attaches nil) (kills nil) (list-calls 0)
+           (dir (file-name-as-directory temporary-file-directory))
+           (claude-code-ide-terminal-initialization-delay 0)
+           (claude-code-ide-enable-ide-integration nil))
+       (cl-labels
+           ((remember-local
+              (id name order)
+              (claude-code-ide-manager--remember-session
+               (claude-code-ide-session-create
+                :id id :zmx-name name :directory dir :cli-type 'omp
+                :order order :created-at 100.0)))
+            (add-local
+              (id name)
+              (let* ((buffer (generate-new-buffer "*claude-code[local-test]*"))
+                     (process (make-pipe-process
+                               :name "cci-local-client" :buffer buffer
+                               :noquery t :sentinel #'ignore)))
+                (push buffer buffers)
+                (push process clients)
+                (with-current-buffer buffer
+                  (add-hook 'kill-buffer-hook
+                            (lambda () (claude-code-ide--cleanup-on-exit id t process))
+                            nil t))
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id id :zmx-name name :directory dir :buffer buffer
+                  :process process :cli-type 'omp :order 1))
+                (claude-code-ide-manager-refresh-items '(:type global) t))))
+         (cl-letf (((symbol-function 'claude-code-ide-zmx-session-names)
+                    (lambda ()
+                      (cl-incf list-calls)
+                      (if (eq listed 'fail) (error "zmx list failed") listed)))
+                   ((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+                   ((symbol-function 'claude-code-ide-zmx-kill)
+                    (lambda (name)
+                      (when (equal name "fail-name") (error "zmx kill failed"))
+                      (push name kills)))
+                   ((symbol-function 'claude-code-ide--reattach-cli-path)
+                    (lambda (_item) "/missing/omp"))
+                   ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                   ((symbol-function 'claude-code-ide--register-session)
+                    #'claude-code-ide--put-session)
+                   ((symbol-function 'claude-code-ide--create-terminal-session)
+                    (lambda (name &rest _)
+                      (push (cons claude-code-ide-zmx--pending-name
+                                  claude-code-ide-zmx--pending-attach-only)
+                            attaches)
+                      (let* ((buffer (generate-new-buffer name))
+                             (process (make-pipe-process
+                                       :name "cci-local-attach" :buffer buffer
+                                       :noquery t :sentinel #'ignore)))
+                        (with-current-buffer buffer
+                          (setq-local major-mode 'ghostel-mode))
+                        (push buffer buffers)
+                        (push process clients)
+                        (cons buffer process)))))
+           ,@body)))))
 
 (ert-deftest claude-code-ide-test-local-zmx-row-outlives-its-client ()
   "A local row stays while zmx lists it or cannot answer, and goes once zmx reports it gone.
 A local Session without a zmx name never leaves a row."
   (claude-code-ide-tests--with-local-targets
-   (dolist (case '(("listed" "listed" ("listed") t) ("unknown" "unknown" fail t)
-                   ("gone" "gone" nil nil) ("plain" nil ("plain") nil)))
-     (pcase-let ((`(,name ,zmx-name ,answer ,kept) case))
-       (setq listed answer)
-       (add-local name zmx-name)
-       (setf (claude-code-ide-manager-item-pinned
-              (claude-code-ide-manager--item-by-session-key '(:type global) name))
-             t)
-       (claude-code-ide--cleanup-on-exit name)
-       (should-not (claude-code-ide--get-session name))
-       (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) name)))
-         (should (eq (and item t) kept))
-         (when kept
-           (should-not (claude-code-ide-manager-item-live-p item))
-           (should (claude-code-ide-manager-item-pinned item))
-           (should (string-match-p
-                    "\\[disconnected\\]"
-                    (claude-code-ide-manager--item-visible-name item)))))))))
+    (dolist (case '(("listed" "listed" ("listed") t) ("unknown" "unknown" fail t)
+                    ("gone" "gone" nil nil) ("plain" nil ("plain") nil)))
+      (pcase-let ((`(,name ,zmx-name ,answer ,kept) case))
+        (setq listed answer)
+        (add-local name zmx-name)
+        (setf (claude-code-ide-manager-item-pinned
+               (claude-code-ide-manager--item-by-session-key '(:type global) name))
+              t)
+        (claude-code-ide--cleanup-on-exit name)
+        (should-not (claude-code-ide--get-session name))
+        (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) name)))
+          (should (eq (and item t) kept))
+          (when kept
+            (should-not (claude-code-ide-manager-item-live-p item))
+            (should (claude-code-ide-manager-item-pinned item))
+            (should (string-match-p
+                     "\\[disconnected\\]"
+                     (claude-code-ide-manager--item-visible-name item)))))))))
 
 (ert-deftest claude-code-ide-test-local-zmx-agent-exit-removes-row-and-buffer ()
   "A client that exits after its zmx session ended removes the row and the buffer.
 This is the result of `/exit' in the Agent and of `/despawn' in its parent."
   (claude-code-ide-tests--with-local-targets
-   (add-local "child" "cci-omp-child-abc123")
-   (let* ((session (claude-code-ide--get-session "child"))
-          (buffer (claude-code-ide-session-buffer session)))
-     (with-current-buffer buffer
-       (setq-local major-mode 'ghostel-mode))
-     (claude-code-ide--cleanup-on-exit "child" nil (claude-code-ide-session-process session))
-     (should (= list-calls 1))
-     (should-not (claude-code-ide--get-session "child"))
-     (should-not (buffer-live-p buffer))
-     (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "child")))))
+    (add-local "child" "cci-omp-child-abc123")
+    (let* ((session (claude-code-ide--get-session "child"))
+           (buffer (claude-code-ide-session-buffer session)))
+      (with-current-buffer buffer
+        (setq-local major-mode 'ghostel-mode))
+      (claude-code-ide--cleanup-on-exit "child" nil (claude-code-ide-session-process session))
+      (should (= list-calls 1))
+      (should-not (claude-code-ide--get-session "child"))
+      (should-not (buffer-live-p buffer))
+      (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "child")))))
 
 (ert-deftest claude-code-ide-test-local-zmx-row-reattaches-after-restart ()
   "A saved local row reloads disconnected and reattaches under its own identity."
   (claude-code-ide-tests--with-local-targets
-   (let ((claude-code-ide-manager-persist-state t)
-         (claude-code-ide-manager--persisted-state
-          (copy-tree claude-code-ide-manager--empty-persisted-state))
-         (persist--test-store (make-hash-table :test 'eq))
-         (persist--test-defaults (make-hash-table :test 'eq)))
-     (remember-local "kept" "loc" 7)
-     (claude-code-ide-manager--save-state)
-     (claude-code-ide-manager--reset-state)
-     (claude-code-ide-manager--load-state)
-     (setq listed '("loc"))
-     (should (> (claude-code-ide--next-session-order dir) 7))
-     (let ((claude-code-ide-manager-auto-reattach nil))
-       (should (string-match-p
-                "Press c to reattach"
-                (cadr (should-error
-                       (claude-code-ide-manager--ensure-live-target "kept")
-                       :type 'user-error))))
-       (should-not attaches))
-     (let ((session (claude-code-ide--reattach-target "kept")))
-       (should (equal (claude-code-ide-session-id session) "kept"))
-       (should (= (claude-code-ide-session-order session) 7))
-       (should (= (claude-code-ide-session-created-at session) 100.0))
-       (should (equal attaches '(("loc" . t))))
-       (should (eq (claude-code-ide--reattach-target "kept") session))
-       (should (= (length attaches) 1))))))
+    (let ((claude-code-ide-manager-persist-state t)
+          (claude-code-ide-manager--persisted-state
+           (copy-tree claude-code-ide-manager--empty-persisted-state))
+          (persist--test-store (make-hash-table :test 'eq))
+          (persist--test-defaults (make-hash-table :test 'eq)))
+      (remember-local "kept" "loc" 7)
+      (claude-code-ide-manager--save-state)
+      (claude-code-ide-manager--reset-state)
+      (claude-code-ide-manager--load-state)
+      (setq listed '("loc"))
+      (should (> (claude-code-ide--next-session-order dir) 7))
+      (let ((claude-code-ide-manager-auto-reattach nil))
+        (should (string-match-p
+                 "Press c to reattach"
+                 (cadr (should-error
+                        (claude-code-ide-manager--ensure-live-target "kept")
+                        :type 'user-error))))
+        (should-not attaches))
+      (let ((session (claude-code-ide--reattach-target "kept")))
+        (should (equal (claude-code-ide-session-id session) "kept"))
+        (should (= (claude-code-ide-session-order session) 7))
+        (should (= (claude-code-ide-session-created-at session) 100.0))
+        (should (equal attaches '(("loc" . t))))
+        (should (eq (claude-code-ide--reattach-target "kept") session))
+        (should (= (length attaches) 1))))))
 
 (ert-deftest claude-code-ide-test-reattach-keeps-master-mark ()
   "A saved master row, local or remote, reattaches as a master Session.
@@ -22498,272 +22498,272 @@ reattaches as a plain Session in no Master section."
     (dolist (master '(t nil))
       (ert-info ((format "host %s master %s" host master))
         (claude-code-ide-tests--with-local-targets
-         (let ((claude-code-ide-manager-persist-state t)
-               (claude-code-ide-manager--persisted-state
-                (copy-tree claude-code-ide-manager--empty-persisted-state))
-               (persist--test-store (make-hash-table :test 'eq))
-               (persist--test-defaults (make-hash-table :test 'eq))
-               (scope '(:type global))
-               (name "cci-omp-master-aaaaaa")
-               heading row-headings)
-           (claude-code-ide-manager--remember-session
-            (claude-code-ide-session-create
-             :id "m" :host host :zmx-name name :directory dir :cli-type 'omp
-             :order 1 :created-at 100.0 :master master))
-           (claude-code-ide-manager--save-state)
-           (claude-code-ide-manager--reset-state)
-           (claude-code-ide-manager--load-state)
-           (setq listed (list name))
-           (cl-letf (((symbol-function 'claude-code-ide--create-session)
-                      (lambda (directory _ _ zmx-name &optional host id &rest _)
-                        (let ((session (claude-code-ide-session-create
-                                        :id id :zmx-name zmx-name :host host
-                                        :directory directory :cli-type 'omp
-                                        :order 1 :created-at 100.0
-                                        :process (car (push (make-pipe-process
-                                                             :name "cci-master-client"
-                                                             :noquery t :sentinel #'ignore)
-                                                            clients)))))
-                          (claude-code-ide--put-session session)
-                          session)))
-                     ((symbol-function 'claude-code-ide-manager--local-group-metadata)
-                      #'ignore))
-             (let ((session (claude-code-ide--reattach-target "m")))
-               (should (equal (claude-code-ide-session-id session) "m"))
-               (should (eq (claude-code-ide-session-master session) master)))
-             (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
-             (claude-code-ide-manager-refresh-items scope t)
-             (claude-code-ide-manager--render scope))
-           (let ((item (claude-code-ide-manager--item-by-session-key scope "m")))
-             (should (claude-code-ide-manager-item-live-p item))
-             (should (eq (claude-code-ide-manager-item-master item) master)))
-           (with-current-buffer (car (push (claude-code-ide-manager--get-buffer scope)
-                                           buffers))
-             (goto-char (point-min))
-             (while (not (eobp))
-               (when (get-text-property (point) 'claude-code-ide-manager-group-heading)
-                 (setq heading (string-trim (thing-at-point 'line t))))
-               (when (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
-                            "m")
-                 (push heading row-headings))
-               (forward-line 1)))
-           (should (= (length row-headings) 1))
-           (should (eq (equal (car row-headings) "Master") master))))))))
+          (let ((claude-code-ide-manager-persist-state t)
+                (claude-code-ide-manager--persisted-state
+                 (copy-tree claude-code-ide-manager--empty-persisted-state))
+                (persist--test-store (make-hash-table :test 'eq))
+                (persist--test-defaults (make-hash-table :test 'eq))
+                (scope '(:type global))
+                (name "cci-omp-master-aaaaaa")
+                heading row-headings)
+            (claude-code-ide-manager--remember-session
+             (claude-code-ide-session-create
+              :id "m" :host host :zmx-name name :directory dir :cli-type 'omp
+              :order 1 :created-at 100.0 :master master))
+            (claude-code-ide-manager--save-state)
+            (claude-code-ide-manager--reset-state)
+            (claude-code-ide-manager--load-state)
+            (setq listed (list name))
+            (cl-letf (((symbol-function 'claude-code-ide--create-session)
+                       (lambda (directory _ _ zmx-name &optional host id &rest _)
+                         (let ((session (claude-code-ide-session-create
+                                         :id id :zmx-name zmx-name :host host
+                                         :directory directory :cli-type 'omp
+                                         :order 1 :created-at 100.0
+                                         :process (car (push (make-pipe-process
+                                                              :name "cci-master-client"
+                                                              :noquery t :sentinel #'ignore)
+                                                             clients)))))
+                           (claude-code-ide--put-session session)
+                           session)))
+                      ((symbol-function 'claude-code-ide-manager--local-group-metadata)
+                       #'ignore))
+              (let ((session (claude-code-ide--reattach-target "m")))
+                (should (equal (claude-code-ide-session-id session) "m"))
+                (should (eq (claude-code-ide-session-master session) master)))
+              (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
+              (claude-code-ide-manager-refresh-items scope t)
+              (claude-code-ide-manager--render scope))
+            (let ((item (claude-code-ide-manager--item-by-session-key scope "m")))
+              (should (claude-code-ide-manager-item-live-p item))
+              (should (eq (claude-code-ide-manager-item-master item) master)))
+            (with-current-buffer (car (push (claude-code-ide-manager--get-buffer scope)
+                                            buffers))
+              (goto-char (point-min))
+              (while (not (eobp))
+                (when (get-text-property (point) 'claude-code-ide-manager-group-heading)
+                  (setq heading (string-trim (thing-at-point 'line t))))
+                (when (equal (get-text-property (point) 'claude-code-ide-manager-session-key)
+                             "m")
+                  (push heading row-headings))
+                (forward-line 1)))
+            (should (= (length row-headings) 1))
+            (should (eq (equal (car row-headings) "Master") master))))))))
 
 (ert-deftest claude-code-ide-test-local-zmx-reattach-of-gone-session-forgets-row ()
   "Reattaching a row whose zmx session is gone removes the row and starts nothing.
 A row whose directory is gone keeps the row and starts nothing."
   (claude-code-ide-tests--with-local-targets
-   (remember-local "gone" "gone-name" 2)
-   (should (string-match-p
-            "no longer exists"
-            (cadr (should-error (claude-code-ide--reattach-target "gone")
-                                :type 'user-error))))
-   (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
-   (claude-code-ide-manager--remember-session
-    (claude-code-ide-session-create
-     :id "moved" :zmx-name "moved" :directory "/nonexistent/cci-moved/" :order 3))
-   (setq listed '("moved"))
-   (should (string-match-p
-            "not accessible"
-            (cadr (should-error (claude-code-ide--reattach-target "moved")
-                                :type 'user-error))))
-   (should (claude-code-ide-manager--item-by-session-key '(:type global) "moved"))
-   (should-not attaches)))
+    (remember-local "gone" "gone-name" 2)
+    (should (string-match-p
+             "no longer exists"
+             (cadr (should-error (claude-code-ide--reattach-target "gone")
+                                 :type 'user-error))))
+    (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
+    (claude-code-ide-manager--remember-session
+     (claude-code-ide-session-create
+      :id "moved" :zmx-name "moved" :directory "/nonexistent/cci-moved/" :order 3))
+    (setq listed '("moved"))
+    (should (string-match-p
+             "not accessible"
+             (cadr (should-error (claude-code-ide--reattach-target "moved")
+                                 :type 'user-error))))
+    (should (claude-code-ide-manager--item-by-session-key '(:type global) "moved"))
+    (should-not attaches)))
 
 (ert-deftest claude-code-ide-test-local-zmx-attach-adopts-remembered-row ()
   "Attach by name reuses the local row, never a remote row with that name."
   (claude-code-ide-tests--with-local-targets
-   (claude-code-ide--materialize-remote-target
-    "remote" "host-a" "loc" "/tmp/shared/" 1 1)
-   (remember-local "kept" "loc" 4)
-   (setq listed '("loc"))
-   (let ((session (claude-code-ide--attach-zmx-entry (list :name "loc") dir "/missing/omp")))
-     (should (equal (claude-code-ide-session-id session) "kept"))
-     (should (eq (claude-code-ide--attach-zmx-entry (list :name "loc") dir "/missing/omp")
-                 session))
-     (should (= (length attaches) 1))
-     (should-not (claude-code-ide--get-session "remote"))
-     (should (= 1 (cl-count-if
-                   (lambda (item)
-                     (and (equal (claude-code-ide-manager-item-zmx-name item) "loc")
-                          (null (claude-code-ide-manager-item-host item))))
-                   (claude-code-ide-manager--all-items)))))))
+    (claude-code-ide--materialize-remote-target
+     "remote" "host-a" "loc" "/tmp/shared/" 1 1)
+    (remember-local "kept" "loc" 4)
+    (setq listed '("loc"))
+    (let ((session (claude-code-ide--attach-zmx-entry (list :name "loc") dir "/missing/omp")))
+      (should (equal (claude-code-ide-session-id session) "kept"))
+      (should (eq (claude-code-ide--attach-zmx-entry (list :name "loc") dir "/missing/omp")
+                  session))
+      (should (= (length attaches) 1))
+      (should-not (claude-code-ide--get-session "remote"))
+      (should (= 1 (cl-count-if
+                    (lambda (item)
+                      (and (equal (claude-code-ide-manager-item-zmx-name item) "loc")
+                           (null (claude-code-ide-manager-item-host item))))
+                    (claude-code-ide-manager--all-items)))))))
 
 (ert-deftest claude-code-ide-test-local-zmx-startup-drops-gone-rows-once ()
   "The first build drops and saves local rows zmx no longer lists, once.
 A missing zmx or a failed list keeps every row."
   (claude-code-ide-tests--with-local-targets
-   (let ((claude-code-ide-manager--local-rows-checked nil)
-         (claude-code-ide-manager-persist-state t)
-         (claude-code-ide-manager--persisted-state
-          (copy-tree claude-code-ide-manager--empty-persisted-state))
-         (persist--test-store (make-hash-table :test 'eq))
-         (persist--test-defaults (make-hash-table :test 'eq))
-         (zmx-found nil)
-         (keys (lambda ()
-                 (sort (mapcar #'claude-code-ide-manager-item-session-key
-                               (claude-code-ide-manager--build-items '(:type global)))
-                       #'string<))))
-     (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) zmx-found)))
-       (claude-code-ide--materialize-remote-target
-        "remote" "host-a" "gone" "/tmp/shared/" 1 1)
-       (remember-local "keep" "keep" 1)
-       (remember-local "gone" "gone" 2)
-       (setq listed '("keep"))
-       (should (equal (funcall keys) '("gone" "keep" "remote")))
-       (should (= list-calls 0))
-       (setq claude-code-ide-manager--local-rows-checked nil
-             zmx-found "/usr/local/bin/zmx"
-             listed 'fail)
-       (should (equal (funcall keys) '("gone" "keep" "remote")))
-       (setq claude-code-ide-manager--local-rows-checked nil
-             listed '("keep"))
-       (should (equal (funcall keys) '("keep" "remote")))
-       (claude-code-ide-manager--reset-state)
-       (claude-code-ide-manager--load-state)
-       (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
-       (should (claude-code-ide-manager--item-by-session-key '(:type global) "keep"))
-       (setq listed nil)
-       (should (member "keep" (funcall keys)))
-       (should (= list-calls 2))))))
+    (let ((claude-code-ide-manager--local-rows-checked nil)
+          (claude-code-ide-manager-persist-state t)
+          (claude-code-ide-manager--persisted-state
+           (copy-tree claude-code-ide-manager--empty-persisted-state))
+          (persist--test-store (make-hash-table :test 'eq))
+          (persist--test-defaults (make-hash-table :test 'eq))
+          (zmx-found nil)
+          (keys (lambda ()
+                  (sort (mapcar #'claude-code-ide-manager-item-session-key
+                                (claude-code-ide-manager--build-items '(:type global)))
+                        #'string<))))
+      (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) zmx-found)))
+        (claude-code-ide--materialize-remote-target
+         "remote" "host-a" "gone" "/tmp/shared/" 1 1)
+        (remember-local "keep" "keep" 1)
+        (remember-local "gone" "gone" 2)
+        (setq listed '("keep"))
+        (should (equal (funcall keys) '("gone" "keep" "remote")))
+        (should (= list-calls 0))
+        (setq claude-code-ide-manager--local-rows-checked nil
+              zmx-found "/usr/local/bin/zmx"
+              listed 'fail)
+        (should (equal (funcall keys) '("gone" "keep" "remote")))
+        (setq claude-code-ide-manager--local-rows-checked nil
+              listed '("keep"))
+        (should (equal (funcall keys) '("keep" "remote")))
+        (claude-code-ide-manager--reset-state)
+        (claude-code-ide-manager--load-state)
+        (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
+        (should (claude-code-ide-manager--item-by-session-key '(:type global) "keep"))
+        (setq listed nil)
+        (should (member "keep" (funcall keys)))
+        (should (= list-calls 2))))))
 
 (ert-deftest claude-code-ide-test-local-zmx-stop-and-detach-disconnected-rows ()
   "Stop kills a disconnected row's zmx session only when confirmed; detach never does.
 Detach removes a live local row that a plain buffer kill would keep."
   (claude-code-ide-tests--with-local-targets
-   (remember-local "stop" "stop-name" 1)
-   (setq confirmation nil)
-   (claude-code-ide-stop "stop")
-   (should-not kills)
-   (should (claude-code-ide-manager--item-by-session-key '(:type global) "stop"))
-   (setq confirmation t)
-   (with-temp-buffer
-     (claude-code-ide-stop "stop")
-     (should (buffer-live-p (current-buffer))))
-   (should (equal kills '("stop-name")))
-   (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "stop"))
-   (setq listed '("live-name"))
-   (add-local "live" "live-name")
-   (dolist (item (list (remember-local "detach" "detach-name" 2)
-                       (claude-code-ide-manager--item-by-session-key '(:type global) "live")))
-     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
-                (lambda () item))
-               ((symbol-function 'claude-code-ide-manager--scope-for-command)
-                (lambda () '(:type global))))
-       (claude-code-ide-manager-detach-at-point))
-     (should-not (claude-code-ide-manager--item-by-session-key
-                  '(:type global) (claude-code-ide-manager-item-session-key item))))
-   (should-not (claude-code-ide--get-session "live"))
-   (should (equal kills '("stop-name")))
-   (remember-local "fail" "fail-name" 3)
-   (should (string-match-p "zmx kill failed"
-                           (cadr (should-error (claude-code-ide-stop "fail")))))
-   (should (claude-code-ide-manager--item-by-session-key '(:type global) "fail"))))
+    (remember-local "stop" "stop-name" 1)
+    (setq confirmation nil)
+    (claude-code-ide-stop "stop")
+    (should-not kills)
+    (should (claude-code-ide-manager--item-by-session-key '(:type global) "stop"))
+    (setq confirmation t)
+    (with-temp-buffer
+      (claude-code-ide-stop "stop")
+      (should (buffer-live-p (current-buffer))))
+    (should (equal kills '("stop-name")))
+    (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "stop"))
+    (setq listed '("live-name"))
+    (add-local "live" "live-name")
+    (dolist (item (list (remember-local "detach" "detach-name" 2)
+                        (claude-code-ide-manager--item-by-session-key '(:type global) "live")))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                 (lambda () item))
+                ((symbol-function 'claude-code-ide-manager--scope-for-command)
+                 (lambda () '(:type global))))
+        (claude-code-ide-manager-detach-at-point))
+      (should-not (claude-code-ide-manager--item-by-session-key
+                   '(:type global) (claude-code-ide-manager-item-session-key item))))
+    (should-not (claude-code-ide--get-session "live"))
+    (should (equal kills '("stop-name")))
+    (remember-local "fail" "fail-name" 3)
+    (should (string-match-p "zmx kill failed"
+                            (cadr (should-error (claude-code-ide-stop "fail")))))
+    (should (claude-code-ide-manager--item-by-session-key '(:type global) "fail"))))
 
 (ert-deftest claude-code-ide-test-disconnect-keeps-local-row ()
   "Disconnect closes a local client, keeps its row and zmx session, and keeps point.
 The window falls back to another buffer and no other Session becomes active."
   (claude-code-ide-tests--with-local-targets
-   (let ((scope '(:type global))
-         (identity (lambda (item)
-                     (list (claude-code-ide-manager-item-order item)
-                           (claude-code-ide-manager-item-order-key item)
-                           (claude-code-ide-manager-item-directory item)
-                           (claude-code-ide-manager-item-host item)
-                           (claude-code-ide-manager-item-created-at item)
-                           (claude-code-ide-manager-item-group-metadata item))))
-         messages before)
-     (setq listed '("loc-name"))
-     (add-local "loc" "loc-name")
-     (let ((item (claude-code-ide-manager--item-by-session-key scope "loc"))
-           (buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "loc"))))
-       (setf (claude-code-ide-manager-item-custom-name item) "Mine"
-             (claude-code-ide-manager-item-pinned item) t)
-       (puthash "loc" '(:saved-layout t) claude-code-ide-manager--layouts)
-       (claude-code-ide-manager--set-scope-active-session-key scope "loc")
-       (setq before (funcall identity item))
-       (with-current-buffer buffer
-         (setq-local claude-code-ide-session-idle-enabled t)
-         (setq-local claude-code-ide-session-idle-p t)
-         (setq-local claude-code-ide-session-working-p t))
-       (should (string-prefix-p claude-code-ide-manager--bell-glyph
-                                (claude-code-ide-manager--marker-gutter item)))
-       (with-current-buffer buffer
-         (setq-local claude-code-ide-session-agent-state 'needs-input))
-       (should (string-prefix-p claude-code-ide-manager--needs-input-glyph
-                                (claude-code-ide-manager--marker-gutter item)))
-       (save-window-excursion
-         (set-window-buffer (selected-window) buffer)
-         (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
-                    (lambda () item))
-                   ((symbol-function 'claude-code-ide-manager--scope-for-command)
-                    (lambda () scope))
-                   ((symbol-function 'message)
-                    (lambda (format &rest args)
-                      (push (apply #'format-message format args) messages))))
-           (claude-code-ide-manager-disconnect-at-point))
-         (should-not (buffer-live-p buffer))
-         (should (buffer-live-p (window-buffer (selected-window)))))
-       (should-not (claude-code-ide--get-session "loc"))
-       (should-not (claude-code-ide-manager--session-buffer "loc"))
-       (let ((kept (claude-code-ide-manager--item-by-session-key scope "loc")))
-         (should (equal (claude-code-ide-manager--marker-gutter kept)
-                        claude-code-ide-manager--pin-glyph))
-         (should-not (memq (claude-code-ide-manager--row-face scope "loc")
-                           '(claude-code-ide-manager-attention-session-face
-                             claude-code-ide-manager-working-session-face
-                             claude-code-ide-manager-idle-session-face)))
-         (should kept)
-         (should-not (claude-code-ide-manager-item-live-p kept))
-         (should (equal (claude-code-ide-manager-item-custom-name kept) "Mine"))
-         (should (claude-code-ide-manager-item-pinned kept))
-         (should (equal (claude-code-ide-manager-item-zmx-name kept) "loc-name"))
-         (should (eq (claude-code-ide-manager-item-cli-type kept) 'omp))
-         (should (equal (funcall identity kept) before)))
-       (should (gethash "loc" claude-code-ide-manager--layouts))
-       (should-not kills)
-       (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "loc"))
-       (should-not (claude-code-ide-manager--scope-active-session-key scope))
-       (should (member "Disconnected zmx session loc-name. Press c to reattach"
-                       messages))))))
+    (let ((scope '(:type global))
+          (identity (lambda (item)
+                      (list (claude-code-ide-manager-item-order item)
+                            (claude-code-ide-manager-item-order-key item)
+                            (claude-code-ide-manager-item-directory item)
+                            (claude-code-ide-manager-item-host item)
+                            (claude-code-ide-manager-item-created-at item)
+                            (claude-code-ide-manager-item-group-metadata item))))
+          messages before)
+      (setq listed '("loc-name"))
+      (add-local "loc" "loc-name")
+      (let ((item (claude-code-ide-manager--item-by-session-key scope "loc"))
+            (buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "loc"))))
+        (setf (claude-code-ide-manager-item-custom-name item) "Mine"
+              (claude-code-ide-manager-item-pinned item) t)
+        (puthash "loc" '(:saved-layout t) claude-code-ide-manager--layouts)
+        (claude-code-ide-manager--set-scope-active-session-key scope "loc")
+        (setq before (funcall identity item))
+        (with-current-buffer buffer
+          (setq-local claude-code-ide-session-idle-enabled t)
+          (setq-local claude-code-ide-session-idle-p t)
+          (setq-local claude-code-ide-session-working-p t))
+        (should (string-prefix-p claude-code-ide-manager--bell-glyph
+                                 (claude-code-ide-manager--marker-gutter item)))
+        (with-current-buffer buffer
+          (setq-local claude-code-ide-session-agent-state 'needs-input))
+        (should (string-prefix-p claude-code-ide-manager--needs-input-glyph
+                                 (claude-code-ide-manager--marker-gutter item)))
+        (save-window-excursion
+          (set-window-buffer (selected-window) buffer)
+          (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                     (lambda () item))
+                    ((symbol-function 'claude-code-ide-manager--scope-for-command)
+                     (lambda () scope))
+                    ((symbol-function 'message)
+                     (lambda (format &rest args)
+                       (push (apply #'format-message format args) messages))))
+            (claude-code-ide-manager-disconnect-at-point))
+          (should-not (buffer-live-p buffer))
+          (should (buffer-live-p (window-buffer (selected-window)))))
+        (should-not (claude-code-ide--get-session "loc"))
+        (should-not (claude-code-ide-manager--session-buffer "loc"))
+        (let ((kept (claude-code-ide-manager--item-by-session-key scope "loc")))
+          (should (equal (claude-code-ide-manager--marker-gutter kept)
+                         claude-code-ide-manager--pin-glyph))
+          (should-not (memq (claude-code-ide-manager--row-face scope "loc")
+                            '(claude-code-ide-manager-attention-session-face
+                              claude-code-ide-manager-working-session-face
+                              claude-code-ide-manager-idle-session-face)))
+          (should kept)
+          (should-not (claude-code-ide-manager-item-live-p kept))
+          (should (equal (claude-code-ide-manager-item-custom-name kept) "Mine"))
+          (should (claude-code-ide-manager-item-pinned kept))
+          (should (equal (claude-code-ide-manager-item-zmx-name kept) "loc-name"))
+          (should (eq (claude-code-ide-manager-item-cli-type kept) 'omp))
+          (should (equal (funcall identity kept) before)))
+        (should (gethash "loc" claude-code-ide-manager--layouts))
+        (should-not kills)
+        (should (equal (claude-code-ide-manager--scope-selected-session-key scope) "loc"))
+        (should-not (claude-code-ide-manager--scope-active-session-key scope))
+        (should (member "Disconnected zmx session loc-name. Press c to reattach"
+                        messages))))))
 
 (ert-deftest claude-code-ide-test-disconnect-closes-terminal-windows-like-buffer-kill ()
   "Disconnect closes a split window and a side window that show the terminal.
 The other window stays live.  A sole main window stays and shows another live buffer."
   (claude-code-ide-tests--with-local-targets
-   (setq listed '("win-name" "solo-name"))
-   (add-local "win" "win-name")
-   (add-local "solo" "solo-name")
-   (cl-flet ((terminal (id)
-               (let ((buffer (claude-code-ide-session-buffer
-                              (claude-code-ide--get-session id))))
-                 (with-current-buffer buffer
-                   (setq major-mode 'ghostel-mode))
-                 buffer)))
-     (cl-letf (((symbol-function 'message) #'ignore))
-       (save-window-excursion
-         (delete-other-windows)
-         (let* ((kept (selected-window))
-                (other (window-buffer kept))
-                (buffer (terminal "win"))
-                (split (split-window kept))
-                (side (display-buffer-in-side-window buffer '((side . right)))))
-           (set-window-buffer split buffer)
-           (should (window-live-p side))
-           (claude-code-ide-disconnect "win")
-           (should-not (buffer-live-p buffer))
-           (should-not (window-live-p split))
-           (should-not (window-live-p side))
-           (should (window-live-p kept))
-           (should (eq (window-buffer kept) other))))
-       (save-window-excursion
-         (delete-other-windows)
-         (let ((buffer (terminal "solo")))
-           (set-window-buffer (selected-window) buffer)
-           (claude-code-ide-disconnect "solo")
-           (should-not (buffer-live-p buffer))
-           (should (buffer-live-p (window-buffer (selected-window))))))))))
+    (setq listed '("win-name" "solo-name"))
+    (add-local "win" "win-name")
+    (add-local "solo" "solo-name")
+    (cl-flet ((terminal (id)
+                (let ((buffer (claude-code-ide-session-buffer
+                               (claude-code-ide--get-session id))))
+                  (with-current-buffer buffer
+                    (setq major-mode 'ghostel-mode))
+                  buffer)))
+      (cl-letf (((symbol-function 'message) #'ignore))
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((kept (selected-window))
+                 (other (window-buffer kept))
+                 (buffer (terminal "win"))
+                 (split (split-window kept))
+                 (side (display-buffer-in-side-window buffer '((side . right)))))
+            (set-window-buffer split buffer)
+            (should (window-live-p side))
+            (claude-code-ide-disconnect "win")
+            (should-not (buffer-live-p buffer))
+            (should-not (window-live-p split))
+            (should-not (window-live-p side))
+            (should (window-live-p kept))
+            (should (eq (window-buffer kept) other))))
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((buffer (terminal "solo")))
+            (set-window-buffer (selected-window) buffer)
+            (claude-code-ide-disconnect "solo")
+            (should-not (buffer-live-p buffer))
+            (should (buffer-live-p (window-buffer (selected-window))))))))))
 
 (ert-deftest claude-code-ide-test-disconnect-changes-only-target-liveness ()
   "Across generated manager states, Disconnect changes only the target row's liveness.
@@ -22786,315 +22786,315 @@ Positions are a random permutation, because every real Session gets its own orde
                                           order))))
         (ert-info ((format "seed %S trial %d target %d rows %S" seed trial target rows))
           (claude-code-ide-tests--with-local-targets
-           (cl-flet ((snapshot ()
-                       (mapcar (lambda (item)
-                                 (list (claude-code-ide-manager-item-session-key item)
-                                       (claude-code-ide-manager-item-live-p item)
-                                       (claude-code-ide-manager-item-custom-name item)
-                                       (claude-code-ide-manager-item-pinned item)
-                                       (claude-code-ide-manager-item-order item)
-                                       (claude-code-ide-manager-item-order-key item)
-                                       (claude-code-ide-manager-item-directory item)
-                                       (claude-code-ide-manager-item-host item)
-                                       (claude-code-ide-manager-item-created-at item)
-                                       (claude-code-ide-manager-item-zmx-name item)
-                                       (claude-code-ide-manager-item-group-metadata item)))
-                               (claude-code-ide-manager--sorted-items
-                                (claude-code-ide-manager--scope-items scope) nil scope))))
-             (setq listed (delq nil (mapcar #'cadr rows)))
-             (pcase-dolist (`(,id ,name . ,_) rows)
-               (add-local id name))
-             (pcase-dolist (`(,id ,_ ,custom-name ,pinned ,order) rows)
-               (let ((session (claude-code-ide--get-session id))
-                     (item (claude-code-ide-manager--item-by-session-key scope id)))
-                 (setf (claude-code-ide-session-order session) order
-                       (claude-code-ide-session-created-at session) (+ 100.0 order)
-                       (claude-code-ide-manager-item-custom-name item) custom-name
-                       (claude-code-ide-manager-item-pinned item) pinned)))
-             (claude-code-ide-manager-refresh-items scope t)
-             (let* ((id (car (nth target rows)))
-                    (expected (mapcar (lambda (row)
-                                        (if (equal (car row) id)
-                                            (cons id (cons nil (cddr row)))
-                                          row))
-                                      (snapshot))))
-               (cl-letf (((symbol-function 'message) #'ignore))
-                 (claude-code-ide-disconnect id))
-               (should (equal (snapshot) expected))
-               (should-not kills)))))))))
+            (cl-flet ((snapshot ()
+                        (mapcar (lambda (item)
+                                  (list (claude-code-ide-manager-item-session-key item)
+                                        (claude-code-ide-manager-item-live-p item)
+                                        (claude-code-ide-manager-item-custom-name item)
+                                        (claude-code-ide-manager-item-pinned item)
+                                        (claude-code-ide-manager-item-order item)
+                                        (claude-code-ide-manager-item-order-key item)
+                                        (claude-code-ide-manager-item-directory item)
+                                        (claude-code-ide-manager-item-host item)
+                                        (claude-code-ide-manager-item-created-at item)
+                                        (claude-code-ide-manager-item-zmx-name item)
+                                        (claude-code-ide-manager-item-group-metadata item)))
+                                (claude-code-ide-manager--sorted-items
+                                 (claude-code-ide-manager--scope-items scope) nil scope))))
+              (setq listed (delq nil (mapcar #'cadr rows)))
+              (pcase-dolist (`(,id ,name . ,_) rows)
+                (add-local id name))
+              (pcase-dolist (`(,id ,_ ,custom-name ,pinned ,order) rows)
+                (let ((session (claude-code-ide--get-session id))
+                      (item (claude-code-ide-manager--item-by-session-key scope id)))
+                  (setf (claude-code-ide-session-order session) order
+                        (claude-code-ide-session-created-at session) (+ 100.0 order)
+                        (claude-code-ide-manager-item-custom-name item) custom-name
+                        (claude-code-ide-manager-item-pinned item) pinned)))
+              (claude-code-ide-manager-refresh-items scope t)
+              (let* ((id (car (nth target rows)))
+                     (expected (mapcar (lambda (row)
+                                         (if (equal (car row) id)
+                                             (cons id (cons nil (cddr row)))
+                                           row))
+                                       (snapshot))))
+                (cl-letf (((symbol-function 'message) #'ignore))
+                  (claude-code-ide-disconnect id))
+                (should (equal (snapshot) expected))
+                (should-not kills)))))))))
 
 (ert-deftest claude-code-ide-test-disconnect-current-buffer ()
   "`claude-code-ide-disconnect' without an ID acts on the Session of the current buffer."
   (claude-code-ide-tests--with-local-targets
-   (setq listed '("cur-name"))
-   (add-local "cur" "cur-name")
-   (with-current-buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "cur"))
-     (cl-letf (((symbol-function 'message) #'ignore))
-       (claude-code-ide-disconnect)))
-   (should-not (claude-code-ide--get-session "cur"))
-   (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) "cur")))
-     (should item)
-     (should-not (claude-code-ide-manager-item-live-p item)))
-   (should-not kills)))
+    (setq listed '("cur-name"))
+    (add-local "cur" "cur-name")
+    (with-current-buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "cur"))
+      (cl-letf (((symbol-function 'message) #'ignore))
+        (claude-code-ide-disconnect)))
+    (should-not (claude-code-ide--get-session "cur"))
+    (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) "cur")))
+      (should item)
+      (should-not (claude-code-ide-manager-item-live-p item)))
+    (should-not kills)))
 
 (ert-deftest claude-code-ide-test-disconnect-keeps-remote-row-without-requests ()
   "Disconnect keeps a remote row under its host and sends nothing to the host."
   (claude-code-ide-tests--with-remote-targets
-   (let (messages)
-     (add-target "rem" "host-a")
-     (claude-code-ide-manager-refresh-items '(:type global) t)
-     (cl-letf (((symbol-function 'message)
-                (lambda (format &rest args)
-                  (push (apply #'format-message format args) messages))))
-       (claude-code-ide-disconnect "rem"))
-     (should-not (claude-code-ide--get-session "rem"))
-     (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) "rem")))
-       (should item)
-       (should-not (claude-code-ide-manager-item-live-p item))
-       (should (equal (claude-code-ide-manager-item-host item) "host-a")))
-     (should-not requests)
-     (should (member "Disconnected zmx session same on host-a. Press c to reattach"
-                     messages)))))
+    (let (messages)
+      (add-target "rem" "host-a")
+      (claude-code-ide-manager-refresh-items '(:type global) t)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args)
+                   (push (apply #'format-message format args) messages))))
+        (claude-code-ide-disconnect "rem"))
+      (should-not (claude-code-ide--get-session "rem"))
+      (let ((item (claude-code-ide-manager--item-by-session-key '(:type global) "rem")))
+        (should item)
+        (should-not (claude-code-ide-manager-item-live-p item))
+        (should (equal (claude-code-ide-manager-item-host item) "host-a")))
+      (should-not requests)
+      (should (member "Disconnected zmx session same on host-a. Press c to reattach"
+                      messages)))))
 
 (ert-deftest claude-code-ide-test-disconnect-row-reattaches-after-restart ()
   "A row from Disconnect survives a state reload and reattaches under its own identity."
   (claude-code-ide-tests--with-local-targets
-   (let ((claude-code-ide-manager-persist-state t)
-         (claude-code-ide-manager--persisted-state
-          (copy-tree claude-code-ide-manager--empty-persisted-state))
-         (persist--test-store (make-hash-table :test 'eq))
-         (persist--test-defaults (make-hash-table :test 'eq)))
-     (setq listed '("back-name"))
-     (add-local "back" "back-name")
-     (cl-letf (((symbol-function 'message) #'ignore))
-       (claude-code-ide-disconnect "back"))
-     (claude-code-ide-manager--save-state)
-     (claude-code-ide-manager--reset-state)
-     (claude-code-ide-manager--load-state)
-     (let ((session (claude-code-ide--reattach-target "back")))
-       (should (equal (claude-code-ide-session-id session) "back"))
-       (should (equal attaches '(("back-name" . t)))))
-     (should-not kills))))
+    (let ((claude-code-ide-manager-persist-state t)
+          (claude-code-ide-manager--persisted-state
+           (copy-tree claude-code-ide-manager--empty-persisted-state))
+          (persist--test-store (make-hash-table :test 'eq))
+          (persist--test-defaults (make-hash-table :test 'eq)))
+      (setq listed '("back-name"))
+      (add-local "back" "back-name")
+      (cl-letf (((symbol-function 'message) #'ignore))
+        (claude-code-ide-disconnect "back"))
+      (claude-code-ide-manager--save-state)
+      (claude-code-ide-manager--reset-state)
+      (claude-code-ide-manager--load-state)
+      (let ((session (claude-code-ide--reattach-target "back")))
+        (should (equal (claude-code-ide-session-id session) "back"))
+        (should (equal attaches '(("back-name" . t)))))
+      (should-not kills))))
 
 (ert-deftest claude-code-ide-test-disconnect-refusals-change-nothing ()
   "Each refused Disconnect signals a user error and leaves Sessions, buffers, and rows alone."
   (claude-code-ide-tests--with-local-targets
-   (cl-flet ((refused (regexp thunk)
-               (should (string-match-p
-                        regexp
-                        (cadr (should-error (funcall thunk) :type 'user-error))))))
-     (setq listed '("live-name"))
-     (add-local "plain" nil)
-     (let ((buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "plain"))))
-       (refused "not zmx-backed" (lambda () (claude-code-ide-disconnect "plain")))
-       (should (buffer-live-p buffer))
-       (should (claude-code-ide--get-session "plain")))
-     (remember-local "gone" "gone-name" 2)
-     (refused "already disconnected" (lambda () (claude-code-ide-disconnect "gone")))
-     (should (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
-     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point) #'ignore))
-       (refused "No manager session at point"
-                #'claude-code-ide-manager-disconnect-at-point))
-     (with-temp-buffer
-       (refused "No Session in the current buffer" #'claude-code-ide-disconnect))
-     (add-target "busy" "host-a")
-     (cl-letf (((symbol-function 'claude-code-ide--remote-target-pending-reason)
-                (lambda (_session-id) "an attach request")))
-       (refused "Cannot disconnect same on host-a\\. an attach request is already in progress"
-                (lambda () (claude-code-ide-disconnect "busy"))))
-     (should (buffer-live-p (claude-code-ide-session-buffer
-                             (claude-code-ide--get-session "busy"))))
-     (add-local "stuck" "live-name")
-     (let ((buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "stuck"))))
-       (with-current-buffer buffer
-         (add-hook 'kill-buffer-query-functions #'ignore nil t))
-       (refused "did not close the Session buffer"
-                (lambda () (claude-code-ide-disconnect "stuck")))
-       (should (buffer-live-p buffer))
-       (should (claude-code-ide--get-session "stuck"))
-       (with-current-buffer buffer
-         (kill-local-variable 'kill-buffer-query-functions)))
-     (should-not kills))))
+    (cl-flet ((refused (regexp thunk)
+                (should (string-match-p
+                         regexp
+                         (cadr (should-error (funcall thunk) :type 'user-error))))))
+      (setq listed '("live-name"))
+      (add-local "plain" nil)
+      (let ((buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "plain"))))
+        (refused "not zmx-backed" (lambda () (claude-code-ide-disconnect "plain")))
+        (should (buffer-live-p buffer))
+        (should (claude-code-ide--get-session "plain")))
+      (remember-local "gone" "gone-name" 2)
+      (refused "already disconnected" (lambda () (claude-code-ide-disconnect "gone")))
+      (should (claude-code-ide-manager--item-by-session-key '(:type global) "gone"))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point) #'ignore))
+        (refused "No manager session at point"
+                 #'claude-code-ide-manager-disconnect-at-point))
+      (with-temp-buffer
+        (refused "No Session in the current buffer" #'claude-code-ide-disconnect))
+      (add-target "busy" "host-a")
+      (cl-letf (((symbol-function 'claude-code-ide--remote-target-pending-reason)
+                 (lambda (_session-id) "an attach request")))
+        (refused "Cannot disconnect same on host-a\\. an attach request is already in progress"
+                 (lambda () (claude-code-ide-disconnect "busy"))))
+      (should (buffer-live-p (claude-code-ide-session-buffer
+                              (claude-code-ide--get-session "busy"))))
+      (add-local "stuck" "live-name")
+      (let ((buffer (claude-code-ide-session-buffer (claude-code-ide--get-session "stuck"))))
+        (with-current-buffer buffer
+          (add-hook 'kill-buffer-query-functions #'ignore nil t))
+        (refused "did not close the Session buffer"
+                 (lambda () (claude-code-ide-disconnect "stuck")))
+        (should (buffer-live-p buffer))
+        (should (claude-code-ide--get-session "stuck"))
+        (with-current-buffer buffer
+          (kill-local-variable 'kill-buffer-query-functions)))
+      (should-not kills))))
 
 (ert-deftest claude-code-ide-test-remote-attach-exits-during-initialization ()
   "An attach client that exits during setup must not report success."
   (claude-code-ide-tests--with-remote-targets
-   (let (client)
-     (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
-                (lambda (host _args callback &optional _name)
-                  (funcall callback (list :host host :status 0
-                                          :stdout "same\n" :stderr ""))
-                  nil))
-               ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-               ((symbol-function 'claude-code-ide--register-session)
-                #'claude-code-ide--put-session)
-               ((symbol-function 'claude-code-ide--create-terminal-with-command)
-                (lambda (name &rest _)
-                  (let ((buffer (generate-new-buffer name)))
-                    (with-current-buffer buffer
-                      (setq-local major-mode 'ghostel-mode))
-                    (setq client (make-pipe-process :name "cci-exiting-attach"
-                                                    :buffer buffer :noquery t))
-                    (push buffer buffers)
-                    (push client clients)
-                    (cons buffer client))))
-               ((symbol-function 'sleep-for)
-                (lambda (&rest _) (delete-process client)))
-               ((symbol-function 'claude-code-ide-manager-switch-to-session)
-                (lambda (&rest _) (ert-fail "An exited attach client was selected"))))
-       (should-error
-        (claude-code-ide--attach-zmx-entry
-         '(:host "host-a" :name "same") "/tmp/shared/" "/missing/omp" "stable")
-        :type 'user-error)
-       (should (processp client))
-       (should-not (process-live-p client))
-       (should-not (claude-code-ide--get-session "stable"))
-       (should (claude-code-ide-manager--item-by-session-key "stable"))))))
+    (let (client)
+      (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote)
+                 (lambda (host _args callback &optional _name)
+                   (funcall callback (list :host host :status 0
+                                           :stdout "same\n" :stderr ""))
+                   nil))
+                ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                ((symbol-function 'claude-code-ide--register-session)
+                 #'claude-code-ide--put-session)
+                ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                 (lambda (name &rest _)
+                   (let ((buffer (generate-new-buffer name)))
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode))
+                     (setq client (make-pipe-process :name "cci-exiting-attach"
+                                                     :buffer buffer :noquery t))
+                     (push buffer buffers)
+                     (push client clients)
+                     (cons buffer client))))
+                ((symbol-function 'sleep-for)
+                 (lambda (&rest _) (delete-process client)))
+                ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                 (lambda (&rest _) (ert-fail "An exited attach client was selected"))))
+        (should-error
+         (claude-code-ide--attach-zmx-entry
+          '(:host "host-a" :name "same") "/tmp/shared/" "/missing/omp" "stable")
+         :type 'user-error)
+        (should (processp client))
+        (should-not (process-live-p client))
+        (should-not (claude-code-ide--get-session "stable"))
+        (should (claude-code-ide-manager--item-by-session-key "stable"))))))
 
 (ert-deftest claude-code-ide-test-manager-detach-forgets-disconnected-remote ()
   "Detach removes a disconnected row and its layout without contacting SSH."
   (claude-code-ide-tests--with-remote-targets
-   (claude-code-ide--materialize-remote-target
-    "stable" "host-a" "same" "/tmp/shared/" 1 1)
-   (claude-code-ide--materialize-remote-target
-    "other" "host-b" "same" "/tmp/shared/" 1 1)
-   (puthash "stable" '(:saved-layout t) claude-code-ide-manager--layouts)
-   (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
-     (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
-                (lambda () item))
-               ((symbol-function 'claude-code-ide-manager--scope-for-command)
-                (lambda () '(:type global))))
-       (claude-code-ide-manager-detach-at-point)
-       (claude-code-ide-manager-refresh-items '(:type global))
-       (should-not (claude-code-ide-manager--item-by-session-key "stable"))
-       (should-not (gethash "stable" claude-code-ide-manager--layouts))
-       (should (claude-code-ide-manager--item-by-session-key "other"))
-       (should-not requests)))))
+    (claude-code-ide--materialize-remote-target
+     "stable" "host-a" "same" "/tmp/shared/" 1 1)
+    (claude-code-ide--materialize-remote-target
+     "other" "host-b" "same" "/tmp/shared/" 1 1)
+    (puthash "stable" '(:saved-layout t) claude-code-ide-manager--layouts)
+    (let ((item (claude-code-ide-manager--item-by-session-key "stable")))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--item-at-point)
+                 (lambda () item))
+                ((symbol-function 'claude-code-ide-manager--scope-for-command)
+                 (lambda () '(:type global))))
+        (claude-code-ide-manager-detach-at-point)
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should-not (claude-code-ide-manager--item-by-session-key "stable"))
+        (should-not (gethash "stable" claude-code-ide-manager--layouts))
+        (should (claude-code-ide-manager--item-by-session-key "other"))
+        (should-not requests)))))
 
 (ert-deftest claude-code-ide-test-remote-verified-exit-forgets-row ()
   "A target the host no longer lists proves the Agent exited, so its row goes."
   (claude-code-ide-tests--with-remote-targets
-   (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
-   (should (claude-code-ide-manager--item-by-session-key "gone"))
-   (claude-code-ide--verify-remembered-target "gone")
-   (should (= (length requests) 1))
-   (should (equal (caar requests) "host-a"))
-   (should (equal (cadar requests) '("list" "--short")))
-   (reply "")
-   (claude-code-ide-manager-refresh-items '(:type global))
-   (should-not (claude-code-ide-manager--item-by-session-key "gone"))))
+    (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
+    (should (claude-code-ide-manager--item-by-session-key "gone"))
+    (claude-code-ide--verify-remembered-target "gone")
+    (should (= (length requests) 1))
+    (should (equal (caar requests) "host-a"))
+    (should (equal (cadar requests) '("list" "--short")))
+    (reply "")
+    (claude-code-ide-manager-refresh-items '(:type global))
+    (should-not (claude-code-ide-manager--item-by-session-key "gone"))))
 
 (ert-deftest claude-code-ide-test-remote-verified-exit-keeps-listed-target ()
   "A target the host still lists keeps its disconnected row."
   (claude-code-ide-tests--with-remote-targets
-   (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
-   (claude-code-ide--verify-remembered-target "kept")
-   (reply "other\nsame\n")
-   (claude-code-ide-manager-refresh-items '(:type global))
-   (let ((item (claude-code-ide-manager--item-by-session-key "kept")))
-     (should item)
-     (should-not (claude-code-ide-manager-item-live-p item)))))
+    (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
+    (claude-code-ide--verify-remembered-target "kept")
+    (reply "other\nsame\n")
+    (claude-code-ide-manager-refresh-items '(:type global))
+    (let ((item (claude-code-ide-manager--item-by-session-key "kept")))
+      (should item)
+      (should-not (claude-code-ide-manager-item-live-p item)))))
 
 (ert-deftest claude-code-ide-test-remote-verified-exit-keeps-row-on-failed-check ()
   "A failed or timed-out check never removes a row."
   (dolist (outcome '((255 nil) (0 t)))
     (claude-code-ide-tests--with-remote-targets
-     (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
-     (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
-                (lambda (&rest _) (ert-fail "An unconfirmed check removed a row"))))
-       (claude-code-ide--verify-remembered-target "kept")
-       (reply "" (car outcome) (cadr outcome)))
-     (claude-code-ide-manager-refresh-items '(:type global))
-     (should (claude-code-ide-manager--item-by-session-key "kept")))))
+      (claude-code-ide--materialize-remote-target "kept" "host-a" "same" "/tmp/shared/" 1 1)
+      (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
+                 (lambda (&rest _) (ert-fail "An unconfirmed check removed a row"))))
+        (claude-code-ide--verify-remembered-target "kept")
+        (reply "" (car outcome) (cadr outcome)))
+      (claude-code-ide-manager-refresh-items '(:type global))
+      (should (claude-code-ide-manager--item-by-session-key "kept")))))
 
 (ert-deftest claude-code-ide-test-remote-verified-exit-skips-live-session ()
   "A live Session under the same id cancels the check before any request."
   (claude-code-ide-tests--with-remote-targets
-   (add-target "live" "host-a")
-   (claude-code-ide--verify-remembered-target "live")
-   (should-not requests)
-   (should (claude-code-ide--get-session "live"))))
+    (add-target "live" "host-a")
+    (claude-code-ide--verify-remembered-target "live")
+    (should-not requests)
+    (should (claude-code-ide--get-session "live"))))
 
 (ert-deftest claude-code-ide-test-remote-verified-exit-keeps-reattached-row ()
   "A reattach that lands during the check keeps its live row."
   (claude-code-ide-tests--with-remote-targets
-   (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
-   (claude-code-ide--verify-remembered-target "gone")
-   (add-target "gone" "host-a")
-   (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
-              (lambda (&rest _) (ert-fail "The check removed a reattached row"))))
-     (reply ""))
-   (claude-code-ide-manager-refresh-items '(:type global))
-   (should (claude-code-ide--get-session "gone"))
-   (should (claude-code-ide-manager--item-by-session-key "gone"))))
+    (claude-code-ide--materialize-remote-target "gone" "host-a" "same" "/tmp/shared/" 1 1)
+    (claude-code-ide--verify-remembered-target "gone")
+    (add-target "gone" "host-a")
+    (cl-letf (((symbol-function 'claude-code-ide-manager-session-ended)
+               (lambda (&rest _) (ert-fail "The check removed a reattached row"))))
+      (reply ""))
+    (claude-code-ide-manager-refresh-items '(:type global))
+    (should (claude-code-ide--get-session "gone"))
+    (should (claude-code-ide-manager--item-by-session-key "gone"))))
 
 (ert-deftest claude-code-ide-test-remote-verified-exit-runs-from-the-sentinel ()
   "An Attach process exit checks the host before the row is kept."
   (claude-code-ide-tests--with-remote-targets
-   (let ((claude-code-ide-terminal-initialization-delay 0)
-         (claude-code-ide--suppress-initial-display t)
-         (claude-code-ide--session-cli-type 'omp)
-         session process)
-     (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-               ((symbol-function 'claude-code-ide--create-terminal-with-command)
-                (lambda (name _directory _cmd _env)
-                  (let* ((buffer (generate-new-buffer name))
-                         (process (make-pipe-process
-                                   :name "cci-remote-terminal" :buffer buffer
-                                   :noquery t :sentinel #'ignore)))
-                    (with-current-buffer buffer
-                      (setq-local major-mode 'ghostel-mode)
-                      (setq-local ghostel--process process))
-                    (push buffer buffers)
-                    (cons buffer process)))))
-       (setq session (claude-code-ide--create-remote-session
-                      "/tmp/shared/" "same" "host-a" nil)
-             process (claude-code-ide-session-process session))
-       (should (claude-code-ide-manager--item-by-session-key
-                (claude-code-ide-session-id session)))
-       (funcall (process-sentinel process) process "finished\n")
-       (should-not (claude-code-ide--get-session
-                    (claude-code-ide-session-id session)))
-       (should (claude-code-ide-manager--item-by-session-key
-                (claude-code-ide-session-id session)))
-       (should (= (length requests) 1))
-       (should (equal (cadar requests) '("list" "--short")))
-       (reply "")
-       (claude-code-ide-manager-refresh-items '(:type global))
-       (should-not (claude-code-ide-manager--item-by-session-key
-                    (claude-code-ide-session-id session)))))))
+    (let ((claude-code-ide-terminal-initialization-delay 0)
+          (claude-code-ide--suppress-initial-display t)
+          (claude-code-ide--session-cli-type 'omp)
+          session process)
+      (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                 (lambda (name _directory _cmd _env)
+                   (let* ((buffer (generate-new-buffer name))
+                          (process (make-pipe-process
+                                    :name "cci-remote-terminal" :buffer buffer
+                                    :noquery t :sentinel #'ignore)))
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode)
+                       (setq-local ghostel--process process))
+                     (push buffer buffers)
+                     (cons buffer process)))))
+        (setq session (claude-code-ide--create-remote-session
+                       "/tmp/shared/" "same" "host-a" nil)
+              process (claude-code-ide-session-process session))
+        (should (claude-code-ide-manager--item-by-session-key
+                 (claude-code-ide-session-id session)))
+        (funcall (process-sentinel process) process "finished\n")
+        (should-not (claude-code-ide--get-session
+                     (claude-code-ide-session-id session)))
+        (should (claude-code-ide-manager--item-by-session-key
+                 (claude-code-ide-session-id session)))
+        (should (= (length requests) 1))
+        (should (equal (cadar requests) '("list" "--short")))
+        (reply "")
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should-not (claude-code-ide-manager--item-by-session-key
+                     (claude-code-ide-session-id session)))))))
 
 (ert-deftest claude-code-ide-test-remote-verified-exit-skips-unready-attach ()
   "An Attach that dies before readiness keeps its row and contacts no host."
   (claude-code-ide-tests--with-remote-targets
-   (let ((claude-code-ide-terminal-initialization-delay 0)
-         (claude-code-ide--suppress-initial-display t)
-         (claude-code-ide--session-cli-type 'omp)
-         session-id)
-     (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-               ((symbol-function 'claude-code-ide--create-terminal-with-command)
-                (lambda (name _directory _cmd _env)
-                  (let* ((buffer (generate-new-buffer name))
-                         (process (make-pipe-process
-                                   :name "cci-remote-terminal" :buffer buffer
-                                   :noquery t :sentinel #'ignore)))
-                    (with-current-buffer buffer
-                      (setq-local major-mode 'ghostel-mode)
-                      (setq-local ghostel--process process))
-                    (push buffer buffers)
-                    (cons buffer process))))
-               ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
-                (lambda (session)
-                  (setq session-id (claude-code-ide-session-id session))
-                  ;; The Agent died after the Session was registered but
-                  ;; before attachment finished.
-                  (funcall (process-sentinel (claude-code-ide-session-process session))
-                           (claude-code-ide-session-process session) "finished\n"))))
-       (claude-code-ide--create-remote-session "/tmp/shared/" "same" "host-a" nil)
-       (should session-id)
-       (should-not requests)
-       (claude-code-ide-manager-refresh-items '(:type global))
-       (should (claude-code-ide-manager--item-by-session-key session-id))))))
+    (let ((claude-code-ide-terminal-initialization-delay 0)
+          (claude-code-ide--suppress-initial-display t)
+          (claude-code-ide--session-cli-type 'omp)
+          session-id)
+      (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                 (lambda (name _directory _cmd _env)
+                   (let* ((buffer (generate-new-buffer name))
+                          (process (make-pipe-process
+                                    :name "cci-remote-terminal" :buffer buffer
+                                    :noquery t :sentinel #'ignore)))
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode)
+                       (setq-local ghostel--process process))
+                     (push buffer buffers)
+                     (cons buffer process))))
+                ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
+                 (lambda (session)
+                   (setq session-id (claude-code-ide-session-id session))
+                   ;; The Agent died after the Session was registered but
+                   ;; before attachment finished.
+                   (funcall (process-sentinel (claude-code-ide-session-process session))
+                            (claude-code-ide-session-process session) "finished\n"))))
+        (claude-code-ide--create-remote-session "/tmp/shared/" "same" "host-a" nil)
+        (should session-id)
+        (should-not requests)
+        (claude-code-ide-manager-refresh-items '(:type global))
+        (should (claude-code-ide-manager--item-by-session-key session-id))))))
 
 (defmacro claude-code-ide-tests--with-spawn-adoption (&rest body)
   "Run BODY with isolated targets and stubbed Session creation and switch.
@@ -23102,86 +23102,86 @@ BODY sees CREATED, the (HOST NAME) of each created Session, and
 SWITCHED, the Session keys passed to the manager switch."
   (declare (indent 0))
   `(claude-code-ide-tests--with-remote-targets
-    (let (created switched)
-      (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
-                ((symbol-function 'claude-code-ide--create-session)
-                 (lambda (directory _ _ name &optional host &rest _)
-                   (push (list host name) created)
-                   (let ((session (claude-code-ide-session-create
-                                   :id name :zmx-name name :host host
-                                   :directory directory :cli-type 'omp)))
-                     (claude-code-ide--put-session session)
-                     session)))
-                ((symbol-function 'claude-code-ide-manager-switch-to-session)
-                 (lambda (key &rest _) (push key switched))))
-        ,@body))))
+     (let (created switched)
+       (cl-letf (((symbol-function 'claude-code-ide-zmx--ensure) #'ignore)
+                 ((symbol-function 'claude-code-ide--create-session)
+                  (lambda (directory _ _ name &optional host &rest _)
+                    (push (list host name) created)
+                    (let ((session (claude-code-ide-session-create
+                                    :id name :zmx-name name :host host
+                                    :directory directory :cli-type 'omp)))
+                      (claude-code-ide--put-session session)
+                      session)))
+                 ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                  (lambda (key &rest _) (push key switched))))
+         ,@body))))
 
 (ert-deftest claude-code-ide-test-adopt-spawned-session-attaches-only-named-entry ()
   "The adopt step attaches only the named entry and switches only when the option is on."
   (dolist (switch '(t nil))
     (claude-code-ide-tests--with-spawn-adoption
-     (let ((claude-code-ide-switch-on-spawn switch)
-           (window (selected-window))
-           (buffer (window-buffer (selected-window))))
-       (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-                  (lambda ()
-                    '((:name "cci-omp-a-aaaaaa" :start_dir "/tmp/a" :cmd "omp")
-                      (:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
-         (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
-       (should (equal created '((nil "cci-omp-b-bbbbbb"))))
-       (should (equal switched (and switch '("cci-omp-b-bbbbbb"))))
-       (should (eq (selected-window) window))
-       (should (eq (window-buffer window) buffer))))))
+      (let ((claude-code-ide-switch-on-spawn switch)
+            (window (selected-window))
+            (buffer (window-buffer (selected-window))))
+        (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                   (lambda ()
+                     '((:name "cci-omp-a-aaaaaa" :start_dir "/tmp/a" :cmd "omp")
+                       (:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+          (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
+        (should (equal created '((nil "cci-omp-b-bbbbbb"))))
+        (should (equal switched (and switch '("cci-omp-b-bbbbbb"))))
+        (should (eq (selected-window) window))
+        (should (eq (window-buffer window) buffer))))))
 
 (ert-deftest claude-code-ide-test-adopt-spawned-session-skips-unknown-or-attached ()
   "The adopt step attaches nothing for an unknown command or an attached name."
   (claude-code-ide-tests--with-spawn-adoption
-   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-              (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "htop")))))
-     (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
-   (should-not created)
-   (should-not switched)
-   (claude-code-ide--put-session
-    (claude-code-ide-session-create :id "b" :zmx-name "cci-omp-b-bbbbbb" :cli-type 'omp))
-   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-              (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
-     (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
-   (should-not created)
-   (should-not switched)))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "htop")))))
+      (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
+    (should-not created)
+    (should-not switched)
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "b" :zmx-name "cci-omp-b-bbbbbb" :cli-type 'omp))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+      (claude-code-ide--adopt-spawned-session nil "cci-omp-b-bbbbbb"))
+    (should-not created)
+    (should-not switched)))
 
 (ert-deftest claude-code-ide-test-adopt-spawned-session-remote-attaches-from-one-list ()
   "An approved host gets one list request, and its reply attaches only B with its host."
   (claude-code-ide-tests--with-spawn-adoption
-   (claude-code-ide--adopt-spawned-session "host-a" "cci-omp-b-bbbbbb")
-   (should (equal (mapcar (lambda (request) (seq-take request 2)) requests)
-                  '(("host-a" ("list")))))
-   (reply (concat "name=cci-omp-a-aaaaaa\tpid=1\tstart_dir=/srv/a\tcmd=omp\n"
-                  "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp"
-                  "\tcci-parent=cci-omp-a-aaaaaa\tcci-state=idle\n"))
-   (should (equal created '(("host-a" "cci-omp-b-bbbbbb"))))
-   (should (equal switched '("cci-omp-b-bbbbbb")))
-   (should (= (length requests) 1))))
+    (claude-code-ide--adopt-spawned-session "host-a" "cci-omp-b-bbbbbb")
+    (should (equal (mapcar (lambda (request) (seq-take request 2)) requests)
+                   '(("host-a" ("list")))))
+    (reply (concat "name=cci-omp-a-aaaaaa\tpid=1\tstart_dir=/srv/a\tcmd=omp\n"
+                   "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp"
+                   "\tcci-parent=cci-omp-a-aaaaaa\tcci-state=idle\n"))
+    (should (equal created '(("host-a" "cci-omp-b-bbbbbb"))))
+    (should (equal switched '("cci-omp-b-bbbbbb")))
+    (should (= (length requests) 1))))
 
 (ert-deftest claude-code-ide-test-adopt-spawned-session-remote-refusals ()
   "An unapproved host sends no request and shows one message.
 A failed list attaches nothing and logs one line."
   (claude-code-ide-tests--with-spawn-adoption
-   (let (messages logs)
-     (cl-letf (((symbol-function 'message)
-                (lambda (format &rest args) (push (apply #'format format args) messages))))
-       (claude-code-ide--adopt-spawned-session "host-z" "cci-omp-b-bbbbbb"))
-     (should-not requests)
-     (should (= (length messages) 1))
-     (should (string-match-p "host-z" (car messages)))
-     (should (string-match-p "cci-omp-b-bbbbbb" (car messages)))
-     (cl-letf (((symbol-function 'claude-code-ide-log)
-                (lambda (format &rest args) (push (apply #'format format args) logs))))
-       (claude-code-ide--adopt-spawned-session "host-a" "cci-omp-b-bbbbbb")
-       (reply "" 255))
-     (should (= (length logs) 1))
-     (should-not created)
-     (should-not switched)
-     (should (= (hash-table-count claude-code-ide--sessions) 0)))))
+    (let (messages logs)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (claude-code-ide--adopt-spawned-session "host-z" "cci-omp-b-bbbbbb"))
+      (should-not requests)
+      (should (= (length messages) 1))
+      (should (string-match-p "host-z" (car messages)))
+      (should (string-match-p "cci-omp-b-bbbbbb" (car messages)))
+      (cl-letf (((symbol-function 'claude-code-ide-log)
+                 (lambda (format &rest args) (push (apply #'format format args) logs))))
+        (claude-code-ide--adopt-spawned-session "host-a" "cci-omp-b-bbbbbb")
+        (reply "" 255))
+      (should (= (length logs) 1))
+      (should-not created)
+      (should-not switched)
+      (should (= (hash-table-count claude-code-ide--sessions) 0)))))
 
 (defmacro claude-code-ide-tests--with-adopt-command (&rest body)
   "Run BODY in `claude-code-ide-tests--with-spawn-adoption' with captured timers.
@@ -23189,21 +23189,21 @@ BODY also sees SCHEDULED, the captured `run-at-time' calls, MESSAGES,
 the shown messages, and `run-scheduled', which runs and clears SCHEDULED."
   (declare (indent 0))
   `(claude-code-ide-tests--with-spawn-adoption
-    (let ((claude-code-ide--pending-adoptions nil)
-          (claude-code-ide--adopted-sessions nil)
-          (claude-code-ide--refused-sessions nil)
-          scheduled messages)
-      (cl-letf (((symbol-function 'run-at-time)
-                 (lambda (_time _repeat function &rest args)
-                   (push (cons function args) scheduled)
-                   nil))
-                ((symbol-function 'message)
-                 (lambda (format &rest args) (push (apply #'format format args) messages))))
-        (cl-labels ((run-scheduled ()
-                      (let ((calls (reverse scheduled)))
-                        (setq scheduled nil)
-                        (dolist (call calls) (apply (car call) (cdr call))))))
-          ,@body)))))
+     (let ((claude-code-ide--pending-adoptions nil)
+           (claude-code-ide--adopted-sessions nil)
+           (claude-code-ide--refused-sessions nil)
+           scheduled messages)
+       (cl-letf (((symbol-function 'run-at-time)
+                  (lambda (_time _repeat function &rest args)
+                    (push (cons function args) scheduled)
+                    nil))
+                 ((symbol-function 'message)
+                  (lambda (format &rest args) (push (apply #'format format args) messages))))
+         (cl-labels ((run-scheduled ()
+                       (let ((calls (reverse scheduled)))
+                         (setq scheduled nil)
+                         (dolist (call calls) (apply (car call) (cdr call))))))
+           ,@body)))))
 
 (ert-deftest claude-code-ide-test-adopt-session-refuses-bad-host-or-name ()
   "A bad host or name returns `refused', shows one message, and schedules nothing."
@@ -23214,133 +23214,133 @@ the shown messages, and `run-scheduled', which runs and clears SCHEDULED."
                   (nil "cci-omp/../b" "cci-omp/../b")
                   ("host-a" "other-b" "other-b")))
     (claude-code-ide-tests--with-adopt-command
-     (let ((claude-code-ide-remote-hosts '("host-a" "-oProxyCommand=x" "host a")))
-       (pcase-let ((`(,host ,name ,value) case))
-         (should (eq (claude-code-ide-adopt-session host name) 'refused))
-         (should (= (length messages) 1))
-         (should (string-match-p (regexp-quote value) (car messages)))
-         (should (string-match-p (regexp-quote name) (car messages)))
-         (should-not scheduled)
-         (should-not claude-code-ide--pending-adoptions))))))
+      (let ((claude-code-ide-remote-hosts '("host-a" "-oProxyCommand=x" "host a")))
+        (pcase-let ((`(,host ,name ,value) case))
+          (should (eq (claude-code-ide-adopt-session host name) 'refused))
+          (should (= (length messages) 1))
+          (should (string-match-p (regexp-quote value) (car messages)))
+          (should (string-match-p (regexp-quote name) (car messages)))
+          (should-not scheduled)
+          (should-not claude-code-ide--pending-adoptions))))))
 
 (ert-deftest claude-code-ide-test-adopt-session-refusal-message-once-per-pair ()
   "A refused pair shows its message once and stays refused.
 A different pair shows its own message.  After the host enters
 `claude-code-ide-remote-hosts', the next call adopts the pair."
   (claude-code-ide-tests--with-adopt-command
-   (let ((claude-code-ide-remote-hosts '("host-a")))
-     (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'refused))
-     (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'refused))
-     (should (= (length messages) 1))
-     (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-c-cccccc") 'refused))
-     (should (= (length messages) 2))
-     (should (string-match-p "cci-omp-c-cccccc" (car messages)))
-     (should-not scheduled)
-     (should-not claude-code-ide--adopted-sessions)
-     (push "host-z" claude-code-ide-remote-hosts)
-     (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'adopting))
-     (should (= (length scheduled) 1)))))
+    (let ((claude-code-ide-remote-hosts '("host-a")))
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'refused))
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'refused))
+      (should (= (length messages) 1))
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-c-cccccc") 'refused))
+      (should (= (length messages) 2))
+      (should (string-match-p "cci-omp-c-cccccc" (car messages)))
+      (should-not scheduled)
+      (should-not claude-code-ide--adopted-sessions)
+      (push "host-z" claude-code-ide-remote-hosts)
+      (should (eq (claude-code-ide-adopt-session "host-z" "cci-omp-b-bbbbbb") 'adopting))
+      (should (= (length scheduled) 1)))))
 
 (ert-deftest claude-code-ide-test-adopt-session-local-attaches-once ()
   "A local call returns `adopting', attaches once, then skips the live Session.
 The switch follows `claude-code-ide-switch-on-spawn'."
   (dolist (switch '(t nil))
     (claude-code-ide-tests--with-adopt-command
-     (let ((claude-code-ide-switch-on-spawn switch))
-       (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-                  (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
-         (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
-         (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'skipped))
-         (run-scheduled)
-         (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'skipped))
-         (should-not scheduled))
-       (should (equal created '((nil "cci-omp-b-bbbbbb"))))
-       (should (equal switched (and switch '("cci-omp-b-bbbbbb"))))
-       (should-not claude-code-ide--pending-adoptions)))))
+      (let ((claude-code-ide-switch-on-spawn switch))
+        (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                   (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+          (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
+          (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'skipped))
+          (run-scheduled)
+          (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'skipped))
+          (should-not scheduled))
+        (should (equal created '((nil "cci-omp-b-bbbbbb"))))
+        (should (equal switched (and switch '("cci-omp-b-bbbbbb"))))
+        (should-not claude-code-ide--pending-adoptions)))))
 
 (ert-deftest claude-code-ide-test-adopt-session-remote-in-flight-skips ()
   "A second call during the remote list is skipped and sends no second list."
   (claude-code-ide-tests--with-adopt-command
-   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
-   (run-scheduled)
-   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'skipped))
-   (run-scheduled)
-   (should (= (length requests) 1))
-   (reply "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp\n")
-   (should (equal created '(("host-a" "cci-omp-b-bbbbbb"))))
-   (should-not claude-code-ide--pending-adoptions)
-   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'skipped))
-   (should-not scheduled)))
+    (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
+    (run-scheduled)
+    (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'skipped))
+    (run-scheduled)
+    (should (= (length requests) 1))
+    (reply "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp\n")
+    (should (equal created '(("host-a" "cci-omp-b-bbbbbb"))))
+    (should-not claude-code-ide--pending-adoptions)
+    (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'skipped))
+    (should-not scheduled)))
 
 (ert-deftest claude-code-ide-test-adopt-session-pending-clears-on-every-end ()
   "The pending pair is gone after a refused host, a failed list, and an error."
   (claude-code-ide-tests--with-adopt-command
-   (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb")
-   (let ((claude-code-ide-remote-hosts '("host-b")))
-     (run-scheduled))
-   (should-not requests)
-   (should-not claude-code-ide--pending-adoptions)
-   (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb")
-   (run-scheduled)
-   (should claude-code-ide--pending-adoptions)
-   (reply "" 255)
-   (should-not claude-code-ide--pending-adoptions)
-   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-              (lambda () (error "No zmx"))))
-     (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb")
-     (run-scheduled))
-   (should-not claude-code-ide--pending-adoptions)
-   (should-not created)))
+    (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb")
+    (let ((claude-code-ide-remote-hosts '("host-b")))
+      (run-scheduled))
+    (should-not requests)
+    (should-not claude-code-ide--pending-adoptions)
+    (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb")
+    (run-scheduled)
+    (should claude-code-ide--pending-adoptions)
+    (reply "" 255)
+    (should-not claude-code-ide--pending-adoptions)
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () (error "No zmx"))))
+      (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb")
+      (run-scheduled))
+    (should-not claude-code-ide--pending-adoptions)
+    (should-not created)))
 
 (ert-deftest claude-code-ide-test-adopt-session-skips-after-disconnect ()
   "A Session attached once is skipped after it leaves this Emacs.
 The pair is neither live nor pending, so only the adopted set skips it."
   (claude-code-ide-tests--with-adopt-command
-   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-              (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
-     (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
-     (run-scheduled))
-   (should (equal created '((nil "cci-omp-b-bbbbbb"))))
-   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
-   (run-scheduled)
-   (reply "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp\n")
-   (should (= (length created) 2))
-   (clrhash claude-code-ide--sessions)
-   (should-not claude-code-ide--pending-adoptions)
-   (dolist (host '(nil "host-a"))
-     (should-not (claude-code-ide--live-session-for-target host "cci-omp-b-bbbbbb"))
-     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped)))
-   (should-not scheduled)))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () '((:name "cci-omp-b-bbbbbb" :start_dir "/tmp/b" :cmd "omp")))))
+      (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
+      (run-scheduled))
+    (should (equal created '((nil "cci-omp-b-bbbbbb"))))
+    (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
+    (run-scheduled)
+    (reply "name=cci-omp-b-bbbbbb\tpid=2\tstart_dir=/srv/b\tcmd=omp\n")
+    (should (= (length created) 2))
+    (clrhash claude-code-ide--sessions)
+    (should-not claude-code-ide--pending-adoptions)
+    (dolist (host '(nil "host-a"))
+      (should-not (claude-code-ide--live-session-for-target host "cci-omp-b-bbbbbb"))
+      (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped)))
+    (should-not scheduled)))
 
 (ert-deftest claude-code-ide-test-adopt-session-skips-hand-attached-after-disconnect ()
   "A Session attached by hand is skipped after it leaves this Emacs.
 An adopt that skips the live Session records the pair."
   (dolist (host '(nil "host-a"))
     (claude-code-ide-tests--with-adopt-command
-     (puthash "hand" (claude-code-ide-session-create
-                      :id "hand" :host host :zmx-name "cci-omp-b-bbbbbb")
-              claude-code-ide--sessions)
-     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped))
-     (clrhash claude-code-ide--sessions)
-     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped))
-     (should-not scheduled)
-     (should-not created))))
+      (puthash "hand" (claude-code-ide-session-create
+                       :id "hand" :host host :zmx-name "cci-omp-b-bbbbbb")
+               claude-code-ide--sessions)
+      (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped))
+      (clrhash claude-code-ide--sessions)
+      (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'skipped))
+      (should-not scheduled)
+      (should-not created))))
 
 (ert-deftest claude-code-ide-test-adopt-session-retries-failed-adopt ()
   "An adopt that leaves the Session not live is not recorded.
 The next call for the same pair starts a new adopt."
   (claude-code-ide-tests--with-adopt-command
-   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-              (lambda () nil)))
-     (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
-     (run-scheduled))
-   (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
-   (run-scheduled)
-   (reply "" 255)
-   (should-not created)
-   (should-not claude-code-ide--adopted-sessions)
-   (dolist (host '(nil "host-a"))
-     (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'adopting)))))
+    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+               (lambda () nil)))
+      (should (eq (claude-code-ide-adopt-session nil "cci-omp-b-bbbbbb") 'adopting))
+      (run-scheduled))
+    (should (eq (claude-code-ide-adopt-session "host-a" "cci-omp-b-bbbbbb") 'adopting))
+    (run-scheduled)
+    (reply "" 255)
+    (should-not created)
+    (should-not claude-code-ide--adopted-sessions)
+    (dolist (host '(nil "host-a"))
+      (should (eq (claude-code-ide-adopt-session host "cci-omp-b-bbbbbb") 'adopting)))))
 
 (defmacro claude-code-ide-tests--with-intake (&rest body)
   "Run BODY with `claude-code-ide-intake-mode' isolated and curl mocked.
@@ -23414,27 +23414,27 @@ HOST-KEY is `absent', `null', or a host string for `emacs_host'."
 (ert-deftest claude-code-ide-test-intake-mode-refuses-without-url-or-curl ()
   "A nil URL or a missing curl gives a `user-error' and starts no process."
   (claude-code-ide-tests--with-intake
-   (let ((claude-code-ide-intake-url nil))
-     (should-error (claude-code-ide-intake-mode 1) :type 'user-error))
-   (setq curl nil)
-   (should-error (claude-code-ide-intake-mode 1) :type 'user-error)
-   (should-not claude-code-ide-intake-mode)
-   (should-not spawned)))
+    (let ((claude-code-ide-intake-url nil))
+      (should-error (claude-code-ide-intake-mode 1) :type 'user-error))
+    (setq curl nil)
+    (should-error (claude-code-ide-intake-mode 1) :type 'user-error)
+    (should-not claude-code-ide-intake-mode)
+    (should-not spawned)))
 
 (ert-deftest claude-code-ide-test-intake-token-only-on-stdin ()
   "No curl argument holds the token, and stdin holds the header and the URL."
   (claude-code-ide-tests--with-intake
-   (claude-code-ide-intake-mode 1)
-   (should (= (length spawned) 2))
-   (dolist (entry spawned)
-     (let ((args (cdr entry))
-           (text (alist-get (car entry) sent)))
-       (should (equal (plist-get args :command) '("curl" "-sN" "--fail" "--config" "-")))
-       (should-not (seq-some (lambda (arg) (string-match-p "s3cret" arg))
-                             (plist-get args :command)))
-       (should (string-match-p "^header = \"Authorization: Bearer s3cret-token\"$" text))
-       (should (string-match-p "^url = \"http://intake\\.test:7311/v1/" text))
-       (should (string-match-p "client=mac%20one" text))))))
+    (claude-code-ide-intake-mode 1)
+    (should (= (length spawned) 2))
+    (dolist (entry spawned)
+      (let ((args (cdr entry))
+            (text (alist-get (car entry) sent)))
+        (should (equal (plist-get args :command) '("curl" "-sN" "--fail" "--config" "-")))
+        (should-not (seq-some (lambda (arg) (string-match-p "s3cret" arg))
+                              (plist-get args :command)))
+        (should (string-match-p "^header = \"Authorization: Bearer s3cret-token\"$" text))
+        (should (string-match-p "^url = \"http://intake\\.test:7311/v1/" text))
+        (should (string-match-p "client=mac%20one" text))))))
 
 (ert-deftest claude-code-ide-test-intake-stream-chunking-property ()
   "A stream cut at random points gives the same adopt calls as the whole stream."
@@ -23457,93 +23457,93 @@ HOST-KEY is `absent', `null', or a host string for `emacs_host'."
     (let ((stream (apply #'concat (nreverse events))))
       (should expected)
       (claude-code-ide-tests--with-intake
-       (claude-code-ide-intake-mode 1)
-       (let ((process (curl-for "/v1/events")))
-         (feed process stream)
-         (should (equal adopted expected))
-         (dotimes (_ 50)
-           (setq adopted nil)
-           (let ((start 0))
-             (while (< start (length stream))
-               (let ((end (min (length stream) (+ start 1 (random 40)))))
-                 (feed process (substring stream start end))
-                 (setq start end))))
-           (should (equal adopted expected))))))))
+        (claude-code-ide-intake-mode 1)
+        (let ((process (curl-for "/v1/events")))
+          (feed process stream)
+          (should (equal adopted expected))
+          (dotimes (_ 50)
+            (setq adopted nil)
+            (let ((start 0))
+              (while (< start (length stream))
+                (let ((end (min (length stream) (+ start 1 (random 40)))))
+                  (feed process (substring stream start end))
+                  (setq start end))))
+            (should (equal adopted expected))))))))
 
 (ert-deftest claude-code-ide-test-intake-adopts-only-running-with-host ()
   "A running event with `emacs_host' adopts once; other events adopt nothing."
   (claude-code-ide-tests--with-intake
-   (claude-code-ide-intake-mode 1)
-   (let ((process (curl-for "/v1/events")))
-     (feed process (claude-code-ide-tests--intake-event "running" 'absent "cci-omp-p-a"))
-     (feed process (claude-code-ide-tests--intake-event "ended" "host-a" "cci-omp-p-b"))
-     (should-not adopted)
-     (feed process (claude-code-ide-tests--intake-event "running" 'null "cci-omp-p-c"))
-     (should (equal adopted '((nil "cci-omp-p-c")))))))
+    (claude-code-ide-intake-mode 1)
+    (let ((process (curl-for "/v1/events")))
+      (feed process (claude-code-ide-tests--intake-event "running" 'absent "cci-omp-p-a"))
+      (feed process (claude-code-ide-tests--intake-event "ended" "host-a" "cci-omp-p-b"))
+      (should-not adopted)
+      (feed process (claude-code-ide-tests--intake-event "running" 'null "cci-omp-p-c"))
+      (should (equal adopted '((nil "cci-omp-p-c")))))))
 
 (ert-deftest claude-code-ide-test-intake-reconnect-backoff-and-catch-up ()
   "Reconnect delays double up to 60, one event resets them to 1,
 and each reconnect reads the running Launches again."
   (claude-code-ide-tests--with-intake
-   (claude-code-ide-intake-mode 1)
-   (dotimes (_ 8)
-     (finish (curl-for "/v1/events") "finished\n")
-     (fire))
-   (should (equal (reverse (mapcar #'car timers)) '(1 2 4 8 16 32 60 60)))
-   (should (= (cl-count-if (lambda (entry) (string-match-p "/v1/launches" (cdr entry))) sent)
-              9))
-   (feed (curl-for "/v1/events") ": ping\n\n")
-   (finish (curl-for "/v1/events") "connection broken by remote peer\n")
-   (should (equal (car (car timers)) 1))))
+    (claude-code-ide-intake-mode 1)
+    (dotimes (_ 8)
+      (finish (curl-for "/v1/events") "finished\n")
+      (fire))
+    (should (equal (reverse (mapcar #'car timers)) '(1 2 4 8 16 32 60 60)))
+    (should (= (cl-count-if (lambda (entry) (string-match-p "/v1/launches" (cdr entry))) sent)
+               9))
+    (feed (curl-for "/v1/events") ": ping\n\n")
+    (finish (curl-for "/v1/events") "connection broken by remote peer\n")
+    (should (equal (car (car timers)) 1))))
 
 (ert-deftest claude-code-ide-test-intake-catch-up-adopts-running ()
   "The catch-up list adopts each running Launch with a host, and a failed list adopts nothing."
   (claude-code-ide-tests--with-intake
-   (claude-code-ide-intake-mode 1)
-   (let ((body (concat "{\"launches\":["
-                       "{\"state\":\"running\",\"emacs_host\":\"host-a\",\"name\":\"cci-omp-p-a\"},"
-                       "{\"state\":\"running\",\"emacs_host\":null,\"name\":\"cci-omp-p-b\"},"
-                       "{\"state\":\"running\",\"name\":\"cci-omp-p-c\"}]}"))
-         (process (curl-for "/v1/launches")))
-     (feed process (substring body 0 30))
-     (feed process (substring body 30))
-     (finish process "finished\n")
-     (should (equal (reverse adopted) '(("host-a" "cci-omp-p-a") (nil "cci-omp-p-b")))))
-   (setq adopted nil)
-   (finish (curl-for "/v1/events") "finished\n")
-   (fire)
-   (let ((process (curl-for "/v1/launches")))
-     (feed process "{\"launches\":[{\"state\":\"running\",\"emacs_host\":null,\"name\":\"cci-omp-p-d\"}]}")
-     (finish process "exited abnormally with code 22\n"))
-   (should-not adopted)))
+    (claude-code-ide-intake-mode 1)
+    (let ((body (concat "{\"launches\":["
+                        "{\"state\":\"running\",\"emacs_host\":\"host-a\",\"name\":\"cci-omp-p-a\"},"
+                        "{\"state\":\"running\",\"emacs_host\":null,\"name\":\"cci-omp-p-b\"},"
+                        "{\"state\":\"running\",\"name\":\"cci-omp-p-c\"}]}"))
+          (process (curl-for "/v1/launches")))
+      (feed process (substring body 0 30))
+      (feed process (substring body 30))
+      (finish process "finished\n")
+      (should (equal (reverse adopted) '(("host-a" "cci-omp-p-a") (nil "cci-omp-p-b")))))
+    (setq adopted nil)
+    (finish (curl-for "/v1/events") "finished\n")
+    (fire)
+    (let ((process (curl-for "/v1/launches")))
+      (feed process "{\"launches\":[{\"state\":\"running\",\"emacs_host\":null,\"name\":\"cci-omp-p-d\"}]}")
+      (finish process "exited abnormally with code 22\n"))
+    (should-not adopted)))
 
 (ert-deftest claude-code-ide-test-intake-http-error-shows-message ()
   "An HTTP error (curl exit 22) names the client and token settings.
 A connection error, as when the Intake is down, shows nothing."
   (claude-code-ide-tests--with-intake
-   (claude-code-ide-intake-mode 1)
-   (let (messages)
-     (cl-letf (((symbol-function 'message)
-                (lambda (format &rest args) (push (apply #'format format args) messages))))
-       (finish (curl-for "/v1/events") "exited abnormally with code 7\n")
-       (should-not messages)
-       (fire)
-       (finish (curl-for "/v1/events") "exited abnormally with code 22\n"))
-     (should (= (length messages) 1))
-     (should (string-match-p "/v1/events\\?client=mac%20one.*claude-code-ide-intake-client"
-                             (car messages))))))
+    (claude-code-ide-intake-mode 1)
+    (let (messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (finish (curl-for "/v1/events") "exited abnormally with code 7\n")
+        (should-not messages)
+        (fire)
+        (finish (curl-for "/v1/events") "exited abnormally with code 22\n"))
+      (should (= (length messages) 1))
+      (should (string-match-p "/v1/events\\?client=mac%20one.*claude-code-ide-intake-client"
+                              (car messages))))))
 
 (ert-deftest claude-code-ide-test-intake-mode-off-leaves-nothing ()
   "Turning the mode off leaves no live process and no timer."
   (claude-code-ide-tests--with-intake
-   (claude-code-ide-intake-mode 1)
-   (finish (curl-for "/v1/events") "finished\n")
-   (should claude-code-ide-intake--timer)
-   (should (process-live-p (curl-for "/v1/launches")))
-   (claude-code-ide-intake-mode -1)
-   (should-not claude-code-ide-intake--timer)
-   (should-not claude-code-ide-intake--processes)
-   (should-not (seq-some (lambda (entry) (process-live-p (car entry))) spawned))))
+    (claude-code-ide-intake-mode 1)
+    (finish (curl-for "/v1/events") "finished\n")
+    (should claude-code-ide-intake--timer)
+    (should (process-live-p (curl-for "/v1/launches")))
+    (claude-code-ide-intake-mode -1)
+    (should-not claude-code-ide-intake--timer)
+    (should-not claude-code-ide-intake--processes)
+    (should-not (seq-some (lambda (entry) (process-live-p (car entry))) spawned))))
 
 (ert-deftest claude-code-ide-test-zmx-label-round-trip-property ()
   "A label value decodes back to the generated UTF-8 text.
@@ -23661,67 +23661,67 @@ An entry without it gives none, even with the same name and directory."
                         nil))
       (ert-info ((format "host %s, role %s" host role))
         (claude-code-ide-tests--with-spawn-adoption
-         (let* ((name "cci-omp-master-aaaaaa")
-                (line (concat "name=" name "\tpid=2\tstart_dir=/srv/master\tcmd=omp"
-                              (if role (concat "\tcci-role=" role) "")))
-                (entry (claude-code-ide-zmx--parse-list-line line)))
-           (if host
-               (progn
-                 (claude-code-ide--adopt-spawned-session host name)
-                 (reply (concat line "\n")))
-             (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-                        (lambda () (list entry))))
-               (claude-code-ide--adopt-spawned-session nil name)))
-           (should (equal created (list (list host name))))
-           (should (eq (claude-code-ide-session-master
-                        (claude-code-ide--live-session-for-target host name))
-                       (equal role (claude-code-ide-tests--label "master"))))))))))
+          (let* ((name "cci-omp-master-aaaaaa")
+                 (line (concat "name=" name "\tpid=2\tstart_dir=/srv/master\tcmd=omp"
+                               (if role (concat "\tcci-role=" role) "")))
+                 (entry (claude-code-ide-zmx--parse-list-line line)))
+            (if host
+                (progn
+                  (claude-code-ide--adopt-spawned-session host name)
+                  (reply (concat line "\n")))
+              (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                         (lambda () (list entry))))
+                (claude-code-ide--adopt-spawned-session nil name)))
+            (should (equal created (list (list host name))))
+            (should (eq (claude-code-ide-session-master
+                         (claude-code-ide--live-session-for-target host name))
+                        (equal role (claude-code-ide-tests--label "master"))))))))))
 
 (ert-deftest claude-code-ide-test-manager-master-section ()
   "Master rows sit under one `Master' heading before every Project group.
 They are in no group, and a saved and restored item keeps the mark."
   (claude-code-ide-tests--with-priority-sessions
-   '(("m" idle nil nil nil "/tmp/group-a/")
-     ("a" idle nil nil nil "/tmp/group-a/")
-     ("b" idle nil nil nil "/tmp/group-b/"))
-   (setf (claude-code-ide-session-master (cdr (assoc "m" sessions))) t)
-   (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
-   (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
-     (claude-code-ide-manager-refresh-items scope))
-   (let ((remote (make-claude-code-ide-manager-item
-                  :session-key "remote-master" :host "alpha" :zmx-name "cci-omp-master-bbbbbb"
-                  :directory "/srv/master" :cli-type 'omp :order 1
-                  :display-name "alpha:master" :live-p nil :master t)))
-     (claude-code-ide-manager--set-scope-items
-      scope (append (claude-code-ide-manager--scope-items scope) (list remote)))
-     (claude-code-ide-manager--render scope)
-     (let (lines)
-       (with-current-buffer (claude-code-ide-manager--get-buffer scope)
-         (goto-char (point-min))
-         (while (not (eobp))
-           (push (or (get-text-property (point) 'claude-code-ide-manager-session-key)
-                     (and (get-text-property (point) 'claude-code-ide-manager-group-heading)
-                          (cons 'heading (string-trim (thing-at-point 'line t)))))
-                 lines)
-           (forward-line 1)))
-       (setq lines (delq nil (nreverse lines)))
-       (should (equal (car lines) '(heading . "Master")))
-       (should (= (cl-count '(heading . "Master") lines :test #'equal) 1))
-       ;; Both master rows come right after the heading, before any other heading.
-       (should (equal (sort (list (nth 1 lines) (nth 2 lines)) #'string<)
-                      (sort (list (session-key "m") "remote-master") #'string<)))
-       (should (eq (car-safe (nth 3 lines)) 'heading))
-       (should (member (session-key "a") lines))
-       (should (member (session-key "b") lines)))
-     (dolist (item (list remote (claude-code-ide-manager--item-by-session-key
-                                 scope (session-key "m"))))
-       (should (claude-code-ide-manager-item-master item))
-       (should (claude-code-ide-manager-item-master
-                (claude-code-ide-manager--deserialize-item
-                 (read (prin1-to-string
-                        (claude-code-ide-manager--serialize-item item))))))))
-   (should-not (claude-code-ide-manager-item-master
-                (claude-code-ide-manager--item-by-session-key scope (session-key "a"))))))
+      '(("m" idle nil nil nil "/tmp/group-a/")
+        ("a" idle nil nil nil "/tmp/group-a/")
+        ("b" idle nil nil nil "/tmp/group-b/"))
+    (setf (claude-code-ide-session-master (cdr (assoc "m" sessions))) t)
+    (puthash "global" '(:view grouped) claude-code-ide-manager--scope-state)
+    (cl-letf (((symbol-function 'claude-code-ide-manager--local-group-metadata) #'ignore))
+      (claude-code-ide-manager-refresh-items scope))
+    (let ((remote (make-claude-code-ide-manager-item
+                   :session-key "remote-master" :host "alpha" :zmx-name "cci-omp-master-bbbbbb"
+                   :directory "/srv/master" :cli-type 'omp :order 1
+                   :display-name "alpha:master" :live-p nil :master t)))
+      (claude-code-ide-manager--set-scope-items
+       scope (append (claude-code-ide-manager--scope-items scope) (list remote)))
+      (claude-code-ide-manager--render scope)
+      (let (lines)
+        (with-current-buffer (claude-code-ide-manager--get-buffer scope)
+          (goto-char (point-min))
+          (while (not (eobp))
+            (push (or (get-text-property (point) 'claude-code-ide-manager-session-key)
+                      (and (get-text-property (point) 'claude-code-ide-manager-group-heading)
+                           (cons 'heading (string-trim (thing-at-point 'line t)))))
+                  lines)
+            (forward-line 1)))
+        (setq lines (delq nil (nreverse lines)))
+        (should (equal (car lines) '(heading . "Master")))
+        (should (= (cl-count '(heading . "Master") lines :test #'equal) 1))
+        ;; Both master rows come right after the heading, before any other heading.
+        (should (equal (sort (list (nth 1 lines) (nth 2 lines)) #'string<)
+                       (sort (list (session-key "m") "remote-master") #'string<)))
+        (should (eq (car-safe (nth 3 lines)) 'heading))
+        (should (member (session-key "a") lines))
+        (should (member (session-key "b") lines)))
+      (dolist (item (list remote (claude-code-ide-manager--item-by-session-key
+                                  scope (session-key "m"))))
+        (should (claude-code-ide-manager-item-master item))
+        (should (claude-code-ide-manager-item-master
+                 (claude-code-ide-manager--deserialize-item
+                  (read (prin1-to-string
+                         (claude-code-ide-manager--serialize-item item))))))))
+    (should-not (claude-code-ide-manager-item-master
+                 (claude-code-ide-manager--item-by-session-key scope (session-key "a"))))))
 
 (ert-deftest claude-code-ide-test-spawn-switch-rule-property ()
   "The switch at attach follows the rule table for every combination.
@@ -23735,38 +23735,38 @@ master pair switches once and clears.  Rule 3: the option decides."
             (ert-info ((format "host %s origin %s pending %s option %s"
                                host origin pending option))
               (claude-code-ide-tests--with-spawn-adoption
-               (let* ((claude-code-ide-switch-on-spawn option)
-                      (pair (pcase pending
-                              ('none nil)
-                              ('same (cons host name))
-                              ('other (cons host "cci-omp-m-mmmmmm"))))
-                      (claude-code-ide--master-open-pending pair)
-                      (window (selected-window))
-                      (buffer (window-buffer (selected-window)))
-                      (line (concat "name=" name "\tpid=2\tstart_dir=/srv/w\tcmd=omp"
-                                    (if (stringp origin)
-                                        (concat "\tcci-origin="
-                                                (claude-code-ide-tests--label origin))
-                                      "")))
-                      ;; The table of contracts/emacs-master.md "Switch rule".
-                      (expected (cond ((equal origin "master") nil)
-                                      ((eq pending 'same) t)
-                                      (t option))))
-                 (if host
-                     (progn
-                       (claude-code-ide--adopt-spawned-session host name)
-                       (reply (concat line "\n")))
-                   (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-                              (lambda () (list (claude-code-ide-zmx--parse-list-line line)))))
-                     (claude-code-ide--adopt-spawned-session nil name)))
-                 (should (equal created (list (list host name))))
-                 (should (equal switched (and expected (list name))))
-                 (should (equal claude-code-ide--master-open-pending
-                                (and (not (and (eq pending 'same)
-                                               (not (equal origin "master"))))
-                                     pair)))
-                 (should (eq (selected-window) window))
-                 (should (eq (window-buffer window) buffer)))))))))))
+                (let* ((claude-code-ide-switch-on-spawn option)
+                       (pair (pcase pending
+                               ('none nil)
+                               ('same (cons host name))
+                               ('other (cons host "cci-omp-m-mmmmmm"))))
+                       (claude-code-ide--master-open-pending pair)
+                       (window (selected-window))
+                       (buffer (window-buffer (selected-window)))
+                       (line (concat "name=" name "\tpid=2\tstart_dir=/srv/w\tcmd=omp"
+                                     (if (stringp origin)
+                                         (concat "\tcci-origin="
+                                                 (claude-code-ide-tests--label origin))
+                                       "")))
+                       ;; The table of contracts/emacs-master.md "Switch rule".
+                       (expected (cond ((equal origin "master") nil)
+                                       ((eq pending 'same) t)
+                                       (t option))))
+                  (if host
+                      (progn
+                        (claude-code-ide--adopt-spawned-session host name)
+                        (reply (concat line "\n")))
+                    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                               (lambda () (list (claude-code-ide-zmx--parse-list-line line)))))
+                      (claude-code-ide--adopt-spawned-session nil name)))
+                  (should (equal created (list (list host name))))
+                  (should (equal switched (and expected (list name))))
+                  (should (equal claude-code-ide--master-open-pending
+                                 (and (not (and (eq pending 'same)
+                                                (not (equal origin "master"))))
+                                      pair)))
+                  (should (eq (selected-window) window))
+                  (should (eq (window-buffer window) buffer)))))))))))
 
 (defmacro claude-code-ide-tests--with-master (&rest body)
   "Run BODY with the Intake and the spawn adoption mocked for the master.
@@ -23776,19 +23776,19 @@ and the local function `answer', which ends a curl PROCESS with an
 HTTP STATUS and a TEXT."
   (declare (indent 0))
   `(claude-code-ide-tests--with-spawn-adoption
-    (claude-code-ide-tests--with-intake
-     (let ((claude-code-ide--master-open-pending nil)
-           (claude-code-ide--pending-adoptions nil)
-           (claude-code-ide--adopted-sessions nil)
-           (claude-code-ide-switch-on-spawn nil)
-           messages)
-       (cl-letf (((symbol-function 'message)
-                  (lambda (format &rest args)
-                    (push (apply #'format format args) messages))))
-         (cl-labels ((answer (process status text)
-                       (feed process (format "%s\n%d" text status))
-                       (finish process "finished\n")))
-           ,@body))))))
+     (claude-code-ide-tests--with-intake
+       (let ((claude-code-ide--master-open-pending nil)
+             (claude-code-ide--pending-adoptions nil)
+             (claude-code-ide--adopted-sessions nil)
+             (claude-code-ide-switch-on-spawn nil)
+             messages)
+         (cl-letf (((symbol-function 'message)
+                    (lambda (format &rest args)
+                      (push (apply #'format format args) messages))))
+           (cl-labels ((answer (process status text)
+                         (feed process (format "%s\n%d" text status))
+                         (finish process "finished\n")))
+             ,@body))))))
 
 (defun claude-code-ide-tests--master-launch (state host-key &optional name reason)
   "Return the JSON text of a master Launch in STATE.
@@ -23812,11 +23812,11 @@ HOST-KEY is `absent', `null', or a host string for `emacs_host'."
   "Both commands give a `user-error' without the URL or curl, and start nothing."
   (dolist (command '(claude-code-ide-master claude-code-ide-intake-confirm))
     (claude-code-ide-tests--with-master
-     (let ((claude-code-ide-intake-url nil))
-       (should-error (funcall command) :type 'user-error))
-     (setq curl nil)
-     (should-error (funcall command) :type 'user-error)
-     (should-not spawned))))
+      (let ((claude-code-ide-intake-url nil))
+        (should-error (funcall command) :type 'user-error))
+      (setq curl nil)
+      (should-error (funcall command) :type 'user-error)
+      (should-not spawned))))
 
 (ert-deftest claude-code-ide-test-master-refuses-without-token-file ()
   "Both commands give a `user-error' that names the token file option when
@@ -23826,14 +23826,14 @@ the file is missing or unreadable, and start no process."
       (unless (and (eq state 'unreadable) (zerop (user-uid)))
         (ert-info ((format "%s with a %s token file" command state))
           (claude-code-ide-tests--with-master
-           (let ((claude-code-ide-intake-token-file
-                  (if (eq state 'missing) (concat token-file "-missing") token-file)))
-             (when (eq state 'unreadable)
-               (set-file-modes token-file 0))
-             (should (string-match-p
-                      "claude-code-ide-intake-token-file"
-                      (cadr (should-error (funcall command) :type 'user-error))))
-             (should-not spawned))))))))
+            (let ((claude-code-ide-intake-token-file
+                   (if (eq state 'missing) (concat token-file "-missing") token-file)))
+              (when (eq state 'unreadable)
+                (set-file-modes token-file 0))
+              (should (string-match-p
+                       "claude-code-ide-intake-token-file"
+                       (cadr (should-error (funcall command) :type 'user-error))))
+              (should-not spawned))))))))
 
 (ert-deftest claude-code-ide-test-master-errors-start-nothing ()
   "A connection failure, a 5xx, a 404, or a 400 gives one message.
@@ -23844,136 +23844,136 @@ poll, no adopt, and no switch."
                   (404 "{\"error\":\"no [master] in config\"}" "no \\[master\\] in config")
                   (400 "{\"error\":\"unknown client: mac one\"}" "unknown client: mac one")))
     (claude-code-ide-tests--with-master
-     (claude-code-ide-master)
-     (let ((process (curl-for "/v1/master")))
-       (if (car case)
-           (answer process (car case) (nth 1 case))
-         (finish process "exited abnormally with code 7\n")))
-     (should (= (length messages) 1))
-     (should (string-match-p (nth 2 case) (car messages)))
-     (should-not timers)
-     (should-not adopted)
-     (should-not switched)
-     (should-not claude-code-ide--master-open-pending))))
+      (claude-code-ide-master)
+      (let ((process (curl-for "/v1/master")))
+        (if (car case)
+            (answer process (car case) (nth 1 case))
+          (finish process "exited abnormally with code 7\n")))
+      (should (= (length messages) 1))
+      (should (string-match-p (nth 2 case) (car messages)))
+      (should-not timers)
+      (should-not adopted)
+      (should-not switched)
+      (should-not claude-code-ide--master-open-pending))))
 
 (ert-deftest claude-code-ide-test-master-running-live-is-shown ()
   "A running master that is live is shown, with no adopt call."
   (claude-code-ide-tests--with-master
-   (claude-code-ide--put-session
-    (claude-code-ide-session-create :id "m" :zmx-name "cci-omp-master-aaaaaa"
-                                    :directory "/srv/master/" :cli-type 'omp))
-   (claude-code-ide-master)
-   (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'null))
-   (should (equal switched '("m")))
-   (should-not adopted)
-   (should-not timers)
-   (should-not claude-code-ide--master-open-pending)))
+    (claude-code-ide--put-session
+     (claude-code-ide-session-create :id "m" :zmx-name "cci-omp-master-aaaaaa"
+                                     :directory "/srv/master/" :cli-type 'omp))
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'null))
+    (should (equal switched '("m")))
+    (should-not adopted)
+    (should-not timers)
+    (should-not claude-code-ide--master-open-pending)))
 
 (ert-deftest claude-code-ide-test-master-running-not-live-is-adopted-and-shown ()
   "After an Emacs restart, a running master is adopted once and shown once.
 The pair comes from `emacs_host', never from the Launch's `host'."
   (dolist (host '(nil "host-a"))
     (claude-code-ide-tests--with-master
-     (claude-code-ide-master)
-     (answer (curl-for "/v1/master") 200
-             (claude-code-ide-tests--master-launch "running" (or host 'null)))
-     (should (equal adopted (list (list host "cci-omp-master-aaaaaa"))))
-     (should (equal claude-code-ide--master-open-pending
-                    (cons host "cci-omp-master-aaaaaa")))
-     (claude-code-ide--attach-spawned-entry
-      host "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry host)))
-     (should (equal switched '("cci-omp-master-aaaaaa")))
-     (should-not claude-code-ide--master-open-pending)
-     (should (claude-code-ide-session-master
-              (claude-code-ide--live-session-for-target host "cci-omp-master-aaaaaa"))))))
+      (claude-code-ide-master)
+      (answer (curl-for "/v1/master") 200
+              (claude-code-ide-tests--master-launch "running" (or host 'null)))
+      (should (equal adopted (list (list host "cci-omp-master-aaaaaa"))))
+      (should (equal claude-code-ide--master-open-pending
+                     (cons host "cci-omp-master-aaaaaa")))
+      (claude-code-ide--attach-spawned-entry
+       host "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry host)))
+      (should (equal switched '("cci-omp-master-aaaaaa")))
+      (should-not claude-code-ide--master-open-pending)
+      (should (claude-code-ide-session-master
+               (claude-code-ide--live-session-for-target host "cci-omp-master-aaaaaa"))))))
 
 (ert-deftest claude-code-ide-test-master-starting-polls-until-running ()
   "A starting master is polled each second, adopted at `running', and shown once.
 Both URLs carry the encoded client name."
   (claude-code-ide-tests--with-master
-   (let ((claude-code-ide-intake-client "a b&c"))
-     (claude-code-ide-master)
-     (should (string-match-p "/v1/master\\?client=a%20b%26c\"" (cdr (car sent))))
-     (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "queued" 'absent))
-     (dolist (state '("starting" "starting" "running"))
-       (should (equal (car (car timers)) 1))
-       (should-not adopted)
-       (should-not claude-code-ide--master-open-pending)
-       (fire)
-       (should (string-match-p "/v1/launches/l1\\?client=a%20b%26c\"" (cdr (car sent))))
-       (should (string-match-p "^request = \"GET\"$" (cdr (car sent))))
-       (answer (curl-for "/v1/launches/l1") 200
-               (claude-code-ide-tests--master-launch state 'null)))
-     (should (= (length timers) 3))
-     (should (equal adopted '((nil "cci-omp-master-aaaaaa"))))
-     (should (equal claude-code-ide--master-open-pending '(nil . "cci-omp-master-aaaaaa")))
-     (claude-code-ide--attach-spawned-entry
-      nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
-     (claude-code-ide--attach-spawned-entry
-      nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
-     (should (equal switched '("cci-omp-master-aaaaaa"))))))
+    (let ((claude-code-ide-intake-client "a b&c"))
+      (claude-code-ide-master)
+      (should (string-match-p "/v1/master\\?client=a%20b%26c\"" (cdr (car sent))))
+      (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "queued" 'absent))
+      (dolist (state '("starting" "starting" "running"))
+        (should (equal (car (car timers)) 1))
+        (should-not adopted)
+        (should-not claude-code-ide--master-open-pending)
+        (fire)
+        (should (string-match-p "/v1/launches/l1\\?client=a%20b%26c\"" (cdr (car sent))))
+        (should (string-match-p "^request = \"GET\"$" (cdr (car sent))))
+        (answer (curl-for "/v1/launches/l1") 200
+                (claude-code-ide-tests--master-launch state 'null)))
+      (should (= (length timers) 3))
+      (should (equal adopted '((nil "cci-omp-master-aaaaaa"))))
+      (should (equal claude-code-ide--master-open-pending '(nil . "cci-omp-master-aaaaaa")))
+      (claude-code-ide--attach-spawned-entry
+       nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
+      (claude-code-ide--attach-spawned-entry
+       nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
+      (should (equal switched '("cci-omp-master-aaaaaa"))))))
 
 (ert-deftest claude-code-ide-test-master-push-in-flight-is-shown-once ()
   "When the push adopt is in flight at `running', the poll adopts nothing.
 The attach then shows the master once, with the switch option off."
   (claude-code-ide-tests--with-master
-   (push '("host-a" . "cci-omp-master-aaaaaa") claude-code-ide--pending-adoptions)
-   (claude-code-ide-master)
-   (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" "host-a"))
-   (should-not adopted)
-   (claude-code-ide--attach-spawned-entry
-    "host-a" "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry "host-a")))
-   (should (equal switched '("cci-omp-master-aaaaaa")))))
+    (push '("host-a" . "cci-omp-master-aaaaaa") claude-code-ide--pending-adoptions)
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" "host-a"))
+    (should-not adopted)
+    (claude-code-ide--attach-spawned-entry
+     "host-a" "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry "host-a")))
+    (should (equal switched '("cci-omp-master-aaaaaa")))))
 
 (ert-deftest claude-code-ide-test-master-disconnected-attaches-again ()
   "A master that this Emacs adopted and then lost attaches again and is shown."
   (claude-code-ide-tests--with-master
-   (push '(nil . "cci-omp-master-aaaaaa") claude-code-ide--adopted-sessions)
-   (claude-code-ide-master)
-   (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'null))
-   (should (equal adopted '((nil "cci-omp-master-aaaaaa"))))
-   (should-not (member '(nil . "cci-omp-master-aaaaaa") claude-code-ide--adopted-sessions))
-   (claude-code-ide--attach-spawned-entry
-    nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
-   (should (equal switched '("cci-omp-master-aaaaaa")))))
+    (push '(nil . "cci-omp-master-aaaaaa") claude-code-ide--adopted-sessions)
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'null))
+    (should (equal adopted '((nil "cci-omp-master-aaaaaa"))))
+    (should-not (member '(nil . "cci-omp-master-aaaaaa") claude-code-ide--adopted-sessions))
+    (claude-code-ide--attach-spawned-entry
+     nil "cci-omp-master-aaaaaa" (list (claude-code-ide-tests--master-entry nil)))
+    (should (equal switched '("cci-omp-master-aaaaaa")))))
 
 (ert-deftest claude-code-ide-test-master-no-emacs-host-shows-message ()
   "A running master with no `emacs_host' gives one message and no adopt."
   (claude-code-ide-tests--with-master
-   (claude-code-ide-master)
-   (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'absent))
-   (should (= (length messages) 1))
-   (should (string-match-p "local" (car messages)))
-   (should-not adopted)
-   (should-not claude-code-ide--master-open-pending)))
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 200 (claude-code-ide-tests--master-launch "running" 'absent))
+    (should (= (length messages) 1))
+    (should (string-match-p "local" (car messages)))
+    (should-not adopted)
+    (should-not claude-code-ide--master-open-pending)))
 
 (ert-deftest claude-code-ide-test-master-failed-or-late-clears-pending ()
   "A failed master gives one message with the reason.  After 45 polls the
 poll stops with one message.  Both clear the pending pair."
   (claude-code-ide-tests--with-master
-   (setq claude-code-ide--master-open-pending '(nil . "cci-omp-old-oooooo"))
-   (claude-code-ide-master)
-   (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "starting" 'null))
-   (fire)
-   (answer (curl-for "/v1/launches/l1") 200
-           (claude-code-ide-tests--master-launch "failed" 'null nil "omp exited 1"))
-   (should (= (length messages) 1))
-   (should (string-match-p "failed: omp exited 1" (car messages)))
-   (should-not claude-code-ide--master-open-pending)
-   (should-not adopted))
+    (setq claude-code-ide--master-open-pending '(nil . "cci-omp-old-oooooo"))
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "starting" 'null))
+    (fire)
+    (answer (curl-for "/v1/launches/l1") 200
+            (claude-code-ide-tests--master-launch "failed" 'null nil "omp exited 1"))
+    (should (= (length messages) 1))
+    (should (string-match-p "failed: omp exited 1" (car messages)))
+    (should-not claude-code-ide--master-open-pending)
+    (should-not adopted))
   (claude-code-ide-tests--with-master
-   (setq claude-code-ide--master-open-pending '(nil . "cci-omp-old-oooooo"))
-   (claude-code-ide-master)
-   (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "starting" 'null))
-   (dotimes (_ 45)
-     (fire)
-     (answer (curl-for "/v1/launches/l1") 200
-             (claude-code-ide-tests--master-launch "starting" 'null)))
-   (should (= (length timers) 45))
-   (should (= (length messages) 1))
-   (should (string-match-p "45 seconds" (car messages)))
-   (should-not claude-code-ide--master-open-pending)
-   (should-not adopted)))
+    (setq claude-code-ide--master-open-pending '(nil . "cci-omp-old-oooooo"))
+    (claude-code-ide-master)
+    (answer (curl-for "/v1/master") 202 (claude-code-ide-tests--master-launch "starting" 'null))
+    (dotimes (_ 45)
+      (fire)
+      (answer (curl-for "/v1/launches/l1") 200
+              (claude-code-ide-tests--master-launch "starting" 'null)))
+    (should (= (length timers) 45))
+    (should (= (length messages) 1))
+    (should (string-match-p "45 seconds" (car messages)))
+    (should-not claude-code-ide--master-open-pending)
+    (should-not adopted)))
 
 (ert-deftest claude-code-ide-test-master-pending-clears-when-adopt-fails ()
   "An adopt of the pending master pair that ends with no live Session clears
@@ -23990,29 +23990,29 @@ A pending pair for another name stays."
             (ert-info ((format "host %s failure %s pending %s option %s"
                                host failure pending option))
               (claude-code-ide-tests--with-adopt-command
-               (let* ((claude-code-ide-switch-on-spawn option)
-                      (pair (cons host (if (eq pending 'same) name "cci-omp-m-mmmmmm")))
-                      (claude-code-ide--master-open-pending pair)
-                      (kept (and (eq pending 'other) pair)))
-                 (cl-flet ((adopt (lines)
-                             (should (eq (claude-code-ide-adopt-session host name) 'adopting))
-                             (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-                                        (lambda ()
-                                          (mapcar #'claude-code-ide-zmx--parse-list-line lines))))
-                               (run-scheduled)
-                               (when host
-                                 (reply (mapconcat (lambda (text) (concat text "\n")) lines ""))))))
-                   (if (eq failure 'missing)
-                       (adopt nil)
-                     (cl-letf (((symbol-function 'claude-code-ide--create-session)
-                                (lambda (&rest _) (error "Attach failed"))))
-                       (adopt (list line))))
-                   (should-not (claude-code-ide--live-session-for-target host name))
-                   (should (equal claude-code-ide--master-open-pending kept))
-                   (adopt (list line))
-                   (should (equal created (list (list host name))))
-                   (should (equal switched (and option (list name))))
-                   (should (equal claude-code-ide--master-open-pending kept))))))))))))
+                (let* ((claude-code-ide-switch-on-spawn option)
+                       (pair (cons host (if (eq pending 'same) name "cci-omp-m-mmmmmm")))
+                       (claude-code-ide--master-open-pending pair)
+                       (kept (and (eq pending 'other) pair)))
+                  (cl-flet ((adopt (lines)
+                              (should (eq (claude-code-ide-adopt-session host name) 'adopting))
+                              (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                                         (lambda ()
+                                           (mapcar #'claude-code-ide-zmx--parse-list-line lines))))
+                                (run-scheduled)
+                                (when host
+                                  (reply (mapconcat (lambda (text) (concat text "\n")) lines ""))))))
+                    (if (eq failure 'missing)
+                        (adopt nil)
+                      (cl-letf (((symbol-function 'claude-code-ide--create-session)
+                                 (lambda (&rest _) (error "Attach failed"))))
+                        (adopt (list line))))
+                    (should-not (claude-code-ide--live-session-for-target host name))
+                    (should (equal claude-code-ide--master-open-pending kept))
+                    (adopt (list line))
+                    (should (equal created (list (list host name))))
+                    (should (equal switched (and option (list name))))
+                    (should (equal claude-code-ide--master-open-pending kept))))))))))))
 
 (ert-deftest claude-code-ide-test-intake-confirm-asks-and-answers ()
   "The confirm command lists held Launches, asks in the minibuffer, and posts
@@ -24024,49 +24024,49 @@ A pending pair for another name stays."
                       "\"state\":\"held\",\"prompt\":\"p2\"}]}")))
     (dolist (yes '(t nil))
       (claude-code-ide-tests--with-master
-       (let ((window (selected-window))
-             (buffer (window-buffer (selected-window)))
-             choices questions)
-         (cl-letf (((symbol-function 'completing-read)
-                    (lambda (_prompt collection &rest _)
-                      (setq choices (mapcar #'car collection))
-                      (car choices)))
-                   ((symbol-function 'yes-or-no-p)
-                    (lambda (prompt) (push prompt questions) yes)))
-           (claude-code-ide-intake-confirm)
-           (should (string-match-p "/v1/launches\\?state=held\"" (cdr (car sent))))
-           (answer (curl-for "state=held") 200 held))
-         (should (equal choices '("h1 proj@host-a" "h2 other@local")))
-         (should (= (length questions) 1))
-         (dolist (part '("proj" "host-a" "Fix the bug\nin 日本 \"x\""))
-           (should (string-search part (car questions))))
-         (let ((text (cdr (car sent))))
-           (should (string-search (if yes "/v1/launches/h1/confirm\"" "/v1/launches/h1/decline\"")
-                                  text))
-           (should (string-match-p "^request = \"POST\"$" text)))
-         (answer (curl-for "/v1/launches/h1/") 200
-                 (format "{\"id\":\"h1\",\"state\":%S}" (if yes "queued" "refused")))
-         (should (string-match-p (if yes "queued" "refused") (car messages)))
-         (should (eq (selected-window) window))
-         (should (eq (window-buffer window) buffer)))))))
+        (let ((window (selected-window))
+              (buffer (window-buffer (selected-window)))
+              choices questions)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _)
+                       (setq choices (mapcar #'car collection))
+                       (car choices)))
+                    ((symbol-function 'yes-or-no-p)
+                     (lambda (prompt) (push prompt questions) yes)))
+            (claude-code-ide-intake-confirm)
+            (should (string-match-p "/v1/launches\\?state=held\"" (cdr (car sent))))
+            (answer (curl-for "state=held") 200 held))
+          (should (equal choices '("h1 proj@host-a" "h2 other@local")))
+          (should (= (length questions) 1))
+          (dolist (part '("proj" "host-a" "Fix the bug\nin 日本 \"x\""))
+            (should (string-search part (car questions))))
+          (let ((text (cdr (car sent))))
+            (should (string-search (if yes "/v1/launches/h1/confirm\"" "/v1/launches/h1/decline\"")
+                                   text))
+            (should (string-match-p "^request = \"POST\"$" text)))
+          (answer (curl-for "/v1/launches/h1/") 200
+                  (format "{\"id\":\"h1\",\"state\":%S}" (if yes "queued" "refused")))
+          (should (string-match-p (if yes "queued" "refused") (car messages)))
+          (should (eq (selected-window) window))
+          (should (eq (window-buffer window) buffer)))))))
 
 (ert-deftest claude-code-ide-test-intake-confirm-empty-list-and-held-event ()
   "An empty held list shows one message.  A `held' event shows one
 message that names the command, and adopts nothing."
   (claude-code-ide-tests--with-master
-   (claude-code-ide-intake-confirm)
-   (answer (curl-for "state=held") 200 "{\"launches\":[]}")
-   (should (= (length messages) 1))
-   (should (string-match-p "No Launch" (car messages))))
+    (claude-code-ide-intake-confirm)
+    (answer (curl-for "state=held") 200 "{\"launches\":[]}")
+    (should (= (length messages) 1))
+    (should (string-match-p "No Launch" (car messages))))
   (claude-code-ide-tests--with-master
-   (claude-code-ide-intake-mode 1)
-   (feed (curl-for "/v1/events")
-         (concat "event: launch\ndata: {\"id\":\"h1\",\"state\":\"held\",\"project\":\"proj\","
-                 "\"host\":\"host-a\",\"emacs_host\":\"host-a\",\"name\":null}\n\n"))
-   (should (= (length messages) 1))
-   (should (string-match-p "h1.*proj@host-a.*M-x claude-code-ide-intake-confirm"
-                           (car messages)))
-   (should-not adopted)))
+    (claude-code-ide-intake-mode 1)
+    (feed (curl-for "/v1/events")
+          (concat "event: launch\ndata: {\"id\":\"h1\",\"state\":\"held\",\"project\":\"proj\","
+                  "\"host\":\"host-a\",\"emacs_host\":\"host-a\",\"name\":null}\n\n"))
+    (should (= (length messages) 1))
+    (should (string-match-p "h1.*proj@host-a.*M-x claude-code-ide-intake-confirm"
+                            (car messages)))
+    (should-not adopted)))
 
 (ert-deftest claude-code-ide-test-remote-attach-refuses-failed-preflight ()
   "Failed or timed-out SSH cannot validate a target from partial output."
@@ -24088,36 +24088,36 @@ message that names the command, and adopts nothing."
         verification
         (kills 0))
     (claude-code-ide-tests--with-remote-targets
-     (add-target "a" "host-a")
-     (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote) control)
-               ((symbol-function 'make-process)
-                (lambda (&rest args)
-                  (if (string-match-p "'kill'" (car (last (plist-get args :command))))
-                      (progn
-                        (setq kills (1+ kills))
-                        (apply spawn
-                               (plist-put args :command
-                                          '("printf" "killed session same\n"))))
-                    (setq verification
-                          (apply spawn (plist-put args :command '("cat"))))))))
-       (unwind-protect
-           (progn
-             (claude-code-ide-stop "a")
-             (let ((deadline (+ (float-time) 2)))
-               (while (and (not verification) (< (float-time) deadline))
-                 (accept-process-output nil 0.01)))
-             (should (process-live-p verification))
-             (should-error (claude-code-ide-stop "a") :type 'user-error)
-             (should (= kills 1))
-             (process-send-string verification "another-target\n")
-             (process-send-eof verification)
-             (let ((deadline (+ (float-time) 2)))
-               (while (and (claude-code-ide--get-session "a")
-                           (< (float-time) deadline))
-                 (accept-process-output nil 0.01)))
-             (should-not (claude-code-ide--get-session "a"))
-             (should-not (claude-code-ide-manager--item-by-session-key "a")))
-         (when (process-live-p verification) (delete-process verification)))))))
+      (add-target "a" "host-a")
+      (cl-letf (((symbol-function 'claude-code-ide-zmx--call-remote) control)
+                ((symbol-function 'make-process)
+                 (lambda (&rest args)
+                   (if (string-match-p "'kill'" (car (last (plist-get args :command))))
+                       (progn
+                         (setq kills (1+ kills))
+                         (apply spawn
+                                (plist-put args :command
+                                           '("printf" "killed session same\n"))))
+                     (setq verification
+                           (apply spawn (plist-put args :command '("cat"))))))))
+        (unwind-protect
+            (progn
+              (claude-code-ide-stop "a")
+              (let ((deadline (+ (float-time) 2)))
+                (while (and (not verification) (< (float-time) deadline))
+                  (accept-process-output nil 0.01)))
+              (should (process-live-p verification))
+              (should-error (claude-code-ide-stop "a") :type 'user-error)
+              (should (= kills 1))
+              (process-send-string verification "another-target\n")
+              (process-send-eof verification)
+              (let ((deadline (+ (float-time) 2)))
+                (while (and (claude-code-ide--get-session "a")
+                            (< (float-time) deadline))
+                  (accept-process-output nil 0.01)))
+              (should-not (claude-code-ide--get-session "a"))
+              (should-not (claude-code-ide-manager--item-by-session-key "a")))
+          (when (process-live-p verification) (delete-process verification)))))))
 
 (defconst claude-code-ide-tests--metadata-nul (string 0)
   "One NUL byte, built at runtime to avoid Lisp octal-escape ambiguity.")
@@ -24257,24 +24257,24 @@ with no shell expansion, substitution, or globbing."
 (ert-deftest claude-code-ide-test-remote-metadata-control-directory-history-and-reattach ()
   "Unsafe remembered directories cannot restore or start an attachment."
   (claude-code-ide-tests--with-grouped-state
-   (let* ((claude-code-ide-remote-hosts '("host"))
-          (directory (concat "/work/" (string #x7f)))
-          (data (list :session-key "unsafe" :host "host" :directory directory
-                      :zmx-name "agent" :cli-type 'omp :order 1))
-          (starts 0))
-     (should-not (claude-code-ide-manager--deserialize-item data))
-     (claude-code-ide-manager--set-scope-items
-      '(:type global)
-      (list (make-claude-code-ide-manager-item
-             :session-key "unsafe" :host "host" :directory directory
-             :zmx-name "agent" :cli-type 'omp :order 1)))
-     (cl-letf (((symbol-function 'claude-code-ide--attach-zmx-entry)
-                (lambda (&rest _)
-                  (cl-incf starts)
-                  (ert-fail "An unsafe remembered directory reached attachment"))))
-       (should-error (claude-code-ide--reattach-session "unsafe")
-                     :type 'user-error))
-     (should (zerop starts)))))
+    (let* ((claude-code-ide-remote-hosts '("host"))
+           (directory (concat "/work/" (string #x7f)))
+           (data (list :session-key "unsafe" :host "host" :directory directory
+                       :zmx-name "agent" :cli-type 'omp :order 1))
+           (starts 0))
+      (should-not (claude-code-ide-manager--deserialize-item data))
+      (claude-code-ide-manager--set-scope-items
+       '(:type global)
+       (list (make-claude-code-ide-manager-item
+              :session-key "unsafe" :host "host" :directory directory
+              :zmx-name "agent" :cli-type 'omp :order 1)))
+      (cl-letf (((symbol-function 'claude-code-ide--attach-zmx-entry)
+                 (lambda (&rest _)
+                   (cl-incf starts)
+                   (ert-fail "An unsafe remembered directory reached attachment"))))
+        (should-error (claude-code-ide--reattach-session "unsafe")
+                      :type 'user-error))
+      (should (zerop starts)))))
 
 ;;; Group C: transport/runner behavior
 
@@ -24791,48 +24791,48 @@ other Git failures remain errors, never misreported as non-Git."
    (lambda ()
      (let ((target default-directory))
        (claude-code-ide-tests--with-fake-git
-        (concat
-         "if [ \"$1\" = rev-parse ] && [ \"$2\" = --git-common-dir ]; then\n"
-         "  printf 'fatal: not a git repository (or any parent up to mount point /)"
-         "\\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\\n' >&2\n"
-         "  exit 128\n"
-         "fi\n"
-         "exit 1")
-        (should (eq (plist-get (car (claude-code-ide-tests--metadata-probe (list target)))
-                               :kind)
-                    'non-git)))
+           (concat
+            "if [ \"$1\" = rev-parse ] && [ \"$2\" = --git-common-dir ]; then\n"
+            "  printf 'fatal: not a git repository (or any parent up to mount point /)"
+            "\\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\\n' >&2\n"
+            "  exit 128\n"
+            "fi\n"
+            "exit 1")
+         (should (eq (plist-get (car (claude-code-ide-tests--metadata-probe (list target)))
+                                :kind)
+                     'non-git)))
        (claude-code-ide-tests--with-fake-git
-        (concat
-         "if [ \"$1\" = rev-parse ] && [ \"$2\" = --git-common-dir ]; then\n"
-         "  printf 'fatal: detected dubious ownership in repository\\n' >&2\n"
-         "  exit 128\n"
-         "fi\n"
-         "exit 1")
-        (let ((data (car (claude-code-ide-tests--metadata-probe (list target)))))
-          (should (eq (plist-get data :kind) 'error))
-          (should (plist-get data :diagnostic))))
+           (concat
+            "if [ \"$1\" = rev-parse ] && [ \"$2\" = --git-common-dir ]; then\n"
+            "  printf 'fatal: detected dubious ownership in repository\\n' >&2\n"
+            "  exit 128\n"
+            "fi\n"
+            "exit 1")
+         (let ((data (car (claude-code-ide-tests--metadata-probe (list target)))))
+           (should (eq (plist-get data :kind) 'error))
+           (should (plist-get data :diagnostic))))
        (claude-code-ide-tests--with-fake-git "exit 1"
-                                             (let ((data (car (claude-code-ide-tests--metadata-probe (list target)))))
-                                               (should (eq (plist-get data :kind) 'error))
-                                               (should (plist-get data :diagnostic))))))))
+         (let ((data (car (claude-code-ide-tests--metadata-probe (list target)))))
+           (should (eq (plist-get data :kind) 'error))
+           (should (plist-get data :diagnostic))))))))
 
 (ert-deftest claude-code-ide-test-remote-metadata-failed-query-keeps-original-diagnostic ()
   "A failed query cannot become non-Git because a repeated query differs."
   (claude-code-ide-tests--with-temp-directory
    (lambda ()
      (claude-code-ide-tests--with-fake-git
-      (concat
-       "if [ -f .metadata-query-seen ]; then\n"
-       "  printf 'fatal: not a git repository (or any of the parent directories): .git\\n' >&2\n"
-       "else\n"
-       "  printf 'fatal: corrupt repository metadata\\n' >&2\n"
-       "  : > .metadata-query-seen\n"
-       "fi\n"
-       "exit 128")
-      (should (eq (plist-get
-                   (car (claude-code-ide-tests--metadata-probe (list default-directory)))
-                   :kind)
-                  'error))))))
+         (concat
+          "if [ -f .metadata-query-seen ]; then\n"
+          "  printf 'fatal: not a git repository (or any of the parent directories): .git\\n' >&2\n"
+          "else\n"
+          "  printf 'fatal: corrupt repository metadata\\n' >&2\n"
+          "  : > .metadata-query-seen\n"
+          "fi\n"
+          "exit 128")
+       (should (eq (plist-get
+                    (car (claude-code-ide-tests--metadata-probe (list default-directory)))
+                    :kind)
+                   'error))))))
 
 (ert-deftest claude-code-ide-test-remote-metadata-probe-processes-full-batch-with-consistent-indices ()
   "One invocation covering several directories keeps every record
@@ -24863,551 +24863,551 @@ host-process, and reply helpers.
 Bind requests, command-size, and chosen-host for each check."
   (declare (indent 0))
   `(claude-code-ide-tests--with-grouped-state
-    (let ((claude-code-ide-remote-hosts '("host-a" "host-b"))
-          (command-size (lambda (directories) (* 64 (length directories))))
-          (chosen-host "host-a")
-          requests buffers clients)
-      (unwind-protect
-          (cl-labels
-              ((add-live
-                 (id host directory zmx-name &optional metadata)
-                 (let* ((buffer (generate-new-buffer "*claude-code-remote-metadata-test*"))
-                        (process (make-pipe-process
-                                  :name (format "cci-metadata-live-%s" id)
-                                  :buffer buffer :noquery t :sentinel #'ignore))
-                        (session (claude-code-ide-session-create
-                                  :id id :host host :zmx-name zmx-name :directory directory
-                                  :buffer buffer :process process :cli-type 'omp :order 1
-                                  :group-metadata metadata)))
-                   (push buffer buffers)
-                   (push process clients)
-                   (claude-code-ide--put-session session)
-                   (claude-code-ide-manager-refresh-items '(:type global) t)
-                   session))
-               (add-remembered
-                 (id host directory zmx-name &optional metadata)
-                 (let ((item (claude-code-ide--materialize-remote-target
-                              id host zmx-name directory 1 1)))
-                   (when metadata
-                     (setf (claude-code-ide-manager-item-group-metadata item) metadata))
-                   item))
-               (git-record
-                 (host directory &optional common branch)
-                 (let* ((common (or common (concat (directory-file-name directory) "/.git")))
-                        (project (if (equal (file-name-nondirectory common) ".git")
-                                     (directory-file-name (file-name-directory common))
-                                   common)))
-                   (list :kind 'git :host host :directory directory
-                         :common-dir common :project-path project
-                         :worktree-path directory :branch (or branch "main"))))
-               (error-record
-                 (host directory &optional diagnostic)
-                 (list :kind 'error :host host :directory directory
-                       :diagnostic (or diagnostic "boom")))
-               (item-metadata
-                 (id)
-                 (when-let* ((item (claude-code-ide-manager--item-by-session-key
-                                    '(:type global) id)))
-                   (claude-code-ide-manager-item-group-metadata item)))
-               (host-process
-                 (host)
-                 (nth 4 (cl-find host requests :key #'car :test #'equal)))
-               (reply
-                 (host &rest keys)
-                 (let* ((request (cl-find host requests :key #'car :test #'equal))
-                        (process (nth 4 request))
-                        (callback (nth 2 request)))
-                   (when (process-live-p process) (delete-process process))
-                   (funcall callback
-                            (append keys
-                                    (list :host host :operation "git-metadata" :process process
-                                          :status 0 :stdout "" :stderr ""
-                                          :cancelled nil :timeout nil))))))
-            (cl-letf (((symbol-function 'claude-code-ide-zmx--metadata-command-size)
-                       (lambda (directories) (funcall command-size directories)))
-                      ((symbol-function 'claude-code-ide-zmx--query-remote-metadata)
-                       (lambda (host directories callback &optional name)
-                         (let ((process (make-pipe-process
-                                         :name (or name (format "cci-metadata-request-%s" host))
-                                         :noquery t :sentinel #'ignore)))
-                           (push (list host directories callback name process) requests)
-                           process)))
-                      ((symbol-function 'completing-read)
-                       (lambda (&rest _) chosen-host)))
-              ,@body))
-        (dolist (process (append clients (mapcar (lambda (request) (nth 4 request)) requests)))
-          (when (process-live-p process) (delete-process process)))
-        (dolist (buffer buffers)
-          (when (buffer-live-p buffer)
-            (with-current-buffer buffer
-              (let ((kill-buffer-hook nil))
-                (kill-buffer buffer)
-                )
-              )
-            )
-          )
-        )
-      )
-    ))
+     (let ((claude-code-ide-remote-hosts '("host-a" "host-b"))
+           (command-size (lambda (directories) (* 64 (length directories))))
+           (chosen-host "host-a")
+           requests buffers clients)
+       (unwind-protect
+           (cl-labels
+               ((add-live
+                  (id host directory zmx-name &optional metadata)
+                  (let* ((buffer (generate-new-buffer "*claude-code-remote-metadata-test*"))
+                         (process (make-pipe-process
+                                   :name (format "cci-metadata-live-%s" id)
+                                   :buffer buffer :noquery t :sentinel #'ignore))
+                         (session (claude-code-ide-session-create
+                                   :id id :host host :zmx-name zmx-name :directory directory
+                                   :buffer buffer :process process :cli-type 'omp :order 1
+                                   :group-metadata metadata)))
+                    (push buffer buffers)
+                    (push process clients)
+                    (claude-code-ide--put-session session)
+                    (claude-code-ide-manager-refresh-items '(:type global) t)
+                    session))
+                (add-remembered
+                  (id host directory zmx-name &optional metadata)
+                  (let ((item (claude-code-ide--materialize-remote-target
+                               id host zmx-name directory 1 1)))
+                    (when metadata
+                      (setf (claude-code-ide-manager-item-group-metadata item) metadata))
+                    item))
+                (git-record
+                  (host directory &optional common branch)
+                  (let* ((common (or common (concat (directory-file-name directory) "/.git")))
+                         (project (if (equal (file-name-nondirectory common) ".git")
+                                      (directory-file-name (file-name-directory common))
+                                    common)))
+                    (list :kind 'git :host host :directory directory
+                          :common-dir common :project-path project
+                          :worktree-path directory :branch (or branch "main"))))
+                (error-record
+                  (host directory &optional diagnostic)
+                  (list :kind 'error :host host :directory directory
+                        :diagnostic (or diagnostic "boom")))
+                (item-metadata
+                  (id)
+                  (when-let* ((item (claude-code-ide-manager--item-by-session-key
+                                     '(:type global) id)))
+                    (claude-code-ide-manager-item-group-metadata item)))
+                (host-process
+                  (host)
+                  (nth 4 (cl-find host requests :key #'car :test #'equal)))
+                (reply
+                  (host &rest keys)
+                  (let* ((request (cl-find host requests :key #'car :test #'equal))
+                         (process (nth 4 request))
+                         (callback (nth 2 request)))
+                    (when (process-live-p process) (delete-process process))
+                    (funcall callback
+                             (append keys
+                                     (list :host host :operation "git-metadata" :process process
+                                           :status 0 :stdout "" :stderr ""
+                                           :cancelled nil :timeout nil))))))
+             (cl-letf (((symbol-function 'claude-code-ide-zmx--metadata-command-size)
+                        (lambda (directories) (funcall command-size directories)))
+                       ((symbol-function 'claude-code-ide-zmx--query-remote-metadata)
+                        (lambda (host directories callback &optional name)
+                          (let ((process (make-pipe-process
+                                          :name (or name (format "cci-metadata-request-%s" host))
+                                          :noquery t :sentinel #'ignore)))
+                            (push (list host directories callback name process) requests)
+                            process)))
+                       ((symbol-function 'completing-read)
+                        (lambda (&rest _) chosen-host)))
+               ,@body))
+         (dolist (process (append clients (mapcar (lambda (request) (nth 4 request)) requests)))
+           (when (process-live-p process) (delete-process process)))
+         (dolist (buffer buffers)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (let ((kill-buffer-hook nil))
+                 (kill-buffer buffer)
+                 )
+               )
+             )
+           )
+         )
+       )
+     ))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-cancel-invalidates-before-sentinel ()
   "A synchronous cancellation callback cannot dispatch the pending batch."
   (claude-code-ide-tests--with-remote-metadata
-   (dotimes (index 33)
-     (add-remembered (format "id-%d" index) "host-a" (format "/dir-%d" index) "agent"))
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (let ((callback (nth 2 (car requests)))
-         (process (host-process "host-a")))
-     (set-process-sentinel
-      process
-      (lambda (proc _event)
-        (funcall callback (list :process proc :error "Cancelled" :cancelled t))))
-     (claude-code-ide-manager--cancel-remote-metadata "host-a")
-     (should-not (process-live-p process))
-     (should (= (length requests) 1))
-     (should-not (gethash "host-a" claude-code-ide-manager--remote-metadata-operations)))))
+    (dotimes (index 33)
+      (add-remembered (format "id-%d" index) "host-a" (format "/dir-%d" index) "agent"))
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (let ((callback (nth 2 (car requests)))
+          (process (host-process "host-a")))
+      (set-process-sentinel
+       process
+       (lambda (proc _event)
+         (funcall callback (list :process proc :error "Cancelled" :cancelled t))))
+      (claude-code-ide-manager--cancel-remote-metadata "host-a")
+      (should-not (process-live-p process))
+      (should (= (length requests) 1))
+      (should-not (gethash "host-a" claude-code-ide-manager--remote-metadata-operations)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-replacement-keeps-session-id ()
   "A replacement owner with the same Session ID gets a fresh queued query."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((old (add-live "stable" "host-a" "/work" "agent")))
-     (claude-code-ide-manager--enqueue-remote-metadata old)
-     (let ((replacement (add-live "stable" "host-a" "/work" "agent")))
-       (claude-code-ide-manager--enqueue-remote-metadata replacement)
-       (reply "host-a" :records (list (git-record "host-a" "/work" "/old/.git")))
-       (should-not (item-metadata "stable"))
-       (should (= (length requests) 2))
-       (reply "host-a" :records (list (git-record "host-a" "/work" "/new/.git")))
-       (should (equal (plist-get (item-metadata "stable") :common-dir) "/new/.git"))
-       (should (eq replacement (claude-code-ide--get-session "stable")))))))
+    (let ((old (add-live "stable" "host-a" "/work" "agent")))
+      (claude-code-ide-manager--enqueue-remote-metadata old)
+      (let ((replacement (add-live "stable" "host-a" "/work" "agent")))
+        (claude-code-ide-manager--enqueue-remote-metadata replacement)
+        (reply "host-a" :records (list (git-record "host-a" "/work" "/old/.git")))
+        (should-not (item-metadata "stable"))
+        (should (= (length requests) 2))
+        (reply "host-a" :records (list (git-record "host-a" "/work" "/new/.git")))
+        (should (equal (plist-get (item-metadata "stable") :common-dir) "/new/.git"))
+        (should (eq replacement (claude-code-ide--get-session "stable")))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-invalid-target-keeps-valid-sibling ()
   "An invalid target does not enter a batch or block valid siblings."
   (claude-code-ide-tests--with-remote-metadata
-   (add-remembered "bad" "host-a" "relative/path" "bad-agent")
-   (add-remembered "good" "host-a" "/good" "good-agent")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (equal (nth 1 (car requests)) '("/good")))
-   (reply "host-a" :records (list (git-record "host-a" "/good")))
-   (should (eq (plist-get (item-metadata "good") :kind) 'git))
-   (should-not (item-metadata "bad"))))
+    (add-remembered "bad" "host-a" "relative/path" "bad-agent")
+    (add-remembered "good" "host-a" "/good" "good-agent")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (equal (nth 1 (car requests)) '("/good")))
+    (reply "host-a" :records (list (git-record "host-a" "/good")))
+    (should (eq (plist-get (item-metadata "good") :kind) 'git))
+    (should-not (item-metadata "bad"))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-start-failure-releases-host ()
   "An SSH startup failure cannot leave a host permanently busy."
   (claude-code-ide-tests--with-remote-metadata
-   (add-remembered "a" "host-a" "/work" "agent")
-   (cl-letf (((symbol-function 'claude-code-ide-zmx--query-remote-metadata)
-              (lambda (&rest _) (signal 'file-error '("SSH cannot start")))))
-     (condition-case nil
-         (claude-code-ide-manager-refresh-remote-metadata "host-a")
-       (error nil)))
-   (should-not (gethash "host-a" claude-code-ide-manager--remote-metadata-operations))
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (reply "host-a" :records (list (git-record "host-a" "/work")))
-   (should (eq (plist-get (item-metadata "a") :kind) 'git))))
+    (add-remembered "a" "host-a" "/work" "agent")
+    (cl-letf (((symbol-function 'claude-code-ide-zmx--query-remote-metadata)
+               (lambda (&rest _) (signal 'file-error '("SSH cannot start")))))
+      (condition-case nil
+          (claude-code-ide-manager-refresh-remote-metadata "host-a")
+        (error nil)))
+    (should-not (gethash "host-a" claude-code-ide-manager--remote-metadata-operations))
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (reply "host-a" :records (list (git-record "host-a" "/work")))
+    (should (eq (plist-get (item-metadata "a") :kind) 'git))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-live-target-change-is-stale ()
   "A live target change invalidates a result before the manager row refreshes."
   (claude-code-ide-tests--with-remote-metadata
-   (let* ((cached (git-record "host-a" "/work" "/old/.git"))
-          (session (add-live "a" "host-a" "/work" "agent" cached)))
-     (claude-code-ide-manager--enqueue-remote-metadata session)
-     (setf (claude-code-ide-session-host session) "host-b")
-     (reply "host-a" :records (list (git-record "host-a" "/work" "/new/.git")))
-     (should (equal (claude-code-ide-session-group-metadata session) cached)))))
+    (let* ((cached (git-record "host-a" "/work" "/old/.git"))
+           (session (add-live "a" "host-a" "/work" "agent" cached)))
+      (claude-code-ide-manager--enqueue-remote-metadata session)
+      (setf (claude-code-ide-session-host session) "host-b")
+      (reply "host-a" :records (list (git-record "host-a" "/work" "/new/.git")))
+      (should (equal (claude-code-ide-session-group-metadata session) cached)))))
 
 (ert-deftest claude-code-ide-test-remote-relocate-stores-bare-path ()
   "A remote Session stores only the bare path of a valid directory report."
   (claude-code-ide-tests--with-remote-metadata
-   (let* ((session (add-live "a" "host-a" "/work/proj" "agent"))
-          (buffer (claude-code-ide-session-buffer session))
-          (notes 0))
-     (cl-letf (((symbol-function 'claude-code-ide-manager--note-remote-move)
-                (lambda (_session) (setq notes (1+ notes)))))
-       (cl-flet ((report (directory)
-                   (with-current-buffer buffer
-                     (setq default-directory directory)
-                     (claude-code-ide--record-ghostel-directory))
-                   (list (claude-code-ide-session-directory session) notes)))
-         ;; The same directory, with or without a trailing slash, is no move.
-         (should (equal (report "/rpc:host-a:/work/proj/") '("/work/proj" 0)))
-         (should (equal (report "/rpc:host-a:/work/proj") '("/work/proj" 0)))
-         ;; Local, relative, and control-character reports are refused.
-         (dolist (bogus (list temporary-file-directory "relative/dir/"
-                              "/rpc:host-a:/work/bad\n/"))
-           (should (equal (report bogus) '("/work/proj" 0))))
-         (should (equal (report "/rpc:host-a:/work/topic/") '("/work/topic" 1)))
-         ;; Another TRAMP host name still names a path on the Session host.
-         (should (equal (report "/scp:other-name:/work/x/") '("/work/x" 2)))
-         (should (equal (report "/rpc:host-a:/") '("/" 3))))))))
+    (let* ((session (add-live "a" "host-a" "/work/proj" "agent"))
+           (buffer (claude-code-ide-session-buffer session))
+           (notes 0))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--note-remote-move)
+                 (lambda (_session) (setq notes (1+ notes)))))
+        (cl-flet ((report (directory)
+                    (with-current-buffer buffer
+                      (setq default-directory directory)
+                      (claude-code-ide--record-ghostel-directory))
+                    (list (claude-code-ide-session-directory session) notes)))
+          ;; The same directory, with or without a trailing slash, is no move.
+          (should (equal (report "/rpc:host-a:/work/proj/") '("/work/proj" 0)))
+          (should (equal (report "/rpc:host-a:/work/proj") '("/work/proj" 0)))
+          ;; Local, relative, and control-character reports are refused.
+          (dolist (bogus (list temporary-file-directory "relative/dir/"
+                               "/rpc:host-a:/work/bad\n/"))
+            (should (equal (report bogus) '("/work/proj" 0))))
+          (should (equal (report "/rpc:host-a:/work/topic/") '("/work/topic" 1)))
+          ;; Another TRAMP host name still names a path on the Session host.
+          (should (equal (report "/scp:other-name:/work/x/") '("/work/x" 2)))
+          (should (equal (report "/rpc:host-a:/") '("/" 3))))))))
 
 (ert-deftest claude-code-ide-test-remote-relocate-requeries-branch ()
   "A remote move keeps the git group, queues one probe, and applies its branch."
   (claude-code-ide-tests--with-remote-metadata
-   (let* ((session (add-live "a" "host-a" "/work/proj" "agent"
-                             (git-record "host-a" "/work/proj" "/work/proj/.git" "main")))
-          (buffer (claude-code-ide-session-buffer session))
-          (plain (add-live "n" "host-a" "/plain" "agent-n"
-                           (list :kind 'non-git :host "host-a" :directory "/plain"
-                                 :project-path "/plain"))))
-     (cl-flet ((group (id)
-                 (claude-code-ide-manager--group-key
-                  (claude-code-ide-manager--item-by-session-key '(:type global) id))))
-       (claude-code-ide-session-relocate buffer "/rpc:host-a:/work/topic/")
-       (should (equal (mapcar #'cadr requests) '(("/work/topic"))))
-       (should (equal (group "a") '(git "host-a" "/work/proj/.git")))
-       (should-not (plist-get (item-metadata "a") :branch))
-       (should (equal (list (claude-code-ide-session-id session)
-                            (claude-code-ide-session-order session)
-                            (claude-code-ide-session-zmx-name session))
-                      '("a" 1 "agent")))
-       (reply "host-a" :records
-              (list (git-record "host-a" "/work/topic" "/work/proj/.git" "topic")))
-       (should (equal (plist-get (item-metadata "a") :branch) "topic"))
-       ;; A failed probe keeps the new path and the group, with no branch.
-       (claude-code-ide-session-relocate buffer "/rpc:host-a:/work/fail/")
-       (cl-letf (((symbol-function 'message) #'ignore))
-         (reply "host-a" :error "SSH timed out" :status 255 :timeout t))
-       (should (equal (group "a") '(git "host-a" "/work/proj/.git")))
-       (should (equal (plist-get (item-metadata "a") :directory) "/work/fail"))
-       (should-not (plist-get (item-metadata "a") :branch))
-       ;; A result from another repository moves the row to that group.
-       (claude-code-ide-session-relocate buffer "/rpc:host-a:/other/repo/")
-       (reply "host-a" :records (list (git-record "host-a" "/other/repo")))
-       (should (equal (group "a") '(git "host-a" "/other/repo/.git")))
-       ;; A non-git row cannot keep its old group, so it waits unresolved.
-       (claude-code-ide-session-relocate (claude-code-ide-session-buffer plain)
-                                         "/rpc:host-a:/elsewhere/")
-       (should-not (item-metadata "n"))
-       (should (equal (group "n") '(unresolved "host-a" "/elsewhere")))))))
+    (let* ((session (add-live "a" "host-a" "/work/proj" "agent"
+                              (git-record "host-a" "/work/proj" "/work/proj/.git" "main")))
+           (buffer (claude-code-ide-session-buffer session))
+           (plain (add-live "n" "host-a" "/plain" "agent-n"
+                            (list :kind 'non-git :host "host-a" :directory "/plain"
+                                  :project-path "/plain"))))
+      (cl-flet ((group (id)
+                  (claude-code-ide-manager--group-key
+                   (claude-code-ide-manager--item-by-session-key '(:type global) id))))
+        (claude-code-ide-session-relocate buffer "/rpc:host-a:/work/topic/")
+        (should (equal (mapcar #'cadr requests) '(("/work/topic"))))
+        (should (equal (group "a") '(git "host-a" "/work/proj/.git")))
+        (should-not (plist-get (item-metadata "a") :branch))
+        (should (equal (list (claude-code-ide-session-id session)
+                             (claude-code-ide-session-order session)
+                             (claude-code-ide-session-zmx-name session))
+                       '("a" 1 "agent")))
+        (reply "host-a" :records
+               (list (git-record "host-a" "/work/topic" "/work/proj/.git" "topic")))
+        (should (equal (plist-get (item-metadata "a") :branch) "topic"))
+        ;; A failed probe keeps the new path and the group, with no branch.
+        (claude-code-ide-session-relocate buffer "/rpc:host-a:/work/fail/")
+        (cl-letf (((symbol-function 'message) #'ignore))
+          (reply "host-a" :error "SSH timed out" :status 255 :timeout t))
+        (should (equal (group "a") '(git "host-a" "/work/proj/.git")))
+        (should (equal (plist-get (item-metadata "a") :directory) "/work/fail"))
+        (should-not (plist-get (item-metadata "a") :branch))
+        ;; A result from another repository moves the row to that group.
+        (claude-code-ide-session-relocate buffer "/rpc:host-a:/other/repo/")
+        (reply "host-a" :records (list (git-record "host-a" "/other/repo")))
+        (should (equal (group "a") '(git "host-a" "/other/repo/.git")))
+        ;; A non-git row cannot keep its old group, so it waits unresolved.
+        (claude-code-ide-session-relocate (claude-code-ide-session-buffer plain)
+                                          "/rpc:host-a:/elsewhere/")
+        (should-not (item-metadata "n"))
+        (should (equal (group "n") '(unresolved "host-a" "/elsewhere")))))))
 
 (ert-deftest claude-code-ide-test-remote-relocate-last-move-wins ()
   "Only a result for the current directory applies, and a return is probed again."
   (claude-code-ide-tests--with-remote-metadata
-   (let* ((session (add-live "a" "host-a" "/w/a" "agent"
-                             (git-record "host-a" "/w/a" "/w/.git" "a")))
-          (buffer (claude-code-ide-session-buffer session)))
-     (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/b/")
-     (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/a/")
-     ;; The B result arrives while the row is at A.
-     (reply "host-a" :records (list (git-record "host-a" "/w/b" "/w/.git" "b")))
-     (should-not (plist-get (item-metadata "a") :branch))
-     (should (equal (cadr (car requests)) '("/w/a")))
-     ;; A return to B inside the same operation is probed again.
-     (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/b/")
-     (reply "host-a" :records (list (git-record "host-a" "/w/a" "/w/.git" "a")))
-     (should-not (plist-get (item-metadata "a") :branch))
-     (should (equal (cadr (car requests)) '("/w/b")))
-     (reply "host-a" :records (list (git-record "host-a" "/w/b" "/w/.git" "b")))
-     (should (equal (plist-get (item-metadata "a") :branch) "b")))))
+    (let* ((session (add-live "a" "host-a" "/w/a" "agent"
+                              (git-record "host-a" "/w/a" "/w/.git" "a")))
+           (buffer (claude-code-ide-session-buffer session)))
+      (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/b/")
+      (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/a/")
+      ;; The B result arrives while the row is at A.
+      (reply "host-a" :records (list (git-record "host-a" "/w/b" "/w/.git" "b")))
+      (should-not (plist-get (item-metadata "a") :branch))
+      (should (equal (cadr (car requests)) '("/w/a")))
+      ;; A return to B inside the same operation is probed again.
+      (claude-code-ide-session-relocate buffer "/rpc:host-a:/w/b/")
+      (reply "host-a" :records (list (git-record "host-a" "/w/a" "/w/.git" "a")))
+      (should-not (plist-get (item-metadata "a") :branch))
+      (should (equal (cadr (car requests)) '("/w/b")))
+      (reply "host-a" :records (list (git-record "host-a" "/w/b" "/w/.git" "b")))
+      (should (equal (plist-get (item-metadata "a") :branch) "b")))))
 
 (ert-deftest claude-code-ide-test-remote-relocate-persists-directory ()
   "A remote move is saved before its probe replies, so a reload keeps the path."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((session (add-live "a" "host-a" "/work/proj" "agent")))
-     (claude-code-ide-session-relocate (claude-code-ide-session-buffer session)
-                                       "/rpc:host-a:/work/topic/")
-     (remhash "a" claude-code-ide--sessions)
-     (claude-code-ide-manager--set-scope-items '(:type global) nil)
-     (claude-code-ide-manager--load-state)
-     (should (equal (claude-code-ide-manager-item-directory
-                     (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
-                    "/work/topic")))))
+    (let ((session (add-live "a" "host-a" "/work/proj" "agent")))
+      (claude-code-ide-session-relocate (claude-code-ide-session-buffer session)
+                                        "/rpc:host-a:/work/topic/")
+      (remhash "a" claude-code-ide--sessions)
+      (claude-code-ide-manager--set-scope-items '(:type global) nil)
+      (claude-code-ide-manager--load-state)
+      (should (equal (claude-code-ide-manager-item-directory
+                      (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
+                     "/work/topic")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-loads-remembered-targets ()
   "Explicit refresh can use saved targets before a sidebar opens."
   (claude-code-ide-tests--with-remote-metadata
-   (add-remembered "a" "host-a" "/work" "agent")
-   (setq claude-code-ide-manager--scope-state (make-hash-table :test 'equal)
-         claude-code-ide-manager--items nil)
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (equal (nth 1 (car requests)) '("/work")))
-   (reply "host-a" :records (list (git-record "host-a" "/work")))
-   (should (eq (plist-get (item-metadata "a") :kind) 'git))))
+    (add-remembered "a" "host-a" "/work" "agent")
+    (setq claude-code-ide-manager--scope-state (make-hash-table :test 'equal)
+          claude-code-ide-manager--items nil)
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (equal (nth 1 (car requests)) '("/work")))
+    (reply "host-a" :records (list (git-record "host-a" "/work")))
+    (should (eq (plist-get (item-metadata "a") :kind) 'git))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-snapshot-host-scope ()
   "Refresh snapshots only the chosen host's live and remembered targets."
   (claude-code-ide-tests--with-remote-metadata
-   (add-live "a1" "host-a" "/a1" "agent-a1")
-   (add-remembered "a2" "host-a" "/a2" "agent-a2")
-   (add-live "b1" "host-b" "/b1" "agent-b1")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (= (length requests) 1))
-   (let* ((request (car requests))
-          (directories (nth 1 request)))
-     (should (equal (nth 0 request) "host-a"))
-     (should (= (length directories) 2))
-     (should-not (cl-set-exclusive-or directories '("/a1" "/a2") :test #'equal))
-     (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) directories)))
-   (should (plist-get (item-metadata "a1") :common-dir))
-   (should (plist-get (item-metadata "a2") :common-dir))
-   (should-not (item-metadata "b1"))
-   (should-not (claude-code-ide-manager-item-live-p
-                (claude-code-ide-manager--item-by-session-key '(:type global) "a2")))))
+    (add-live "a1" "host-a" "/a1" "agent-a1")
+    (add-remembered "a2" "host-a" "/a2" "agent-a2")
+    (add-live "b1" "host-b" "/b1" "agent-b1")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (= (length requests) 1))
+    (let* ((request (car requests))
+           (directories (nth 1 request)))
+      (should (equal (nth 0 request) "host-a"))
+      (should (= (length directories) 2))
+      (should-not (cl-set-exclusive-or directories '("/a1" "/a2") :test #'equal))
+      (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) directories)))
+    (should (plist-get (item-metadata "a1") :common-dir))
+    (should (plist-get (item-metadata "a2") :common-dir))
+    (should-not (item-metadata "b1"))
+    (should-not (claude-code-ide-manager-item-live-p
+                 (claude-code-ide-manager--item-by-session-key '(:type global) "a2")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-dedup-directory ()
   "Two Sessions sharing one directory query it once and both apply the result."
   (claude-code-ide-tests--with-remote-metadata
-   (add-live "a" "host-a" "/shared" "agent-a")
-   (add-live "b" "host-a" "/shared" "agent-b")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (= (length requests) 1))
-   (should (equal (nth 1 (car requests)) '("/shared")))
-   (reply "host-a" :records (list (git-record "host-a" "/shared")))
-   (should (plist-get (item-metadata "a") :common-dir))
-   (should (equal (item-metadata "a") (item-metadata "b")))))
+    (add-live "a" "host-a" "/shared" "agent-a")
+    (add-live "b" "host-a" "/shared" "agent-b")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (= (length requests) 1))
+    (should (equal (nth 1 (car requests)) '("/shared")))
+    (reply "host-a" :records (list (git-record "host-a" "/shared")))
+    (should (plist-get (item-metadata "a") :common-dir))
+    (should (equal (item-metadata "a") (item-metadata "b")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-batch-partitioning-count ()
   "A host with more than 32 directories dispatches sequential capped batches."
   (claude-code-ide-tests--with-remote-metadata
-   (setq command-size (lambda (directories) (* 10 (length directories))))
-   (dotimes (i 40)
-     (add-remembered (format "r%d" i) "host-a" (format "/remote/proj-%d" i) (format "agent-%d" i)))
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (= (length requests) 1))
-   (let ((first (nth 1 (car requests))))
-     (should (= (length first) 32))
-     (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) first))
-     (should (= (length requests) 2))
-     (let ((second (nth 1 (car requests))))
-       (should (= (length second) 8))
-       (should-not (cl-intersection first second :test #'equal))
-       (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) second))))
-   (should (= (length requests) 2))
-   (dotimes (i 40)
-     (should (plist-get (item-metadata (format "r%d" i)) :common-dir)))))
+    (setq command-size (lambda (directories) (* 10 (length directories))))
+    (dotimes (i 40)
+      (add-remembered (format "r%d" i) "host-a" (format "/remote/proj-%d" i) (format "agent-%d" i)))
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (= (length requests) 1))
+    (let ((first (nth 1 (car requests))))
+      (should (= (length first) 32))
+      (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) first))
+      (should (= (length requests) 2))
+      (let ((second (nth 1 (car requests))))
+        (should (= (length second) 8))
+        (should-not (cl-intersection first second :test #'equal))
+        (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) second))))
+    (should (= (length requests) 2))
+    (dotimes (i 40)
+      (should (plist-get (item-metadata (format "r%d" i)) :common-dir)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-batch-partitioning-size ()
   "Batches also split once directories would exceed the encoded size bound."
   (claude-code-ide-tests--with-remote-metadata
-   (setq command-size (lambda (directories) (* 6000 (length directories))))
-   (dotimes (i 5)
-     (add-remembered (format "s%d" i) "host-a" (format "/remote/size-%d" i) (format "agent-%d" i)))
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (let (seen)
-     (dotimes (_ 3)
-       (should requests)
-       (let ((directories (nth 1 (car requests))))
-         (should (<= (length directories) 2))
-         (should (<= (funcall command-size directories) 16384))
-         (setq seen (append seen directories))
-         (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) directories))))
-     (should (= (length requests) 3))
-     (should (= (length seen) 5))
-     (should-not (cl-set-exclusive-or
-                  seen (cl-loop for i below 5 collect (format "/remote/size-%d" i))
-                  :test #'equal)))))
+    (setq command-size (lambda (directories) (* 6000 (length directories))))
+    (dotimes (i 5)
+      (add-remembered (format "s%d" i) "host-a" (format "/remote/size-%d" i) (format "agent-%d" i)))
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (let (seen)
+      (dotimes (_ 3)
+        (should requests)
+        (let ((directories (nth 1 (car requests))))
+          (should (<= (length directories) 2))
+          (should (<= (funcall command-size directories) 16384))
+          (setq seen (append seen directories))
+          (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) directories))))
+      (should (= (length requests) 3))
+      (should (= (length seen) 5))
+      (should-not (cl-set-exclusive-or
+                   seen (cl-loop for i below 5 collect (format "/remote/size-%d" i))
+                   :test #'equal)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-oversized-directory-skipped ()
   "A directory whose command size alone exceeds the batch bound never dispatches."
   (claude-code-ide-tests--with-remote-metadata
-   (setq command-size (lambda (directories)
-                        (if (member "/huge" directories) 999999 (* 10 (length directories)))))
-   (add-remembered "n1" "host-a" "/normal-1" "agent-n1")
-   (add-remembered "huge" "host-a" "/huge" "agent-huge")
-   (add-remembered "n2" "host-a" "/normal-2" "agent-n2")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (= (length requests) 1))
-   (let ((directories (nth 1 (car requests))))
-     (should-not (member "/huge" directories))
-     (should-not (cl-set-exclusive-or directories '("/normal-1" "/normal-2") :test #'equal))
-     (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) directories)))
-   (should (= (length requests) 1))
-   (should (plist-get (item-metadata "n1") :common-dir))
-   (should (plist-get (item-metadata "n2") :common-dir))
-   (should-not (item-metadata "huge"))
-   (should (equal (claude-code-ide-manager--group-key
-                   (claude-code-ide-manager--item-by-session-key '(:type global) "huge"))
-                  '(unresolved "host-a" "/huge")))))
+    (setq command-size (lambda (directories)
+                         (if (member "/huge" directories) 999999 (* 10 (length directories)))))
+    (add-remembered "n1" "host-a" "/normal-1" "agent-n1")
+    (add-remembered "huge" "host-a" "/huge" "agent-huge")
+    (add-remembered "n2" "host-a" "/normal-2" "agent-n2")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (= (length requests) 1))
+    (let ((directories (nth 1 (car requests))))
+      (should-not (member "/huge" directories))
+      (should-not (cl-set-exclusive-or directories '("/normal-1" "/normal-2") :test #'equal))
+      (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) directories)))
+    (should (= (length requests) 1))
+    (should (plist-get (item-metadata "n1") :common-dir))
+    (should (plist-get (item-metadata "n2") :common-dir))
+    (should-not (item-metadata "huge"))
+    (should (equal (claude-code-ide-manager--group-key
+                    (claude-code-ide-manager--item-by-session-key '(:type global) "huge"))
+                   '(unresolved "host-a" "/huge")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-refresh-already-in-progress ()
   "An explicit refresh rejects a second request while its host is still busy."
   (claude-code-ide-tests--with-remote-metadata
-   (add-remembered "a" "host-a" "/proj" "agent-a")
-   (add-remembered "b" "host-b" "/other" "agent-b")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (= (length requests) 1))
-   (should-error (claude-code-ide-manager-refresh-remote-metadata "host-a") :type 'user-error)
-   (should (= (length requests) 1))
-   ;; A different host is unaffected by host-a's in-flight operation.
-   (claude-code-ide-manager-refresh-remote-metadata "host-b")
-   (should (= (length requests) 2))
-   (reply "host-a" :records (list (git-record "host-a" "/proj")))
-   (reply "host-b" :records (list (git-record "host-b" "/other")))
-   ;; host-a's operation is done now, so a fresh explicit refresh succeeds again.
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (= (length requests) 3))))
+    (add-remembered "a" "host-a" "/proj" "agent-a")
+    (add-remembered "b" "host-b" "/other" "agent-b")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (= (length requests) 1))
+    (should-error (claude-code-ide-manager-refresh-remote-metadata "host-a") :type 'user-error)
+    (should (= (length requests) 1))
+    ;; A different host is unaffected by host-a's in-flight operation.
+    (claude-code-ide-manager-refresh-remote-metadata "host-b")
+    (should (= (length requests) 2))
+    (reply "host-a" :records (list (git-record "host-a" "/proj")))
+    (reply "host-b" :records (list (git-record "host-b" "/other")))
+    ;; host-a's operation is done now, so a fresh explicit refresh succeeds again.
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (= (length requests) 3))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-enqueue-survives-in-flight-directory-reuse ()
   "A fresh owner's enqueue is not discarded because an old owner used its directory."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((session-a (add-live "a" "host-a" "/proj" "agent1")))
-     (claude-code-ide-manager--enqueue-remote-metadata session-a)
-     (should (= (length requests) 1))
-     ;; A verified Stop removes "a" entirely while its metadata batch is in flight.
-     (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a)
-                                       'verified-stop)
-     (claude-code-ide-manager-session-ended "a" t)
-     (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a")))
-   (let ((session-b (add-live "b" "host-a" "/proj" "agent2")))
-     ;; A new owner attaches at the same directory and enqueues while "a"'s
-     ;; already-dispatched batch is still outstanding: it must not be dropped
-     ;; or silently merged into that frozen, already-sent batch.
-     (claude-code-ide-manager--enqueue-remote-metadata session-b)
-     (should (= (length requests) 1)))
-   (reply "host-a" :records (list (git-record "host-a" "/proj" "/old/common/.git")))
-   (should (= (length requests) 2))
-   (should-not (item-metadata "b"))
-   (reply "host-a" :records (list (git-record "host-a" "/proj" "/new/common/.git")))
-   (should (equal (plist-get (item-metadata "b") :common-dir) "/new/common/.git"))
-   (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a"))))
+    (let ((session-a (add-live "a" "host-a" "/proj" "agent1")))
+      (claude-code-ide-manager--enqueue-remote-metadata session-a)
+      (should (= (length requests) 1))
+      ;; A verified Stop removes "a" entirely while its metadata batch is in flight.
+      (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a)
+                                        'verified-stop)
+      (claude-code-ide-manager-session-ended "a" t)
+      (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a")))
+    (let ((session-b (add-live "b" "host-a" "/proj" "agent2")))
+      ;; A new owner attaches at the same directory and enqueues while "a"'s
+      ;; already-dispatched batch is still outstanding: it must not be dropped
+      ;; or silently merged into that frozen, already-sent batch.
+      (claude-code-ide-manager--enqueue-remote-metadata session-b)
+      (should (= (length requests) 1)))
+    (reply "host-a" :records (list (git-record "host-a" "/proj" "/old/common/.git")))
+    (should (= (length requests) 2))
+    (should-not (item-metadata "b"))
+    (reply "host-a" :records (list (git-record "host-a" "/proj" "/new/common/.git")))
+    (should (equal (plist-get (item-metadata "b") :common-dir) "/new/common/.git"))
+    (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a"))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-same-owner-repeated-enqueue-no-duplicate-or-auto-retry ()
   "Repeated enqueues cannot retry an owner during the same host operation."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((session-a (add-live "a" "host-a" "/proj" "agent1"))
-         (session-b (add-live "b" "host-a" "/other" "agent2")))
-     (claude-code-ide-manager--enqueue-remote-metadata session-a)
-     (claude-code-ide-manager--enqueue-remote-metadata session-a)
-     (claude-code-ide-manager--enqueue-remote-metadata session-b)
-     (claude-code-ide-manager--enqueue-remote-metadata session-b)
-     (should (= (length requests) 1))
-     (reply "host-a" :error "SSH timed out" :status 255)
-     (should (= (length requests) 2))
-     (should (equal (nth 1 (car requests)) '("/other")))
-     (claude-code-ide-manager--enqueue-remote-metadata session-a)
-     (claude-code-ide-manager--enqueue-remote-metadata session-b)
-     (reply "host-a" :records (list (git-record "host-a" "/other")))
-     (should (= (length requests) 2))
-     (should-not (item-metadata "a"))
-     (should (equal (plist-get (item-metadata "b") :common-dir) "/other/.git"))
-     (claude-code-ide-manager--enqueue-remote-metadata session-a)
-     (should (= (length requests) 3))
-     (reply "host-a" :records (list (git-record "host-a" "/proj")))
-     (should (equal (plist-get (item-metadata "a") :common-dir) "/proj/.git")))))
+    (let ((session-a (add-live "a" "host-a" "/proj" "agent1"))
+          (session-b (add-live "b" "host-a" "/other" "agent2")))
+      (claude-code-ide-manager--enqueue-remote-metadata session-a)
+      (claude-code-ide-manager--enqueue-remote-metadata session-a)
+      (claude-code-ide-manager--enqueue-remote-metadata session-b)
+      (claude-code-ide-manager--enqueue-remote-metadata session-b)
+      (should (= (length requests) 1))
+      (reply "host-a" :error "SSH timed out" :status 255)
+      (should (= (length requests) 2))
+      (should (equal (nth 1 (car requests)) '("/other")))
+      (claude-code-ide-manager--enqueue-remote-metadata session-a)
+      (claude-code-ide-manager--enqueue-remote-metadata session-b)
+      (reply "host-a" :records (list (git-record "host-a" "/other")))
+      (should (= (length requests) 2))
+      (should-not (item-metadata "a"))
+      (should (equal (plist-get (item-metadata "b") :common-dir) "/other/.git"))
+      (claude-code-ide-manager--enqueue-remote-metadata session-a)
+      (should (= (length requests) 3))
+      (reply "host-a" :records (list (git-record "host-a" "/proj")))
+      (should (equal (plist-get (item-metadata "a") :common-dir) "/proj/.git")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-persists-before-reload-restores-group ()
   "A successful result is saved, so a simulated reload restores its group."
   (claude-code-ide-tests--with-remote-metadata
-   (add-live "a" "host-a" "/work/proj" "agent-a")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/work/common/.git")))
-   (should (equal (plist-get (item-metadata "a") :common-dir) "/work/common/.git"))
-   ;; Simulate a fresh Emacs restart: no live Session yet, then reload
-   ;; strictly from what was persisted.
-   (remhash "a" claude-code-ide--sessions)
-   (claude-code-ide-manager--set-scope-items '(:type global) nil)
-   (claude-code-ide-manager--load-state)
-   (should (equal (claude-code-ide-manager--group-key
-                   (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
-                  '(git "host-a" "/work/common/.git")))))
+    (add-live "a" "host-a" "/work/proj" "agent-a")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/work/common/.git")))
+    (should (equal (plist-get (item-metadata "a") :common-dir) "/work/common/.git"))
+    ;; Simulate a fresh Emacs restart: no live Session yet, then reload
+    ;; strictly from what was persisted.
+    (remhash "a" claude-code-ide--sessions)
+    (claude-code-ide-manager--set-scope-items '(:type global) nil)
+    (claude-code-ide-manager--load-state)
+    (should (equal (claude-code-ide-manager--group-key
+                    (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
+                   '(git "host-a" "/work/common/.git")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-failure-preserves-cache ()
   "A batch failure reports its targets without changing caches or terminals."
   (claude-code-ide-tests--with-remote-metadata
-   (let* ((cached (git-record "host-a" "/work/proj" "/work/common/.git"))
-          (session (add-live "a" "host-a" "/work/proj" "agent-a" cached))
-          messages)
-     (add-remembered "b" "host-a" "/work/other" "agent-b")
-     (claude-code-ide-manager-refresh-remote-metadata "host-a")
-     (cl-letf (((symbol-function 'message)
-                (lambda (format-string &rest args)
-                  (push (apply #'format format-string args) messages))))
-       (reply "host-a" :error "SSH timed out" :status 255 :timeout t))
-     (dolist (context '("host-a" "/work/proj" "/work/other" "SSH timed out"))
-       (should (cl-some (lambda (text)
-                          (string-match-p (regexp-quote context) text))
-                        messages)))
-     (should (process-live-p (claude-code-ide-session-process session)))
-     (should (equal (item-metadata "a") cached))
-     ;; The operation still completed cleanly: a fresh refresh is not blocked.
-     (claude-code-ide-manager-refresh-remote-metadata "host-a")
-     (should (= (length requests) 2)))))
+    (let* ((cached (git-record "host-a" "/work/proj" "/work/common/.git"))
+           (session (add-live "a" "host-a" "/work/proj" "agent-a" cached))
+           messages)
+      (add-remembered "b" "host-a" "/work/other" "agent-b")
+      (claude-code-ide-manager-refresh-remote-metadata "host-a")
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (reply "host-a" :error "SSH timed out" :status 255 :timeout t))
+      (dolist (context '("host-a" "/work/proj" "/work/other" "SSH timed out"))
+        (should (cl-some (lambda (text)
+                           (string-match-p (regexp-quote context) text))
+                         messages)))
+      (should (process-live-p (claude-code-ide-session-process session)))
+      (should (equal (item-metadata "a") cached))
+      ;; The operation still completed cleanly: a fresh refresh is not blocked.
+      (claude-code-ide-manager-refresh-remote-metadata "host-a")
+      (should (= (length requests) 2)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-error-record-preserves-cache ()
   "A per-directory error record preserves that target's cache; others still apply."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((cached (git-record "host-a" "/work/proj" "/work/common/.git")))
-     (add-live "a" "host-a" "/work/proj" "agent-a" cached)
-     (add-live "b" "host-a" "/work/other" "agent-b")
-     (claude-code-ide-manager-refresh-remote-metadata "host-a")
-     (let ((directories (nth 1 (car requests))))
-       (reply "host-a" :records
-              (mapcar (lambda (d)
-                        (if (equal d "/work/proj")
-                            (error-record "host-a" d "permission denied")
-                          (git-record "host-a" d "/work/other-common/.git")))
-                      directories)))
-     (should (equal (item-metadata "a") cached))
-     (should (equal (plist-get (item-metadata "b") :common-dir) "/work/other-common/.git")))))
+    (let ((cached (git-record "host-a" "/work/proj" "/work/common/.git")))
+      (add-live "a" "host-a" "/work/proj" "agent-a" cached)
+      (add-live "b" "host-a" "/work/other" "agent-b")
+      (claude-code-ide-manager-refresh-remote-metadata "host-a")
+      (let ((directories (nth 1 (car requests))))
+        (reply "host-a" :records
+               (mapcar (lambda (d)
+                         (if (equal d "/work/proj")
+                             (error-record "host-a" d "permission denied")
+                           (git-record "host-a" d "/work/other-common/.git")))
+                       directories)))
+      (should (equal (item-metadata "a") cached))
+      (should (equal (plist-get (item-metadata "b") :common-dir) "/work/other-common/.git")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-cancel-owned-process-only ()
   "Canceling one host's operation kills only its own process. A stale result
 that still arrives while the replacement operation is active cannot touch the
 cache, and that replacement operation still completes normally."
   (claude-code-ide-tests--with-remote-metadata
-   (add-remembered "a" "host-a" "/proj-a" "agent-a")
-   (add-remembered "b" "host-b" "/proj-b" "agent-b")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (claude-code-ide-manager-refresh-remote-metadata "host-b")
-   (let* ((stale-request (cl-find "host-a" requests :key #'car :test #'equal))
-          (stale-callback (nth 2 stale-request))
-          (stale-process (nth 4 stale-request))
-          (process-b (host-process "host-b")))
-     (should (process-live-p stale-process))
-     (should (process-live-p process-b))
-     (claude-code-ide-manager--cancel-remote-metadata "host-a")
-     (should-not (process-live-p stale-process))
-     (should (process-live-p process-b))
-     ;; host-a is free again immediately; host-b is still busy.
-     (claude-code-ide-manager-refresh-remote-metadata "host-a")
-     (should-error (claude-code-ide-manager-refresh-remote-metadata "host-b") :type 'user-error)
-     ;; The canceled operation's callback fires late, while the replacement
-     ;; operation for host-a is active, still carrying its own dead :process.
-     (funcall stale-callback
-              (list :host "host-a" :operation "git-metadata" :status 0
-                    :stdout "" :stderr "" :cancelled nil :timeout nil :process stale-process
-                    :records (list (git-record "host-a" "/proj-a"))))
-     (should-not (item-metadata "a"))
-     ;; The replacement operation itself is unaffected and completes normally.
-     (reply "host-a" :records (list (git-record "host-a" "/proj-a" "/proj-a-common/.git")))
-     (should (equal (plist-get (item-metadata "a") :common-dir) "/proj-a-common/.git"))
-     ;; host-b, untouched throughout, still completes normally too.
-     (reply "host-b" :records (list (git-record "host-b" "/proj-b")))
-     (should (plist-get (item-metadata "b") :common-dir)))))
+    (add-remembered "a" "host-a" "/proj-a" "agent-a")
+    (add-remembered "b" "host-b" "/proj-b" "agent-b")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (claude-code-ide-manager-refresh-remote-metadata "host-b")
+    (let* ((stale-request (cl-find "host-a" requests :key #'car :test #'equal))
+           (stale-callback (nth 2 stale-request))
+           (stale-process (nth 4 stale-request))
+           (process-b (host-process "host-b")))
+      (should (process-live-p stale-process))
+      (should (process-live-p process-b))
+      (claude-code-ide-manager--cancel-remote-metadata "host-a")
+      (should-not (process-live-p stale-process))
+      (should (process-live-p process-b))
+      ;; host-a is free again immediately; host-b is still busy.
+      (claude-code-ide-manager-refresh-remote-metadata "host-a")
+      (should-error (claude-code-ide-manager-refresh-remote-metadata "host-b") :type 'user-error)
+      ;; The canceled operation's callback fires late, while the replacement
+      ;; operation for host-a is active, still carrying its own dead :process.
+      (funcall stale-callback
+               (list :host "host-a" :operation "git-metadata" :status 0
+                     :stdout "" :stderr "" :cancelled nil :timeout nil :process stale-process
+                     :records (list (git-record "host-a" "/proj-a"))))
+      (should-not (item-metadata "a"))
+      ;; The replacement operation itself is unaffected and completes normally.
+      (reply "host-a" :records (list (git-record "host-a" "/proj-a" "/proj-a-common/.git")))
+      (should (equal (plist-get (item-metadata "a") :common-dir) "/proj-a-common/.git"))
+      ;; host-b, untouched throughout, still completes normally too.
+      (reply "host-b" :records (list (git-record "host-b" "/proj-b")))
+      (should (plist-get (item-metadata "b") :common-dir)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-host-removed-blocks-publish-and-next-batch ()
   "A host removed mid-flight neither publishes its result nor dispatches more."
   (claude-code-ide-tests--with-remote-metadata
-   (setq command-size (lambda (directories) (* 10 (length directories))))
-   (dotimes (i 40)
-     (add-remembered (format "h%d" i) "host-a" (format "/remote/host-%d" i) (format "agent-%d" i)))
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should (= (length requests) 1))
-   (let ((first (nth 1 (car requests))))
-     (setq claude-code-ide-remote-hosts (remove "host-a" claude-code-ide-remote-hosts))
-     (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) first)))
-   ;; Neither this batch's result nor a follow-up batch for the rest is dispatched.
-   (should (= (length requests) 1))
-   (dotimes (i 40)
-     (should-not (plist-get (item-metadata (format "h%d" i)) :common-dir)))
-   ;; Host removal never deletes the remembered rows themselves.
-   (should (claude-code-ide-manager--item-by-session-key '(:type global) "h0"))
-   (should (claude-code-ide-manager--item-by-session-key '(:type global) "h39"))))
+    (setq command-size (lambda (directories) (* 10 (length directories))))
+    (dotimes (i 40)
+      (add-remembered (format "h%d" i) "host-a" (format "/remote/host-%d" i) (format "agent-%d" i)))
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should (= (length requests) 1))
+    (let ((first (nth 1 (car requests))))
+      (setq claude-code-ide-remote-hosts (remove "host-a" claude-code-ide-remote-hosts))
+      (reply "host-a" :records (mapcar (lambda (d) (git-record "host-a" d)) first)))
+    ;; Neither this batch's result nor a follow-up batch for the rest is dispatched.
+    (should (= (length requests) 1))
+    (dotimes (i 40)
+      (should-not (plist-get (item-metadata (format "h%d" i)) :common-dir)))
+    ;; Host removal never deletes the remembered rows themselves.
+    (should (claude-code-ide-manager--item-by-session-key '(:type global) "h0"))
+    (should (claude-code-ide-manager--item-by-session-key '(:type global) "h39"))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-stale-after-detach ()
   "A Session that detaches before the callback discards its stale in-flight result."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
-     (claude-code-ide-manager--enqueue-remote-metadata session-a)
-     (should (= (length requests) 1))
-     (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a))
-     (should (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
-     (should-not (claude-code-ide--get-session "a")))
-   (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
-   (should-not (item-metadata "a"))
-   (should-not (claude-code-ide-manager-item-live-p
-                (claude-code-ide-manager--item-by-session-key '(:type global) "a")))))
+    (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
+      (claude-code-ide-manager--enqueue-remote-metadata session-a)
+      (should (= (length requests) 1))
+      (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a))
+      (should (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
+      (should-not (claude-code-ide--get-session "a")))
+    (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
+    (should-not (item-metadata "a"))
+    (should-not (claude-code-ide-manager-item-live-p
+                 (claude-code-ide-manager--item-by-session-key '(:type global) "a")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-stale-after-reattach ()
   "A reattached Session with a new process discards a stale in-flight result,
@@ -25415,141 +25415,141 @@ whether the original snapshot captured a live or a remembered target, and the
 reattached owner's own fresh enqueue still succeeds afterward."
   (dolist (captured-live '(t nil))
     (claude-code-ide-tests--with-remote-metadata
-     (if captured-live
-         (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
-           (claude-code-ide-manager--enqueue-remote-metadata session-a)
-           (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a)))
-       (add-remembered "a" "host-a" "/work/proj" "agent1")
-       (claude-code-ide-manager-refresh-remote-metadata "host-a"))
-     (should (= (length requests) 1))
-     (let* ((new-buffer (generate-new-buffer "*claude-code-remote-metadata-reattached*"))
-            (new-process (make-pipe-process
-                          :name (format "cci-metadata-reattached-%s" captured-live)
-                          :buffer new-buffer :noquery t :sentinel #'ignore)))
-       (push new-buffer buffers)
-       (push new-process clients)
-       (claude-code-ide--put-session
-        (claude-code-ide-session-create
-         :id "a" :host "host-a" :zmx-name "agent1" :directory "/work/proj"
-         :buffer new-buffer :process new-process :cli-type 'omp :order 1))
-       (claude-code-ide-manager-refresh-items '(:type global) t))
-     (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/stale/common/.git")))
-     (should-not (item-metadata "a"))
-     (should (claude-code-ide-manager-item-live-p
-              (claude-code-ide-manager--item-by-session-key '(:type global) "a")))
-     ;; The reattached owner's own fresh enqueue still succeeds normally.
-     (claude-code-ide-manager--enqueue-remote-metadata (claude-code-ide--get-session "a"))
-     (should (= (length requests) 2))
-     (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/fresh/common/.git")))
-     (should (equal (plist-get (item-metadata "a") :common-dir) "/fresh/common/.git")))))
+      (if captured-live
+          (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
+            (claude-code-ide-manager--enqueue-remote-metadata session-a)
+            (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a)))
+        (add-remembered "a" "host-a" "/work/proj" "agent1")
+        (claude-code-ide-manager-refresh-remote-metadata "host-a"))
+      (should (= (length requests) 1))
+      (let* ((new-buffer (generate-new-buffer "*claude-code-remote-metadata-reattached*"))
+             (new-process (make-pipe-process
+                           :name (format "cci-metadata-reattached-%s" captured-live)
+                           :buffer new-buffer :noquery t :sentinel #'ignore)))
+        (push new-buffer buffers)
+        (push new-process clients)
+        (claude-code-ide--put-session
+         (claude-code-ide-session-create
+          :id "a" :host "host-a" :zmx-name "agent1" :directory "/work/proj"
+          :buffer new-buffer :process new-process :cli-type 'omp :order 1))
+        (claude-code-ide-manager-refresh-items '(:type global) t))
+      (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/stale/common/.git")))
+      (should-not (item-metadata "a"))
+      (should (claude-code-ide-manager-item-live-p
+               (claude-code-ide-manager--item-by-session-key '(:type global) "a")))
+      ;; The reattached owner's own fresh enqueue still succeeds normally.
+      (claude-code-ide-manager--enqueue-remote-metadata (claude-code-ide--get-session "a"))
+      (should (= (length requests) 2))
+      (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/fresh/common/.git")))
+      (should (equal (plist-get (item-metadata "a") :common-dir) "/fresh/common/.git")))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-rejects-exact-target-mismatch ()
   "A captured target whose host, directory, or zmx-name changed before the
 result arrives never has that result applied to the row now at its key."
   (dolist (field '(host directory zmx-name))
     (claude-code-ide-tests--with-remote-metadata
-     (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
-       (claude-code-ide-manager--enqueue-remote-metadata session-a)
-       (should (= (length requests) 1))
-       (pcase field
-         ('host (setf (claude-code-ide-session-host session-a) "host-b"))
-         ('directory (setf (claude-code-ide-session-directory session-a) "/different"))
-         ('zmx-name (setf (claude-code-ide-session-zmx-name session-a) "different-agent")))
-       (claude-code-ide-manager-refresh-items '(:type global) t)
-       (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
-       (should-not (item-metadata "a"))))))
+      (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
+        (claude-code-ide-manager--enqueue-remote-metadata session-a)
+        (should (= (length requests) 1))
+        (pcase field
+          ('host (setf (claude-code-ide-session-host session-a) "host-b"))
+          ('directory (setf (claude-code-ide-session-directory session-a) "/different"))
+          ('zmx-name (setf (claude-code-ide-session-zmx-name session-a) "different-agent")))
+        (claude-code-ide-manager-refresh-items '(:type global) t)
+        (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
+        (should-not (item-metadata "a"))))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-git-to-non-git-replaces-cache ()
   "A valid non-Git result replaces an existing Git cache for the same target."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((cached (git-record "host-a" "/work/proj" "/work/common/.git")))
-     (add-live "a" "host-a" "/work/proj" "agent-a" cached)
-     (should (eq (plist-get (item-metadata "a") :kind) 'git))
-     (claude-code-ide-manager-refresh-remote-metadata "host-a")
-     (reply "host-a" :records (list (list :kind 'non-git :host "host-a" :directory "/work/proj"
-                                          :project-path "/work/proj")))
-     (should (eq (plist-get (item-metadata "a") :kind) 'non-git))
-     (should-not (plist-get (item-metadata "a") :common-dir)))))
+    (let ((cached (git-record "host-a" "/work/proj" "/work/common/.git")))
+      (add-live "a" "host-a" "/work/proj" "agent-a" cached)
+      (should (eq (plist-get (item-metadata "a") :kind) 'git))
+      (claude-code-ide-manager-refresh-remote-metadata "host-a")
+      (reply "host-a" :records (list (list :kind 'non-git :host "host-a" :directory "/work/proj"
+                                           :project-path "/work/proj")))
+      (should (eq (plist-get (item-metadata "a") :kind) 'non-git))
+      (should-not (plist-get (item-metadata "a") :common-dir)))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-stop-pending-blocks-update ()
   "A pending Stop blocks a concurrent metadata update for the same target."
   (claude-code-ide-tests--with-remote-metadata
-   (let* ((session-a (add-live "a" "host-a" "/work/proj" "agent1"))
-          (stop-process (make-pipe-process
-                         :name (claude-code-ide--remote-target-process-name "a")
-                         :noquery t :sentinel #'ignore)))
-     (process-put stop-process 'cci-operation 'stop)
-     (unwind-protect
-         (progn
-           (claude-code-ide-manager--enqueue-remote-metadata session-a)
-           (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
-           (should-not (item-metadata "a")))
-       (when (process-live-p stop-process) (delete-process stop-process))))
-   ;; Once the Stop is no longer pending, a fresh refresh applies normally.
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/work/common/.git")))
-   (should (equal (plist-get (item-metadata "a") :common-dir) "/work/common/.git"))))
+    (let* ((session-a (add-live "a" "host-a" "/work/proj" "agent1"))
+           (stop-process (make-pipe-process
+                          :name (claude-code-ide--remote-target-process-name "a")
+                          :noquery t :sentinel #'ignore)))
+      (process-put stop-process 'cci-operation 'stop)
+      (unwind-protect
+          (progn
+            (claude-code-ide-manager--enqueue-remote-metadata session-a)
+            (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
+            (should-not (item-metadata "a")))
+        (when (process-live-p stop-process) (delete-process stop-process))))
+    ;; Once the Stop is no longer pending, a fresh refresh applies normally.
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (reply "host-a" :records (list (git-record "host-a" "/work/proj" "/work/common/.git")))
+    (should (equal (plist-get (item-metadata "a") :common-dir) "/work/common/.git"))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-never-recreates-stopped-session ()
   "A verified Stop's removed target is never recreated by a late result."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
-     (claude-code-ide-manager--enqueue-remote-metadata session-a)
-     (should (= (length requests) 1))
-     (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a)
-                                       'verified-stop)
-     (claude-code-ide-manager-session-ended "a" t)
-     (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
-     (should-not (claude-code-ide--get-session "a")))
-   (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
-   (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
-   (should-not (claude-code-ide--get-session "a"))))
+    (let ((session-a (add-live "a" "host-a" "/work/proj" "agent1")))
+      (claude-code-ide-manager--enqueue-remote-metadata session-a)
+      (should (= (length requests) 1))
+      (claude-code-ide--cleanup-on-exit "a" nil (claude-code-ide-session-process session-a)
+                                        'verified-stop)
+      (claude-code-ide-manager-session-ended "a" t)
+      (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
+      (should-not (claude-code-ide--get-session "a")))
+    (reply "host-a" :records (list (git-record "host-a" "/work/proj")))
+    (should-not (claude-code-ide-manager--item-by-session-key '(:type global) "a"))
+    (should-not (claude-code-ide--get-session "a"))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-exact-directory-distinct-from-trailing-slash ()
   "Directories differing only by a trailing separator stay distinct identities."
   (claude-code-ide-tests--with-remote-metadata
-   (add-remembered "a" "host-a" "/a/b" "agent-a")
-   (add-remembered "b" "host-a" "/a/b/" "agent-b")
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (let ((directories (nth 1 (car requests))))
-     (should (= (length directories) 2))
-     (should (member "/a/b" directories))
-     (should (member "/a/b/" directories))
-     (reply "host-a" :records
-            (mapcar (lambda (d)
-                      (git-record "host-a" d
-                                  (if (equal d "/a/b") "/common/one/.git" "/common/two/.git")))
-                    directories)))
-   (should (equal (plist-get (item-metadata "a") :common-dir) "/common/one/.git"))
-   (should (equal (plist-get (item-metadata "b") :common-dir) "/common/two/.git"))))
+    (add-remembered "a" "host-a" "/a/b" "agent-a")
+    (add-remembered "b" "host-a" "/a/b/" "agent-b")
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (let ((directories (nth 1 (car requests))))
+      (should (= (length directories) 2))
+      (should (member "/a/b" directories))
+      (should (member "/a/b/" directories))
+      (reply "host-a" :records
+             (mapcar (lambda (d)
+                       (git-record "host-a" d
+                                   (if (equal d "/a/b") "/common/one/.git" "/common/two/.git")))
+                     directories)))
+    (should (equal (plist-get (item-metadata "a") :common-dir) "/common/one/.git"))
+    (should (equal (plist-get (item-metadata "b") :common-dir) "/common/two/.git"))))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-no-targets-no-dispatch ()
   "A host with no known targets reports the result without starting SSH."
   (claude-code-ide-tests--with-remote-metadata
-   (claude-code-ide-manager-refresh-remote-metadata "host-a")
-   (should-not requests)))
+    (claude-code-ide-manager-refresh-remote-metadata "host-a")
+    (should-not requests)))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-rejects-unconfigured-host ()
   "A host outside the configured list is rejected before any dispatch."
   (claude-code-ide-tests--with-remote-metadata
-   (should-error (claude-code-ide-manager-refresh-remote-metadata "host-c") :type 'user-error)
-   (should-not requests)))
+    (should-error (claude-code-ide-manager-refresh-remote-metadata "host-c") :type 'user-error)
+    (should-not requests)))
 
 (ert-deftest claude-code-ide-test-manager-grouped-remote-metadata-interactive-host-isolated-from-others ()
   "Prompting for a host refreshes only that host's cache, isolated from others."
   (claude-code-ide-tests--with-remote-metadata
-   (let ((cached-b (git-record "host-b" "/other" "/other/common/.git")))
-     (add-remembered "a" "host-a" "/proj" "agent-a")
-     (add-live "b" "host-b" "/other" "agent-b" cached-b)
-     (setq chosen-host "host-a")
-     (call-interactively #'claude-code-ide-manager-refresh-remote-metadata)
-     (should (= (length requests) 1))
-     (should (equal (nth 0 (car requests)) "host-a"))
-     (reply "host-a" :records (list (git-record "host-a" "/proj" "/proj-common/.git")))
-     (should (equal (plist-get (item-metadata "a") :common-dir) "/proj-common/.git"))
-     ;; host-b was never touched by the prompted host-a refresh.
-     (should (equal (item-metadata "b") cached-b))
-     (should-not (cl-find "host-b" requests :key #'car :test #'equal)))))
+    (let ((cached-b (git-record "host-b" "/other" "/other/common/.git")))
+      (add-remembered "a" "host-a" "/proj" "agent-a")
+      (add-live "b" "host-b" "/other" "agent-b" cached-b)
+      (setq chosen-host "host-a")
+      (call-interactively #'claude-code-ide-manager-refresh-remote-metadata)
+      (should (= (length requests) 1))
+      (should (equal (nth 0 (car requests)) "host-a"))
+      (reply "host-a" :records (list (git-record "host-a" "/proj" "/proj-common/.git")))
+      (should (equal (plist-get (item-metadata "a") :common-dir) "/proj-common/.git"))
+      ;; host-b was never touched by the prompted host-a refresh.
+      (should (equal (item-metadata "b") cached-b))
+      (should-not (cl-find "host-b" requests :key #'car :test #'equal)))))
 
 (ert-deftest claude-code-ide-test-remote-metadata-attachment-preserves-counts-and-selection ()
   "Metadata completion groups a Session, while failure cannot undo attachment."
@@ -25558,70 +25558,70 @@ result arrives never has that result applied to the row now at its key."
         (claude-code-ide-terminal-initialization-delay 0)
         callback control fail-start selected)
     (claude-code-ide-tests--with-remote-targets
-     (cl-letf (((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
-                (lambda (session)
-                  (when (eq fail-start 'enqueue)
-                    (user-error "The metadata fixture cannot enqueue"))
-                  (funcall enqueue session)))
-               ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
-               ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
-               ((symbol-function 'claude-code-ide--install-terminal-resize-observer) #'ignore)
-               ((symbol-function 'claude-code-ide-manager-refresh-all)
-                (lambda () (claude-code-ide-manager-refresh-items '(:type global))))
-               ((symbol-function 'claude-code-ide-zmx-infer-cli-command)
-                (lambda (_command) "/missing/omp"))
-               ((symbol-function 'claude-code-ide-manager-switch-to-session)
-                (lambda (id) (setq selected id)))
-               ((symbol-function 'claude-code-ide--create-terminal-with-command)
-                (lambda (name &rest _)
-                  (let* ((buffer (generate-new-buffer name))
-                         (process (make-pipe-process
-                                   :name "cci-metadata-attach-client" :buffer buffer
-                                   :noquery t :sentinel #'ignore)))
-                    (with-current-buffer buffer
-                      (setq-local major-mode 'ghostel-mode))
-                    (push buffer buffers)
-                    (push process clients)
-                    (cons buffer process))))
-               ((symbol-function 'claude-code-ide-zmx--query-remote-metadata)
-                (lambda (_host _directories done &optional _name)
-                  (when (eq fail-start 'transport)
-                    (signal 'file-error '("SSH fixture cannot start")))
-                  (setq callback done
-                        control (make-pipe-process :name "cci-metadata-attach-control"
-                                                   :noquery t :sentinel #'ignore))
-                  (push control clients)
-                  control)))
-       (let ((first (claude-code-ide--attach-zmx-entry
-                     '(:host "host-a" :name "first")
-                     "/tmp/shared/" "/missing/omp" "stable")))
-         (when control (delete-process control))
-         (funcall callback
-                  (list :host "host-a" :process control :status 0 :stdout "" :stderr ""
-                        :records '((:kind git :host "host-a" :directory "/tmp/shared/"
-                                          :common-dir "/remote/repo/.git"
-                                          :project-path "/remote/repo"
-                                          :worktree-path "/tmp/shared" :branch "topic"))))
-         (should (equal (claude-code-ide-manager--group-key
-                         (claude-code-ide-manager--item-by-session-key "stable"))
-                        '(git "host-a" "/remote/repo/.git")))
-         (setq fail-start 'transport)
-         (should (= 2 (claude-code-ide--attach-zmx-entries
-                       '((:host "host-a" :name "second" :start_dir "/tmp/second" :cmd "omp")
-                         (:host "host-a" :name "third" :start_dir "/tmp/third" :cmd "omp")))))
-         (should (= 3 (hash-table-count claude-code-ide--sessions)))
-         (maphash (lambda (_id session)
-                    (should (process-live-p (claude-code-ide-session-process session))))
-                  claude-code-ide--sessions)
-         (claude-code-ide--cleanup-on-exit "stable")
-         (setq fail-start 'enqueue)
-         (claude-code-ide--reattach-session "stable")
-         (let ((replacement (claude-code-ide--get-session "stable")))
-           (should (not (eq first replacement)))
-           (should (process-live-p (claude-code-ide-session-process replacement)))
-           (should (equal selected "stable"))
-           (should (equal (claude-code-ide-session-group-metadata replacement)
-                          (claude-code-ide-session-group-metadata first)))))))))
+      (cl-letf (((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata)
+                 (lambda (session)
+                   (when (eq fail-start 'enqueue)
+                     (user-error "The metadata fixture cannot enqueue"))
+                   (funcall enqueue session)))
+                ((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                ((symbol-function 'claude-code-ide-zmx-require-remote-session) #'ignore)
+                ((symbol-function 'claude-code-ide--install-terminal-resize-observer) #'ignore)
+                ((symbol-function 'claude-code-ide-manager-refresh-all)
+                 (lambda () (claude-code-ide-manager-refresh-items '(:type global))))
+                ((symbol-function 'claude-code-ide-zmx-infer-cli-command)
+                 (lambda (_command) "/missing/omp"))
+                ((symbol-function 'claude-code-ide-manager-switch-to-session)
+                 (lambda (id) (setq selected id)))
+                ((symbol-function 'claude-code-ide--create-terminal-with-command)
+                 (lambda (name &rest _)
+                   (let* ((buffer (generate-new-buffer name))
+                          (process (make-pipe-process
+                                    :name "cci-metadata-attach-client" :buffer buffer
+                                    :noquery t :sentinel #'ignore)))
+                     (with-current-buffer buffer
+                       (setq-local major-mode 'ghostel-mode))
+                     (push buffer buffers)
+                     (push process clients)
+                     (cons buffer process))))
+                ((symbol-function 'claude-code-ide-zmx--query-remote-metadata)
+                 (lambda (_host _directories done &optional _name)
+                   (when (eq fail-start 'transport)
+                     (signal 'file-error '("SSH fixture cannot start")))
+                   (setq callback done
+                         control (make-pipe-process :name "cci-metadata-attach-control"
+                                                    :noquery t :sentinel #'ignore))
+                   (push control clients)
+                   control)))
+        (let ((first (claude-code-ide--attach-zmx-entry
+                      '(:host "host-a" :name "first")
+                      "/tmp/shared/" "/missing/omp" "stable")))
+          (when control (delete-process control))
+          (funcall callback
+                   (list :host "host-a" :process control :status 0 :stdout "" :stderr ""
+                         :records '((:kind git :host "host-a" :directory "/tmp/shared/"
+                                           :common-dir "/remote/repo/.git"
+                                           :project-path "/remote/repo"
+                                           :worktree-path "/tmp/shared" :branch "topic"))))
+          (should (equal (claude-code-ide-manager--group-key
+                          (claude-code-ide-manager--item-by-session-key "stable"))
+                         '(git "host-a" "/remote/repo/.git")))
+          (setq fail-start 'transport)
+          (should (= 2 (claude-code-ide--attach-zmx-entries
+                        '((:host "host-a" :name "second" :start_dir "/tmp/second" :cmd "omp")
+                          (:host "host-a" :name "third" :start_dir "/tmp/third" :cmd "omp")))))
+          (should (= 3 (hash-table-count claude-code-ide--sessions)))
+          (maphash (lambda (_id session)
+                     (should (process-live-p (claude-code-ide-session-process session))))
+                   claude-code-ide--sessions)
+          (claude-code-ide--cleanup-on-exit "stable")
+          (setq fail-start 'enqueue)
+          (claude-code-ide--reattach-session "stable")
+          (let ((replacement (claude-code-ide--get-session "stable")))
+            (should (not (eq first replacement)))
+            (should (process-live-p (claude-code-ide-session-process replacement)))
+            (should (equal selected "stable"))
+            (should (equal (claude-code-ide-session-group-metadata replacement)
+                           (claude-code-ide-session-group-metadata first)))))))))
 
 
 (require 'claude-code-ide-remote-project)
@@ -25648,263 +25648,263 @@ result arrives never has that result applied to the row now at its key."
   (require 'claude-code-ide-remote-project)
   (cl-progv '(features) (list (cons 'ghostel features))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (claude-code-ide-remote-project--reset-state)
-       (let* ((claude-code-ide-remote-hosts '("host-a"))
-              (claude-code-ide-remote-project-view-hosts '("host-a"))
-              (claude-code-ide-manager-layout-preset 'magit-left)
-              (agent (generate-new-buffer "*claude-code[remote-presets]*"))
-              (agent-process (make-pipe-process :name "remote-presets" :buffer agent :noquery t))
-              (git-view (generate-new-buffer "*captured-remote-provider*"))
-              (dired-view (generate-new-buffer "*direct-remote-dired*"))
-              (directory "/rpc:host-a:/srv/repo/sub/")
-              (file-name-handler-alist nil)
-              (ghostel-mode-hook nil)
-              (claude-code-ide-manager-status-buffer-function
-               (lambda (path)
-                 (should (equal path directory))
-                 git-view))
-              (provider claude-code-ide-manager-status-buffer-function)
-              attempts shells late-provider-used)
-         (unwind-protect
-             (cl-letf
-                 (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
-                   (lambda (attempt _label) (push attempt attempts) attempt))
-                  ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
-                  ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
-                  ((symbol-function 'tramp-dissect-file-name) #'identity)
-                  ((symbol-function 'tramp-rpc--connection-key) #'identity)
-                  ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
-                  ((symbol-function 'locate-dominating-file) (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
-                  ((symbol-function 'file-truename) #'identity)
-                  ((symbol-function 'file-accessible-directory-p)
-                   (lambda (path) (equal path directory)))
-                  ((symbol-function 'dired-noselect)
-                   (lambda (path &rest _)
-                     (should (equal path directory))
-                     (with-current-buffer dired-view
-                       (setq major-mode 'dired-mode default-directory path))
-                     dired-view))
-                  ((symbol-function 'ghostel--new) #'ignore)
-                  ((symbol-function 'ghostel-create)
-                   (lambda (&rest arguments)
-                     (should (equal default-directory directory))
-                     (let ((buffer (apply #'claude-code-ide-tests--create-companion-pipe arguments)))
-                       (push buffer shells)
-                       buffer))))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id "remote" :host "host-a" :zmx-name "agent"
-                 :directory "/srv/repo/sub/" :buffer agent :process agent-process :cli-type 'codex))
-               (with-current-buffer agent
-                 (setq-local major-mode 'ghostel-mode)
-                 (insert "Remote Agent prompt"))
-               (dolist (preset '(magit-left magit-right dired-left dired-right shell-left shell-right))
-                 (ert-info ((format "Remote preset %s" preset))
-                   (setq claude-code-ide-manager-status-buffer-function provider
-                         claude-code-ide-manager-layout-preset preset
-                         attempts nil late-provider-used nil)
-                   (claude-code-ide-manager-reset-layout "remote")
-                   (let* ((kind (nth 1 (assq preset claude-code-ide-manager--layout-presets)))
-                          (side (nth 2 (assq preset claude-code-ide-manager--layout-presets)))
-                          (focus (claude-code-ide-manager--sidebar-window '(:type global))))
-                     (should (eq (window-buffer (selected-window)) agent))
-                     (select-window focus)
-                     (setq claude-code-ide-manager-layout-preset 'dired-left
-                           claude-code-ide-manager-status-buffer-function
-                           (lambda (_)
-                             (setq late-provider-used t)
-                             (ert-fail "Completion read the newer provider")))
-                     (dolist (attempt attempts)
-                       (let (callbacks)
-                         (cl-letf (((symbol-function 'run-at-time)
-                                    (lambda (_time _repeat function &rest args)
-                                      (push (cons function args) callbacks))))
-                           (claude-code-ide-remote-project--worker attempt))
-                         (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
-                         (dolist (callback (nreverse callbacks))
-                           (apply (car callback) (cdr callback)))))
-                     (let* ((companion (pcase kind
-                                         ('git git-view)
-                                         ('dired dired-view)
-                                         ('shell (car shells))))
-                            (companion-window (get-buffer-window companion))
-                            (agent-window (get-buffer-window agent)))
-                       (should (window-live-p companion-window))
-                       (should (eq focus (selected-window)))
-                       (should-not late-provider-used)
-                       (should (claude-code-ide-manager--display-remote-project-view
-                                "remote" agent (selected-frame) companion))
-                       (when attempts
-                         (should-not
-                          (claude-code-ide-manager--display-remote-project-view
-                           "remote" agent (selected-frame) companion
-                           (claude-code-ide-remote-project--attempt-layout-request (car attempts)))))
-                       (with-current-buffer agent
-                         (should (equal (buffer-string) "Remote Agent prompt")))
-                       (should (eq (eq side 'left)
-                                   (< (car (window-edges companion-window))
-                                      (car (window-edges agent-window)))))
-                       (when (eq kind 'shell)
-                         (should (eq companion (gethash "remote" claude-code-ide-manager--companion-shells)))
-                         (should (= (length shells) 1)))))))
-               (should (= (hash-table-count claude-code-ide--sessions) 1)))
-           (dolist (buffer (append (list agent git-view dired-view) shells))
-             (when (buffer-live-p buffer)
-               (with-current-buffer buffer (setq default-directory temporary-file-directory))
-               (kill-buffer buffer)))
-           (claude-code-ide-remote-project--reset-state)))))))
+      (save-window-excursion
+        (claude-code-ide-remote-project--reset-state)
+        (let* ((claude-code-ide-remote-hosts '("host-a"))
+               (claude-code-ide-remote-project-view-hosts '("host-a"))
+               (claude-code-ide-manager-layout-preset 'magit-left)
+               (agent (generate-new-buffer "*claude-code[remote-presets]*"))
+               (agent-process (make-pipe-process :name "remote-presets" :buffer agent :noquery t))
+               (git-view (generate-new-buffer "*captured-remote-provider*"))
+               (dired-view (generate-new-buffer "*direct-remote-dired*"))
+               (directory "/rpc:host-a:/srv/repo/sub/")
+               (file-name-handler-alist nil)
+               (ghostel-mode-hook nil)
+               (claude-code-ide-manager-status-buffer-function
+                (lambda (path)
+                  (should (equal path directory))
+                  git-view))
+               (provider claude-code-ide-manager-status-buffer-function)
+               attempts shells late-provider-used)
+          (unwind-protect
+              (cl-letf
+                  (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                    (lambda (attempt _label) (push attempt attempts) attempt))
+                   ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
+                   ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
+                   ((symbol-function 'tramp-dissect-file-name) #'identity)
+                   ((symbol-function 'tramp-rpc--connection-key) #'identity)
+                   ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
+                   ((symbol-function 'locate-dominating-file) (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
+                   ((symbol-function 'file-truename) #'identity)
+                   ((symbol-function 'file-accessible-directory-p)
+                    (lambda (path) (equal path directory)))
+                   ((symbol-function 'dired-noselect)
+                    (lambda (path &rest _)
+                      (should (equal path directory))
+                      (with-current-buffer dired-view
+                        (setq major-mode 'dired-mode default-directory path))
+                      dired-view))
+                   ((symbol-function 'ghostel--new) #'ignore)
+                   ((symbol-function 'ghostel-create)
+                    (lambda (&rest arguments)
+                      (should (equal default-directory directory))
+                      (let ((buffer (apply #'claude-code-ide-tests--create-companion-pipe arguments)))
+                        (push buffer shells)
+                        buffer))))
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id "remote" :host "host-a" :zmx-name "agent"
+                  :directory "/srv/repo/sub/" :buffer agent :process agent-process :cli-type 'codex))
+                (with-current-buffer agent
+                  (setq-local major-mode 'ghostel-mode)
+                  (insert "Remote Agent prompt"))
+                (dolist (preset '(magit-left magit-right dired-left dired-right shell-left shell-right))
+                  (ert-info ((format "Remote preset %s" preset))
+                    (setq claude-code-ide-manager-status-buffer-function provider
+                          claude-code-ide-manager-layout-preset preset
+                          attempts nil late-provider-used nil)
+                    (claude-code-ide-manager-reset-layout "remote")
+                    (let* ((kind (nth 1 (assq preset claude-code-ide-manager--layout-presets)))
+                           (side (nth 2 (assq preset claude-code-ide-manager--layout-presets)))
+                           (focus (claude-code-ide-manager--sidebar-window '(:type global))))
+                      (should (eq (window-buffer (selected-window)) agent))
+                      (select-window focus)
+                      (setq claude-code-ide-manager-layout-preset 'dired-left
+                            claude-code-ide-manager-status-buffer-function
+                            (lambda (_)
+                              (setq late-provider-used t)
+                              (ert-fail "Completion read the newer provider")))
+                      (dolist (attempt attempts)
+                        (let (callbacks)
+                          (cl-letf (((symbol-function 'run-at-time)
+                                     (lambda (_time _repeat function &rest args)
+                                       (push (cons function args) callbacks))))
+                            (claude-code-ide-remote-project--worker attempt))
+                          (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                          (dolist (callback (nreverse callbacks))
+                            (apply (car callback) (cdr callback)))))
+                      (let* ((companion (pcase kind
+                                          ('git git-view)
+                                          ('dired dired-view)
+                                          ('shell (car shells))))
+                             (companion-window (get-buffer-window companion))
+                             (agent-window (get-buffer-window agent)))
+                        (should (window-live-p companion-window))
+                        (should (eq focus (selected-window)))
+                        (should-not late-provider-used)
+                        (should (claude-code-ide-manager--display-remote-project-view
+                                 "remote" agent (selected-frame) companion))
+                        (when attempts
+                          (should-not
+                           (claude-code-ide-manager--display-remote-project-view
+                            "remote" agent (selected-frame) companion
+                            (claude-code-ide-remote-project--attempt-layout-request (car attempts)))))
+                        (with-current-buffer agent
+                          (should (equal (buffer-string) "Remote Agent prompt")))
+                        (should (eq (eq side 'left)
+                                    (< (car (window-edges companion-window))
+                                       (car (window-edges agent-window)))))
+                        (when (eq kind 'shell)
+                          (should (eq companion (gethash "remote" claude-code-ide-manager--companion-shells)))
+                          (should (= (length shells) 1)))))))
+                (should (= (hash-table-count claude-code-ide--sessions) 1)))
+            (dolist (buffer (append (list agent git-view dired-view) shells))
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer (setq default-directory temporary-file-directory))
+                (kill-buffer buffer)))
+            (claude-code-ide-remote-project--reset-state)))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-remote-navigation-completes ()
   "Returning during preparation preserves captured content and delayed focus."
   (require 'claude-code-ide-remote-project)
   (dolist (restore-failure '(nil t))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (claude-code-ide-remote-project--reset-state)
-       (let* ((claude-code-ide-remote-hosts '("host-a"))
-              (claude-code-ide-remote-project-view-hosts '("host-a"))
-              (claude-code-ide-manager-layout-preset 'magit-left)
-              (agent (generate-new-buffer "*claude-code[navigation-remote]*"))
-              (process (make-pipe-process :name "navigation-remote" :buffer agent :noquery t))
-              (local-agent (generate-new-buffer "*claude-code[navigation-local]*"))
-              (view (generate-new-buffer "*navigation-remote-view*"))
-              (local-view (generate-new-buffer "*navigation-local-view*"))
-              (directory "/rpc:host-a:/srv/repo/sub/")
-              (file-name-handler-alist nil)
-              (claude-code-ide-manager-status-buffer-function
-               (lambda (path) (if (equal path directory) view local-view)))
-              attempts)
-         (unwind-protect
-             (cl-letf
-                 (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
-                   (lambda (attempt _) (push attempt attempts) attempt))
-                  ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
-                  ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
-                  ((symbol-function 'tramp-dissect-file-name) #'identity)
-                  ((symbol-function 'tramp-rpc--connection-key) #'identity)
-                  ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
-                  ((symbol-function 'locate-dominating-file)
-                   (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
-                  ((symbol-function 'file-truename) #'identity)
-                  ((symbol-function 'file-accessible-directory-p) (lambda (_) t)))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id "remote" :host "host-a" :zmx-name "agent"
-                 :directory "/srv/repo/sub/" :buffer agent :process process :cli-type 'omp))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id "local" :directory temporary-file-directory
-                 :buffer local-agent :process local-agent :cli-type 'omp))
-               (claude-code-ide-manager-reset-layout "remote")
-               (claude-code-ide-manager-switch-to-session "local")
-               (if restore-failure
-                   (cl-letf (((symbol-function 'window-state-put)
-                              (lambda (&rest _) (error "Native restoration failure"))))
-                     (claude-code-ide-manager-switch-to-session "remote"))
-                 (setq claude-code-ide-manager-layout-preset 'dired-right
-                       claude-code-ide-manager-status-buffer-function
-                       (lambda (_) (ert-fail "Navigation reread the provider preference")))
-                 (claude-code-ide-manager-switch-to-session "remote"))
-               (let ((focus (claude-code-ide-manager--sidebar-window '(:type global))))
-                 (select-window focus)
-                 (dolist (attempt (copy-sequence attempts))
-                   (let (callbacks)
-                     (cl-letf (((symbol-function 'run-at-time)
-                                (lambda (_time _repeat fn &rest args)
-                                  (push (cons fn args) callbacks))))
-                       (claude-code-ide-remote-project--worker attempt))
-                     (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
-                     (dolist (callback (nreverse callbacks))
-                       (apply (car callback) (cdr callback)))))
-                 (should (buffer-live-p view))
-                 (should (get-buffer-window view))
-                 (should (< (car (window-edges (get-buffer-window view)))
-                            (car (window-edges (get-buffer-window agent)))))
-                 (should (eq focus (selected-window)))
-                 (should (process-live-p process))
-                 (should (= (length attempts) (if restore-failure 2 1)))))
-           (dolist (buffer (list agent local-agent view local-view))
-             (when (buffer-live-p buffer)
-               (with-current-buffer buffer (setq default-directory temporary-file-directory))
-               (kill-buffer buffer)))
-           (claude-code-ide-remote-project--reset-state)))))))
+      (save-window-excursion
+        (claude-code-ide-remote-project--reset-state)
+        (let* ((claude-code-ide-remote-hosts '("host-a"))
+               (claude-code-ide-remote-project-view-hosts '("host-a"))
+               (claude-code-ide-manager-layout-preset 'magit-left)
+               (agent (generate-new-buffer "*claude-code[navigation-remote]*"))
+               (process (make-pipe-process :name "navigation-remote" :buffer agent :noquery t))
+               (local-agent (generate-new-buffer "*claude-code[navigation-local]*"))
+               (view (generate-new-buffer "*navigation-remote-view*"))
+               (local-view (generate-new-buffer "*navigation-local-view*"))
+               (directory "/rpc:host-a:/srv/repo/sub/")
+               (file-name-handler-alist nil)
+               (claude-code-ide-manager-status-buffer-function
+                (lambda (path) (if (equal path directory) view local-view)))
+               attempts)
+          (unwind-protect
+              (cl-letf
+                  (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                    (lambda (attempt _) (push attempt attempts) attempt))
+                   ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
+                   ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
+                   ((symbol-function 'tramp-dissect-file-name) #'identity)
+                   ((symbol-function 'tramp-rpc--connection-key) #'identity)
+                   ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
+                   ((symbol-function 'locate-dominating-file)
+                    (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
+                   ((symbol-function 'file-truename) #'identity)
+                   ((symbol-function 'file-accessible-directory-p) (lambda (_) t)))
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id "remote" :host "host-a" :zmx-name "agent"
+                  :directory "/srv/repo/sub/" :buffer agent :process process :cli-type 'omp))
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id "local" :directory temporary-file-directory
+                  :buffer local-agent :process local-agent :cli-type 'omp))
+                (claude-code-ide-manager-reset-layout "remote")
+                (claude-code-ide-manager-switch-to-session "local")
+                (if restore-failure
+                    (cl-letf (((symbol-function 'window-state-put)
+                               (lambda (&rest _) (error "Native restoration failure"))))
+                      (claude-code-ide-manager-switch-to-session "remote"))
+                  (setq claude-code-ide-manager-layout-preset 'dired-right
+                        claude-code-ide-manager-status-buffer-function
+                        (lambda (_) (ert-fail "Navigation reread the provider preference")))
+                  (claude-code-ide-manager-switch-to-session "remote"))
+                (let ((focus (claude-code-ide-manager--sidebar-window '(:type global))))
+                  (select-window focus)
+                  (dolist (attempt (copy-sequence attempts))
+                    (let (callbacks)
+                      (cl-letf (((symbol-function 'run-at-time)
+                                 (lambda (_time _repeat fn &rest args)
+                                   (push (cons fn args) callbacks))))
+                        (claude-code-ide-remote-project--worker attempt))
+                      (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                      (dolist (callback (nreverse callbacks))
+                        (apply (car callback) (cdr callback)))))
+                  (should (buffer-live-p view))
+                  (should (get-buffer-window view))
+                  (should (< (car (window-edges (get-buffer-window view)))
+                             (car (window-edges (get-buffer-window agent)))))
+                  (should (eq focus (selected-window)))
+                  (should (process-live-p process))
+                  (should (= (length attempts) (if restore-failure 2 1)))))
+            (dolist (buffer (list agent local-agent view local-view))
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer (setq default-directory temporary-file-directory))
+                (kill-buffer buffer)))
+            (claude-code-ide-remote-project--reset-state)))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-remote-move-keeps-view ()
   "A Session directory move keeps the ready view until reset prepares the new one."
   (require 'claude-code-ide-remote-project)
   (dolist (preset '(magit-left dired-left))
     (claude-code-ide-tests--with-grouped-state
-     (save-window-excursion
-       (claude-code-ide-remote-project--reset-state)
-       (let* ((claude-code-ide-remote-hosts '("host-a"))
-              (claude-code-ide-remote-project-view-hosts '("host-a"))
-              (claude-code-ide-manager-layout-preset preset)
-              (agent (generate-new-buffer "*claude-code[moved-directory]*"))
-              (local-agent (generate-new-buffer "*claude-code[moved-local]*"))
-              (process (make-pipe-process :name "moved-directory" :buffer agent :noquery t))
-              (view (generate-new-buffer "*moved-directory-view*"))
-              (local-view (generate-new-buffer "*moved-local-view*"))
-              (directory "/rpc:host-a:/srv/repo/sub/")
-              (file-name-handler-alist nil)
-              (claude-code-ide-manager-status-buffer-function
-               (lambda (path) (if (equal path directory) view local-view)))
-              (spawns 0)
-              attempt)
-         (unwind-protect
-             (cl-letf
-                 (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
-                   (lambda (request _) (setq attempt request spawns (1+ spawns))))
-                  ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
-                  ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
-                  ((symbol-function 'tramp-dissect-file-name) #'identity)
-                  ((symbol-function 'tramp-rpc--connection-key) #'identity)
-                  ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
-                  ((symbol-function 'locate-dominating-file)
-                   (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
-                  ((symbol-function 'file-truename) #'identity)
-                  ((symbol-function 'file-accessible-directory-p) (lambda (_) t))
-                  ((symbol-function 'dired-noselect)
-                   (lambda (path &rest _)
-                     (let ((buffer (if (equal path directory) view local-view)))
-                       (with-current-buffer buffer
-                         (setq major-mode 'dired-mode default-directory path))
-                       buffer))))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id "remote" :host "host-a" :zmx-name "agent" :directory "/srv/repo/sub"
-                 :buffer agent :process process :cli-type 'omp))
-               (claude-code-ide--put-session
-                (claude-code-ide-session-create
-                 :id "local" :directory temporary-file-directory
-                 :buffer local-agent :process local-agent :cli-type 'omp))
-               (claude-code-ide-manager-reset-layout "remote")
-               (let (callbacks)
-                 (cl-letf (((symbol-function 'run-at-time)
-                            (lambda (_time _repeat fn &rest args)
-                              (push (cons fn args) callbacks))))
-                   (claude-code-ide-remote-project--worker attempt))
-                 (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
-                 (dolist (callback (nreverse callbacks))
-                   (apply (car callback) (cdr callback))))
-               (should (get-buffer-window view))
-               (setf (claude-code-ide-session-directory
-                      (claude-code-ide--get-session "remote")) "/srv/other")
-               (let ((before spawns))
-                 (claude-code-ide-manager-switch-to-session "local")
-                 (claude-code-ide-manager-switch-to-session "remote")
-                 (should (get-buffer-window agent))
-                 (should (get-buffer-window view))
-                 (should (= spawns before))
-                 (claude-code-ide-manager-reset-layout "remote")
-                 (should (= spawns (1+ before)))
-                 (should (equal (claude-code-ide-remote-project--attempt-directory attempt)
-                                "/rpc:host-a:/srv/other/"))))
-           (dolist (buffer (list agent local-agent view local-view))
-             (when (buffer-live-p buffer)
-               (with-current-buffer buffer (setq default-directory temporary-file-directory))
-               (kill-buffer buffer)))
-           (claude-code-ide-remote-project--reset-state)))))))
+      (save-window-excursion
+        (claude-code-ide-remote-project--reset-state)
+        (let* ((claude-code-ide-remote-hosts '("host-a"))
+               (claude-code-ide-remote-project-view-hosts '("host-a"))
+               (claude-code-ide-manager-layout-preset preset)
+               (agent (generate-new-buffer "*claude-code[moved-directory]*"))
+               (local-agent (generate-new-buffer "*claude-code[moved-local]*"))
+               (process (make-pipe-process :name "moved-directory" :buffer agent :noquery t))
+               (view (generate-new-buffer "*moved-directory-view*"))
+               (local-view (generate-new-buffer "*moved-local-view*"))
+               (directory "/rpc:host-a:/srv/repo/sub/")
+               (file-name-handler-alist nil)
+               (claude-code-ide-manager-status-buffer-function
+                (lambda (path) (if (equal path directory) view local-view)))
+               (spawns 0)
+               attempt)
+          (unwind-protect
+              (cl-letf
+                  (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                    (lambda (request _) (setq attempt request spawns (1+ spawns))))
+                   ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore)
+                   ((symbol-function 'claude-code-ide-remote-project--load-client) (lambda () t))
+                   ((symbol-function 'tramp-dissect-file-name) #'identity)
+                   ((symbol-function 'tramp-rpc--connection-key) #'identity)
+                   ((symbol-function 'claude-code-ide-remote-project--health-check) (lambda (_) t))
+                   ((symbol-function 'locate-dominating-file)
+                    (lambda (&rest _) "/rpc:host-a:/srv/repo/"))
+                   ((symbol-function 'file-truename) #'identity)
+                   ((symbol-function 'file-accessible-directory-p) (lambda (_) t))
+                   ((symbol-function 'dired-noselect)
+                    (lambda (path &rest _)
+                      (let ((buffer (if (equal path directory) view local-view)))
+                        (with-current-buffer buffer
+                          (setq major-mode 'dired-mode default-directory path))
+                        buffer))))
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id "remote" :host "host-a" :zmx-name "agent" :directory "/srv/repo/sub"
+                  :buffer agent :process process :cli-type 'omp))
+                (claude-code-ide--put-session
+                 (claude-code-ide-session-create
+                  :id "local" :directory temporary-file-directory
+                  :buffer local-agent :process local-agent :cli-type 'omp))
+                (claude-code-ide-manager-reset-layout "remote")
+                (let (callbacks)
+                  (cl-letf (((symbol-function 'run-at-time)
+                             (lambda (_time _repeat fn &rest args)
+                               (push (cons fn args) callbacks))))
+                    (claude-code-ide-remote-project--worker attempt))
+                  (setf (claude-code-ide-remote-project--attempt-worker attempt) nil)
+                  (dolist (callback (nreverse callbacks))
+                    (apply (car callback) (cdr callback))))
+                (should (get-buffer-window view))
+                (setf (claude-code-ide-session-directory
+                       (claude-code-ide--get-session "remote")) "/srv/other")
+                (let ((before spawns))
+                  (claude-code-ide-manager-switch-to-session "local")
+                  (claude-code-ide-manager-switch-to-session "remote")
+                  (should (get-buffer-window agent))
+                  (should (get-buffer-window view))
+                  (should (= spawns before))
+                  (claude-code-ide-manager-reset-layout "remote")
+                  (should (= spawns (1+ before)))
+                  (should (equal (claude-code-ide-remote-project--attempt-directory attempt)
+                                 "/rpc:host-a:/srv/other/"))))
+            (dolist (buffer (list agent local-agent view local-view))
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer (setq default-directory temporary-file-directory))
+                (kill-buffer buffer)))
+            (claude-code-ide-remote-project--reset-state)))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-remote-rejected-shell-stays-ordinary ()
   "A stale or undisplayable shell cannot gain ownership or change focus."
@@ -25913,130 +25913,130 @@ result arrives never has that result applied to the row now at its key."
                              split-refused dismissed frame-changed))
     (ert-info ((format "Rejected shell: %s" case))
       (claude-code-ide-tests--with-grouped-state
-       (save-window-excursion
-         (claude-code-ide-remote-project--reset-state)
-         (let* ((claude-code-ide-remote-hosts '("host-a"))
-                (claude-code-ide-remote-project-view-hosts '("host-a"))
-                (claude-code-ide-manager-layout-preset 'shell-left)
-                (agent (generate-new-buffer "*claude-code[stale-remote]*"))
-                (agent-process (make-pipe-process :name "stale-remote" :buffer agent :noquery t))
-                (replacement (generate-new-buffer "*claude-code[new-attachment]*"))
-                (replacement-process (make-pipe-process :name "new-attachment" :buffer replacement :noquery t))
-                (ghostel-mode-hook nil)
-                (shell (claude-code-ide-tests--create-companion-pipe "*unpublished-remote-shell*"))
-                (session (claude-code-ide-session-create
-                          :id "remote" :host "host-a" :directory "/srv/repo/"
-                          :zmx-name "agent" :buffer agent :process agent-process :cli-type 'omp))
-                (original-split (symbol-function 'split-window))
-                attempt)
-           (unwind-protect
-               (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
-                          (lambda (pending _label) (setq attempt pending)))
-                         ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore))
-                 (claude-code-ide--put-session session)
-                 (claude-code-ide-manager-reset-layout "remote")
-                 (let ((old-attempt attempt)
-                       (focus (selected-window)))
-                   (pcase case
-                     ('superseded
-                      (setq claude-code-ide-manager-layout-preset 'dired-right)
-                      (claude-code-ide-manager-reset-layout "remote")
-                      (setq focus (selected-window)))
-                     ('host-disabled (setq claude-code-ide-remote-project-view-hosts nil))
-                     ('host-unapproved (setq claude-code-ide-remote-hosts nil))
-                     ('attachment-changed
-                      (setf (claude-code-ide-session-buffer session) replacement
-                            (claude-code-ide-session-process session) replacement-process)
-                      (set-window-buffer focus replacement))
-                     ('dismissed (claude-code-ide-remote-project-suppress "remote" agent))
-                     ('frame-changed (claude-code-ide-manager--advance-layout-epoch)))
-                   (cl-letf (((symbol-function 'split-window)
-                              (if (eq case 'split-refused)
-                                  (lambda (&rest _) (error "The frame cannot split"))
-                                original-split)))
-                     (claude-code-ide-remote-project--finish-success
-                      old-attempt
-                      (list :companion-kind 'shell :buffer shell
-                            :layout-request
-                            (claude-code-ide-remote-project--attempt-layout-request old-attempt))))
-                   (should (eq focus (selected-window)))
-                   (should (eq (window-buffer focus)
-                               (if (eq case 'attachment-changed) replacement agent)))
-                   (should-not (get-buffer-window shell))
-                   (should-not (gethash "remote" claude-code-ide-manager--companion-shells))
-                   (should (claude-code-ide-session--companion-shell-live-p shell))
-                   (should (= (hash-table-count claude-code-ide-remote-project--views) 0))))
-             (dolist (buffer (list agent replacement shell))
-               (when (buffer-live-p buffer) (kill-buffer buffer)))
-             (claude-code-ide-remote-project--reset-state))))))))
+        (save-window-excursion
+          (claude-code-ide-remote-project--reset-state)
+          (let* ((claude-code-ide-remote-hosts '("host-a"))
+                 (claude-code-ide-remote-project-view-hosts '("host-a"))
+                 (claude-code-ide-manager-layout-preset 'shell-left)
+                 (agent (generate-new-buffer "*claude-code[stale-remote]*"))
+                 (agent-process (make-pipe-process :name "stale-remote" :buffer agent :noquery t))
+                 (replacement (generate-new-buffer "*claude-code[new-attachment]*"))
+                 (replacement-process (make-pipe-process :name "new-attachment" :buffer replacement :noquery t))
+                 (ghostel-mode-hook nil)
+                 (shell (claude-code-ide-tests--create-companion-pipe "*unpublished-remote-shell*"))
+                 (session (claude-code-ide-session-create
+                           :id "remote" :host "host-a" :directory "/srv/repo/"
+                           :zmx-name "agent" :buffer agent :process agent-process :cli-type 'omp))
+                 (original-split (symbol-function 'split-window))
+                 attempt)
+            (unwind-protect
+                (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                           (lambda (pending _label) (setq attempt pending)))
+                          ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore))
+                  (claude-code-ide--put-session session)
+                  (claude-code-ide-manager-reset-layout "remote")
+                  (let ((old-attempt attempt)
+                        (focus (selected-window)))
+                    (pcase case
+                      ('superseded
+                       (setq claude-code-ide-manager-layout-preset 'dired-right)
+                       (claude-code-ide-manager-reset-layout "remote")
+                       (setq focus (selected-window)))
+                      ('host-disabled (setq claude-code-ide-remote-project-view-hosts nil))
+                      ('host-unapproved (setq claude-code-ide-remote-hosts nil))
+                      ('attachment-changed
+                       (setf (claude-code-ide-session-buffer session) replacement
+                             (claude-code-ide-session-process session) replacement-process)
+                       (set-window-buffer focus replacement))
+                      ('dismissed (claude-code-ide-remote-project-suppress "remote" agent))
+                      ('frame-changed (claude-code-ide-manager--advance-layout-epoch)))
+                    (cl-letf (((symbol-function 'split-window)
+                               (if (eq case 'split-refused)
+                                   (lambda (&rest _) (error "The frame cannot split"))
+                                 original-split)))
+                      (claude-code-ide-remote-project--finish-success
+                       old-attempt
+                       (list :companion-kind 'shell :buffer shell
+                             :layout-request
+                             (claude-code-ide-remote-project--attempt-layout-request old-attempt))))
+                    (should (eq focus (selected-window)))
+                    (should (eq (window-buffer focus)
+                                (if (eq case 'attachment-changed) replacement agent)))
+                    (should-not (get-buffer-window shell))
+                    (should-not (gethash "remote" claude-code-ide-manager--companion-shells))
+                    (should (claude-code-ide-session--companion-shell-live-p shell))
+                    (should (= (hash-table-count claude-code-ide-remote-project--views) 0))))
+              (dolist (buffer (list agent replacement shell))
+                (when (buffer-live-p buffer) (kill-buffer buffer)))
+              (claude-code-ide-remote-project--reset-state))))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-remote-saved-shell-never-restarts ()
   "Saved remote shell windows and output restore without remote preparation."
   (require 'claude-code-ide-remote-project)
   (claude-code-ide-tests--with-grouped-state
-   (save-window-excursion
-     (claude-code-ide-remote-project--reset-state)
-     (let* ((claude-code-ide-remote-hosts '("host-a"))
-            (claude-code-ide-remote-project-view-hosts '("host-a"))
-            (claude-code-ide-manager-layout-preset 'shell-right)
-            (agent (generate-new-buffer "*claude-code[saved-remote]*"))
-            (agent-process (make-pipe-process :name "saved-remote" :buffer agent :noquery t))
-            (away (generate-new-buffer "*claude-code[away]*"))
-            (ghostel-mode-hook nil)
-            (shell (claude-code-ide-tests--create-companion-pipe "*saved-remote-shell*"))
-            (process (buffer-local-value 'ghostel--process shell))
-            (preparations 0))
-       (unwind-protect
-           (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
-                      (lambda (&rest _)
-                        (cl-incf preparations)
-                        (error "Saved shell return cannot start remote preparation")))
-                     ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore))
-             (claude-code-ide--put-session
-              (claude-code-ide-session-create
-               :id "remote" :host "host-a" :directory "/srv/repo/" :zmx-name "agent"
-               :buffer agent :process agent-process :cli-type 'omp))
-             (claude-code-ide--put-session
-              (claude-code-ide-session-create
-               :id "away" :directory temporary-file-directory
-               :buffer away :process away :cli-type 'omp))
-             (delete-other-windows)
-             (set-window-buffer (selected-window) away)
-             (puthash "away" (list :window-state (window-state-get (frame-root-window) t)
-                                   :selected-buffer-name (buffer-name away))
-                      claude-code-ide-manager--layouts)
-             (puthash "remote" shell claude-code-ide-manager--companion-shells)
-             (with-current-buffer shell (insert "Retained remote output\n"))
-             (claude-code-ide-manager-reset-layout "remote")
-             (should (get-buffer-window shell))
-             (select-window (get-buffer-window shell))
-             (setq claude-code-ide-manager-layout-preset 'dired-left)
-             (claude-code-ide-manager-switch-to-session "away")
-             (with-current-buffer shell (rename-buffer "*renamed-saved-remote-shell*" t))
-             (claude-code-ide-manager-switch-to-session "remote")
-             (should (eq (window-buffer (selected-window)) shell))
-             (should (eq process (buffer-local-value 'ghostel--process shell)))
-             (delete-window (get-buffer-window shell))
-             (claude-code-ide-manager-switch-to-session "away")
-             (claude-code-ide-manager-switch-to-session "remote")
-             (should-not (get-buffer-window shell))
-             (should (claude-code-ide-session--companion-shell-live-p shell))
-             (setq claude-code-ide-manager-layout-preset 'shell-left)
-             (claude-code-ide-manager-reset-layout "remote")
-             (select-window (get-buffer-window shell))
-             (delete-process process)
-             (claude-code-ide-manager-switch-to-session "away")
-             (claude-code-ide-manager-switch-to-session "remote")
-             (should (eq (window-buffer (selected-window)) shell))
-             (should (string-match-p "Retained remote output\n" (with-current-buffer shell (buffer-string))))
-             (kill-buffer shell)
-             (claude-code-ide-manager-switch-to-session "away")
-             (claude-code-ide-manager-switch-to-session "remote")
-             (should (get-buffer-window agent))
-             (should (= preparations 0)))
-         (dolist (buffer (list agent away shell))
-           (when (buffer-live-p buffer) (kill-buffer buffer)))
-         (claude-code-ide-remote-project--reset-state))))))
+    (save-window-excursion
+      (claude-code-ide-remote-project--reset-state)
+      (let* ((claude-code-ide-remote-hosts '("host-a"))
+             (claude-code-ide-remote-project-view-hosts '("host-a"))
+             (claude-code-ide-manager-layout-preset 'shell-right)
+             (agent (generate-new-buffer "*claude-code[saved-remote]*"))
+             (agent-process (make-pipe-process :name "saved-remote" :buffer agent :noquery t))
+             (away (generate-new-buffer "*claude-code[away]*"))
+             (ghostel-mode-hook nil)
+             (shell (claude-code-ide-tests--create-companion-pipe "*saved-remote-shell*"))
+             (process (buffer-local-value 'ghostel--process shell))
+             (preparations 0))
+        (unwind-protect
+            (cl-letf (((symbol-function 'claude-code-ide-remote-project--spawn-worker)
+                       (lambda (&rest _)
+                         (cl-incf preparations)
+                         (error "Saved shell return cannot start remote preparation")))
+                      ((symbol-function 'claude-code-ide-manager--enqueue-remote-metadata-snapshots) #'ignore))
+              (claude-code-ide--put-session
+               (claude-code-ide-session-create
+                :id "remote" :host "host-a" :directory "/srv/repo/" :zmx-name "agent"
+                :buffer agent :process agent-process :cli-type 'omp))
+              (claude-code-ide--put-session
+               (claude-code-ide-session-create
+                :id "away" :directory temporary-file-directory
+                :buffer away :process away :cli-type 'omp))
+              (delete-other-windows)
+              (set-window-buffer (selected-window) away)
+              (puthash "away" (list :window-state (window-state-get (frame-root-window) t)
+                                    :selected-buffer-name (buffer-name away))
+                       claude-code-ide-manager--layouts)
+              (puthash "remote" shell claude-code-ide-manager--companion-shells)
+              (with-current-buffer shell (insert "Retained remote output\n"))
+              (claude-code-ide-manager-reset-layout "remote")
+              (should (get-buffer-window shell))
+              (select-window (get-buffer-window shell))
+              (setq claude-code-ide-manager-layout-preset 'dired-left)
+              (claude-code-ide-manager-switch-to-session "away")
+              (with-current-buffer shell (rename-buffer "*renamed-saved-remote-shell*" t))
+              (claude-code-ide-manager-switch-to-session "remote")
+              (should (eq (window-buffer (selected-window)) shell))
+              (should (eq process (buffer-local-value 'ghostel--process shell)))
+              (delete-window (get-buffer-window shell))
+              (claude-code-ide-manager-switch-to-session "away")
+              (claude-code-ide-manager-switch-to-session "remote")
+              (should-not (get-buffer-window shell))
+              (should (claude-code-ide-session--companion-shell-live-p shell))
+              (setq claude-code-ide-manager-layout-preset 'shell-left)
+              (claude-code-ide-manager-reset-layout "remote")
+              (select-window (get-buffer-window shell))
+              (delete-process process)
+              (claude-code-ide-manager-switch-to-session "away")
+              (claude-code-ide-manager-switch-to-session "remote")
+              (should (eq (window-buffer (selected-window)) shell))
+              (should (string-match-p "Retained remote output\n" (with-current-buffer shell (buffer-string))))
+              (kill-buffer shell)
+              (claude-code-ide-manager-switch-to-session "away")
+              (claude-code-ide-manager-switch-to-session "remote")
+              (should (get-buffer-window agent))
+              (should (= preparations 0)))
+          (dolist (buffer (list agent away shell))
+            (when (buffer-live-p buffer) (kill-buffer buffer)))
+          (claude-code-ide-remote-project--reset-state))))))
 
 (ert-deftest claude-code-ide-test-manager-layout-preset-remote-provider-identity ()
   "Explicit targets capture Git callbacks and never merge distinct providers."
@@ -28476,37 +28476,37 @@ result arrives never has that result applied to the row now at its key."
 (ert-deftest claude-code-ide-test-disconnect-keeps-owned-project-view ()
   "Disconnect never closes an owned Project view, even on a cleanup host."
   (claude-code-ide-tests--with-remote-targets
-   (claude-code-ide-remote-project--reset-state)
-   (let* ((session (add-target "rem" "host-a"))
-          (terminal (claude-code-ide-session-buffer session))
-          (view-buffer (generate-new-buffer " *disconnect-view*"))
-          (key (claude-code-ide-tests--remote-view-key "host-a" 'git "/work"))
-          (intent (claude-code-ide-remote-project--intent-for "rem" "host-a" terminal))
-          (claude-code-ide-remote-project-cleanup-hosts '("host-a")))
-     (unwind-protect
-         (progn
-           (with-current-buffer view-buffer
-             (setq major-mode 'dired-mode
-                   default-directory "/work/")
-             (set-buffer-modified-p nil)
-             (add-hook 'kill-buffer-hook #'claude-code-ide-remote-project--view-killed nil t))
-           (setf (claude-code-ide-remote-project--intent-view-key intent) key
-                 (claude-code-ide-remote-project--intent-view-buffer intent) view-buffer)
-           (puthash key
-                    (claude-code-ide-remote-project--make-view
-                     :key key :buffer view-buffer :origin 'created-by-feature
-                     :creator 'dired :sessions '("rem"))
-                    claude-code-ide-remote-project--views)
-           (claude-code-ide-manager-refresh-items '(:type global) t)
-           (cl-letf (((symbol-function 'message) #'ignore))
-             (claude-code-ide-disconnect "rem"))
-           (should-not (claude-code-ide--get-session "rem"))
-           (should (buffer-live-p view-buffer)))
-       (when (buffer-live-p view-buffer)
-         (with-current-buffer view-buffer
-           (kill-local-variable 'kill-buffer-hook))
-         (kill-buffer view-buffer))
-       (claude-code-ide-remote-project--reset-state)))))
+    (claude-code-ide-remote-project--reset-state)
+    (let* ((session (add-target "rem" "host-a"))
+           (terminal (claude-code-ide-session-buffer session))
+           (view-buffer (generate-new-buffer " *disconnect-view*"))
+           (key (claude-code-ide-tests--remote-view-key "host-a" 'git "/work"))
+           (intent (claude-code-ide-remote-project--intent-for "rem" "host-a" terminal))
+           (claude-code-ide-remote-project-cleanup-hosts '("host-a")))
+      (unwind-protect
+          (progn
+            (with-current-buffer view-buffer
+              (setq major-mode 'dired-mode
+                    default-directory "/work/")
+              (set-buffer-modified-p nil)
+              (add-hook 'kill-buffer-hook #'claude-code-ide-remote-project--view-killed nil t))
+            (setf (claude-code-ide-remote-project--intent-view-key intent) key
+                  (claude-code-ide-remote-project--intent-view-buffer intent) view-buffer)
+            (puthash key
+                     (claude-code-ide-remote-project--make-view
+                      :key key :buffer view-buffer :origin 'created-by-feature
+                      :creator 'dired :sessions '("rem"))
+                     claude-code-ide-remote-project--views)
+            (claude-code-ide-manager-refresh-items '(:type global) t)
+            (cl-letf (((symbol-function 'message) #'ignore))
+              (claude-code-ide-disconnect "rem"))
+            (should-not (claude-code-ide--get-session "rem"))
+            (should (buffer-live-p view-buffer)))
+        (when (buffer-live-p view-buffer)
+          (with-current-buffer view-buffer
+            (kill-local-variable 'kill-buffer-hook))
+          (kill-buffer view-buffer))
+        (claude-code-ide-remote-project--reset-state)))))
 
 (ert-deftest claude-code-ide-test-remote-project-cleanup-follows-explicit-detach ()
   "Explicit detach captures ownership first and cleans before forgetting."
