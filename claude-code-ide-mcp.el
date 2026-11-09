@@ -184,8 +184,8 @@ Uses buffer-local cache to avoid repeated project lookups."
 (defun claude-code-ide-mcp--get-buffer-directory ()
   "Return the current buffer's most specific working directory."
   (when-let* ((directory (or (and buffer-file-name
-                                 (file-name-directory buffer-file-name))
-                            default-directory)))
+                                  (file-name-directory buffer-file-name))
+                             default-directory)))
     (claude-code-ide-mcp--normalize-directory directory)))
 
 (defun claude-code-ide-mcp--directory-contains-p (parent child)
@@ -212,7 +212,7 @@ Uses buffer-local cache to avoid repeated project lookups."
 (defun claude-code-ide-mcp--get-related-sessions (&optional directory)
   "Return sessions related to DIRECTORY or the current buffer."
   (when-let* ((directory (claude-code-ide-mcp--normalize-directory
-                         (or directory (claude-code-ide-mcp--get-buffer-directory)))))
+                          (or directory (claude-code-ide-mcp--get-buffer-directory)))))
     (claude-code-ide-mcp--sort-sessions-by-specificity
      (cl-remove-if-not
       (lambda (session)
@@ -233,14 +233,14 @@ closest parent of the current buffer's directory."
              (claude-code-ide-session-id owner))
           (when-let* ((directory (claude-code-ide-mcp--get-buffer-directory)))
             (when-let* ((closest
-                        (car
-                         (claude-code-ide-mcp--sort-sessions-by-specificity
-                          (cl-remove-if-not
-                           (lambda (session)
-                             (claude-code-ide-mcp--directory-contains-p
-                              (claude-code-ide-mcp-session-project-dir session)
-                              directory))
-                           (claude-code-ide-mcp--active-sessions))))))
+                         (car
+                          (claude-code-ide-mcp--sort-sessions-by-specificity
+                           (cl-remove-if-not
+                            (lambda (session)
+                              (claude-code-ide-mcp--directory-contains-p
+                               (claude-code-ide-mcp-session-project-dir session)
+                               directory))
+                            (claude-code-ide-mcp--active-sessions))))))
               (or (claude-code-ide-mcp--get-session-for-project
                    (claude-code-ide-mcp-session-project-dir closest))
                   closest)))))))
@@ -532,9 +532,9 @@ Optional SESSION contains the MCP session context."
                             (claude-code-ide-mcp-session-client session)
                           ;; Fallback: try to find session from current buffer using cache
                           (when-let* ((s (or (when (and claude-code-ide-mcp--buffer-cache-valid
-                                                       claude-code-ide-mcp--buffer-session-cache)
-                                              claude-code-ide-mcp--buffer-session-cache)
-                                            (claude-code-ide-mcp--resolve-buffer-session))))
+                                                        claude-code-ide-mcp--buffer-session-cache)
+                                               claude-code-ide-mcp--buffer-session-cache)
+                                             (claude-code-ide-mcp--resolve-buffer-session))))
                             (claude-code-ide-mcp-session-client s)))))
             (if client
                 (let ((response-text (json-encode response)))
@@ -690,8 +690,8 @@ Optional SESSION contains the MCP session context."
         ;; Find the session for this websocket
         (let ((session (or (and session-id
                                 (when-let* ((candidate
-                                            (claude-code-ide-mcp--get-session
-                                             session-id)))
+                                             (claude-code-ide-mcp--get-session
+                                              session-id)))
                                   (and (eq ws
                                            (claude-code-ide-mcp-session-client
                                             candidate))

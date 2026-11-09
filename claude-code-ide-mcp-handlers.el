@@ -225,7 +225,7 @@ STARTUP-HOOK-FN is the hook function to remove after use."
       ;; Restore Claude side window only if user wants it shown during ediff
       (when claude-code-ide-show-claude-window-in-ediff
         (when-let* ((project-dir
-                    (claude-code-ide-mcp-session-project-dir session)))
+                     (claude-code-ide-mcp-session-project-dir session)))
           (let* ((core-session
                   (claude-code-ide--get-session
                    (claude-code-ide-mcp-session-id session)))
@@ -790,7 +790,7 @@ SESSION is the MCP session to use - if not provided, tries to determine it."
       ;; Fallback to project directory if no current session
       (when-let* ((project-dir (claude-code-ide-mcp--get-buffer-project)))
         (when-let* ((session (claude-code-ide-mcp--get-session-for-project
-                             project-dir)))
+                              project-dir)))
           (let ((session-diffs (claude-code-ide-mcp-session-active-diffs session)))
             (maphash (lambda (tab-name _diff-info)
                        (claude-code-ide-mcp--cleanup-diff tab-name session)

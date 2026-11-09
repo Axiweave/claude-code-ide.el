@@ -2563,7 +2563,7 @@ pull it off the row the user chose."
 (defun claude-code-ide-manager--install-idle-refresh-hooks ()
   "Refresh the manager sidebar when session idle state changes."
   (unless (advice-member-p #'claude-code-ide-manager--refresh-after-idle-timer
-                          'claude-code-ide-session-idle--fire-timer)
+                           'claude-code-ide-session-idle--fire-timer)
     (advice-add 'claude-code-ide-session-idle--fire-timer
                 :around #'claude-code-ide-manager--refresh-after-idle-timer))
   (unless (memq #'claude-code-ide-manager--refresh-on-idle-transition

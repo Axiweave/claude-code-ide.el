@@ -360,9 +360,9 @@ When REQUIRE-DATA is non-nil, refuse unavailable or empty clipboard data."
                             (and (or (symbolp target) (stringp target))
                                  (not (member target
                                               '(nil "" TARGETS "TARGETS"
-                                                TIMESTAMP "TIMESTAMP"
-                                                MULTIPLE "MULTIPLE"
-                                                SAVE_TARGETS "SAVE_TARGETS")))))
+                                                    TIMESTAMP "TIMESTAMP"
+                                                    MULTIPLE "MULTIPLE"
+                                                    SAVE_TARGETS "SAVE_TARGETS")))))
                           targets))))
       (if (display-graphic-p)
           (user-error "The clipboard has no usable data. Copy an image or text before another paste")

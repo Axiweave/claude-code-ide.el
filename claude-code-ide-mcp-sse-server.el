@@ -382,7 +382,7 @@ terminal) without losing the last real selection."
       (cancel-timer claude-code-ide-mcp-sse--selection-timer))
     (setq claude-code-ide-mcp-sse--selection-timer
           (run-with-timer claude-code-ide-mcp-selection-delay nil
-                           #'claude-code-ide-mcp-sse--flush-selection (current-buffer)))))
+                          #'claude-code-ide-mcp-sse--flush-selection (current-buffer)))))
 
 ;;; Request handlers
 
