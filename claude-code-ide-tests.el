@@ -16181,6 +16181,33 @@ spec 015 extends the reference conversion to the project pickers."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest claude-code-ide-test-create-terminal-with-command-ignores-caller-shell ()
+  "A buffer-local shell in the calling buffer does not reach the new terminal.
+Remote file buffers carry a connection-local `shell-file-name' for the
+remote host, and adoption timers can run while one is current."
+  (let ((claude-code-ide-cli-path "claude")
+        (claude-code-ide-session-setup-hook nil)
+        (working-dir (file-name-as-directory
+                      (file-truename temporary-file-directory)))
+        (caller (generate-new-buffer " *cci-remote-file*"))
+        program buffer)
+    (unwind-protect
+        (with-current-buffer caller
+          (setq-local shell-file-name "/only/on/the/remote/zsh")
+          (cl-letf (((symbol-function 'claude-code-ide-session--ensure-ghostel) #'ignore)
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (target shell _args)
+                       (setq buffer target
+                             program shell)
+                       (error "Stop after capture"))))
+            (should-error
+             (claude-code-ide--create-terminal-with-command
+              "*claude-code[caller-shell]*" working-dir "true" nil))
+            (should (equal program (default-value 'shell-file-name)))))
+      (kill-buffer caller)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest claude-code-ide-test-create-terminal-with-command-preserves-existing-buffer ()
   "A requested name must not transfer an existing buffer or process."
   (let* ((claude-code-ide-cli-path "claude")

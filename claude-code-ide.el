@@ -1656,8 +1656,13 @@ Return (buffer . process) only for a live, owned terminal process."
             (with-current-buffer buffer
               (setq-local ghostel-enable-url-detection nil)
               (setq-local ghostel-enable-file-detection nil))
+            ;; Read the shell in the new local buffer.  A timer can run
+            ;; this in a remote file buffer whose connection-local
+            ;; `shell-file-name' names a program that only the remote has.
             (setq process
-                  (ghostel-exec buffer (or shell-file-name "/bin/sh")
+                  (ghostel-exec buffer
+                                (or (buffer-local-value 'shell-file-name buffer)
+                                    "/bin/sh")
                                 (list "-lc" cmd)))
             (unless (claude-code-ide-session--live-ghostel-process-p buffer process)
               (user-error "Ghostel did not start a live process for the new buffer"))
