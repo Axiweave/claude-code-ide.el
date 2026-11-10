@@ -1575,6 +1575,10 @@ under the ESC prefix, so iterate that sub-keymap."
 (define-derived-mode claude-code-ide-manager-mode special-mode "CC-Manager"
   "Major mode for the cc-manager sidebar."
   (setq truncate-lines t)
+  ;; The sidebar is rendered output, so it needs no undo.  With undo on, the
+  ;; list reached 2.45M entries after 4 days: half of the live heap, and each
+  ;; GC pause went from 0.24s to 0.54s.
+  (buffer-disable-undo)
   (setq-local global-hl-line-mode nil)
   (setq-local claude-code-ide-manager--last-point-path nil)
   (add-hook 'post-command-hook #'claude-code-ide-manager--show-point-path nil t)
