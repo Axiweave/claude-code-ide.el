@@ -12812,12 +12812,13 @@ another live-prompt session and back keeps the restored viewport."
               (claude-code-ide--sync-visible-live-prompt-terminal-windows)
               (should (= (window-start session-window) (point-min)))
               (should (= (window-point session-window) (point-min)))
-              ;; At the prompt before the command, a late restore inside the
-              ;; command is stale and gets repaired.  Batch Emacs never
-              ;; redisplays, so stub visibility for the snapshot.
-              (cl-letf (((symbol-function 'pos-visible-in-window-p)
-                         (lambda (&rest _) t)))
-                (claude-code-ide--note-live-prompt-terminal-scroll))
+              ;; At the live end before the command, a late restore inside
+              ;; the command is stale and gets repaired.
+              (set-window-start session-window
+                                (with-current-buffer buffer
+                                  (claude-code-ide--window-start-for-point-near-bottom
+                                   session-window (point-max) 0)))
+              (claude-code-ide--note-live-prompt-terminal-scroll)
               (should-not (buffer-local-value 'claude-code-ide--scrolled-away
                                               buffer))
               (set-window-start session-window (point-min))
@@ -12832,9 +12833,7 @@ another live-prompt session and back keeps the restored viewport."
               (claude-code-ide--note-live-prompt-terminal-scroll)
               (let ((state (window-state-get (frame-root-window) t)))
                 (set-window-buffer session-window other-buffer)
-                (cl-letf (((symbol-function 'pos-visible-in-window-p)
-                           (lambda (&rest _) t)))
-                  (claude-code-ide--note-live-prompt-terminal-scroll))
+                (claude-code-ide--note-live-prompt-terminal-scroll)
                 (window-state-put state (frame-root-window) 'safe))
               (let ((restored (get-buffer-window buffer)))
                 (claude-code-ide--sync-visible-live-prompt-terminal-windows)
@@ -12843,6 +12842,52 @@ another live-prompt session and back keeps the restored viewport."
         (kill-buffer buffer))
       (when (buffer-live-p other-buffer)
         (kill-buffer other-buffer)))))
+
+(ert-deftest claude-code-ide-test-live-prompt-parked-cursor-keeps-live-end ()
+  "A window at the live end stays there when omp parks its cursor above it.
+omp parks the native cursor on the top row of the screen in some states,
+such as a dialog, and that row can be out of view while the window shows
+the end.  The window still follows the output: it gets no scrolled-away
+mark and the sync leaves it, so a Session switch comes back to the end."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-omp-parked-cursor*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (insert (mapconcat (lambda (n) (format "line %d" n))
+                             (number-sequence 1 120)
+                             "\n"))
+          (setq-local claude-code-ide--session-cli-type 'omp
+                      major-mode 'ghostel-mode
+                      ghostel--term 'mock-term)
+          (let* ((win (selected-window))
+                 (end-start (claude-code-ide--window-start-for-point-near-bottom
+                             win (point-max) 0)))
+            (setq-local ghostel--cursor-char-pos
+                        (save-excursion (goto-char end-start)
+                                        (forward-line -3)
+                                        (point)))
+            (set-window-start win end-start)
+            (set-window-point win (point-max))
+            (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                       (lambda (candidate) (eq candidate buffer)))
+                      ((symbol-function 'evil-emacs-state-p)
+                       (lambda () t))
+                      ;; Batch Emacs never redisplays; answer as redisplay would.
+                      ((symbol-function 'pos-visible-in-window-p)
+                       (lambda (&optional pos window _partially)
+                         (>= pos (window-start window)))))
+              (claude-code-ide--note-live-prompt-terminal-scroll)
+              (should-not claude-code-ide--scrolled-away)
+              (claude-code-ide--sync-visible-live-prompt-terminal-windows)
+              (should (= (window-start win) end-start))
+              ;; A stale restore moves the window up.  The repair puts the end
+              ;; at the bottom, not the parked cursor.
+              (set-window-start win (point-min))
+              (set-window-point win (point-min))
+              (claude-code-ide--sync-visible-live-prompt-terminal-windows)
+              (should (= (window-start win) end-start)))))
+      (kill-buffer buffer))))
 
 (ert-deftest claude-code-ide-test-schedule-live-prompt-terminal-window-sync-runs-now-and-later ()
   "Window sync scheduling should run immediately and queue a deferred pass."

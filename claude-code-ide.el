@@ -1548,6 +1548,17 @@ layout.  Callers pass the per-CLI margin from
     (forward-line (- (max 0 (- (window-body-height win) (or bottom-margin 4) 1))))
     (line-beginning-position)))
 
+(defun claude-code-ide--window-at-live-end-p (win &optional start)
+  "Non-nil if WIN shows the end of its terminal buffer, the live output.
+START defaults to WIN's `window-start'.  Count lines like Ghostel's
+follow test: the lines from START to the end fit in the body, plus one
+for a partly visible top line.  Do not use the native cursor for this:
+omp parks it on the top row of the screen in some states, such as a
+dialog."
+  (<= (with-current-buffer (window-buffer win)
+        (count-lines (or start (window-start win)) (point-max)))
+      (1+ (window-body-height win))))
+
 (defun claude-code-ide--live-prompt-terminal-window-p (win)
   "Non-nil if WIN shows a live-prompt Ghostel session in Emacs state."
   (let ((buffer (window-buffer win)))
@@ -1560,16 +1571,17 @@ layout.  Callers pass the per-CLI margin from
                     (evil-emacs-state-p)))))))
 
 (defvar-local claude-code-ide--scrolled-away nil
-  "Non-nil when the user left this live-prompt buffer scrolled away from the prompt.
+  "Non-nil when the user left this live-prompt buffer scrolled away from its end.
 The mark lives on the buffer, so it survives a Session switch.  A buffer
 shown again keeps the viewport the switch restored.")
 
 (defun claude-code-ide--note-live-prompt-terminal-scroll ()
-  "Record which live-prompt buffers the user scrolled away from the prompt.
+  "Record which live-prompt buffers the user scrolled away from the live output.
 Runs from `pre-command-hook', so it sees the viewport the previous command
 left.  A popup that restores stale window state does so inside a command,
 after this snapshot, so the sync still repairs it.  Hidden buffers keep
-their mark.  A buffer is scrolled away when any of its windows is."
+their mark.  A buffer is scrolled away when any of its windows does not
+show its end; see `claude-code-ide--window-at-live-end-p'."
   (let (seen)
     (dolist (win (window-list nil 'no-minibuf))
       (when (claude-code-ide--live-prompt-terminal-window-p win)
@@ -1577,32 +1589,35 @@ their mark.  A buffer is scrolled away when any of its windows is."
           (unless (memq (current-buffer) seen)
             (push (current-buffer) seen)
             (setq claude-code-ide--scrolled-away nil))
-          (unless (pos-visible-in-window-p
-                   (claude-code-ide--live-prompt-terminal-window-target-point)
-                   win)
+          (unless (claude-code-ide--window-at-live-end-p win)
             (setq claude-code-ide--scrolled-away t)))))))
 
 (defun claude-code-ide--sync-visible-live-prompt-terminal-windows ()
-  "Keep visible Ghostel windows at the live prompt after layout changes.
-Buffers the user scrolled away from the prompt keep their viewport; see
+  "Bring visible Ghostel windows back to the live prompt after layout changes.
+Windows that show the live output stay as they are.  Buffers the user
+scrolled away from the live output keep their viewport; see
 `claude-code-ide--note-live-prompt-terminal-scroll'."
   (dolist (win (window-list nil 'no-minibuf))
     (when (and (claude-code-ide--live-prompt-terminal-window-p win)
                (not (buffer-local-value 'claude-code-ide--scrolled-away
-                                        (window-buffer win))))
+                                        (window-buffer win)))
+               (not (claude-code-ide--window-at-live-end-p win)))
       (with-current-buffer (window-buffer win)
         (let ((target-point
                (claude-code-ide--live-prompt-terminal-window-target-point))
               (bottom-margin (claude-code-ide--live-prompt-bottom-margin)))
           (with-selected-window win
-            (set-window-point win target-point)
-            (goto-char target-point)
-            (unless (pos-visible-in-window-p target-point win)
-              (set-window-start
-               win
-               (claude-code-ide--window-start-for-point-near-bottom
-                win target-point bottom-margin)
-               t))))))))
+            (let ((start (claude-code-ide--window-start-for-point-near-bottom
+                          win target-point bottom-margin)))
+              ;; A parked cursor near the bottom would hide the live output.
+              (unless (claude-code-ide--window-at-live-end-p win start)
+                (setq start (claude-code-ide--window-start-for-point-near-bottom
+                             win (point-max) 0)))
+              ;; Point must stay in view, or redisplay moves START to it.
+              (let ((pt (max target-point start)))
+                (set-window-point win pt)
+                (goto-char pt))
+              (set-window-start win start t))))))))
 
 (defun claude-code-ide--keep-scrolled-viewport-p (window force)
   "Veto Ghostel's anchor when WINDOW shows a scrolled-away buffer again.
