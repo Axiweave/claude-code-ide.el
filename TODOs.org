@@ -88,3 +88,11 @@ assuming free to change omp
 * TODO remote prompt open is slow on first use (~30 s)
 While the remote-project worker waits on the RPC response, =accept-process-output= also runs Ghostel's event filter for the Session buffer. =ghostel--buffer-identification= calls =abbreviate-file-name= on the remote =default-directory= (=%d= spec), which makes a nested tramp-rpc call inside the outer wait. Slow, not a hang. Fix in Ghostel: skip =abbreviate-file-name= for remote paths, or drop =%d= from =ghostel-buffer-identification-format=.
 
+
+* TODO Notices from /spawn Sibling Sessions to their parent
+Follow-up to [[file:specs/025-master-session/spec.md][specs/025-master-session]], which leaves this out.
+/spawn Sibling Sessions do not go through the Intake, so the Intake sends no Notice when one finishes a turn.
+The Intake reconcile loop could treat the =cci-parent= zmx label the same as the =notify= origin of a master Launch, and send the parent the same fixed-format Notice (FR-040, FR-043–045).
+
+** TODO posframe for master session
+quick access; like quick shell.
