@@ -6,7 +6,7 @@
 ESC _ pi:send;<mode>.<payload> ESC \
 ```
 
-- `<mode>` is `queue`, `guide`, or `stop`.
+- `<mode>` is `queue`, `guide`, `stop`, or `notice`.
 - `<payload>` is the follow-up text in UTF-8, encoded as base64url with no padding. The composer regex refuses `/`, so standard base64 does not work.
 - The text is at most 64 KiB before encoding. The text must not be empty.
 - The packet can arrive in pieces. Without the kitty keyboard protocol, the stdin buffer holds a head that starts with `ESC _ p`, `ESC _ pi`, or `ESC _ pi:` as a string sequence, so a pause in the packet does not make it typed text. A pause right after `ESC _` is the exception: those two bytes are also Alt+_, the same as for every other APC reply.
@@ -24,6 +24,7 @@ The composer regex at `tui/src/prompt/composer.ts:365` adds `send` to its kinds.
 | `queue` | `session.prompt(text, {streamingBehavior: "followUp"})` | Waits until the turn ends. | Starts a turn. |
 | `guide` | `session.prompt(text, {streamingBehavior: "steer"})` | Joins the running turn. | Starts a turn. |
 | `stop` | `await session.abort({reason: USER_INTERRUPT_LABEL}); await session.waitForIdle(); session.prompt(text)` | Stops the turn, then starts a new one. | Starts a turn. |
+| `notice` | `await session.waitForIdle(); session.sendCustomMessage({customType: "intake-notice", content: text, display: true, attribution: "agent"})` | Waits until the turn ends, then adds the card. | Adds the card and starts no turn. |
 
 - The handler does not need the editor, so an open dialog does not block it. The draft in the editor does not change.
 - Each handler call passes `runCommands: false`, the same as the start prompt. Thus a follow-up never runs an extension command or a custom command, and its text reaches the agent as written. A file command, for example `/speckit.specify`, expands the same as in the start prompt (FR-030).

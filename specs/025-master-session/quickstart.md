@@ -28,7 +28,6 @@ These steps prove the feature from end to end. The contracts are in `contracts/`
    path = "/Users/fuyu0425/agents/dispatch"
    omp = ["/Users/fuyu0425/.bun/bin/omp"]
    launch_session = ["/Users/fuyu0425/.bun/bin/omp", "launch-session"]
-   prompt = "Read AGENTS.md, then wait for my request."
    token_file = "~/.config/cci-intake/master-token"
    confirm = false
    ```

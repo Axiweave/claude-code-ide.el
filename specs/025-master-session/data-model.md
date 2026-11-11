@@ -82,7 +82,7 @@ stateDiagram-v2
 | `[master].path` | absolute path | Must exist. It does not need to be a Git checkout. |
 | `[master].omp` | string array | `omp[0]` basename must be `omp`, as for projects. |
 | `[master].launch_session` | string array | The same rule as for projects. |
-| `[master].prompt` | string | The opening prompt. It must not be blank. |
+| `[master].prompt` | string, optional | The opening prompt. Empty or missing: the master starts with no first turn. omp loads `AGENTS.md` from `path` into the system prompt. |
 | `[master].confirm` | boolean | Default `false` (FR-050). |
 | `[master].token_file` | path | The master token (research D4). The same mode rule as `token_file`: refused when group or other can read it. The Intake reads both token files at each request. When their contents are equal, it treats the request as shared (no master origin). |
 | `[projects.*].description` | string, optional | A short text for `GET /v1/projects`. |

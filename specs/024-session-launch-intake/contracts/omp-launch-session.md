@@ -6,7 +6,7 @@
 omp launch-session --cwd DIR [--branch NAME] [--label KEY=VALUE]... [--json] -- CHILD_ARGV...
 ```
 
-- stdin carries the opening prompt in UTF-8. It is required and must not be empty.
+- stdin carries the opening prompt in UTF-8. Empty or blank stdin means no opening prompt: the Session starts idle.
 - `--cwd` is an absolute path to a Git checkout on this host.
 - `--branch` asks for a new worktree. The command uses `freeBranchName(DIR, NAME)`, so an existing branch gets the next free suffix, for example `eng-123-2` (FR-055). Without `--branch`, the Session runs in `DIR`.
 - `--label` adds one zmx label. Keys must start with `cci-`. The command base64url-encodes each value, as spec 021 does.

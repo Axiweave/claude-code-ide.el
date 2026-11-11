@@ -1,6 +1,6 @@
 # Contract: Notices
 
-A Notice is a `queue` packet from the Intake to the Master Session. It uses the 024 packet `pi:send;queue.<base64url>` (`specs/024-session-launch-intake/contracts/omp-send-packet.md`).
+A Notice is a `notice` packet from the Intake to the Master Session. It uses the 024 packet `pi:send;notice.<base64url>` (`specs/024-session-launch-intake/contracts/omp-send-packet.md`).
 
 ## Text
 
@@ -31,4 +31,4 @@ See `data-model.md`, "Notice events". The Intake writes Notices only for Launche
 3. The Notices go out oldest first. They use the master's per-Launch chain, the same chain as follow-ups to the master.
 4. After `zmx send` exits 0, the row is `sent`. A later restart sends it never again (FR-044).
 5. If `zmx send` fails, the row goes back to `pending`. The next reconcile tick sends it again. At start, `recover()` sets each row that a crash left in `sending` back to `pending` (FR-045). A duplicate Notice is the accepted cost.
-6. omp delivers a `queue` packet after the master's current turn (FR-041), with `runCommands: false`. A Notice cannot start a Launch, because the Intake never starts a Launch from a Notice (FR-042).
+6. omp shows a `notice` packet as a card and adds it to the master's context as a system-authored message. It starts no turn, so the master sees it at the user's next message. A Notice cannot start a Launch, because the Intake never starts a Launch from a Notice (FR-042).
