@@ -6292,6 +6292,35 @@ jumps off the row the user chose."
      (should (equal (claude-code-ide-manager--repo-worktree-directories main)
                     (list main))))))
 
+(ert-deftest claude-code-ide-test-submodule-worktrees-resolve-to-checkouts ()
+  "A submodule's main worktree is its checkout, not .git/modules/X.
+Its linked worktrees share that checkout as the repo root."
+  (let* ((temp-dir (file-name-as-directory
+                    (file-truename (make-temp-file "claude-code-ide-submodule-test-" t))))
+         (upstream (expand-file-name "upstream" temp-dir))
+         (parent (expand-file-name "parent" temp-dir))
+         (sub (file-name-as-directory (expand-file-name "sub" parent)))
+         (linked (file-name-as-directory (expand-file-name "linked" temp-dir))))
+    (unwind-protect
+        (progn
+          (dolist (dir (list upstream parent))
+            (make-directory dir t)
+            (let ((default-directory dir))
+              (claude-code-ide-tests--git "init" "-b" "main")
+              (claude-code-ide-tests--git "config" "user.name" "Claude Code IDE Tests")
+              (claude-code-ide-tests--git "config" "user.email" "tests@example.com")
+              (claude-code-ide-tests--git "commit" "--allow-empty" "-m" "initial")))
+          (let ((default-directory parent))
+            (claude-code-ide-tests--git "-c" "protocol.file.allow=always"
+                                        "submodule" "add" upstream "sub"))
+          (let ((default-directory sub))
+            (claude-code-ide-tests--git "worktree" "add" "-b" "feature" linked))
+          (should (equal (claude-code-ide-manager--repo-worktree-directories sub)
+                         (list sub linked)))
+          (let ((default-directory linked))
+            (should (equal (claude-code-ide-manager--current-git-root) sub))))
+      (ignore-errors (delete-directory temp-dir t)))))
+
 (ert-deftest claude-code-ide-test-manager-open-existing-session-uses-manager-switch-path ()
   "Test manager open uses the normal manager switch path for live sessions."
   (claude-code-ide-tests--reset-manager-state)

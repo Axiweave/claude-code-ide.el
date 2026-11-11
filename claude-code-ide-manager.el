@@ -890,6 +890,13 @@ Master Session rows are in no Project group, so they have no entry."
      scope
      (plist-put state :items items))))
 
+(defun claude-code-ide-manager--git-dir-checkout (git-dir)
+  "Return the checkout of GIT-DIR, or nil when it has none.
+Git reports a submodule's gitdir (.git/modules/X) as its main worktree;
+`--show-toplevel' run there follows core.worktree to the real checkout."
+  (car (ignore-errors
+         (process-lines "git" "-C" git-dir "rev-parse" "--show-toplevel"))))
+
 (defun claude-code-ide-manager--current-git-root ()
   "Return the current Git root directory when available."
   (or
@@ -899,11 +906,12 @@ Master Session rows are in no Project group, so they have no entry."
                (common-dir-line (car (ignore-errors
                                        (process-lines "git" "-C" default-directory
                                                       "rev-parse" "--git-common-dir"))))
-               (common-dir (expand-file-name common-dir-line default-directory))
-               ((string-equal (file-name-nondirectory (directory-file-name common-dir))
-                              ".git")))
-     (file-name-as-directory
-      (file-name-directory (directory-file-name common-dir))))
+               (common-dir (directory-file-name
+                            (expand-file-name common-dir-line default-directory)))
+               (root (if (string-equal (file-name-nondirectory common-dir) ".git")
+                         (file-name-directory common-dir)
+                       (claude-code-ide-manager--git-dir-checkout common-dir))))
+     (file-name-as-directory root))
    (when-let* ((root (ignore-errors (vc-git-root default-directory))))
      (file-name-as-directory (expand-file-name root)))))
 
@@ -4079,16 +4087,17 @@ probe: a probe connects to the host and blocks when the host is down."
                       nil t))))
 
 (defun claude-code-ide-manager--repo-worktree-directories (git-root)
-  "Return normalized worktree directories for GIT-ROOT that exist on disk."
+  "Return normalized checkout directories of GIT-ROOT's worktrees.
+Missing trees and bare gitdirs have no checkout and are skipped."
   (let ((default-directory git-root)
         directories)
     (dolist (line (ignore-errors
                     (process-lines "git" "-C" git-root "worktree" "list" "--porcelain")))
-      (when (string-prefix-p "worktree " line)
-        (let ((directory (claude-code-ide-manager--normalize-target-directory
-                          (string-remove-prefix "worktree " line))))
-          (when (file-directory-p directory)
-            (push directory directories)))))
+      (when-let* (((string-prefix-p "worktree " line))
+                  (checkout (claude-code-ide-manager--git-dir-checkout
+                             (string-remove-prefix "worktree " line))))
+        (push (claude-code-ide-manager--normalize-target-directory checkout)
+              directories)))
     (nreverse directories)))
 
 (defun claude-code-ide-manager--select-worktree-in (worktrees)
