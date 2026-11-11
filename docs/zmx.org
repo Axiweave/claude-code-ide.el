@@ -232,6 +232,8 @@ The Intake sends it a short Notice when a Worker Session ends a turn, ends, fail
 This package does not ship the master directory, its =AGENTS.md=, its opening prompt, or its omp command.
 You keep them in your own files and in the =[master]= table of the Intake configuration.
 The Intake README shows that table and an example =AGENTS.md=.
+Put =--master= in the omp command of the =[master]= table.
+Then omp runs the Master Session in master mode: it refuses file changes and waits, so each =cci= call runs as a background =bash= call.
 
 Setup in Emacs:
 
