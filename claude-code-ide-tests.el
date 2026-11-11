@@ -12881,12 +12881,80 @@ mark and the sync leaves it, so a Session switch comes back to the end."
               (should-not claude-code-ide--scrolled-away)
               (claude-code-ide--sync-visible-live-prompt-terminal-windows)
               (should (= (window-start win) end-start))
-              ;; A stale restore moves the window up.  The repair puts the end
-              ;; at the bottom, not the parked cursor.
+              ;; A stale restore moves the window up.  The terminal is taller
+              ;; than the window, so the repair clamps to the cursor line, as
+              ;; `ghostel--anchor-window' does.
               (set-window-start win (point-min))
               (set-window-point win (point-min))
               (claude-code-ide--sync-visible-live-prompt-terminal-windows)
-              (should (= (window-start win) end-start)))))
+              (should (= (window-start win)
+                         (save-excursion (goto-char ghostel--cursor-char-pos)
+                                         (line-beginning-position)))))))
+      (kill-buffer buffer))))
+
+(ert-deftest claude-code-ide-test-live-prompt-omp-window-current-at-follow-boundary ()
+  "An omp window shows its live prompt exactly when Ghostel would follow it.
+The lines from the start to the end fit in the body plus one partly
+visible line, or the start is on the cursor line."
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((win (selected-window))
+           (h (window-body-height win)))
+      (dolist (n (list 0 1 (1- h) h (1+ h) (+ h 2) (+ h 3)))
+        (with-temp-buffer
+          (set-window-buffer win (current-buffer))
+          (insert (mapconcat #'number-to-string (number-sequence 1 n) "\n"))
+          (setq-local claude-code-ide--session-cli-type 'omp
+                      ghostel--term 'mock-term
+                      ghostel--cursor-char-pos (point-max))
+          (set-window-start win (point-min))
+          (should (equal (list :lines n :body h :current
+                               (and (claude-code-ide--live-prompt-window-current-p win) t))
+                         (list :lines n :body h :current (<= n (1+ h)))))))
+      (with-temp-buffer
+        (set-window-buffer win (current-buffer))
+        (insert (mapconcat #'number-to-string (number-sequence 1 (* 3 h)) "\n"))
+        (goto-char (point-min))
+        (forward-line h)
+        (setq-local claude-code-ide--session-cli-type 'omp
+                    ghostel--term 'mock-term
+                    ghostel--cursor-char-pos (point))
+        (set-window-start win (line-beginning-position))
+        (should (claude-code-ide--live-prompt-window-current-p win))
+        (set-window-start win (line-beginning-position 2))
+        (should-not (claude-code-ide--live-prompt-window-current-p win))))))
+
+(ert-deftest claude-code-ide-test-live-prompt-codex-repair-keeps-cursor-above-blank-rows ()
+  "A Codex repair pins the cursor even when blank grid rows follow it.
+The terminal grid is 13 rows taller than the window and the cursor sits
+on grid row 10, so an end-aligned window would hide the prompt."
+  (let ((buffer (generate-new-buffer " *claude-code-ide-codex-blank-rows*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer buffer)
+          (insert (mapconcat (lambda (n) (format "line %d" n))
+                             (number-sequence 1 120)
+                             "\n"))
+          (let* ((win (selected-window))
+                 (h (window-body-height win))
+                 (cursor (save-excursion
+                           (goto-char (point-min))
+                           (forward-line (+ (- 120 (+ h 13)) 10))
+                           (point))))
+            (setq-local claude-code-ide--session-cli-type 'codex
+                        major-mode 'ghostel-mode
+                        ghostel--term 'mock-term
+                        ghostel--cursor-char-pos cursor)
+            (set-window-start win (point-min))
+            (set-window-point win (point-min))
+            (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
+                       (lambda (candidate) (eq candidate buffer)))
+                      ((symbol-function 'evil-emacs-state-p)
+                       (lambda () t)))
+              (claude-code-ide--sync-visible-live-prompt-terminal-windows))
+            (should (<= (window-start win) cursor))
+            (should (< (count-lines (window-start win) cursor) h))))
       (kill-buffer buffer))))
 
 (ert-deftest claude-code-ide-test-schedule-live-prompt-terminal-window-sync-runs-now-and-later ()
