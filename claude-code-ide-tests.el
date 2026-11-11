@@ -12772,8 +12772,8 @@ the buffer below the screen, so prefer `ghostel--cursor-char-pos'."
 
 (ert-deftest claude-code-ide-test-live-prompt-sync-keeps-user-scrolled-viewport ()
   "Sync keeps a viewport the user scrolled away but repairs a stale restore.
-The pre-command snapshot decides.  The mark is per buffer, so a window that
-later shows another session buffer still snaps to that buffer's prompt."
+The pre-command snapshot decides.  The mark is per buffer, so a switch to
+another live-prompt session and back keeps the restored viewport."
   (let ((buffer (generate-new-buffer " *claude-code-ide-omp-ghostel-scrolled*"))
         (other-buffer (generate-new-buffer " *claude-code-ide-other*")))
     (unwind-protect
@@ -12790,13 +12790,19 @@ later shows another session buffer still snaps to that buffer's prompt."
                         major-mode 'ghostel-mode
                         ghostel--term 'mock-term
                         ghostel--cursor-char-pos (point)))
+          (with-current-buffer other-buffer
+            (insert "prompt")
+            (setq-local claude-code-ide--session-cli-type 'omp
+                        major-mode 'ghostel-mode
+                        ghostel--term 'mock-term
+                        ghostel--cursor-char-pos (point-min)))
           (let ((target-point (with-current-buffer buffer ghostel--cursor-char-pos))
                 (session-window (selected-window))
                 (other-window (split-window-right)))
             (set-window-buffer other-window other-buffer)
             (select-window other-window)
             (cl-letf (((symbol-function 'claude-code-ide--session-buffer-p)
-                       (lambda (candidate) (eq candidate buffer)))
+                       (lambda (candidate) (memq candidate (list buffer other-buffer))))
                       ((symbol-function 'evil-emacs-state-p)
                        (lambda () t)))
               ;; The user scrolled to the top, then a popup changed the layout.
@@ -12812,19 +12818,27 @@ later shows another session buffer still snaps to that buffer's prompt."
               (cl-letf (((symbol-function 'pos-visible-in-window-p)
                          (lambda (&rest _) t)))
                 (claude-code-ide--note-live-prompt-terminal-scroll))
-              (should-not (window-parameter session-window
-                                            'claude-code-ide-scrolled-away))
+              (should-not (buffer-local-value 'claude-code-ide--scrolled-away
+                                              buffer))
               (set-window-start session-window (point-min))
               (set-window-point session-window (point-min))
               (claude-code-ide--sync-visible-live-prompt-terminal-windows)
               (should (= (window-point session-window) target-point))
               (should (> (window-start session-window) (point-min)))
-              ;; A scrolled-away mark does not carry over to another buffer.
-              (set-window-parameter session-window
-                                    'claude-code-ide-scrolled-away other-buffer)
+              ;; Scroll away, switch to session B at its prompt, and switch
+              ;; back through the saved layout, as the manager does.
               (set-window-start session-window (point-min))
-              (claude-code-ide--sync-visible-live-prompt-terminal-windows)
-              (should (= (window-point session-window) target-point)))))
+              (set-window-point session-window (point-min))
+              (claude-code-ide--note-live-prompt-terminal-scroll)
+              (let ((state (window-state-get (frame-root-window) t)))
+                (set-window-buffer session-window other-buffer)
+                (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                           (lambda (&rest _) t)))
+                  (claude-code-ide--note-live-prompt-terminal-scroll))
+                (window-state-put state (frame-root-window) 'safe))
+              (let ((restored (get-buffer-window buffer)))
+                (claude-code-ide--sync-visible-live-prompt-terminal-windows)
+                (should (= (window-start restored) (point-min)))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when (buffer-live-p other-buffer)

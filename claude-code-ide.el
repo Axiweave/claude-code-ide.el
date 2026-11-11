@@ -1559,31 +1559,37 @@ layout.  Callers pass the per-CLI margin from
                 (or (not (fboundp 'evil-emacs-state-p))
                     (evil-emacs-state-p)))))))
 
+(defvar-local claude-code-ide--scrolled-away nil
+  "Non-nil when the user left this live-prompt buffer scrolled away from the prompt.
+The mark lives on the buffer, so it survives a Session switch.  A buffer
+shown again keeps the viewport the switch restored.")
+
 (defun claude-code-ide--note-live-prompt-terminal-scroll ()
-  "Record which live-prompt windows the user scrolled away from the prompt.
+  "Record which live-prompt buffers the user scrolled away from the prompt.
 Runs from `pre-command-hook', so it sees the viewport the previous command
 left.  A popup that restores stale window state does so inside a command,
-after this snapshot, so the sync still repairs it.  The window parameter
-holds the scrolled buffer, so a later buffer switch does not inherit it."
-  (dolist (win (window-list nil 'no-minibuf))
-    (when (claude-code-ide--live-prompt-terminal-window-p win)
-      (let ((buffer (window-buffer win)))
-        (set-window-parameter
-         win 'claude-code-ide-scrolled-away
-         (unless (pos-visible-in-window-p
-                  (with-current-buffer buffer
-                    (claude-code-ide--live-prompt-terminal-window-target-point))
-                  win)
-           buffer))))))
+after this snapshot, so the sync still repairs it.  Hidden buffers keep
+their mark.  A buffer is scrolled away when any of its windows is."
+  (let (seen)
+    (dolist (win (window-list nil 'no-minibuf))
+      (when (claude-code-ide--live-prompt-terminal-window-p win)
+        (with-current-buffer (window-buffer win)
+          (unless (memq (current-buffer) seen)
+            (push (current-buffer) seen)
+            (setq claude-code-ide--scrolled-away nil))
+          (unless (pos-visible-in-window-p
+                   (claude-code-ide--live-prompt-terminal-window-target-point)
+                   win)
+            (setq claude-code-ide--scrolled-away t)))))))
 
 (defun claude-code-ide--sync-visible-live-prompt-terminal-windows ()
   "Keep visible Ghostel windows at the live prompt after layout changes.
-Windows the user scrolled away from the prompt keep their viewport; see
+Buffers the user scrolled away from the prompt keep their viewport; see
 `claude-code-ide--note-live-prompt-terminal-scroll'."
   (dolist (win (window-list nil 'no-minibuf))
     (when (and (claude-code-ide--live-prompt-terminal-window-p win)
-               (not (eq (window-parameter win 'claude-code-ide-scrolled-away)
-                        (window-buffer win))))
+               (not (buffer-local-value 'claude-code-ide--scrolled-away
+                                        (window-buffer win))))
       (with-current-buffer (window-buffer win)
         (let ((target-point
                (claude-code-ide--live-prompt-terminal-window-target-point))
@@ -1597,6 +1603,16 @@ Windows the user scrolled away from the prompt keep their viewport; see
                (claude-code-ide--window-start-for-point-near-bottom
                 win target-point bottom-margin)
                t))))))))
+
+(defun claude-code-ide--keep-scrolled-viewport-p (window force)
+  "Veto Ghostel's anchor when WINDOW shows a scrolled-away buffer again.
+Ghostel anchors a window at the prompt when the window starts to show its
+buffer.  A Session switch back to a buffer the user scrolled away restores
+the saved viewport, so keep it.  FORCE anchors, such as typing, still run.
+Runs from `ghostel-inhibit-anchor-functions' with WINDOW's buffer current."
+  (and (not force)
+       claude-code-ide--scrolled-away
+       (not (eq (window-old-buffer window) (window-buffer window)))))
 
 (defun claude-code-ide--run-live-prompt-terminal-window-sync ()
   "Run the deferred live-prompt terminal window sync pass."
@@ -1617,6 +1633,8 @@ pass corrects those late restores without waiting for terminal output."
 (defun claude-code-ide--install-live-prompt-terminal-window-sync ()
   "Install hooks that keep live-prompt terminal windows at the live prompt."
   (add-hook 'pre-command-hook #'claude-code-ide--note-live-prompt-terminal-scroll)
+  (add-hook 'ghostel-inhibit-anchor-functions
+            #'claude-code-ide--keep-scrolled-viewport-p)
   (unless (memq #'claude-code-ide--schedule-live-prompt-terminal-window-sync
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
