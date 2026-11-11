@@ -3159,6 +3159,14 @@ A remote heading spans a host line and a project line but starts one block."
       (message
        "C-c C-c applies. C-c C-k cancels. M-p/M-k move rows. M-P/M-K move groups."))))
 
+(defun claude-code-ide-manager--row-letters (row)
+  "Return the letter label for ROW past the ten quick slots.
+Row 11 is \"A\", 36 is \"Z\", 37 is \"AA\", and 712 is \"ZZ\".  Later rows
+get nil.  A letter label names a row only: no hotkey reaches it."
+  (let ((n (- row 11)))
+    (cond ((< n 26) (string (+ ?A n)))
+          ((< (setq n (- n 26)) 676) (string (+ ?A (/ n 26)) (+ ?A (% n 26)))))))
+
 (defun claude-code-ide-manager--insert-item (scope item slot &optional grouped-label)
   "Insert ITEM with SLOT in SCOPE, optionally using GROUPED-LABEL.
 Reserve one active-marker cell and two status-marker cells before SLOT."
@@ -3178,7 +3186,9 @@ Reserve one active-marker cell and two status-marker cells before SLOT."
               " "))
     (insert (claude-code-ide-manager--marker-gutter item))
     (insert (propertize " " 'display '(space :align-to 3)))
-    (insert (if (numberp slot) (format "%2d." slot) " - "))
+    (insert (cond ((numberp slot) (format "%2d." slot))
+                  (slot (format "%2s." slot))
+                  (t " - ")))
     (insert " ")
     (let ((name-start (point)))
       (insert (claude-code-ide-manager--item-visible-name item grouped-label) "\n")
@@ -3331,6 +3341,7 @@ returns to it.  No Session status changes."
                   (get-text-property (point) 'claude-code-ide-manager-session-key)))
              (inhibit-read-only t)
              (slots (claude-code-ide-manager--slot-map items t))
+             (row 0)
              previous-group previous-host)
         (erase-buffer)
         (when claude-code-ide-manager-focused-view
@@ -3358,8 +3369,11 @@ returns to it.  No Session status changes."
                  (concat (if host "  " "") (car heading))
                  (claude-code-ide-manager--echo-path (cdr heading) host) key)
                 (setq previous-group key previous-host host)))))
+          (setq row (1+ row))
           (claude-code-ide-manager--insert-item
-           scope item (gethash (claude-code-ide-manager-item-session-key item) slots)
+           scope item
+           (or (gethash (claude-code-ide-manager-item-session-key item) slots)
+               (claude-code-ide-manager--row-letters row))
            (and labels (gethash item labels))))
         (goto-char (point-min))
         (when-let* ((target-session-key

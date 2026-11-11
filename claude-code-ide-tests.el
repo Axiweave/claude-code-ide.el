@@ -8195,7 +8195,8 @@ same order, under a count line that belongs to no Session."
                             (cl-loop for (_key . text) in rows
                                      for index from 1
                                      do (should (string-prefix-p
-                                                 (if (<= index 10) (format "%2d. " index) " -  ")
+                                                 (if (<= index 10) (format "%2d. " index)
+                                                   (format " %s. " (nth (- index 11) '("A" "B"))))
                                                  text)))
                             rows)))
                 (let ((rows (rows)))
@@ -8212,6 +8213,17 @@ same order, under a count line that belongs to no Session."
                     (claude-code-ide-manager-switch-by-slot (1+ (min 10 (length rows))))
                     (should (equal claude-code-ide-manager--current-session-key
                                    current))))))))))))
+
+(ert-deftest claude-code-ide-test-manager-row-letters ()
+  "Rows past slot 10 get distinct labels that fit the slot column, then nil."
+  (should (equal (mapcar #'claude-code-ide-manager--row-letters
+                         '(11 12 36 37 62 63 712 713))
+                 '("A" "B" "Z" "AA" "AZ" "BA" "ZZ" nil)))
+  (let ((labels (cl-loop for row from 11 to 712
+                         collect (claude-code-ide-manager--row-letters row))))
+    (should (= (length (delete-dups (copy-sequence labels))) (length labels)))
+    ;; Two columns before the dot, the same width as "10.".
+    (should (cl-every (lambda (label) (<= 1 (length label) 2)) labels))))
 
 (ert-deftest claude-code-ide-test-manager-focused-view-move-swaps-visible-rows ()
   "A row move skips hidden Sessions, so the two visible rows trade places."
