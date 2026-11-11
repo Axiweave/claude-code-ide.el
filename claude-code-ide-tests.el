@@ -23852,48 +23852,61 @@ They are in no group, and a saved and restored item keeps the mark."
 
 (ert-deftest claude-code-ide-test-spawn-switch-rule-property ()
   "The switch at attach follows the rule table for every combination.
-Rule 1: a Worker of the master never switches.  Rule 2: the pending
-master pair switches once and clears.  Rule 3: the option decides."
-  (let ((name "cci-omp-w-wwwwww"))
+Rule 1: a Worker of the master, or a child that a live master spawned,
+never switches.  Rule 2: the pending master pair switches once and
+clears.  Rule 3: the option decides."
+  (let ((name "cci-omp-w-wwwwww")
+        (parent-name "cci-omp-p-pppppp"))
     (dolist (host '(nil "host-a"))
       (dolist (origin '(none "master" "api"))
-        (dolist (pending '(none same other))
-          (dolist (option '(t nil))
-            (ert-info ((format "host %s origin %s pending %s option %s"
-                               host origin pending option))
-              (claude-code-ide-tests--with-spawn-adoption
-                (let* ((claude-code-ide-switch-on-spawn option)
-                       (pair (pcase pending
-                               ('none nil)
-                               ('same (cons host name))
-                               ('other (cons host "cci-omp-m-mmmmmm"))))
-                       (claude-code-ide--master-open-pending pair)
-                       (window (selected-window))
-                       (buffer (window-buffer (selected-window)))
-                       (line (concat "name=" name "\tpid=2\tstart_dir=/srv/w\tcmd=omp"
-                                     (if (stringp origin)
-                                         (concat "\tcci-origin="
-                                                 (claude-code-ide-tests--label origin))
-                                       "")))
-                       ;; The table of contracts/emacs-master.md "Switch rule".
-                       (expected (cond ((equal origin "master") nil)
-                                       ((eq pending 'same) t)
-                                       (t option))))
-                  (if host
-                      (progn
-                        (claude-code-ide--adopt-spawned-session host name)
-                        (reply (concat line "\n")))
-                    (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
-                               (lambda () (list (claude-code-ide-zmx--parse-list-line line)))))
-                      (claude-code-ide--adopt-spawned-session nil name)))
-                  (should (equal created (list (list host name))))
-                  (should (equal switched (and expected (list name))))
-                  (should (equal claude-code-ide--master-open-pending
-                                 (and (not (and (eq pending 'same)
-                                                (not (equal origin "master"))))
-                                      pair)))
-                  (should (eq (selected-window) window))
-                  (should (eq (window-buffer window) buffer)))))))))))
+        (dolist (parent '(none master plain))
+          (dolist (pending '(none same other))
+            (dolist (option '(t nil))
+              (ert-info ((format "host %s origin %s parent %s pending %s option %s"
+                                 host origin parent pending option))
+                (claude-code-ide-tests--with-spawn-adoption
+                  (let* ((claude-code-ide-switch-on-spawn option)
+                         (pair (pcase pending
+                                 ('none nil)
+                                 ('same (cons host name))
+                                 ('other (cons host "cci-omp-m-mmmmmm"))))
+                         (claude-code-ide--master-open-pending pair)
+                         (window (selected-window))
+                         (buffer (window-buffer (selected-window)))
+                         (line (concat "name=" name "\tpid=2\tstart_dir=/srv/w\tcmd=omp"
+                                       (if (stringp origin)
+                                           (concat "\tcci-origin="
+                                                   (claude-code-ide-tests--label origin))
+                                         "")
+                                       (if (eq parent 'none)
+                                           ""
+                                         (concat "\tcci-parent="
+                                                 (claude-code-ide-tests--label parent-name)))))
+                         (blocked (or (equal origin "master") (eq parent 'master)))
+                         ;; The table of contracts/emacs-master.md "Switch rule".
+                         (expected (cond (blocked nil)
+                                         ((eq pending 'same) t)
+                                         (t option))))
+                    (unless (eq parent 'none)
+                      (claude-code-ide--put-session
+                       (claude-code-ide-session-create
+                        :id parent-name :zmx-name parent-name :host host
+                        :directory "/srv/p" :cli-type 'omp
+                        :master (eq parent 'master))))
+                    (if host
+                        (progn
+                          (claude-code-ide--adopt-spawned-session host name)
+                          (reply (concat line "\n")))
+                      (cl-letf (((symbol-function 'claude-code-ide-zmx-list-sessions)
+                                 (lambda () (list (claude-code-ide-zmx--parse-list-line line)))))
+                        (claude-code-ide--adopt-spawned-session nil name)))
+                    (should (equal created (list (list host name))))
+                    (should (equal switched (and expected (list name))))
+                    (should (equal claude-code-ide--master-open-pending
+                                   (and (not (and (eq pending 'same) (not blocked)))
+                                        pair)))
+                    (should (eq (selected-window) window))
+                    (should (eq (window-buffer window) buffer))))))))))))
 
 (defmacro claude-code-ide-tests--with-master (&rest body)
   "Run BODY with the Intake and the spawn adoption mocked for the master.

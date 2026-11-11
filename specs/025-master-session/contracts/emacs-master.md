@@ -6,13 +6,13 @@
 
 | # | Condition | Result |
 |---|---|---|
-| 1 | `ENTRY` has label `cci-origin` with value `master` | nil: no switch, no window change |
+| 1 | `ENTRY` has label `cci-origin` with value `master`, or label `cci-parent` names a live Master Session on `HOST` | nil: no switch, no window change |
 | 2 | `(HOST . NAME)` is equal to `claude-code-ide--master-open-pending` | t, and the variable becomes nil |
 | 3 | otherwise | `claude-code-ide-switch-on-spawn` |
 
 Label values are base64url. The rule decodes them before it compares.
 
-ERT: the rule table is a property over all combinations of the `cci-origin` label (none, `master`, other), pending (none, the same pair, another pair), and the option (t, nil). The test runs the combinations for a local and for a remote entry, and checks `switched` against the table.
+ERT: the rule table is a property over all combinations of the `cci-origin` label (none, `master`, other), the `cci-parent` label (none, a live Master Session, a live plain Session), pending (none, the same pair, another pair), and the option (t, nil). The test runs the combinations for a local and for a remote entry, and checks `switched` against the table.
 
 ## Master mark (FR-004, FR-005)
 

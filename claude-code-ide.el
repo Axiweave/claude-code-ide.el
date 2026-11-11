@@ -2779,12 +2779,17 @@ that Session that ends with no live Session also clears it.")
 Emacs asks this when it attaches the Session.
 ENTRY is the zmx entry of the Session.  The first rule that matches wins:
 1. A Worker Session of the Master Session (label `cci-origin' is
-   `master') never gets the focus.
+   `master'), or a Sibling Session that a live Master Session on HOST
+   spawned (label `cci-parent' names it), never gets the focus.
 2. The Master Session that `claude-code-ide-master' waits for gets the
    focus once.  This clears `claude-code-ide--master-open-pending'.
 3. Otherwise, follow `claude-code-ide-switch-on-spawn'."
   (cond
    ((equal (claude-code-ide--zmx-label entry "cci-origin") "master") nil)
+   ((when-let* ((parent (claude-code-ide--zmx-label entry "cci-parent"))
+                (session (claude-code-ide--live-session-for-target host parent)))
+      (claude-code-ide-session-master session))
+    nil)
    ((equal (cons host name) claude-code-ide--master-open-pending)
     (setq claude-code-ide--master-open-pending nil)
     t)

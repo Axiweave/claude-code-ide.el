@@ -257,6 +257,7 @@ Emacs reads two zmx labels that the Intake sets:
 - =cci-origin=master= marks a Worker Session.
   Emacs attaches it but never moves the focus to it, whatever =claude-code-ide-switch-on-spawn= says.
   So your chat with the Master Session is not interrupted.
+  The same holds for a Sibling Session that the Master Session starts with =/spawn= or its spawn tool (its =cci-parent= label names the Master Session).
 
 When the =[master]= table sets =confirm = true=, the Intake holds each Worker Session Launch until you answer.
 With =claude-code-ide-intake-mode= on, Emacs shows one message for each held Launch.
